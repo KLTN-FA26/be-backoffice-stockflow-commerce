@@ -26,7 +26,8 @@ class EInvoiceRegisterCsvTest {
 
     private final EInvoiceQueries queries = mock(EInvoiceQueries.class);
     private final EInvoiceQueryService service = new EInvoiceQueryService(mock(EInvoiceRepository.class), queries,
-            mock(ProviderCallLog.class), mock(FileTransfers.class));
+            mock(ProviderCallLog.class), mock(FileTransfers.class),
+            mock(com.stockflow.invoicing.internal.domain.InvoiceSettings.class), mock(EInvoiceProviders.class));
 
     @Test
     @DisplayName("UTF-8 with a byte-order mark, a header, one line per invoice; numbers padded, money whole")

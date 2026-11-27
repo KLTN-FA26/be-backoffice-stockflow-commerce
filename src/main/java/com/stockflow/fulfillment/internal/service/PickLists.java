@@ -82,7 +82,9 @@ public interface PickLists {
      * the removed line stays as it is (its carton goes to quarantine through the put-back queue). The new allocations
      * stand for the task's delivery batch and join the task as a top-up (07 §4.3 step 7): a PICKED task goes back to
      * PICKING, and the check session, still IN_PROGRESS, takes the replacement once it is picked. Refused once the
-     * task's check is complete or cancelled, and once the line lacks nothing more (replaced already, or closed).</p>
+     * task's check is complete or cancelled, and once the line lacks nothing more (replaced already, or closed). A line
+     * whose carton left a shipment the warehouse manager cancelled before dispatch is replaced the same way, damaged or
+     * not (09 §5.1, RTM-RTDCANCEL): that cancellation took the task's check back to IN_PROGRESS.</p>
      *
      * @return the new lines
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
@@ -103,6 +105,27 @@ public interface PickLists {
      * whose carton was not removed, or one replaced since, changes nothing. Locks the pick, then the order.
      */
     void holdForUnreplacedCarton(UUID taskId, UUID lineId, CurrentUser actor);
+
+    /**
+     * A carton was removed at the check station (kltn-docs 08 §4.2 step 4): its line lacks it, handled as a short pick
+     * (07 §4.4 step 9), so the order is held {@code INVENTORY} at once - as a picker's short report holds it - and the
+     * warehouse manager reallocates the line ({@link #reallocateShort}), which resumes the order when stock replaces the
+     * carton; when none does, {@link #holdForUnreplacedCarton} keeps it held. In the caller's transaction (the
+     * removal's), which already holds the pick's lock; then the order's. An order on hold already, a line whose carton
+     * was not removed, or one replaced since, changes nothing.
+     */
+    void holdForRemovedCarton(UUID taskId, UUID lineId, CurrentUser actor);
+
+    /**
+     * The warehouse manager cancelled shipment {@code shipmentCode} before dispatch (kltn-docs 09 §5.1; owner decision
+     * RTM-RTDCANCEL, 2026-11-19): the line's carton left it - damaged into quarantine, or good back onto a bin - and its
+     * order line lacks it, so the order is held {@code INVENTORY} as for a carton removed at the check station
+     * ({@link #holdForRemovedCarton}); the warehouse manager reallocates the line ({@link #reallocateShort}), which
+     * resumes the order - back to the status it was held from - once nothing lacks a replacement. In the caller's
+     * transaction, which holds the pick's lock; then the order's. An order on hold already, or a line not lacking,
+     * changes nothing.
+     */
+    void holdForCancelledShipment(UUID taskId, UUID lineId, String shipmentCode, CurrentUser actor);
 
     /**
      * An approved count wrote off a carton an order still held (kltn-docs 20 §4.2 step 8): inventory gave the hold up
@@ -142,12 +165,34 @@ public interface PickLists {
      * @param lpn the carton the line takes, scanned to confirm it and to put it back
      * @param stagedAt when the carton was moved to the staging area (4C-5); null for a line never staged
      * @param stagedLocationCode the staging area it was moved to; null for a line never staged
+     * @param removalReason why the check station removed the line's carton ({@code DAMAGED}, {@code ORDER_CANCELLED}, ...);
+     *                      null while it was not removed. Filled by the list read only
+     * @param replacementPending the carton was removed as damaged and its order line still lacks it: it may be replaced
+     *                      through the reallocation (08 §4.2 step 4, 07 §4.4 step 10). Filled by the list read only
      */
     record PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                         String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
                         Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
                         int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton, Instant stagedAt,
-                        String stagedLocationCode) {
+                        String stagedLocationCode, String removalReason, boolean replacementPending) {
+
+        /** A line whose carton was not looked up at the check station (every answer but the list read). */
+        public PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
+                            String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
+                            Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
+                            int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton,
+                            Instant stagedAt, String stagedLocationCode) {
+            this(lineId, taskId, sequenceNo, orderLineId, sku, barcode, locationCode, lotNumber, allocatedQty,
+                    pickedQty, status, pickedAt, putBackQty, putBackLocationCode, putBackAt, shortQty, shortReason,
+                    lpn, wholeCarton, stagedAt, stagedLocationCode, null, false);
+        }
+
+        /** The same line with what the check station did to its carton. */
+        PickLineView withRemoval(String removalReason, boolean replacementPending) {
+            return new PickLineView(lineId, taskId, sequenceNo, orderLineId, sku, barcode, locationCode, lotNumber,
+                    allocatedQty, pickedQty, status, pickedAt, putBackQty, putBackLocationCode, putBackAt, shortQty,
+                    shortReason, lpn, wholeCarton, stagedAt, stagedLocationCode, removalReason, replacementPending);
+        }
 
         /** A line as it was shown before team plan 4C-5: never staged. */
         public PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
@@ -156,7 +201,7 @@ public interface PickLists {
                             int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton) {
             this(lineId, taskId, sequenceNo, orderLineId, sku, barcode, locationCode, lotNumber, allocatedQty,
                     pickedQty, status, pickedAt, putBackQty, putBackLocationCode, putBackAt, shortQty, shortReason,
-                    lpn, wholeCarton, null, null);
+                    lpn, wholeCarton, null, null, null, false);
         }
     }
 
@@ -170,13 +215,24 @@ public interface PickLists {
     /**
      * @param quarantine the check station removed the carton as damaged (4C-6): it goes into a quarantine area, not
      *                   onto a bin
+     * @param overflowLocationCodes the warehouse's usable OVERFLOW areas, when no bin of it takes the carton (07 BR-12);
+     *                   empty while one does
+     * @param taskNumber the task's human number {@code PK-yyyyMMdd-nnnn}
+     * @param warehouseCode the code (prefix) of {@code warehouseId}; null only if the warehouse is unknown
+     * @param warehouseName the name of {@code warehouseId}; null only if the warehouse is unknown
      */
     record PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,
-                      String lpn, int pickedQty, String fromLocationCode, Instant pickedAt, boolean quarantine) {
+                      String lpn, int pickedQty, String fromLocationCode, Instant pickedAt, boolean quarantine,
+                      List<String> overflowLocationCodes, String taskNumber, String warehouseCode,
+                      String warehouseName) {
+        public PutBackRow {
+            overflowLocationCodes = overflowLocationCodes == null ? List.of() : List.copyOf(overflowLocationCodes);
+        }
+
         PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,
                    String lpn, int pickedQty, String fromLocationCode, Instant pickedAt) {
             this(taskId, orderNumber, warehouseId, lineId, sku, lotNumber, lpn, pickedQty, fromLocationCode, pickedAt,
-                    false);
+                    false, List.of(), null, null, null);
         }
     }
 }

@@ -110,16 +110,16 @@ class GetStockLotsTool implements AssistantTool {
         Sku sku = KnownSkus.require(inventory, new Sku(arguments.text("sku", Sku.MAX_LENGTH)));
         List<StockAvailability> rows = inventory.availabilityOf(sku);
         Set<UUID> hidden = rows.isEmpty() ? Set.of()
-                : blindCount.hiddenFromCaller(rows.stream().map(StockAvailability::stockItemId).toList());
+                : blindCount.hiddenFromCaller(rows.stream().map(StockAvailability::stockPackageId).toList());
         // A hidden row stays whatever it holds: leaving it out at zero would give its books away.
         List<StockAvailability> stocked = rows.stream()
-                .filter(row -> hidden.contains(row.stockItemId()) || row.onHand() > 0)
+                .filter(row -> hidden.contains(row.stockPackageId()) || row.onHand() > 0)
                 .toList();
         Packing packing = Packing.of(units, List.of(sku.code())).getOrDefault(sku.code(), Packing.NONE);
         return new Answer(sku.code(), packing.unit(), packing.packingUnit(), packing.unitsPerPacking(),
                 stocked.size(), stocked.size() > MAX_ROWS,
                 stocked.stream().limit(MAX_ROWS)
-                        .map(row -> hidden.contains(row.stockItemId()) ? Row.hidden(row) : Row.of(row, packing))
+                        .map(row -> hidden.contains(row.stockPackageId()) ? Row.hidden(row) : Row.of(row, packing))
                         .toList());
     }
 

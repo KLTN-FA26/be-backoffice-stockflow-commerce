@@ -25,6 +25,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -158,6 +159,8 @@ class FindOrdersTool implements AssistantTool {
         LocalDate placedFrom = ToolDates.optional(arguments, "placedFrom");
         LocalDate placedTo = ToolDates.optional(arguments, "placedTo");
         int limit = arguments.integer("limit", 1, MAX_ROWS);
+        // The order list's warehouse limit: a warehouse manager reads the orders of their warehouses only.
+        Set<UUID> reach = OrderReach.limitOf(user);
         String typedCustomer = arguments.optionalText("customer", 200);
         if (!"ANY".equals(holdReason) && !"ANY".equals(status) && !OrderStatus.ON_HOLD.name().equals(status)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
@@ -175,12 +178,12 @@ class FindOrdersTool implements AssistantTool {
         CustomerName named = customer == null ? null : customer.customerName();
         if (!"ANY".equals(holdReason)) {
             return held(HoldReason.valueOf(holdReason), customerId, named, placedFrom, placedTo, limit,
-                    mayListCustomers);
+                    mayListCustomers, reach);
         }
         // The order service refuses placedTo before placedFrom itself, for the screen and for this tool alike.
         PageResponse<OrderSummary> page = orders.list(new ListOrdersQuery(0, limit, null,
                 "ANY".equals(status) ? ORDER_STATUSES : List.of(OrderStatus.valueOf(status)), customerId,
-                placedFrom, placedTo, NEWEST_FIRST));
+                placedFrom, placedTo, NEWEST_FIRST, reach));
         Map<UUID, String> names = names(page.items(), mayListCustomers);
         List<Row> rows = page.items().stream().map(order -> Row.of(order, names)).toList();
         return new Answer(rows, page.totalElements(), page.totalElements() > rows.size(), null, named, List.of());
@@ -188,12 +191,12 @@ class FindOrdersTool implements AssistantTool {
 
     /** The held orders, a page at a time, keeping those held for {@code reason}. */
     private Answer held(HoldReason reason, UUID customerId, CustomerName customer, LocalDate placedFrom,
-                        LocalDate placedTo, int limit, boolean mayListCustomers) {
+                        LocalDate placedTo, int limit, boolean mayListCustomers, Set<UUID> reach) {
         List<OrderSummary> kept = new ArrayList<>();
         long total = 0;
         for (int page = 0; page * SCAN_PAGE < MAX_SCANNED; page++) {
             PageResponse<OrderSummary> found = orders.list(new ListOrdersQuery(page, SCAN_PAGE, null,
-                    List.of(OrderStatus.ON_HOLD), customerId, placedFrom, placedTo, NEWEST_FIRST));
+                    List.of(OrderStatus.ON_HOLD), customerId, placedFrom, placedTo, NEWEST_FIRST, reach));
             for (OrderSummary order : found.items()) {
                 if (order.lifecycle() != null && order.lifecycle().holdReason() == reason) {
                     total++;

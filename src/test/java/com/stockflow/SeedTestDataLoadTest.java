@@ -118,6 +118,109 @@ class SeedTestDataLoadTest {
         }
     }
 
+    /**
+     * The WF-05 demo's own locations - {@code db/demo-sepay} and {@code db/demo-wf05}, which the integration tests never
+     * load (their jobs would find what these leave waiting) - load on top of {@code db/migration} and {@code db/demo}
+     * with every trigger on, leave nothing pointing at nothing, and leave each scene in the state the runbook opens it
+     * in (WF-05 demo-run 24/11/2026: the blocked steps).
+     */
+    @Test
+    @DisplayName("the WF-05 demo locations load and leave every seeded scene in its state")
+    void wf05DemoScenes() throws Exception {
+        try (var pg = new PostgreSQLContainer<>("postgres:16-alpine")) {
+            pg.start();
+            pg.copyFileToContainer(MountableFile.forHostPath(ORPHANS), "/tmp/orphans.sql");
+            String database = pg.getDatabaseName();
+            migrate(pg, database, "classpath:db/migration", "classpath:db/demo", "classpath:db/demo-sepay",
+                    "classpath:db/demo-wf05");
+            try (Connection db = connect(pg, database)) {
+                wf05Scenes(db);
+            }
+            noOrphans(pg, database);
+        }
+    }
+
+    private static UUID wf05(String key) {
+        return DemoData.demoId("demo:wf05:" + key);
+    }
+
+    private static String orderStatus(Connection db, String key) throws Exception {
+        return RawSql.text(db, "SELECT status FROM ordering.customer_order WHERE id = ?", wf05("order:" + key));
+    }
+
+    private static String invoice(Connection db, String key) throws Exception {
+        return RawSql.text(db, "SELECT type || '|' || status || '|' || coalesce(provider, '-') || '|' || attempt || '|' "
+                + "|| coalesce(warnings, '-') FROM invoicing.einvoice WHERE id = ?", wf05("einvoice:" + key));
+    }
+
+    private static void wf05Scenes(Connection db) throws Exception {
+        // D-5 / TH-5: a second member of Sales, same role.
+        assertThat(RawSql.texts(db, "SELECT r.code FROM identity.user_role ur JOIN identity.app_role r ON r.id = "
+                + "ur.role_id JOIN identity.app_user u ON u.id = ur.user_id WHERE u.username = 'demo.sales2'"))
+                .containsExactly("SALES_STAFF");
+        // Steps 8, 9, HĐ-2, HĐ-7: drafts the automatic issuing does not take.
+        assertThat(invoice(db, "WF5-C:1")).isEqualTo("ORIGINAL|DRAFT|-|0|TAX_RATE_DIFFERS_FROM_CONTRACT");
+        assertThat(invoice(db, "WF5-D:1")).isEqualTo("ORIGINAL|DRAFT|SANDBOX|1|-");
+        assertThat(invoice(db, "WF5-HD7:1"))
+                .isEqualTo("ORIGINAL|DRAFT|-|0|TAX_RATE_DIFFERS_FROM_CONTRACT,TAX_CLASS_UNKNOWN");
+        assertThat(RawSql.number(db, "SELECT count(*) FROM invoicing.einvoice_line WHERE einvoice_id = ? AND tax_rate = 10",
+                wf05("einvoice:WF5-HD7:1"))).as("the cup without a class at the highest rate").isOne();
+        // HĐ-1: one the sandbox keeps "processing", one it never received.
+        assertThat(invoice(db, "WF5-HD1B:1")).isEqualTo("ORIGINAL|SUBMITTING|SANDBOX|1|-");
+        assertThat(RawSql.text(db, "SELECT (s.ready_at > now() + INTERVAL '1 year')::text FROM invoicing.sandbox_issuance s "
+                + "JOIN invoicing.einvoice e ON e.transaction_id = s.transaction_id WHERE e.id = ?",
+                wf05("einvoice:WF5-HD1B:1"))).isEqualTo("true");
+        assertThat(invoice(db, "WF5-HD1C:1")).isEqualTo("ORIGINAL|SUBMITTING|SANDBOX|1|-");
+        assertThat(RawSql.number(db, "SELECT count(*) FROM invoicing.sandbox_issuance s JOIN invoicing.einvoice e ON "
+                + "e.transaction_id = s.transaction_id WHERE e.id = ?", wf05("einvoice:WF5-HD1C:1"))).isZero();
+        // HĐ-3 step 5, HĐ-5.
+        assertThat(invoice(db, "WF5-HD3R:1")).isEqualTo("ORIGINAL|REPLACED|SANDBOX|1|-");
+        assertThat(invoice(db, "WF5-HD3R:replacement")).isEqualTo("REPLACEMENT|ISSUED|SANDBOX|1|-");
+        assertThat(invoice(db, "WF5-HD5:1")).isEqualTo("ORIGINAL|ISSUED|VIETTEL_SINVOICE|1|-");
+        // The provider's and the codes' sequences continue after what was seeded.
+        assertThat(RawSql.number(db, "SELECT count(*) FROM invoicing.einvoice e WHERE e.provider = 'SANDBOX' AND "
+                + "e.invoice_number > (SELECT last_number FROM invoicing.sandbox_number WHERE symbol = 'C26TSB')")).isZero();
+        assertThat(RawSql.number(db, "SELECT count(*) FROM invoicing.einvoice e WHERE split_part(e.code, '-', 3)::int > "
+                + "(SELECT d.last_value FROM platform.document_sequence d WHERE d.document_type = 'EINV' AND "
+                + "to_char(d.sequence_date, 'YYYYMMDD') = split_part(e.code, '-', 2))")).isZero();
+        // Step 11: WF5-E completes on the next run, WF5-E2 closes, WF5-F's contract is liquidated.
+        assertThat(orderStatus(db, "WF5-E")).isEqualTo("DELIVERED");
+        assertThat(RawSql.number(db, "SELECT count(*) FROM payment.installment WHERE order_id = ? AND status <> 'PAID'",
+                wf05("order:WF5-E"))).isZero();
+        assertThat(orderStatus(db, "WF5-E2")).isEqualTo("COMPLETED");
+        assertThat(RawSql.text(db, "SELECT (completed_at < now() - INTERVAL '30 days')::text FROM ordering.customer_order "
+                + "WHERE id = ?", wf05("order:WF5-E2"))).isEqualTo("true");
+        assertThat(orderStatus(db, "WF5-F")).isEqualTo("CANCELLED");
+        assertThat(RawSql.text(db, "SELECT status FROM ordering.sales_contract WHERE order_id = ?", wf05("order:WF5-F")))
+                .isEqualTo("SIGNED");
+        assertThat(RawSql.number(db, "SELECT (SELECT sum(refundable_amount) FROM payment.order_settlement WHERE order_id"
+                + " = ?) - (SELECT sum(amount) FROM payment.refund_record WHERE order_id = ? AND status = 'RECORDED')",
+                wf05("order:WF5-F"), wf05("order:WF5-F"))).as("nothing left to refund").isZero();
+        // TT-1: held for credit; TT-2: due yesterday, not announced; TT-5 and TH-1: a batch never released.
+        for (String key : List.of("WF5-TT1A", "WF5-TT1B")) {
+            assertThat(RawSql.text(db, "SELECT o.status || '|' || o.hold_reason || '|' || c.outcome FROM "
+                    + "ordering.customer_order o JOIN ordering.order_credit_check c ON c.order_id = o.id JOIN "
+                    + "ordering.order_hold h ON h.order_id = o.id AND h.resolved_at IS NULL WHERE o.id = ?",
+                    wf05("order:" + key))).isEqualTo("ON_HOLD|CREDIT|OVERDUE");
+        }
+        assertThat(RawSql.text(db, "SELECT status || '|' || (due_date = (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date - 1)"
+                + " || '|' || (overdue_announced_for IS NULL) FROM payment.installment WHERE id = ?",
+                wf05("installment:WF5-TT2:2"))).isEqualTo("DUE|true|true");
+        assertThat(orderStatus(db, "WF5-TT5")).isEqualTo("PARTIALLY_FULFILLED");
+        assertThat(orderStatus(db, "WF5-TH1")).isEqualTo("PARTIALLY_FULFILLED");
+        // DĐ-1: refunded more than 30 days ago; A has a delivery not invoiced, B only its return's adjustment.
+        for (String key : List.of("WF5-DD1A", "WF5-DD1B")) {
+            assertThat(RawSql.text(db, "SELECT status || '|' || (refunded_at < now() - INTERVAL '30 days') FROM "
+                    + "ordering.customer_order WHERE id = ?", wf05("order:" + key))).isEqualTo("PARTIALLY_REFUNDED|true");
+            assertThat(RawSql.text(db, "SELECT status FROM invoicing.einvoice WHERE id = ?", wf05("einvoice:" + key
+                    + ":return"))).isEqualTo("DRAFT");
+        }
+        assertThat(invoice(db, "WF5-DD1A:2")).isEqualTo("ORIGINAL|DRAFT|SANDBOX|1|-");
+        assertThat(invoice(db, "WF5-DD1B:2")).isEqualTo("ORIGINAL|ISSUED|SANDBOX|1|-");
+        assertThat(RawSql.text(db, "SELECT status || '|' || return_ownership FROM inventory.stock_package WHERE id = ?",
+                wf05("lpn:WF5-DD1A-1:1"))).isEqualTo("IN_STOCK|COMPANY");
+    }
+
     /** Staff of every role but the system administrator, customers' accounts, and the areas each warehouse works in. */
     private static void staffAndPlaces(Connection db) throws Exception {
         assertThat(RawSql.texts(db, "SELECT DISTINCT r.code FROM identity.user_role ur JOIN identity.app_role r ON r.id = "
@@ -153,8 +256,11 @@ class SeedTestDataLoadTest {
         assertThat(RawSql.number(db, "SELECT count(*) FROM ordering.return_request r JOIN ordering.customer_order o ON "
                 + "o.id = r.order_id WHERE r.created_by = 'seed' AND r.status = 'REQUESTED' AND o.status <> "
                 + "'RETURN_REQUESTED'")).as("a return waiting for its goods").isZero();
-        assertThat(byStatus(db, "ordering.production_order")).as("a production order in every state")
-                .containsOnlyKeys(allowedStatuses(db, "ordering.production_order"));
+        // PENDING_APPROVAL is history only: no edge leads into it since the approval step went (V20261213000100).
+        List<String> reachable = new ArrayList<>(allowedStatuses(db, "ordering.production_order"));
+        reachable.remove("PENDING_APPROVAL");
+        assertThat(byStatus(db, "ordering.production_order")).as("a production order in every reachable state")
+                .containsOnlyKeys(reachable);
         assertThat(byStatus(db, "ordering.production_order")).containsEntry("RECEIVED", 10L);
         assertThat(RawSql.number(db, "SELECT count(*) FROM ordering.production_order_sample_round r JOIN "
                 + "ordering.production_order p ON p.id = r.production_order_id WHERE p.created_by = 'seed'"))
@@ -167,38 +273,35 @@ class SeedTestDataLoadTest {
     }
 
     /**
-     * 20 BR-18 / BR-22: stock is whole LPN cartons only, one row each; a carton in stock holds its standard count, a
-     * consumed one nothing; the ledger of each carton adds up to what it holds; every lot is a production order's
-     * code (03 BR-03), and returned cartons wait in a quarantine area.
+     * 20 BR-18 / BR-22: stock is whole LPN cartons only, and the carton is the stock (ADR-0011): one in stock has a
+     * stock status and stands for its standard count, a consumed one has none; the ledger of each carton adds up to
+     * whether it is in stock; every lot is a production order's code (03 BR-03), and returned cartons wait in a
+     * quarantine area.
      */
     private static void stockInWholeCartons(Connection db) throws Exception {
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item WHERE created_by = 'seed' AND "
-                + "stock_package_id IS NULL")).as("no loose stock").isZero();
         assertThat(byStatus(db, "inventory.stock_package")).containsOnlyKeys("IN_STOCK", "CONSUMED");
         assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p WHERE p.created_by = 'seed' AND "
-                + "(SELECT count(*) FROM inventory.stock_item s WHERE s.stock_package_id = p.id) <> 1"))
-                .as("one row per carton").isZero();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p JOIN inventory.stock_item s ON "
-                + "s.stock_package_id = p.id WHERE p.created_by = 'seed' AND NOT CASE p.status WHEN 'IN_STOCK' THEN "
-                + "s.on_hand = p.received_qty AND p.received_qty = p.nominal_qty ELSE s.on_hand = 0 END"))
-                .as("a carton holds its standard count or, consumed, nothing").isZero();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p JOIN inventory.stock_item s ON "
-                + "s.stock_package_id = p.id WHERE p.created_by = 'seed' AND s.on_hand <> COALESCE((SELECT "
-                + "COALESCE(sum(m.quantity) FILTER (WHERE m.to_stock_package_id = p.id), 0) - COALESCE(sum(m.quantity) "
-                + "FILTER (WHERE m.from_stock_package_id = p.id), 0) FROM inventory.stock_movement m WHERE p.id IN "
-                + "(m.to_stock_package_id, m.from_stock_package_id)), 0)")).as("each carton's ledger adds up").isZero();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item s JOIN inventory.stock_lot l ON l.id = "
-                + "s.lot_id LEFT JOIN ordering.production_order o ON o.id = l.production_order_id WHERE s.created_by = "
-                + "'seed' AND (l.origin_type <> 'PRODUCTION_ORDER' OR s.lot_number IS DISTINCT FROM o.code)"))
+                + "NOT CASE p.status WHEN 'IN_STOCK' THEN p.stock_status IS NOT NULL AND p.counted_at IS NOT NULL "
+                + "ELSE p.stock_status IS NULL END"))
+                .as("a carton in stock was counted in and has a stock status; consumed, it has none").isZero();
+        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p WHERE p.created_by = 'seed' AND "
+                + "CASE WHEN p.status = 'IN_STOCK' THEN 1 ELSE 0 END <> (SELECT "
+                + "count(*) FILTER (WHERE m.to_location_code IS NOT NULL) - count(*) "
+                + "FILTER (WHERE m.from_location_code IS NOT NULL) FROM inventory.stock_movement m WHERE "
+                + "m.stock_package_id = p.id)")).as("each carton's ledger adds up: a line is the carton, whole").isZero();
+        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package p LEFT JOIN inventory.stock_lot l ON "
+                + "l.id = p.lot_id LEFT JOIN ordering.production_order o ON o.id = l.production_order_id WHERE "
+                + "p.created_by = 'seed' AND (l.origin_type IS DISTINCT FROM 'PRODUCTION_ORDER' "
+                + "OR l.lot_number IS DISTINCT FROM o.code)"))
                 .as("lot = the production order's code").isZero();
         assertThat(RawSql.number(db, "SELECT count(*) FROM procurement.goods_receipts WHERE created_by = 'seed' AND "
                 + "receipt_type = 'RETURN' AND status = 'CLOSED'")).as("a return received").isPositive();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item s JOIN warehouse.storage_location l ON "
+        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package s JOIN warehouse.storage_location l ON "
                 + "l.location_code = s.location_code JOIN warehouse.area a ON a.location_id = l.id WHERE s.created_by = "
-                + "'seed' AND s.on_hand > 0 AND s.status = 'QUARANTINE' AND a.type = 'QUARANTINE'"))
+                + "'seed' AND s.stock_status = 'QUARANTINE' AND a.type = 'QUARANTINE'"))
                 .as("returned cartons in quarantine").isPositive();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item s WHERE s.created_by = 'seed' AND "
-                + "s.status = 'QUARANTINE' AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location l JOIN "
+        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package s WHERE s.created_by = 'seed' AND "
+                + "s.stock_status = 'QUARANTINE' AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location l JOIN "
                 + "warehouse.area a ON a.location_id = l.id WHERE l.location_code = s.location_code AND a.type = "
                 + "'QUARANTINE')")).as("quarantined stock outside a quarantine area").isZero();
     }
@@ -208,9 +311,9 @@ class SeedTestDataLoadTest {
         assertThat(RawSql.number(db, "SELECT count(*) FROM fulfillment.pick_line l JOIN fulfillment.pick p ON p.id = "
                 + "l.pick_id WHERE p.created_by = 'seed' AND l.status = 'STAGED'")).as("lines picked to staging")
                 .isPositive();
-        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item s JOIN warehouse.storage_location l ON "
+        assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_package s JOIN warehouse.storage_location l ON "
                 + "l.location_code = s.location_code JOIN warehouse.area a ON a.location_id = l.id WHERE s.created_by = "
-                + "'seed' AND s.on_hand > 0 AND a.type = 'STAGING'")).as("cartons waiting in staging").isPositive();
+                + "'seed' AND s.status = 'IN_STOCK' AND a.type = 'STAGING'")).as("cartons waiting in staging").isPositive();
         assertThat(byStatus(db, "fulfillment.pack")).containsKey("COMPLETED");
         assertThat(byStatus(db, "fulfillment.load_plan")).containsKeys("CONFIRMED", "DISPATCHED");
         assertThat(byStatus(db, "fulfillment.shipment")).containsKeys("READY_TO_DISPATCH", "HANDED_OVER", "DELIVERED",

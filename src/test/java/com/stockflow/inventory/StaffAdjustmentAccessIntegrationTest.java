@@ -7,6 +7,7 @@ import com.stockflow.common.security.Role;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,7 +28,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * V20261014001200: the warehouse staff, who may request an adjustment, may also read the adjustments,
- * but deciding one stays with the holder of {@code inventory-stock-adjustments:APPROVE}.
+ * but deciding one stays with the holder of {@code inventory-stock-adjustments:APPROVE}. V20261209000200: the Accountant
+ * reads them too (kltn-docs 20 §3) and neither requests nor decides one.
  */
 @SecuredIntegrationTest
 class StaffAdjustmentAccessIntegrationTest {
@@ -71,6 +73,24 @@ class StaffAdjustmentAccessIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"not mine to decide\"}"))
                 .andExpect(status().isForbidden());
     }
+
+    @Test
+    @DisplayName("V20261209000200 (kltn-docs 20 §3): the Accountant reads stock adjustments but cannot decide one, nor "
+            + "request one")
+    void accountantReadsButDoesNotDecide() throws Exception {
+        UUID accountant = UUID.randomUUID();
+        mvc.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/inventory/adjustments"))
+                .andExpect(status().isOk());
+        mvc.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/inventory/adjustments/" + UUID.randomUUID()))
+                .andExpect(status().isNotFound());
+        mvc.asRole(Role.ACCOUNTANT, accountant, post("/api/v1/inventory/adjustments/" + UUID.randomUUID() + "/approval"))
+                .andExpect(status().isForbidden());
+        mvc.asRole(Role.ACCOUNTANT, accountant, post("/api/v1/inventory/adjustments")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"lpn\":\"LPN-20991231-000001\",\"direction\":\"WRITE_OFF\",\"reason\":\"DAMAGED\"}"))
+                .andExpect(status().isForbidden());
+    }
+
     @Test
     @DisplayName("4A-8: an adjustment for SUBCONTRACT_LOSS is refused, 400 VALIDATION_FAILED: subcontracting is gone")
     void subcontractLossIsRefused() throws Exception {
@@ -85,16 +105,17 @@ class StaffAdjustmentAccessIntegrationTest {
     }
 
     @Test
-    @DisplayName("an adjustment named by bin and lot, with or without a lot, is STOCK_NOT_IN_CARTON: stock is adjusted by "
-            + "carton only (review C4 P-3; was STOCK_ADJUSTMENT_LOT_REQUIRED for the loose layer, 5-5 review)")
-    void adjustmentWithoutALotIsRefused() {
-        // Since 4C-3 the HTTP request names a carton by LPN and carries no lot; since P-3 the inventory API's loose
-        // path (InventoryService.requestAdjustment without an LPN) is refused before its lot is looked at.
-        for (String lot : new String[] {null, "  ", "L-ANY"}) {
+    @DisplayName("an adjustment named by bin and SKU and no LPN is STOCK_NOT_IN_CARTON: stock is adjusted by carton "
+            + "only (review C4 P-3; was STOCK_ADJUSTMENT_LOT_REQUIRED for the loose layer, 5-5 review)")
+    void adjustmentWithoutACartonIsRefused() {
+        // Since 4C-3 the HTTP request names a carton by LPN; since P-3 the inventory API's request without an LPN
+        // (InventoryService.requestAdjustment) is refused, and since ADR-0011 the command carries neither a lot nor a
+        // quantity to name loose stock by. A missing and a blank LPN are the same request.
+        for (String lpn : new String[] {null, "  "}) {
             BusinessException refused = org.assertj.core.api.Assertions.catchThrowableOfType(BusinessException.class,
-                    () -> inventory.requestAdjustment(new RequestAdjustmentCommand("HCM-A01-1-B", new Sku("SOFA-3S-GREY"),
-                            lot, -1, StockAdjustmentReason.DAMAGED, null, clerk)));
-            org.assertj.core.api.Assertions.assertThat(refused).as("lot %s", lot).isNotNull();
+                    () -> inventory.requestAdjustment(new RequestAdjustmentCommand(lpn, "HCM-A01-1-B",
+                            new Sku(DemoData.SKU_STOCKED), StockAdjustmentReason.DAMAGED, null, clerk)));
+            org.assertj.core.api.Assertions.assertThat(refused).as("lpn '%s'", lpn).isNotNull();
             org.assertj.core.api.Assertions.assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_NOT_IN_CARTON);
         }
     }

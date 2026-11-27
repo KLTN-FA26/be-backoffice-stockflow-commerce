@@ -64,6 +64,20 @@ class ReturnResolvedListener {
                 announce(event, EInvoiceReturnUnadjusted.Cause.NOT_ON_AN_ISSUED_INVOICE, adjustments.unplaced(),
                         null);
             }
+            if (!adjustments.pending().isEmpty()) {
+                // WF-05 BE-28: its shipment's invoice is not issued yet; taken off it once it is
+                // (PendingReturnAdjustmentListener). Told now, so the accountant sees why no adjustment is there yet.
+                log.info("Return {} of order {}: the invoice of its shipment is not issued yet; {} order line(s) wait "
+                        + "for it", LogSafe.text(event.rmaNumber()), LogSafe.text(event.orderNumber()),
+                        adjustments.pending().size());
+                announce(event, EInvoiceReturnUnadjusted.Cause.NOT_ON_AN_ISSUED_INVOICE, adjustments.pending(), null);
+            }
+            if (!adjustments.onReplacement().isEmpty()) {
+                log.warn("Return {} of order {}: its goods are on a replacement e-invoice, which is not adjusted; the "
+                        + "accountant reduces it on the provider's portal", LogSafe.text(event.rmaNumber()),
+                        LogSafe.text(event.orderNumber()));
+                announce(event, EInvoiceReturnUnadjusted.Cause.ON_A_REPLACEMENT, adjustments.onReplacement(), null);
+            }
         } catch (BusinessException refused) {
             log.warn("No adjustment e-invoice for return {} of order {}: {}", LogSafe.text(event.rmaNumber()),
                     LogSafe.text(event.orderNumber()), refused.errorCode());

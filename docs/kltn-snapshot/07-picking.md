@@ -110,6 +110,8 @@ Picking là **bước mở đầu luồng Fulfillment**: Picking → [Kiểm th�
 7. **Lấy bổ sung** — đơn `Awaiting Stock` có phần hàng còn thiếu đã nhập vào kho xuất theo Đơn sản xuất ([03](../03-receipt/README.md)) → đơn `Ready to Fulfill` ([17](../../ecommerce/17-order-management/README.md)). Quản lý kho phân bổ phần còn lại (BR-03); hệ thống **thêm dòng lấy hàng vào cùng task**, theo đích của task:
    - task `Staged` → `Picking`, đơn → `Picking`; picker lấy các thùng bổ sung về khu chờ xuất như bước 5–6;
    - task `Picked` (đã giao trước một phần sang `DISPATCH`) → `Picking`; picker lấy bổ sung sang khu xuất hàng, phiên kiểm thùng tiếp tục ([08](../08-packing/README.md)).
+
+   Lấy bổ sung **chỉ nhận khi phiên kiểm thùng của task chưa `Completed`** ([08](../08-packing/README.md) §5.1): hoàn tất một phần giữ phiên `In Progress` nên vẫn lấy bổ sung được; hoàn tất đủ thì các thùng đã gom vào shipment, hệ thống **từ chối** lấy bổ sung — **trừ** khi một shipment `Ready to Dispatch` của đơn bị huỷ ([09](../09-shipping/README.md) §5.1): khi đó phần kiểm thùng được **mở lại** cho các thùng thay thế của đơn, dù phiên đang `Completed` hay `In Progress` *(✅ Đã chốt 2026-11-19)*. Phần còn lại của đơn (đợt giao sau) đi bằng **task riêng** của đợt đó (§4.1 bước 2), không thêm vào task đã hoàn tất kiểm thùng.
 8. **Chuyển cả tác vụ sang khu xuất hàng** — khi đơn đã sẵn sàng xuất (đủ hàng, hoặc Sale cho phép giao một phần), Quản lý kho **cho chuyển cả tác vụ sang khu xuất hàng**. Điều kiện: task `Staged`, đơn không đang treo. Hệ thống:
    - chuyển mọi dòng `Staged` → `Picked`, **trừ tồn** của các thùng tại khu chờ xuất, ghi dòng sổ `PICK`; thùng → `Consumed`; khoản phân bổ → `Consumed`;
    - task → `Picked`; nhân viên kho mang thùng sang khu xuất hàng; phần kiểm thùng mở ([08](../08-packing/README.md)).
@@ -175,11 +177,11 @@ stateDiagram-v2
 
 | Trạng thái | Ý nghĩa | Chuyển tiếp cho phép | Ai thực hiện |
 |------------|---------|----------------------|--------------|
-| `Open` | Chờ lấy thùng | → `Picked`, → `Staged`, → `Short` | Picker |
-| `Staged` | Thùng đã về khu chờ xuất; tồn chưa trừ, vẫn gắn đơn | → `Picked` (chuyển cả tác vụ sang khu xuất hàng), → `Put Back` (task bị huỷ) | Picker; Quản lý kho |
-| `Picked` | Đã lấy thùng; tồn đã trừ | → `Put Back` (task bị huỷ) | Picker; Hệ thống (từ `Staged`) |
+| `Open` | Chờ lấy thùng | → `Picked`, → `Staged`, → `Short`, → `Cancelled` (đơn bị huỷ — dòng chưa lấy bị huỷ cùng đơn) | Picker; Hệ thống (huỷ đơn) |
+| `Staged` | Thùng đã về khu chờ xuất; tồn chưa trừ, vẫn gắn đơn | → `Picked` (chuyển cả tác vụ sang khu xuất hàng), → `Short` (báo thiếu thùng ở khu chờ; hoặc kiểm kê thấy thiếu thùng — [20](../20-inventory-control/README.md) §4.9), → `Put Back` (task bị huỷ) | Picker; Quản lý kho; Hệ thống (kiểm kê thấy thiếu) |
+| `Picked` | Đã lấy thùng; tồn đã trừ | → `Put Back` (task bị huỷ; hoặc thùng bị loại ở trạm kiểm thùng — [08](../08-packing/README.md) §4.2 bước 4) | Picker; Hệ thống (từ `Staged`); Nhân viên kho (loại thùng ở trạm kiểm) |
 | `Short` | Không lấy được thùng; chưa trừ tồn | → `Cancelled` (đã phân bổ lại sang dòng mới) | Picker báo; Quản lý kho phân bổ lại |
-| `Cancelled` | Bị thay bằng dòng phân bổ lại | *(cuối)* | Hệ thống |
+| `Cancelled` | Bị thay bằng dòng phân bổ lại; hoặc dòng `Open` bị huỷ cùng đơn | *(cuối)* | Hệ thống |
 | `Put Back` | Thùng đã cất lại bin | *(cuối)* | Nhân viên / Quản lý kho |
 
 > `Staged` / `Picked` là trạng thái của **dòng lấy hàng**, không phải trạng thái tồn. Thùng ở khu chờ xuất vẫn là tồn `Available` mang khoản phân bổ của đơn; thùng đã `Picked` **rời khỏi tồn**, khoản phân bổ chuyển sang `Consumed` ([20](../20-inventory-control/README.md) §5.6).

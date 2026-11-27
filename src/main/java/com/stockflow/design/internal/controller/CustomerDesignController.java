@@ -63,7 +63,7 @@ class CustomerDesignController {
 
     record StartRequest(@NotNull UUID productId, @NotBlank @Size(max = 64) String sku,
                         @NotBlank @Size(max = 50) String templateCode, @NotBlank @Size(max = 200) String name,
-                        UUID projectId) {
+                        @NotNull UUID projectId) {
     }
 
     record RenameRequest(@PositiveOrZero long version, @NotBlank @Size(max = 200) String name) {
@@ -77,8 +77,8 @@ class CustomerDesignController {
     }
 
     @PostMapping("/mine")
-    @Operation(summary = "Start a design on a variant's template, in one of the caller's projects if named; the "
-            + "customer and owner are the caller")
+    @Operation(summary = "Start a design on a variant's template, in one of the caller's open projects with room; "
+            + "the customer and owner are the caller")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.CREATE)
     public ResponseEntity<ApiResponse<DesignDraftResponse>> start(@Valid @RequestBody StartRequest request,
                                                                   @AuthenticatedUser CurrentUser user) {
@@ -135,8 +135,8 @@ class CustomerDesignController {
      * it cannot be asked: 400 for its fields, 409 {@code CUSTOMER_NOT_ACTIVE}. 404 for anyone but the owner.
      */
     @PostMapping("/{id}/technical-review-requests")
-    @Operation(summary = "Submit the draft for review, with a quote request if any: preflight, then the Sales "
-            + "Manager's queue")
+    @Operation(summary = "Submit the draft for review, with a quote request if any: preflight, then the Production "
+            + "Coordinator's queue")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
     public ApiResponse<DesignDraftResponse> submit(@PathVariable UUID id, @Valid @RequestBody SubmitRequest request,
                                                    @AuthenticatedUser CurrentUser user) {
@@ -177,12 +177,14 @@ class CustomerDesignController {
 
     /**
      * Clones the design onto another variant of its product (FE request 2026-11-13 E-3): {@code {variantSku,
-     * document}}, the layout already fitted to the target's print areas. The body is taken as text, as a layout save's
+     * document, projectId?}}, the layout already fitted to the target's print areas, into the project named or else the
+     * source's (BR-23.3). {@code notInProject} stays in the answer for the clients that read it and is always null now:
+     * a clone is written into a project or not at all. The body is taken as text, as a layout save's
      * is, and capped before it is read ({@code stockflow.web.body-limits}). The {@code Idempotency-Key} is required: the
      * idempotency filter answers a retry with the first response, so a lost answer never makes a second clone.
      */
     @PostMapping(path = "/{id}/clones", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(summary = "Clone the design onto another variant of its product: {variantSku, document}; "
+    @Operation(summary = "Clone the design onto another variant of its product: {variantSku, document, projectId?}; "
             + "Idempotency-Key required")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.CREATE)
     public ResponseEntity<ApiResponse<DesignCloneResponse>> cloneDesign(@PathVariable UUID id,
@@ -191,7 +193,7 @@ class CustomerDesignController {
         // Required, but checked by the service after the owner check: a stranger learns nothing from a 400.
         var clone = service.cloneDesign(id, actor(user), requestKey, body);
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(
-                new DesignCloneResponse(drafts.toResponse(clone.design()), clone.notInProject())));
+                new DesignCloneResponse(drafts.toResponse(clone), null)));
     }
 
     private static UUID actor(CurrentUser user) {

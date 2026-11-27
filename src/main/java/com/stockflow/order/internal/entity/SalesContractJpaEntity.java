@@ -56,6 +56,10 @@ public class SalesContractJpaEntity extends BaseEntity {
     @Column(name = "free_sample_rounds", nullable = false)
     private int freeSampleRounds;
 
+    /** WF-05 TH-1 (Điều 318): the complaint period agreed; null on contracts drawn up before. */
+    @Column(name = "return_window_days")
+    private Integer returnWindowDays;
+
     @Column(name = "sent_at")
     private Instant sentAt;
     @Column(name = "sent_by")
@@ -83,6 +87,14 @@ public class SalesContractJpaEntity extends BaseEntity {
 
     @Column(name = "completed_at")
     private Instant completedAt;
+
+    /** WF-05 Q-6 (V20261217000100): when the contract was liquidated. */
+    @Column(name = "liquidated_at")
+    private Instant liquidatedAt;
+
+    /** 15 BR-11 (V20270101000100): PENDING while the draft waits for accounting to approve the customer's credit. */
+    @Column(name = "credit_review", nullable = false, length = 16)
+    private String creditReview = "NONE";
 
     protected SalesContractJpaEntity() {
     }
@@ -126,6 +138,17 @@ public class SalesContractJpaEntity extends BaseEntity {
         this.completedAt = completedAt;
     }
 
+    public void applyLiquidated(Instant at) {
+        this.liquidatedAt = at;
+    }
+
+    public Instant getLiquidatedAt() { return liquidatedAt; }
+
+    public void creditReview(boolean pending) {
+        this.creditReview = pending ? "PENDING" : "NONE";
+    }
+
+    public boolean isCreditReviewPending() { return "PENDING".equals(creditReview); }
     public String getContractNumber() { return contractNumber; }
     public UUID getOrderId() { return orderId; }
     public SalesContractStatus getStatus() { return status; }
@@ -140,6 +163,12 @@ public class SalesContractJpaEntity extends BaseEntity {
     public String getBuyerRepresentative() { return buyerRepresentative; }
     public String getBuyerRepresentativeTitle() { return buyerRepresentativeTitle; }
     public int getFreeSampleRounds() { return freeSampleRounds; }
+    public Integer getReturnWindowDays() { return returnWindowDays; }
+
+    /** The complaint period as the contract states it; frozen with the rest once sent. */
+    public void agreeReturnWindow(Integer days) {
+        this.returnWindowDays = days;
+    }
     public Instant getSentAt() { return sentAt; }
     public UUID getSentBy() { return sentBy; }
     public String getSentDocumentKey() { return sentDocumentKey; }

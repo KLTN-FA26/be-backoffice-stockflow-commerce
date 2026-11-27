@@ -57,7 +57,7 @@ class InventoryReportQueriesTest {
 
     private static LotTrace.Summary summary(UUID lotId) {
         return new LotTrace.Summary(lotId, "CUP-12OZ", "L-2310",
-                Instant.parse("2026-10-01T03:00:00Z"), "GOODS_RECEIPT", UUID.randomUUID(), "GR-001", UUID.randomUUID(),
+                Instant.parse("2026-10-01T03:00:00Z"), "GOODS_RECEIPT", UUID.randomUUID(),
                 1000, 600, 500, 100, UUID.randomUUID(), "LSX-001");
     }
 
@@ -134,16 +134,16 @@ class InventoryReportQueriesTest {
             + "decides counts")
     void adjustmentsAreBlindForACounter() {
         StockOperations operations = mock(StockOperations.class);
-        when(operations.adjustments(any(), any(), any(), anyInt(), anyInt(), any(), any()))
+        when(operations.adjustments(any(), any(), any(), any(), anyInt(), anyInt(), any(), any()))
                 .thenReturn(PageResponse.of(List.of(), 0, 10, 0));
 
         new StockAdjustmentQueriesImpl(operations, COUNTER)
                 .adjustments(StockAdjustmentStatus.PENDING_APPROVAL, "CUP-12OZ", null, 0, 10, null);
         new StockAdjustmentQueriesImpl(operations, APPROVER).adjustments(null, null, null, 0, 10, "createdAt,asc");
 
-        verify(operations).adjustments(StockAdjustmentStatus.PENDING_APPROVAL, "CUP-12OZ", null, 0, 10, null,
+        verify(operations).adjustments(StockAdjustmentStatus.PENDING_APPROVAL, "CUP-12OZ", null, null, 0, 10, null,
                 BookVisibility.HIDE_COUNTED_SLOTS);
-        verify(operations).adjustments(null, null, null, 0, 10, "createdAt,asc", BookVisibility.FULL);
+        verify(operations).adjustments(null, null, null, null, 0, 10, "createdAt,asc", BookVisibility.FULL);
     }
 
     @Test

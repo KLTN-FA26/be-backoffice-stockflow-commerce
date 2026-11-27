@@ -1,5 +1,7 @@
 package com.stockflow.inventory.internal.controller;
 
+import com.stockflow.inventory.api.CartonSpec;
+import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.internal.service.StockConsumption;
@@ -20,6 +22,7 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.common.security.WarehouseScope;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -31,6 +34,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -69,16 +73,23 @@ import java.util.UUID;
 class InventoryController {
 
     private final InventoryService inventoryService;
+    private final InventoryControlService inventoryControl;
     private final StockConsumption stockConsumption;
     private final StockBrowsing browsing;
     private final InventoryWebMapper mapper;
 
-    InventoryController(InventoryService inventoryService, StockConsumption stockConsumption,
-                        StockBrowsing browsing, InventoryWebMapper mapper) {
+    InventoryController(InventoryService inventoryService, InventoryControlService inventoryControl,
+                        StockConsumption stockConsumption, StockBrowsing browsing, InventoryWebMapper mapper) {
         this.inventoryService = inventoryService;
+        this.inventoryControl = inventoryControl;
         this.stockConsumption = stockConsumption;
         this.browsing = browsing;
         this.mapper = mapper;
+    }
+
+    /** Pieces in one carton of the SKU, for showing stock in cartons too (kltn-docs 01 BR-09); null: no carton unit. */
+    private Integer unitsPerCarton(Sku sku) {
+        return inventoryControl.cartonSpec(sku).map(CartonSpec::unitsPerCarton).orElse(null);
     }
 
     @GetMapping("/stock-items")
@@ -88,13 +99,13 @@ class InventoryController {
     public ApiResponse<List<StockItemResponse>> stockItems(@RequestParam("sku") String sku,
                                                            @AuthenticatedUser Optional<CurrentUser> user) {
         List<StockAvailability> rows = inventoryService.availabilityOf(new Sku(sku));
-        if (!BlindCount.visibilityFor(user).hidesCountedSlots()) {
-            return ApiResponse.ok(mapper.toResponses(rows));
-        }
+        Integer perCarton = unitsPerCarton(new Sku(sku));
         // SCRUM-146: the books of a slot under a count are not for a counter; the row stays, its quantities do not.
-        Set<UUID> held = browsing.underCount(rows.stream().map(StockAvailability::stockItemId).toList());
-        return ApiResponse.ok(rows.stream().map(row -> held.contains(row.stockItemId())
-                ? mapper.toResponse(row).hidden() : mapper.toResponse(row)).toList());
+        Set<UUID> held = BlindCount.visibilityFor(user).hidesCountedSlots()
+                ? browsing.underCount(rows.stream().map(StockAvailability::stockPackageId).toList())
+                : Set.of();
+        return ApiResponse.ok(rows.stream().map(row -> held.contains(row.stockPackageId())
+                ? mapper.toResponse(row, perCarton).hidden() : mapper.toResponse(row, perCarton)).toList());
     }
 
     @GetMapping("/warehouses/{warehouseId}/stock-items")
@@ -125,7 +136,8 @@ class InventoryController {
     @Operation(summary = "Inventory Level of one SKU per warehouse: on hand, available, reserved, ATP")
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.READ)
     public ApiResponse<List<StockLevelResponse>> stockLevels(@RequestParam("sku") String sku) {
-        return ApiResponse.ok(mapper.toLevelResponses(inventoryService.levelsOf(new Sku(sku))));
+        return ApiResponse.ok(mapper.toLevelResponses(inventoryService.levelsOf(new Sku(sku)),
+                unitsPerCarton(new Sku(sku))));
     }
 
     @GetMapping("/stock-items/atp")
@@ -133,9 +145,27 @@ class InventoryController {
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.READ)
     public ApiResponse<Integer> availableToPromise(@RequestParam("sku") String sku,
                                                    @RequestParam(value = "warehouse", required = false) String warehouse) {
-        return ApiResponse.ok(warehouse == null || warehouse.isBlank()
-                ? inventoryService.availableToPromise(new Sku(sku))
-                : inventoryService.availableToPromise(new Sku(sku), warehouse));
+        if (warehouse != null && !warehouse.isBlank()) {
+            // BR-SEC-002: a warehouse not assigned to a limited caller is refused, not answered with a silent 0.
+            WarehouseScope.requirePrefix(WarehouseScope.prefixOf(warehouse));
+            return ApiResponse.ok(inventoryService.availableToPromise(new Sku(sku), warehouse));
+        }
+        return ApiResponse.ok(WarehouseScope.restriction()
+                .map(allowed -> availableAt(new Sku(sku), allowed.prefixes()))
+                .orElseGet(() -> inventoryService.availableToPromise(new Sku(sku))));
+    }
+
+    /**
+     * The "system-wide" figure for a caller limited to warehouses: what their own warehouses can promise, never more
+     * than the system can (each warehouse's figure is capped at the system-wide one, so their sum may not be). Checked
+     * here and not in {@code InventoryService.availableToPromise(Sku)}, which other modules call for the whole system.
+     */
+    private int availableAt(Sku sku, Set<String> prefixes) {
+        int own = inventoryService.availableToPromiseByWarehouse(sku).entrySet().stream()
+                .filter(entry -> prefixes.contains(entry.getKey()))
+                .mapToInt(Map.Entry::getValue)
+                .sum();
+        return own == 0 ? 0 : Math.min(own, inventoryService.availableToPromise(sku));
     }
 
     @GetMapping("/reservations")
@@ -167,7 +197,7 @@ class InventoryController {
      * <p><b>For operations, not for picking.</b> A pick line deducts its hold in-process, in its own
      * transaction, through {@code inventory :: consumption} (SCRUM-275): {@code fulfillment} never
      * calls this endpoint. It stays for an operator who has to consume a hold outside a pick task, and
-     * runs the same implementation — the hold becomes CONSUMED, {@code on_hand} falls, one {@code PICK}
+     * runs the same implementation — the hold becomes CONSUMED, its carton leaves stock, one {@code PICK}
      * ledger row names the order and {@code StockDeducted} is published. A hold that is no longer HELD
      * is a 409 {@code RESERVATION_NOT_ACTIVE}. Guarded by {@code UPDATE} rather than {@code CREATE}: it
      * changes an existing hold, it does not make one.</p>

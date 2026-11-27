@@ -73,10 +73,12 @@ SELECT pg_temp.expect_true('T1 none of the 21 procurement tables of purchasing r
 SELECT pg_temp.expect_true('T2 nor the notification and warehouse ones', $c$
     to_regclass('notification.po_delivery_control') IS NULL AND to_regclass('notification.po_retry_cursor') IS NULL
     AND to_regclass('warehouse.subcontractor_site') IS NULL $c$);
-SELECT pg_temp.expect_true('T3 procurement keeps exactly its receiving tables (and 4D-2''s return cartons)', $c$
+SELECT pg_temp.expect_true('T3 procurement keeps exactly its receiving tables (and the return receipt''s cartons, 4D-2, '
+    || 'and loose units, V20261201000310)', $c$
     (SELECT string_agg(table_name, ',' ORDER BY table_name) FROM information_schema.tables
       WHERE table_schema = 'procurement' AND table_type = 'BASE TABLE')
-    = 'goods_receipt_lines,goods_receipt_photos,goods_receipt_return_cartons,goods_receipts' $c$);
+    = 'goods_receipt_lines,goods_receipt_photos,goods_receipt_return_cartons,goods_receipt_return_loose_lines,'
+      || 'goods_receipts' $c$);
 SELECT pg_temp.expect_true('T4 goods_receipts lost its PO, supplier, blind and approval columns', $c$
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'procurement'
                  AND table_name = 'goods_receipts' AND column_name IN ('po_id', 'po_revision_id', 'supplier_id',
@@ -116,9 +118,11 @@ SELECT pg_temp.expect_true('T10 no foreign key points at a dropped table, and th
           AND column_name IN ('purchase_order_id', 'purchase_order_number', 'supplier_id', 'supplier_name')) = 0 $c$);
 
 \echo '--- permissions'
-SELECT pg_temp.expect_true('P1 only the four goods-receipt permissions are left under procurement-', $c$
+-- WF-05 Q-18 (V20261216000050) added procurement-return-receipt-approvals:APPROVE: a return receipt's, not purchasing's.
+-- The list stays exact, so any purchasing permission coming back still fails here.
+SELECT pg_temp.expect_true('P1 only the four goods-receipt permissions and the return-receipt approval are left under procurement-', $c$
     (SELECT string_agg(code, ',' ORDER BY code) FROM identity.permission WHERE code LIKE 'procurement-%')
-    = 'procurement-goods-receipts:CREATE,procurement-goods-receipts:READ,procurement-goods-receipts:UPDATE,procurement-goods-receipts:VIEW_PAGE' $c$);
+    = 'procurement-goods-receipts:CREATE,procurement-goods-receipts:READ,procurement-goods-receipts:UPDATE,procurement-goods-receipts:VIEW_PAGE,procurement-return-receipt-approvals:APPROVE' $c$);
 SELECT pg_temp.expect_true('P2 no role holds a grant of a permission that is gone', $c$
     NOT EXISTS (SELECT 1 FROM identity.role_permission rp
                  WHERE NOT EXISTS (SELECT 1 FROM identity.permission p WHERE p.id = rp.permission_id)) $c$);
@@ -126,48 +130,66 @@ SELECT pg_temp.expect_true('P2 no role holds a grant of a permission that is gon
 \echo '--- the rewritten functions run'
 -- A SQL function naming a table that is not there fails only when it is called.
 SELECT pg_temp.expect_true('F1 item_in_use runs and is true for an item with stock', $c$
-    inventory.item_in_use(md5('demo:item:SOFA-3S-GREY')::uuid, 'SOFA-3S-GREY') $c$);
+    inventory.item_in_use((SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'LY-GIAY-DEMO-12OZ-XANH') $c$);
 SELECT pg_temp.expect_true('F2 unit_in_use runs', $c$
     NOT inventory.unit_in_use(gen_random_uuid()) $c$);
 
--- Fixtures: a carton of 10 sofas (its own unit code: the demo sofa already has the CARTON of one that 4C-1 made); a production order of 5 cartons of them at HCM, SENT with no sample to approve first;
+-- Fixtures: a carton of 10 blue cups (its own unit code: the demo cup already has its THUNG of 1,000); a production order of 5 cartons of them at HCM, SENT with no sample to approve first;
 -- a DRAFT receipt against it, registered with it (as 22_production_receipts.sql does). The production order's own rows are
 -- written with the row triggers off: its rules are 21_production_orders.sql's.
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-VALUES (md5('qa61:carton')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'CARTON10', 10, 60, 40, 50, 12),
-       (md5('qa61:old')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'OLDCTN', 10, NULL, NULL, NULL, NULL);
-UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa61:old')::uuid;
+-- 01 BR-03: one active carton per variant. The demo seed's own is retired, CARTON10 is the one, and OLDCTN is declared retired.
+UPDATE inventory.uom_conversions SET active = FALSE
+ WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg, active)
+VALUES (md5('qa61:carton')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12, TRUE),
+       -- measured, so L7 is refused for being retired, not for the size and weight receiving asks of a carton (V20261215000100)
+       (md5('qa61:old')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'OLDCTN', 10, 60, 40, 50, 12, FALSE);
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
                                        receiving_warehouse_id, need_by_date, status, sample_approval_required,
-                                       sample_required_by_default, drawn_up_by, submitted_at, approved_by, approved_at, sent_at)
+                                       sample_required_by_default, drawn_up_by, sent_by, sent_at)
 VALUES (md5('qa61:prod')::uuid, 'PRD-20261109-6101', md5('qa61:so')::uuid, md5('qa61:batch')::uuid,
         md5('qa61:cust')::uuid, md5('qa61:producer')::uuid, md5('demo:wh:HCM')::uuid, CURRENT_DATE + 30, 'SENT', FALSE,
-        FALSE, md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), NOW());
+        FALSE, md5('demo:user:editor')::uuid, md5('demo:user:editor')::uuid, NOW());
 INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, sku, cartons, units_per_carton,
                                             design_snapshot_id, print_file_checksum)
-VALUES (md5('qa61:prod:line')::uuid, md5('qa61:prod')::uuid, md5('qa61:ol')::uuid, 'SOFA-3S-GREY', 5, 10,
+VALUES (md5('qa61:prod:line')::uuid, md5('qa61:prod')::uuid, md5('qa61:ol')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 5, 10,
         md5('qa61:snap')::uuid, repeat('d', 64));
 -- An item nothing but a production order line names.
 INSERT INTO product.products (id, code, name, slug, status, kind, tax_class, version, created_at)
 VALUES (md5('qa61:product')::uuid, 'QA61', 'QA 61', 'qa-61', 'DRAFT', 'CUSTOMIZABLE', 'STANDARD', 0, NOW());
 SET LOCAL session_replication_role = origin;
 INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version, created_at)
-VALUES (md5('qa61:variant')::uuid, md5('qa61:product')::uuid, 'QA-61-ONLY', 'QA 61', 'DRAFT', TRUE, 'DEFAULT', 0, 0, NOW());
+VALUES (md5('qa61:variant')::uuid, md5('qa61:product')::uuid, 'QA-61-BLANK', 'QA 61', 'DRAFT', TRUE, 'DEFAULT', 0, 0, NOW());
+-- Since V20270105000100 an item is a customer's SKU's, made when its order is: a customer's SKU of the cup, with it.
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+SELECT md5('qa61:draft')::uuid, c.id, md5('qa61:product')::uuid, 'DRAFT', NOW(), '{}'::jsonb
+  FROM customer.customer c ORDER BY c.id LIMIT 1;
+INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
+VALUES (md5('qa61:snap:own')::uuid, md5('qa61:draft')::uuid, repeat('d', 64), 'https://example.com/d.pdf', NOW(), NOW(),
+        '[]'::jsonb);
+INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku, name)
+SELECT md5('qa61:own')::uuid, md5('qa61:product')::uuid, md5('qa61:variant')::uuid, d.customer_id,
+       md5('qa61:snap:own')::uuid, 'QA-61-ONLY', 'QA 61 in'
+  FROM design.design_draft d WHERE d.id = md5('qa61:draft')::uuid;
+INSERT INTO inventory.inventory_items (id, sku, variant_id)
+VALUES (md5('qa61:item')::uuid, 'QA-61-ONLY', md5('qa61:variant')::uuid);
 SELECT pg_temp.expect_true('F3 item_in_use is false for an item no document names', $c$
     NOT inventory.item_in_use((SELECT id FROM inventory.inventory_items WHERE sku = 'QA-61-ONLY'), 'QA-61-ONLY') $c$);
-SELECT pg_temp.expect_ok('F3b an unused DRAFT variant may still be renamed', $q$
+SELECT pg_temp.expect_ok('F3b an unused DRAFT variant may still be renamed: it has no item to follow it', $q$
     UPDATE product.variants SET sku = 'QA-61-FREE' WHERE id = md5('qa61:variant')::uuid $q$);
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, sku, cartons, units_per_carton,
                                             design_snapshot_id, print_file_checksum)
-VALUES (md5('qa61:prod:line2')::uuid, md5('qa61:prod')::uuid, md5('qa61:ol2')::uuid, 'QA-61-FREE', 1, 10,
+VALUES (md5('qa61:prod:line2')::uuid, md5('qa61:prod')::uuid, md5('qa61:ol2')::uuid, 'QA-61-ONLY', 1, 10,
         md5('qa61:snap')::uuid, repeat('d', 64));
 SET LOCAL session_replication_role = origin;
-SELECT pg_temp.expect_true('F4 item_in_use counts a production order line (the SKU may no longer be renamed)', $c$
-    inventory.item_in_use((SELECT id FROM inventory.inventory_items WHERE sku = 'QA-61-FREE'), 'QA-61-FREE') $c$);
-SELECT pg_temp.expect_fail_like('F5 the SKU of that item renamed', 'unused DRAFT variant', $q$
-    UPDATE product.variants SET sku = 'QA-61-RENAMED' WHERE id = md5('qa61:variant')::uuid $q$);
+SELECT pg_temp.expect_true('F4 item_in_use counts a production order line', $c$
+    inventory.item_in_use((SELECT id FROM inventory.inventory_items WHERE sku = 'QA-61-ONLY'), 'QA-61-ONLY') $c$);
+SELECT pg_temp.expect_fail_like('F5 the SKU of an item renamed: it never changes', 'never changes', $q$
+    UPDATE inventory.inventory_items SET sku = 'QA-61-RENAMED' WHERE sku = 'QA-61-ONLY' $q$);
+SELECT pg_temp.expect_fail_like('F5b the customer''s SKU renamed: its code never changes', 'immutable', $q$
+    UPDATE product.customer_skus SET sku = 'QA-61-RENAMED' WHERE sku = 'QA-61-ONLY' $q$);
 
 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height, version, created_at)
 VALUES (md5('qa61:wh')::uuid, 'QA other warehouse', 'ACTIVE', 'QAX', 'Somewhere', 'M', 50, 50, 0, NOW());
@@ -188,7 +210,7 @@ SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
 \echo '--- no purchase receipt is started; a receipt says what it is against'
-SELECT pg_temp.expect_fail_like('R1 a PURCHASE receipt started', 'purchasing was removed', $q$
+SELECT pg_temp.expect_fail_like('R1 a PURCHASE receipt started', 'ck_goods_receipts_type', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, receipt_type, warehouse_id, status, received_at, received_by)
     VALUES (gen_random_uuid(), 'GR-QA61-P', 'PURCHASE', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid) $q$);
 SELECT pg_temp.expect_fail_like('R2 a receipt with no type (the PURCHASE default is gone)', 'receipt_type', $q$
@@ -218,18 +240,18 @@ SELECT pg_temp.expect_fail_like('L2 a line without a lot, written with the row t
     SET LOCAL session_replication_role = replica;
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 10, NULL, md5('qa61:carton')::uuid) $q$);
 SELECT pg_temp.expect_fail_like('L3 a line without a unit, written with the row triggers off', 'uom_conversion_id', $q$
     SET LOCAL session_replication_role = replica;
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', NULL) $q$);
 SELECT pg_temp.expect_fail_like('L4 a line in a lot of its own on a production receipt (BR-03)', 'the lot is production order', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 10, 'LOT-A', md5('qa61:carton')::uuid) $q$);
 -- The expiry column goes with 5-1 (V20261111000300); the check reads it through to_jsonb either way.
 DO $$
@@ -239,7 +261,7 @@ BEGIN
         PERFORM pg_temp.expect_fail_like('L5 a production line with an expiry date (BR-06)', 'no expiry date', $q$
             INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id,
                                                          location_id, received_qty, lot_number, uom_conversion_id, expiry_date)
-            VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+            VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
                     md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', md5('qa61:carton')::uuid, CURRENT_DATE + 365) $q$);
     ELSE
         RAISE NOTICE 'ok    L5 (expiry_date is gone: nothing to try)';
@@ -249,23 +271,25 @@ SELECT pg_temp.expect_fail_like('L6 a line that names no production order line (
 $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, inventory_item_id, location_id, received_qty, lot_number,
                                                  uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, md5('demo:loc:HCM-RCV01')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), md5('demo:loc:HCM-RCV01')::uuid,
             10, 'PRD-20261109-6101', md5('qa61:carton')::uuid) $q$);
 SELECT pg_temp.expect_fail_like('L7 a line in a retired unit takes nothing new (no purchase order line to excuse it)', 'is retired', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', md5('qa61:old')::uuid) $q$);
-SELECT pg_temp.expect_fail_like('L8 a line in a unit of another item', 'cartons holding', $q$
+SELECT pg_temp.expect_fail_like('L8 a line in a carton of another variant (the grey paper box''s, of 500)', 'cartons holding', $q$
+    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg, active)
+    SELECT md5('qa61:grey')::uuid, variant_id, 'QA61GREY', 500, 60, 40, 50, 12, TRUE
+      FROM inventory.inventory_items WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER';
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    SELECT gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
-           md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', u.id
-      FROM inventory.uom_conversions u WHERE u.inventory_item_id = md5('demo:item:TABLE-OAK-160')::uuid AND u.is_base $q$);
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
+            md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', md5('qa61:grey')::uuid) $q$);
 SELECT pg_temp.expect_ok('L9 a whole carton of the production order line, in its lot', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (md5('qa61:l1')::uuid, md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (md5('qa61:l1')::uuid, md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 20, 'PRD-20261109-6101', md5('qa61:carton')::uuid) $q$);
 SELECT pg_temp.expect_true('L10 unit_in_use sees the receipt line''s unit', $c$ inventory.unit_in_use(md5('qa61:carton')::uuid) $c$);
 
@@ -282,7 +306,7 @@ SELECT pg_temp.expect_fail_like('L13 a posted line moved to another unit', 'BR-0
 SELECT pg_temp.expect_fail_like('L14 a line added to a posted receipt', 'BR-05', $q$
     INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id,
                                                  received_qty, lot_number, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+    VALUES (gen_random_uuid(), md5('qa61:gr')::uuid, md5('qa61:prod:line')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'),
             md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-6101', md5('qa61:carton')::uuid) $q$);
 SELECT pg_temp.expect_ok('L15 a posted line''s note is still editable', $q$
     UPDATE procurement.goods_receipt_lines SET note = 'checked twice' WHERE id = md5('qa61:l1')::uuid $q$);

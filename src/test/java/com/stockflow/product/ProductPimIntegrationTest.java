@@ -43,7 +43,6 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -125,8 +124,9 @@ class ProductPimIntegrationTest {
             assertThat(v.defaultVariant()).isTrue();
             assertThat(v.status()).isEqualTo(VariantStatus.DRAFT);
         });
+        // A catalogue variant is never stocked: no inventory item (V20270105000100).
         assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items where sku = ?", Long.class,
-                "CUP-" + suffix)).isOne();
+                "CUP-" + suffix)).isZero();
         assertThat(products.containsSku(created.productId(), "CUP-" + suffix)).isTrue();
         assertThat(products.nameForSku("cup-" + suffix)).contains("Ly giấy 12oz");
 
@@ -148,22 +148,23 @@ class ProductPimIntegrationTest {
     }
 
     @Test
-    @DisplayName("logistics are per SKU, on the inventory item, with optimistic versioning")
+    @DisplayName("logistics are per SKU, on the inventory item of a customer's SKU an order named, with optimistic versioning")
     void logisticsLiveOnTheInventoryItem() {
-        var created = create(null, null);
-        String sku = variants.list(created.productId(), 0, 1).items().getFirst().sku();
+        // Only a customer's SKU has an item, opened by the order that first names it (V20270105000100); issue() leaves
+        // one ordered before.
+        String sku = com.stockflow.support.CustomerSkuRows.issue(jdbc, tx, entityManager,
+                com.stockflow.support.DemoData.CUSTOMER_ID, 10).sku();
         UUID itemId = inventory.itemIdsOf(List.of(sku)).get(sku);
         var before = items.get(itemId);
         assertThat(before.logistics().unitOfMeasure()).isEqualTo("EACH");
 
-        var logistics = new ItemLogistics("EACH", "893" + suffix.replaceAll("[^0-9]", "1"),
-                new BigDecimal("0.012"), new BigDecimal("8"), new BigDecimal("8"), new BigDecimal("10"),
-                new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("50"), 1, 50);
+        String barcode = "893" + suffix.replaceAll("[^0-9]", "1");
+        var logistics = new ItemLogistics("EACH", barcode);
         var after = items.describe(itemId, before.version(), logistics);
 
         assertThat(after.version()).isGreaterThan(before.version());
-        assertThat(after.logistics().packageHeightCm()).isEqualByComparingTo("50");
-        assertThat(after.logistics().packSize()).isEqualTo(50);
+        assertThat(after.logistics().barcode()).isEqualTo(barcode);
+
         assertThatThrownBy(() -> items.describe(itemId, before.version(), logistics))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK));

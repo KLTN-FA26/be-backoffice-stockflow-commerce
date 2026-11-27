@@ -2,6 +2,7 @@ package com.stockflow.invoicing.internal.domain;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -25,14 +26,44 @@ public interface ProviderCallLog {
      * @param errorCode    the provider's error code, when it gave one
      * @param requestHash  SHA-256 of what was sent, lower-case hex; null for a call that sends only the transaction id
      * @param responseHash SHA-256 of what came back; null when nothing did
+     * @param providerReference the provider's own handle on a submission it took in (SePay's tracking code, which is
+     *                     the only way to learn that it failed after taking it in); null for every other call. An id the
+     *                     provider made up, not anything the invoice says
      */
     record Call(UUID einvoiceId, String provider, String transactionId, Operation operation, Outcome outcome,
                 Integer httpStatus, String errorCode, String requestHash, String responseHash, Instant calledAt,
-                long durationMs) {
+                long durationMs, String providerReference) {
+
+        /** A call the provider gave no handle on. */
+        public Call(UUID einvoiceId, String provider, String transactionId, Operation operation, Outcome outcome,
+                    Integer httpStatus, String errorCode, String requestHash, String responseHash, Instant calledAt,
+                    long durationMs) {
+            this(einvoiceId, provider, transactionId, operation, outcome, httpStatus, errorCode, requestHash,
+                    responseHash, calledAt, durationMs, null);
+        }
     }
 
     void record(Call call);
 
+    /**
+     * The handle the provider gave on the latest submission of a transaction it took in; empty when it gave none, or
+     * nothing was submitted under the transaction.
+     */
+    Optional<String> lastProviderReference(String provider, String transactionId);
+
     /** An invoice's calls, oldest first. */
     List<Call> of(UUID einvoiceId);
+
+    /**
+     * Whether the provider once said it holds the transaction (WF-05 BE-07): a submission answered as a duplicate of
+     * what it already had, or a look-up that found it issued. Proof that the provider holds it, whatever a later answer
+     * says - such a transaction is never taken back.
+     */
+    boolean providerHeld(UUID einvoiceId, String transactionId);
+
+    /**
+     * The provider's last answer to a look-up of the transaction - what the screen goes by to offer taking the invoice
+     * back (audit r2 H-2) without calling the provider on every read; empty when it was never asked.
+     */
+    Optional<Call> lastQuery(UUID einvoiceId, String transactionId);
 }

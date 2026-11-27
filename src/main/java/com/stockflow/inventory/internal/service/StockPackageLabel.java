@@ -1,14 +1,14 @@
 package com.stockflow.inventory.internal.service;
 
 /**
- * What one carton label says (SCRUM-473). No item name: it lives in product's schema, which inventory may not
- * read, and the SKU identifies the item; the LPN scan gives the rest. No lot: a carton stores none, and the lot is on the receipt line, which
- * inventory cannot read; scanning the LPN is what leads to it.
+ * What one carton label says (SCRUM-473). Everything but the LPN is for the eye: a picture of the carton when the label
+ * was printed. The name and the lot are asked of the modules that own them (see {@link StockPackageLabels}).
  *
- *
- * @param receivedQty what was counted into the carton, null while it is still to be counted
+ * @param name        what the SKU is called; null when the catalogue does not answer
+ * @param lot         the lot the carton is in; null when it is not known
+ * @param counted     whether the carton has been counted in; false while it is still to be counted
  * @param unit        the packing unit's code, as the receipt shows it
  */
-public record StockPackageLabel(String lpn, String sku, Integer receivedQty, int nominalQty,
+public record StockPackageLabel(String lpn, String sku, String name, String lot, boolean counted, int nominalQty,
                                 String unit) {
 }

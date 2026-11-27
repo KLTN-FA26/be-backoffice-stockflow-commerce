@@ -10,6 +10,9 @@ package com.stockflow.order.internal.domain;
  *       └─cancel─▶ CANCELLED ◀─cancel─ AWAITING_RETURN                             └──sent back────┤
  *                                                                          approved by another ─▶ RESOLVED
  *   EXPIRED, CANCELLED (after approval) ─a return receipt opened before brings the goods anyway─▶ RECEIVED
+ *   RECEIVED ─nothing approved came back usable, closed without a refund (WF-05 TH-4)─▶ RESOLVED
+ *   AWAITING_RETURN ─parcels of part of the goods (WF-05 TH-3): stays, until everything approved is back, Sales mark
+ *                    the goods complete, or the deadline passes with some back─▶ RECEIVED
  * </pre>
  *
  * <p>Sales approve the claim on its photos, and the goods always come back (17 BR-18): the warehouse receives them on a
@@ -24,7 +27,10 @@ public enum ReturnStatus {
     /** Opened by the customer or by Sales for them; Sales review it. */
     REQUESTED,
 
-    /** Approved (the RMA); the customer sends the approved goods back to the order's warehouse before the deadline. */
+    /**
+     * Approved (the RMA); the customer sends the approved goods back to the order's warehouse before the deadline, in
+     * one parcel or several - each on a return receipt of its own, while part of the goods is still awaited.
+     */
     AWAITING_RETURN,
 
     /** The goods came back on a return receipt, into quarantine; Sales propose the refund. */
@@ -69,7 +75,9 @@ public enum ReturnStatus {
 
     /**
      * The transition table, as one exhaustive switch: adding a status forces every branch to be revisited. The
-     * aggregate's methods are the only callers; each also checks what the step needs.
+     * aggregate's methods are the only callers; each also checks what the step needs. The database holds the same
+     * edges ({@code ordering.return_request_status_transition}, {@code tg_return_request_status_transition}; WF-05
+     * BE-47): a change here is a migration there, and {@code ReturnStatusTransitionMirrorTest} fails until both agree.
      */
     public boolean canTransitionTo(ReturnStatus target) {
         return switch (this) {
@@ -78,9 +86,23 @@ public enum ReturnStatus {
             // Goods are physically here: a return receipt opened while the return awaited them brings them in whatever
             // happened to the return meanwhile. The aggregate checks a CANCELLED one was approved.
             case EXPIRED, CANCELLED -> target == RECEIVED;
-            case RECEIVED -> target == SETTLEMENT_PENDING;
+            // RESOLVED straight away: nothing approved came back usable, so there is no refund to propose (WF-05 TH-4).
+            case RECEIVED -> target == SETTLEMENT_PENDING || target == RESOLVED;
             case SETTLEMENT_PENDING -> target == RESOLVED || target == RECEIVED;
             case INSPECTED, RESOLVED, REJECTED -> false;
         };
+    }
+
+    /** Every edge of {@link #canTransitionTo} as {@code FROM>TO}: what the database's transition table must hold. */
+    public static java.util.Set<String> edges() {
+        java.util.Set<String> edges = new java.util.TreeSet<>();
+        for (ReturnStatus from : values()) {
+            for (ReturnStatus to : values()) {
+                if (from != to && from.canTransitionTo(to)) {
+                    edges.add(from.name() + ">" + to.name());
+                }
+            }
+        }
+        return edges;
     }
 }

@@ -19,15 +19,19 @@ What it creates (see README.md for the details):
 Each order goes through the real flow, so the data is what the application itself leaves behind:
   quote (Sales) -> sent -> accepted (the CUSTOMER's own login) -> converted to an order -> contract drawn up, sent,
   signed -> instalment on signing paid by a payment receipt (Accounting) -> order CONFIRMED -> shipping warehouse chosen
-  (Sales; stock held) -> for the cartons missing: production order (Production Coordinator) -> submitted -> approved
-  (a second user: the approver is never the drafter) -> goods receipt of the cartons -> putaway into bins -> the held
+  (Sales; stock held) -> for the cartons missing: production order (Production Coordinator) -> sent to its
+  producer by the coordinator (no approval step since 2026-11-20) -> goods receipt of the cartons -> putaway into bins -> the held
   stock now covers the order.
+  SPARE  for each D23 order a "spare" order of the same customer and SKU (1 carton by default, --spare-cartons N, 0 = none)
+       goes through the same flow and is then cancelled by Sales: its cartons stay in the bins and are free again, so
+       the "top-up" demos (X01 missing carton, X02 damaged carton) have a carton of the same SKU to reallocate. Without
+       a spare carton the reallocation answers 409 INSUFFICIENT_STOCK.
 It stops there: nothing is released, picked or labelled; the presenter does steps 1-10 live. The orders stay in
 AWAITING_STOCK (every carton held) until the warehouse manager releases them - that is how the backend leaves an order
 whose cartons came from a production order (OrderStatus javadoc).
 
 Credentials: SF_DEMO_USER / SF_DEMO_PASSWORD (environment only; never printed, never stored). The other accounts
-the flow needs (the customers, the approver) are the seeded demo accounts, signed in with the same password unless
+the flow needs (the customers) are the seeded demo accounts, signed in with the same password unless
 SF_DEMO_PASSWORD_<USERNAME> (upper case, other characters as _) says otherwise.
 
 Python 3.9+, standard library only.
@@ -87,9 +91,16 @@ ORDERS = [
          label="D23: cartons held, no payment block (other half of the two-vehicle plan)"),
 ]
 
+# Spare cartons (QA finding A1): the "top-up" demos (X01 missing carton, X02 damaged carton) reallocate a carton of the same
+# SKU, which must be FREE stock at the warehouse. A production order can never make more cartons than its order lacks, so a
+# spare order of the same SKU takes the same path as the D23 order, then Sales cancels it: the hold goes, the cartons stay.
+SPARE_CARTONS_DEFAULT = 1
+SPARE_OF = ("D23-A", "D23-B")
+SPARE_CANCEL_REASON = "DUPLICATE_ORDER"
+SPARE_CANCEL_NOTE = "WF4 demo data: spare carton order, cancelled to leave free stock for the top-up demo"
+
 ACTOR_DEFAULTS = {          # role -> username; None = the user of SF_DEMO_USER
     "sales": None, "accountant": None, "coordinator": None, "warehouse": None, "admin": None,
-    "approver": "truongkd",
 }
 
 
@@ -425,11 +436,23 @@ class Run:
     def orders(self):
         log("\n== D14 / D23 orders (set %r)" % self.args.set)
         customers = self.find_customers()
-        for spec in ORDERS:
+        for spec in self.order_specs():
             if self.args.only_order and spec["key"] not in self.args.only_order:
                 continue
             DemoOrder(self, spec, customers[spec["customer"]]).drive()
         self.verify_two_vehicles()
+
+    def order_specs(self):
+        """ORDERS, then one spare order (spare cartons of the same customer and SKU) after each D23 order."""
+        specs = list(ORDERS)
+        if self.args.spare_cartons > 0:
+            for base in (o for o in ORDERS if o["key"] in SPARE_OF):
+                specs.append(dict(base, key=base["key"] + "-SPARE", cartons=self.args.spare_cartons, payment="split",
+                                  window_in_days=30, plan=False, spare=True,
+                                  label="%s: %d spare carton(s) of the same SKU for the top-up demo (cancelled "
+                                        "afterwards: the cartons stay as free stock)" % (base["key"],
+                                                                                         self.args.spare_cartons)))
+        return specs
 
     def find_customers(self):
         api = self.actor("sales")
@@ -588,7 +611,7 @@ class DemoOrder:
 
     ORDER = ["create_quote", "send_quote", "accept_quote", "convert_quote", "create_contract", "send_contract",
              "sign_contract", "pay_signing", "choose_warehouse", "draw_production_order",
-             "submit_production_order", "approve_production_order", "receive_goods", "put_away"]
+             "send_production_order", "receive_goods", "put_away", "cancel_spare"]
     TEXT = {
         "create_quote": "draw up the quote (Sales)", "send_quote": "send the quote to the customer (Sales)",
         "accept_quote": "accept the quote (the customer's own login)",
@@ -598,18 +621,20 @@ class DemoOrder:
         "pay_signing": "record the payment receipt of the instalment on signing (Accounting)",
         "choose_warehouse": "choose the shipping warehouse (stock is held there)",
         "draw_production_order": "draw up the production order for the missing cartons (Production Coordinator)",
-        "submit_production_order": "submit the production order for approval",
-        "approve_production_order": "approve the production order (the approver, not the drafter)",
+        "send_production_order": "send the production order to its producer (Production Coordinator, no approval)",
         "receive_goods": "receive the cartons against the production order (goods receipt)",
         "put_away": "put the received cartons away into bins (the order's hold completes)",
+        "cancel_spare": "cancel the spare order (Sales): its cartons stay in the bins as free stock for the top-up demo",
     }
 
     def following(self, name):
         """The steps after `name`, for a dry run's plan (it cannot look past what it would change)."""
         rest = self.ORDER[self.ORDER.index(name) + 1:]
+        if not self.spec.get("spare"):
+            rest = [s for s in rest if s != "cancel_spare"]
         if self.free_stock_covers():
-            rest = [s for s in rest if s not in ("draw_production_order", "submit_production_order",
-                                                 "approve_production_order", "receive_goods", "put_away")]
+            rest = [s for s in rest if s not in ("draw_production_order", "send_production_order",
+                                                 "receive_goods", "put_away")]
         return rest
 
     def free_stock_covers(self):
@@ -642,7 +667,11 @@ class DemoOrder:
 
     def finish(self, state):
         self.record(state)
-        if state == "READY":
+        if state == "READY" and self.spec.get("spare"):
+            self.run.say("ok  ", "%s: order %s is cancelled; %d carton(s) of %s are free stock at %s" % (
+                self.spec["key"], self.order["orderNumber"], self.spec["cartons"], self.spec["sku"],
+                self.run.args.warehouse))
+        elif state == "READY":
             self.run.say("ok  ", "%s: order %s has every carton held at %s; contract, payments and window as below" % (
                 self.spec["key"], self.order["orderNumber"], self.run.args.warehouse))
 
@@ -707,6 +736,8 @@ class DemoOrder:
             return "sign_contract", ""
         if order_status == "PENDING_PAYMENT":
             return "pay_signing", ""
+        if order_status == "CANCELLED" and self.spec.get("spare"):
+            return None
         if order_status not in ("CONFIRMED", "AWAITING_STOCK"):
             if order_status == "ON_HOLD":
                 raise Blocked("order %s is ON_HOLD (%s)" % (self.order["orderNumber"], self.order.get("holdReason")))
@@ -726,7 +757,7 @@ class DemoOrder:
             raise Blocked("the order ships from another warehouse than %s" % wh["prefix"])
         coverage = self.sales().data("/orders/%s/stock-coverage" % self.order_id)
         if coverage["fullyHeld"]:
-            return None
+            return ("cancel_spare", "frees %d carton(s)" % self.spec["cartons"]) if self.spec.get("spare") else None
         orders = self.run.actor("coordinator").data("/production-orders", {"salesOrderId": self.order_id, "size": 50})["items"]
         live = [p for p in orders if p["status"] not in ("CANCELLED", "CLOSED")]
         if not live:
@@ -734,9 +765,7 @@ class DemoOrder:
         po = live[0]
         self.po = po
         if po["status"] == "DRAFT":
-            return "submit_production_order", po["code"]
-        if po["status"] == "PENDING_APPROVAL":
-            return "approve_production_order", po["code"]
+            return "send_production_order", po["code"]
         if po["status"] == "SAMPLE_PENDING":
             raise Blocked("production order %s waits for a print sample approval" % po["code"])
         warehouse = self.run.actor("warehouse")
@@ -848,16 +877,9 @@ class DemoOrder:
         coordinator.call("POST", "/production-orders", {"salesOrderId": self.order_id, "deliveryBatchSeq": 1,
                                                         "producerId": active[0]["id"]})
 
-    def do_submit_production_order(self):
-        self.run.actor("coordinator").call("POST", "/production-orders/%s/submission" % self.po["id"],
+    def do_send_production_order(self):
+        self.run.actor("coordinator").call("POST", "/production-orders/%s/sending" % self.po["id"],
                                            {"version": self.po["version"]})
-
-    def do_approve_production_order(self):
-        approver = self.run.actor("approver")
-        if approver.username == self.po.get("drawnUpByName") or approver.username == self.run.actor("coordinator").username:
-            raise Fatal("the approver of a production order must not be the user who drew it up: pass --actor "
-                        "approver=<another user>")
-        approver.call("POST", "/production-orders/%s/approval" % self.po["id"], {"version": self.po["version"]})
 
     def do_receive_goods(self):
         warehouse = self.run.actor("warehouse")
@@ -878,6 +900,16 @@ class DemoOrder:
                               "packages": [{} for _ in range(count)]})
         warehouse.call("PUT", "/goods-receipts/%s/lines" % draft["id"], {"lines": lines})
         warehouse.call("POST", "/goods-receipts/%s/confirmation" % draft["id"], {})
+
+    def do_cancel_spare(self):
+        """Sales cancels the spare order: the hold is released, the cartons stay in their bins (free stock again).
+        Only an order this script created for spare cartons (its quote carries the set's marker) is ever cancelled."""
+        if not self.spec.get("spare"):
+            raise Fatal("refusing to cancel %s: it is not a spare order" % self.spec["key"])
+        self.sales().call("POST", "/orders/%s/admin-cancellation" % self.order_id,
+                          {"reasonCode": SPARE_CANCEL_REASON, "note": SPARE_CANCEL_NOTE, "retainedPercent": 0})
+        self.wait("the spare order to be CANCELLED", lambda: self.sales().data("/orders/" + self.order_id)["status"]
+                  == "CANCELLED")
 
     def area_code(self, wh, kind):
         layout = self.run.actor("warehouse").data("/warehouses/%s/layout" % wh["id"])
@@ -936,7 +968,7 @@ def report(run):
     if run.summary["orders"]:
         log("\nOrders")
         for o in run.summary["orders"]:
-            log("  %-6s %-20s %-18s %2d cartons of %s  [%s]" % (o["key"], o["number"] or "(not created yet)",
+            log("  %-12s %-20s %-18s %2d cartons of %s  [%s]" % (o["key"], o["number"] or "(not created yet)",
                                                               o["status"] or "-", o["cartons"], o["sku"], o["state"]))
             log("         customer: %s   contract: %s" % (o["customer"], o["contract"] or "-"))
             for seq, start, end in (o["window"] or []):
@@ -981,12 +1013,16 @@ def main(argv=None):
                                                    "(use it after the first set was consumed by a demo)")
     parser.add_argument("--d14-window-in-days", type=int, default=1,
                         help="the D14 order's delivery window starts this many days after the run date (default 1)")
+    parser.add_argument("--spare-cartons", type=int, default=SPARE_CARTONS_DEFAULT, metavar="N",
+                        help="spare cartons per D23 SKU for the X01/X02 top-up demos (default %d, 0 = none; 1 or 2 "
+                             "is enough): a spare order of the same SKU is made and cancelled, leaving free stock"
+                             % SPARE_CARTONS_DEFAULT)
     parser.add_argument("--only", action="append", choices=["carriers", "vehicles", "staging", "orders"],
                         help="run only this part (repeatable); default: all")
-    parser.add_argument("--only-order", action="append", choices=[o["key"] for o in ORDERS],
+    parser.add_argument("--only-order", action="append", choices=[o["key"] for o in ORDERS] + [k + "-SPARE" for k in SPARE_OF],
                         help="with orders: only this order (repeatable)")
     parser.add_argument("--actor", action="append", default=[], metavar="ROLE=USERNAME",
-                        help="who acts in a role (%s); default: SF_DEMO_USER, the approver truongkd"
+                        help="who acts in a role (%s); default: SF_DEMO_USER"
                              % ", ".join(sorted(ACTOR_DEFAULTS)))
     parser.add_argument("--customer-user", action="append", default=[], metavar="CODE=USERNAME",
                         help="the account of a customer, if it cannot be looked up (e.g. caphemoc=kh.caphemoc)")

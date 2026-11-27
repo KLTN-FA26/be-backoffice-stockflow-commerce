@@ -17,9 +17,11 @@ import com.stockflow.order.internal.controller.dto.ResolveHoldRequest;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.ReleaseOrderRequest;
 import com.stockflow.order.internal.service.OrderReleases;
+import com.stockflow.order.internal.service.OrderWarehouseVisibility;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -51,10 +53,16 @@ class OrderReleaseController {
 
     private final OrderReleases releases;
     private final com.stockflow.order.api.OrderService orders;
+    private final OrderWarehouseVisibility visibility;
+    private final com.stockflow.warehouse.api.WarehouseService warehouses;
 
-    OrderReleaseController(OrderReleases releases, com.stockflow.order.api.OrderService orders) {
+    OrderReleaseController(OrderReleases releases, com.stockflow.order.api.OrderService orders,
+                           OrderWarehouseVisibility visibility,
+                           com.stockflow.warehouse.api.WarehouseService warehouses) {
+        this.warehouses = warehouses;
         this.releases = releases;
         this.orders = orders;
+        this.visibility = visibility;
     }
 
     /**
@@ -125,7 +133,8 @@ class OrderReleaseController {
     @PostMapping("/{orderId}/release")
     @Operation(summary = "Release an order - its next delivery batch, for an order with a delivery schedule - from its "
             + "shipping warehouse: the batch's holds are allocated on bins there. 409 DELIVERY_BATCH_NOT_NEXT, "
-            + "409 ORDER_STOCK_NOT_HELD. 403 for a warehouse the caller is not assigned to")
+            + "409 DELIVERY_BATCH_ALL_RELEASED (every batch is released already), 409 ORDER_STOCK_NOT_HELD. 403 for a warehouse the caller is not assigned to; 404 NOT_FOUND for an order "
+            + "neither shipping from nor returned to one of the caller's warehouses")
     @RequiresPermission(resource = OrderResources.RELEASES, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<OrderResponse> release(@PathVariable UUID orderId,
                                               @Valid @RequestBody ReleaseOrderRequest request,
@@ -133,8 +142,31 @@ class OrderReleaseController {
         ScopeGuards.requireBackOffice(user);
         // Scope first: whether another warehouse exists is not an out-of-scope caller's to learn.
         WarehouseScope.requireWarehouse(request.warehouseId());
-        return ApiResponse.ok(OrderWebMapper.toResponse(releases.release(orderId, request.warehouseId(),
-                request.deliveryBatchId(), user.userId())));
+        // BR-SEC-002: nor is an order of another warehouse - the release's refusals name it, its batches and its SKUs.
+        visibility.requireReleasable(orderId, user);
+        // The answer names the warehouse it was released from, as the detail does.
+        return ApiResponse.ok(OrderWebMapper.withWarehouse(OrderWebMapper.toResponse(releases.release(orderId,
+                request.warehouseId(), request.deliveryBatchId(), user.userId())),
+                warehouses.findWarehouses(java.util.List.of(request.warehouseId()))));
+    }
+
+    /**
+     * WF4-OVERDUE-WARN: what the release dialog shows when it opens - the customer has an installment overdue. A warning
+     * only: the release goes ahead (the same shape as {@code creditWarning} of a contract sent, 15 BR-11). Behind the
+     * release permission itself, and holds nothing but the outcome: no amount, no name.
+     */
+    @GetMapping("/{orderId}/release-warnings")
+    @Operation(summary = "What to know before releasing an order (never a reason to refuse it): creditWarning with "
+            + "outcome OVERDUE when its customer has an installment past its due day and still owing, else null. "
+            + "404 NOT_FOUND for an unknown order")
+    @RequiresPermission(resource = OrderResources.RELEASES, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<OrderReleases.ReleaseWarnings> releaseWarnings(@PathVariable UUID orderId,
+                                                                      @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        // BR-SEC-002: the dialog opens before the release, while the order has no warehouse of its own yet, so the
+        // check is the order's shipping or released warehouse (OrderWarehouseVisibility), not requireOrdersWarehouse.
+        visibility.requireVisible(orderId, user);
+        return ApiResponse.ok(releases.releaseWarnings(orderId));
     }
 
     /**

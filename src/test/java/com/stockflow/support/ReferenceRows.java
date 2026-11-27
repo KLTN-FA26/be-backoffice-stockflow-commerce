@@ -3,6 +3,7 @@ package com.stockflow.support;
 import com.stockflow.common.id.Identifiers;
 import jakarta.persistence.EntityManager;
 
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -17,6 +18,17 @@ import java.util.UUID;
 public final class ReferenceRows {
 
     private ReferenceRows() {
+    }
+
+    /**
+     * A warehouse prefix no other test's warehouse has: {@code lead}, then random hex up to the ten characters
+     * {@code ck_warehouse_prefix} allows (nine digits after "E", about 7e10 values). Every test shares one database,
+     * and the "elsewhere" warehouses used to be "E" and five hex digits - a million values for every warehouse those
+     * tests made, which met now and then on {@code uk_warehouse_prefix} (FtlDispatchIntegrationTest, CI 2026-11-24).
+     */
+    public static String warehousePrefix(String lead) {
+        String hex = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        return lead + hex.substring(0, 10 - lead.length());
     }
 
     /** An {@code identity.app_user} row; returns its id. */
@@ -65,9 +77,10 @@ public final class ReferenceRows {
     }
 
     /**
-     * A DRAFT {@code product.products} row with its default ACTIVE variant; the variant insert creates
-     * the SKU's inventory item (trigger). Since C1, a design draft's {@code product_id} and an order
-     * line's {@code sku} are foreign keys to these.
+     * A DRAFT {@code product.products} row with its default ACTIVE variant - a catalogue variant, which has no
+     * inventory item and holds no stock (V20270105000100): a test that stocks, quotes or orders goods issues a
+     * customer's SKU on it ({@link CustomerSkuRows}). Since C1 a design draft's {@code product_id} is a foreign key
+     * to these.
      */
     public static ProductRow product(EntityManager em) {
         UUID productId = Identifiers.newId();
@@ -107,7 +120,30 @@ public final class ReferenceRows {
                 .setParameter(2, approver)
                 .setParameter(3, row.productId())
                 .executeUpdate();
+        standardPriceOfOne(em, row.sku());
         return row;
+    }
+
+    /**
+     * 14 BR-10 (2026-11-26): {@code variantSku} gets a standard price of 1 VND a piece from 1 carton, so a quote of a
+     * customer's SKU drawn on it, priced as a test prices it, is sent rather than held for the Sales Manager. Every
+     * {@link #approvedProduct} has it; a test of the approval removes or raises it. Nothing when it has one already.
+     */
+    public static void standardPriceOfOne(EntityManager em, String variantSku) {
+        em.createNativeQuery("""
+                        INSERT INTO catalog.standard_price (id, sku, currency, version, created_at, created_by)
+                        VALUES (?1, ?2, 'VND', 0, NOW(), 'fixture') ON CONFLICT (sku) DO NOTHING""")
+                .setParameter(1, Identifiers.newId())
+                .setParameter(2, variantSku)
+                .executeUpdate();
+        em.createNativeQuery("""
+                        INSERT INTO catalog.standard_price_tier (id, standard_price_id, min_quantity, unit_price, version,
+                            created_at, created_by)
+                        SELECT ?1, p.id, 1, 1, 0, NOW(), 'fixture' FROM catalog.standard_price p WHERE p.sku = ?2
+                        ON CONFLICT (standard_price_id, min_quantity) DO NOTHING""")
+                .setParameter(1, Identifiers.newId())
+                .setParameter(2, variantSku)
+                .executeUpdate();
     }
 
     /** Every fixture order number starts with this, after the date: real numbers never reach 9 followed by 11 digits. */

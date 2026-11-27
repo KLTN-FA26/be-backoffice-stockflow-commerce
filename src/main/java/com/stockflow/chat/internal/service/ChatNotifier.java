@@ -36,6 +36,13 @@ import java.util.UUID;
 @Component
 public class ChatNotifier {
 
+    /**
+     * Where each app opens a conversation: the storefront's page is {@code /chat/{id}}, the back office's
+     * {@code /admin/chat/{id}}. The API path {@code /chat/conversations/{id}} is neither, and both bells led to a 404.
+     */
+    static final String CUSTOMER_LINK = "/chat/";
+    static final String STAFF_LINK = "/admin/chat/";
+
     private static final String ANSWERS_ESCALATIONS = ChatCallers.SUPERVISION + ":UPDATE";
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy");
 
@@ -67,7 +74,7 @@ public class ChatNotifier {
         Instant period = periodOf(at);
         ResourceBundle m = bundle();
         int told = inbox.post(away, new InboxMessage("CHAT", InboxSeverity.INFO, m.getString("inbox.chat.reply.title"),
-                m.getString("inbox.chat.reply.body"), "/chat/conversations/" + c.id(), "CHAT_CONVERSATION",
+                m.getString("inbox.chat.reply.body"), CUSTOMER_LINK + c.id(), "CHAT_CONVERSATION",
                 c.id().toString(), "chat-reply:" + c.id() + ":" + period.getEpochSecond()));
         if (told > 0) {
             events.publishEvent(new CustomerChatReplied(c.id(), c.customerId(), period, at));
@@ -86,7 +93,7 @@ public class ChatNotifier {
                 .format(c.firstResponseDueAt());
         inbox.post(supervisors, new InboxMessage("CHAT_SLA", InboxSeverity.WARN,
                 m.getString("inbox.chat.overdue.title"), m.getString("inbox.chat.overdue.body").formatted(due),
-                "/chat/conversations/" + c.id(), "CHAT_CONVERSATION", c.id().toString(),
+                STAFF_LINK + c.id(), "CHAT_CONVERSATION", c.id().toString(),
                 "chat-first-response-overdue:" + c.id()));
     }
 
@@ -101,7 +108,7 @@ public class ChatNotifier {
         String due = TIME.withZone(ZoneId.of(properties.businessZone())).format(c.resolutionDueAt());
         inbox.post(supervisors, new InboxMessage("CHAT_SLA", InboxSeverity.WARN,
                 m.getString("inbox.chat.resolution-overdue.title"),
-                m.getString("inbox.chat.resolution-overdue.body").formatted(due), "/chat/conversations/" + c.id(),
+                m.getString("inbox.chat.resolution-overdue.body").formatted(due), STAFF_LINK + c.id(),
                 "CHAT_CONVERSATION", c.id().toString(),
                 "chat-resolution-overdue:" + c.id() + ":" + c.resolutionDueAt().getEpochSecond()));
     }

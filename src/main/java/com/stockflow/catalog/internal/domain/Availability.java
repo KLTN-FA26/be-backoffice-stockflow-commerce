@@ -38,19 +38,4 @@ public enum Availability {
         }
         return atp <= threshold ? LOW_STOCK : IN_STOCK;
     }
-
-    /**
-     * The indicator of stock counted in pieces, for a SKU sold by the carton: only whole cartons count (13 BR-07, BR-12
-     * - every carton holds the SKU's standard number of pieces).
-     *
-     * @param atpUnits           available to promise, in pieces; negative is treated as nothing
-     * @param unitsPerCarton     the SKU's standard pieces per carton, at least 1
-     * @param thresholdInCartons the low-stock threshold, in cartons, 0 meaning "never warn"
-     */
-    public static Availability ofCartons(int atpUnits, int unitsPerCarton, int thresholdInCartons) {
-        if (unitsPerCarton < 1) {
-            throw new IllegalArgumentException("unitsPerCarton must be at least 1: " + unitsPerCarton);
-        }
-        return of(Math.max(atpUnits, 0) / unitsPerCarton, thresholdInCartons);
-    }
 }

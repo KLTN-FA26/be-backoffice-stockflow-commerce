@@ -8,6 +8,7 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
+import com.stockflow.order.internal.service.OrderWarehouseVisibility;
 import com.stockflow.order.internal.service.ShippingWarehouseService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -48,20 +50,35 @@ class ShippingWarehouseController {
     }
 
     private final ShippingWarehouseService shippingWarehouses;
+    private final OrderWarehouseVisibility visibility;
 
-    ShippingWarehouseController(ShippingWarehouseService shippingWarehouses) {
+    ShippingWarehouseController(ShippingWarehouseService shippingWarehouses, OrderWarehouseVisibility visibility) {
         this.shippingWarehouses = shippingWarehouses;
+        this.visibility = visibility;
     }
 
     @GetMapping("/{orderId}/shipping-warehouse/options")
     @Operation(summary = "The warehouses an order of a contract may ship from, best first: whole cartons of each line "
-            + "available to promise at each (17 §4.2 step 2; the projected free space is not worked out yet - "
-            + "capacityComputed false)")
+            + "available to promise at each, and each warehouse's room - projected free, pending, free if all approved "
+            + "(m³) - with the volume to be produced there and a warning when it does not fit (17 §4.2 step 2, BR-25; "
+            + "06 §4.6). A warning, never a refusal; capacityComputed true. Order (C3, 17 §4.2 step 2): warehouses "
+            + "holding every line; then those with room for what is still to be produced, larger projected free first; "
+            + "then more available cartons; then code")
     @RequiresPermission(resource = OrderResources.SHIPPING_WAREHOUSES, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<ShippingWarehouseService.Options> options(@PathVariable UUID orderId,
                                                                 @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(shippingWarehouses.options(orderId));
+        // BR-SEC-002: a warehouse manager reads the options of an order of their warehouses only, and of those
+        // options only their own warehouses' stock and room.
+        visibility.requireVisible(orderId, user);
+        ShippingWarehouseService.Options options = shippingWarehouses.options(orderId);
+        Set<UUID> limit = OrderWarehouseVisibility.limitOf(user);
+        if (limit != null) {
+            options = new ShippingWarehouseService.Options(options.orderId(), options.chosenWarehouseId(),
+                    options.capacityComputed(), options.warehouses().stream()
+                    .filter(option -> limit.contains(option.warehouseId())).toList());
+        }
+        return ApiResponse.ok(options);
     }
 
     @PutMapping("/{orderId}/shipping-warehouse")
@@ -83,6 +100,7 @@ class ShippingWarehouseController {
     public ApiResponse<ShippingWarehouseService.Coverage> coverage(@PathVariable UUID orderId,
                                                                   @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
+        visibility.requireVisible(orderId, user);
         return ApiResponse.ok(shippingWarehouses.coverage(orderId));
     }
 }

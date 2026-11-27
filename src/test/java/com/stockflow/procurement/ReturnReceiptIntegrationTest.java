@@ -10,6 +10,7 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
 import com.stockflow.procurement.internal.service.ReturnReceiptService;
 import com.stockflow.procurement.internal.service.ReturnReceiptService.ReturnReceiptView;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -46,7 +47,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 @Import(PostgresContainer.class)
 class ReturnReceiptIntegrationTest {
 
-    private static final String SKU = "SOFA-3S-GREY";
+    /** A carton of the test's own cup holds 1,000, as the demo's stocked cup does. */
+    private static final int PER_CARTON = 1000;
     private static final String QUARANTINE = "HCM-QC01";
 
     @Autowired ReturnReceiptService receipts;
@@ -57,17 +59,23 @@ class ReturnReceiptIntegrationTest {
 
     private UUID staff;
     private UUID customer;
+    /**
+     * The customer's own cup, handled like the demo's stocked cup: its cartons come back into quarantine, so it is the
+     * test's own SKU and not the demo's, whose stock other test classes read.
+     */
+    private String sku;
 
     @BeforeEach
     void setUp() {
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
         customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        sku = CustomerSkuRows.like(jdbc, tx, entityManager, customer, DemoData.SKU_STOCKED, PER_CARTON).sku();
     }
 
     // ---- fixtures --------------------------------------------------------------------------------------------
 
     private UUID deliveredOrder() {
-        UUID order = tx.execute(s -> ReferenceRows.orderWithLine(entityManager, SKU, "DELIVERED", customer, staff,
+        UUID order = tx.execute(s -> ReferenceRows.orderWithLine(entityManager, sku, "DELIVERED", customer, staff,
                 DemoData.WAREHOUSE_HCM));
         tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET warehouse_id = ? WHERE id = ?",
                 DemoData.WAREHOUSE_HCM, order));
@@ -76,7 +84,7 @@ class ReturnReceiptIntegrationTest {
 
     private ShippedCartons.Shipped shipped(UUID order, int cartons, String lot, String shipmentStatus) {
         UUID line = jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ?", UUID.class, order);
-        return ShippedCartons.ship(jdbc, tx, order, line, SKU, cartons, 4, lot, shipmentStatus, staff);
+        return ShippedCartons.ship(jdbc, tx, order, line, sku, cartons, PER_CARTON, lot, shipmentStatus, staff);
     }
 
     private <T> T asHcmStaff(Supplier<T> call) {
@@ -101,15 +109,17 @@ class ReturnReceiptIntegrationTest {
 
     private Map<String, Object> carton(String lpn) {
         return jdbc.queryForMap("""
-                SELECT p.status AS package_status, p.location_code AS package_location, s.status AS row_status,
-                       s.location_code, s.lot_number, s.on_hand
-                  FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
+                SELECT p.status AS package_status, p.location_code AS package_location, p.stock_status AS row_status,
+                       p.location_code, l.lot_number,
+                       CASE WHEN p.status = 'IN_STOCK' THEN p.nominal_qty ELSE 0 END AS on_hand
+                  FROM inventory.stock_package p JOIN inventory.stock_lot l ON l.id = p.lot_id
                  WHERE p.lpn = ?""", lpn);
     }
 
     private long published(UUID receipt) {
-        return jdbc.queryForObject("SELECT count(*) FROM event_publication WHERE event_type LIKE '%ReturnedGoodsReceived' "
-                + "AND serialized_event LIKE ?", Long.class, "%" + receipt + "%");
+        // One publication row per listener of the event: count the events, not the listeners.
+        return jdbc.queryForObject("SELECT count(DISTINCT serialized_event) FROM event_publication WHERE event_type LIKE "
+                + "'%ReturnedGoodsReceived' AND serialized_event LIKE ?", Long.class, "%" + receipt + "%");
     }
 
     // ---- scenarios -------------------------------------------------------------------------------------------
@@ -121,9 +131,10 @@ class ReturnReceiptIntegrationTest {
     void aReturnedShipmentComesBackWhole() {
         UUID order = deliveredOrder();
         ShippedCartons.Shipped shipped = shipped(order, 3, "LOT-RTO-" + order.toString().substring(0, 8), "RETURNED");
-        String lot = jdbc.queryForObject("SELECT lot_number FROM inventory.stock_item WHERE stock_package_id = ?",
+        String lot = jdbc.queryForObject("SELECT l.lot_number FROM inventory.stock_package p JOIN "
+                + "inventory.stock_lot l ON l.id = p.lot_id WHERE p.id = ?",
                 String.class, shipped.cartons().getFirst().id());
-        int atpBefore = inventory.availableToPromise(new Sku(SKU));
+        int atpBefore = inventory.availableToPromise(new Sku(sku));
         assertThat(shipped.cartons()).allSatisfy(c -> assertThat(carton(c.lpn()).get("package_status")).isEqualTo("CONSUMED"));
 
         ReturnReceiptView draft = openForShipment(shipped);
@@ -150,6 +161,19 @@ class ReturnReceiptIntegrationTest {
                 .containsExactlyInAnyOrder(shipped.lpns().get(0), shipped.lpns().get(1));
         assertThat(closed.confirmedBy()).isEqualTo(staff);
         assertThat(closed.closedAt()).isNotNull();
+        // Every person and the warehouse by name, so the screen shows no UUID; the list names the shipment by code.
+        assertThat(closed.confirmedByName()).isEqualTo("test-" + staff);
+        assertThat(closed.receivedByName()).isEqualTo("test-" + staff);
+        assertThat(closed.cartons()).allSatisfy(c -> assertThat(c.scannedByName()).isEqualTo("test-" + staff));
+        assertThat(closed.warehouseCode()).isEqualTo(jdbc.queryForObject(
+                "SELECT prefix FROM warehouse.warehouse WHERE id = ?", String.class, DemoData.WAREHOUSE_HCM));
+        assertThat(closed.warehouseName()).isEqualTo(jdbc.queryForObject(
+                "SELECT name FROM warehouse.warehouse WHERE id = ?", String.class, DemoData.WAREHOUSE_HCM));
+        var row = asHcmStaff(() -> receipts.list(null, null, null, shipped.shipmentId(), null, null, 0, 20, null))
+                .items().getFirst();
+        assertThat(row.shipmentCode()).isEqualTo(shipped.shipmentCode());
+        assertThat(row.receivedByName()).isEqualTo("test-" + staff);
+        assertThat(row.warehouseName()).isEqualTo(closed.warehouseName());
 
         for (String lpn : shipped.lpns().subList(0, 2)) {
             Map<String, Object> back = carton(lpn);
@@ -163,12 +187,16 @@ class ReturnReceiptIntegrationTest {
         }
         assertThat(carton(shipped.lpns().get(2)).get("package_status")).as("not on the receipt: still out")
                 .isEqualTo("CONSUMED");
-        assertThat(inventory.availableToPromise(new Sku(SKU))).as("returned goods are not sold until released")
+        assertThat(inventory.availableToPromise(new Sku(sku))).as("returned goods are not sold until released")
                 .isEqualTo(atpBefore);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM inventory.stock_movement WHERE reference_type = 'GOODS_RECEIPT' AND reference_id = ?
                    AND movement_type = 'RECEIPT'""", Long.class, draft.id())).isEqualTo(2);
         assertThat(published(draft.id())).isEqualTo(1);
+        // WF-05 BE-24: the carrier's return names the carton of the shipment still not back.
+        assertThat(jdbc.queryForObject("SELECT count(DISTINCT serialized_event) FROM event_publication WHERE "
+                + "serialized_event LIKE ? AND serialized_event LIKE ?", Long.class, "%" + draft.id() + "%",
+                "%\"missingCartons\":[\"" + shipped.lpns().get(2) + "\"]%")).isEqualTo(1);
         // The RTO receipt names no return request: nothing to move on the order side.
         assertThat(jdbc.queryForObject("SELECT return_request_id FROM procurement.goods_receipts WHERE id = ?",
                 UUID.class, draft.id())).isNull();
@@ -178,8 +206,20 @@ class ReturnReceiptIntegrationTest {
         assertThat(published(draft.id())).isEqualTo(1);
         // A closed receipt takes no more cartons; the rest of the shipment needs no second receipt to be refused.
         assertThat(code(catchThrowable(() -> scan(draft.id(), shipped.lpns().get(2))))).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        assertThat(code(catchThrowable(() -> openForShipment(shipped)))).as("one receipt per returned shipment")
+        // WF-05 Q-11 (BE-13): the carrier brings the rest on a second trip - a receipt of its own, one draft at a time;
+        // the first trip's cartons are not taken again.
+        ReturnReceiptView secondTrip = openForShipment(shipped);
+        assertThat(code(catchThrowable(() -> openForShipment(shipped)))).as("one draft at a time")
                 .isEqualTo(ErrorCode.RETURN_RECEIPT_ALREADY_OPEN);
+        assertThat(code(catchThrowable(() -> scan(secondTrip.id(), shipped.lpns().get(0)))))
+                .isEqualTo(ErrorCode.RETURN_CARTON_IN_WAREHOUSE);
+        scan(secondTrip.id(), shipped.lpns().get(2));
+        assertThat(asHcmStaff(() -> receipts.confirm(secondTrip.id(), staff)).status()).isEqualTo(GoodsReceiptStatus.CLOSED);
+        assertThat(carton(shipped.lpns().get(2)).get("package_status")).isEqualTo("IN_STOCK");
+        assertThat(jdbc.queryForObject("SELECT count(DISTINCT serialized_event) FROM event_publication WHERE "
+                + "serialized_event LIKE ? AND serialized_event LIKE ?", Long.class, "%" + secondTrip.id() + "%",
+                "%\"missingCartons\":[]%"))
+                .as("nothing of the shipment missing any more").isEqualTo(1);
     }
 
     @Test
@@ -203,17 +243,10 @@ class ReturnReceiptIntegrationTest {
         // A carton of the shipment that is back in the warehouse already (by hand, outside any receipt).
         String home = mine.lpns().getFirst();
         tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL, "
-                    + "location_code = 'HCM-A01-1-A' WHERE lpn = ?", home);
-            // The carton's own row filled again, as the application restocks a carton of its very receipt: the FIFO
-            // trigger lets a row grow in place only when it is named for the statement (stockflow.same_receipt_merge).
-            UUID row = jdbc.queryForObject("SELECT id FROM inventory.stock_item WHERE stock_package_id = (SELECT id FROM "
-                    + "inventory.stock_package WHERE lpn = ?)", UUID.class, home);
-            jdbc.queryForObject("SELECT set_config('stockflow.same_receipt_merge', ?, true)", String.class,
-                    row.toString());
-            jdbc.update("UPDATE inventory.stock_item SET on_hand = ? WHERE id = ?", mine.cartons().getFirst().quantity(),
-                    row);
-            jdbc.queryForObject("SELECT set_config('stockflow.same_receipt_merge', '', true)", String.class);
+            // In stock again as the application restocks a put-back carton: AVAILABLE, with the lot and the FIFO date it
+            // always had (ck_stock_package_stock_status: a carton in stock has a stock status).
+            jdbc.update("UPDATE inventory.stock_package SET status = 'IN_STOCK', stock_status = 'AVAILABLE', "
+                    + "closed_at = NULL, location_code = 'HCM-A01-1-A' WHERE lpn = ?", home);
         });
         assertThat(code(catchThrowable(() -> scan(draft.id(), home)))).isEqualTo(ErrorCode.RETURN_CARTON_IN_WAREHOUSE);
 
@@ -269,7 +302,7 @@ class ReturnReceiptIntegrationTest {
                 otherOrder);
         String again = first.lpns().getFirst();
         // It came back, went into stock and was picked, labelled and shipped for another order (a later pick of the LPN).
-        ShippedCartons.shipAgain(jdbc, tx, again, otherOrder, otherLine, SKU, staff);
+        ShippedCartons.shipAgain(jdbc, tx, again, otherOrder, otherLine, sku, staff);
 
         ReturnReceiptView draft = openForShipment(first);
         assertThat(code(catchThrowable(() -> scan(draft.id(), again)))).isEqualTo(ErrorCode.RETURN_CARTON_NOT_OF_SOURCE);

@@ -10,6 +10,7 @@ import com.stockflow.common.i18n.Messages;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.security.RunAs;
 import com.stockflow.notification.api.Inbox;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -266,7 +267,8 @@ class AssistantWatchIntegrationTest {
         String number = "SO-2190%04d-%06d".formatted(ThreadLocalRandom.current().nextInt(101, 1231),
                 ThreadLocalRandom.current().nextInt(1_000_000));
         tx.executeWithoutResult(s -> {
-            UUID order = ReferenceRows.orderWithLine(entityManager, "TABLE-OAK-160", "CONFIRMED", CUSTOMER_ID,
+            // The demo customer's own SKU: only a customer's SKU is ordered (fk_order_line_customer_sku).
+            UUID order = ReferenceRows.orderWithLine(entityManager, DemoData.SKU_STOCKED, "CONFIRMED", CUSTOMER_ID,
                     releasedBy, WAREHOUSE_HCM);
             entityManager.flush();
             jdbc.update("""

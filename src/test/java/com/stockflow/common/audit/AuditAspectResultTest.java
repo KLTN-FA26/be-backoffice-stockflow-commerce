@@ -3,11 +3,8 @@ package com.stockflow.common.audit;
 import com.stockflow.common.security.CurrentUserProvider;
 import org.junit.jupiter.api.Test;
 import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -27,6 +24,10 @@ class AuditAspectResultTest {
 
     record Created(UUID id) {}
 
+    record Tier(int minQuantity, BigDecimal unitPrice) {}
+
+    record Placed(UUID id, String locationCode) {}
+
     /** Stands in for a service; public, because the aspect only advises what a proxy can reach. */
     public static class Catalogue {
         static final UUID NEW_ID = UUID.fromString("01a10000-0000-7000-8000-0000000000aa");
@@ -44,13 +45,6 @@ class AuditAspectResultTest {
             return new Created(id);
         }
 
-        /** Commits its own transaction: what its caller does next cannot undo it. */
-        @Auditable(action = AuditAction.UPDATE, resourceType = "thing", resourceId = "#id")
-        @Transactional(propagation = Propagation.REQUIRES_NEW)
-        public Created updateOnItsOwn(UUID id) {
-            return new Created(id);
-        }
-
         @Auditable(action = AuditAction.TRANSITION, resourceType = "thing", resourceId = "#id",
                 details = "{change: #change, reason: #reason, count: #count}")
         public Created transition(UUID id, String change, String reason, int count) {
@@ -60,14 +54,18 @@ class AuditAspectResultTest {
             return new Created(id);
         }
 
-        @Auditable(action = AuditAction.UPDATE, resourceType = "thing", details = "#nope.broken()")
-        public Created brokenDetails() {
-            return new Created(NEW_ID);
+        @Auditable(action = AuditAction.UPDATE, resourceType = "bin", resourceId = "#id",
+                details = "{locationCode: #result?.locationCode(), "
+                        + "tiers: #tiers.![minQuantity() + ':' + unitPrice().toPlainString()]}")
+        public Placed place(UUID id, List<Tier> tiers) {
+            if (tiers.isEmpty()) {
+                throw new IllegalArgumentException("no tiers");
+            }
+            return new Placed(id, "HCM-A01-L1-B01");
         }
 
-        @Auditable(action = AuditAction.UPDATE, resourceType = "thing",
-                details = "{ratio: T(java.lang.Double).NaN, count: 2}")
-        public Created notANumber() {
+        @Auditable(action = AuditAction.UPDATE, resourceType = "thing", details = "#nope.broken()")
+        public Created brokenDetails() {
             return new Created(NEW_ID);
         }
     }
@@ -84,7 +82,7 @@ class AuditAspectResultTest {
 
     @Test
     void aCreationIsRecordedUnderTheIdItReturned() {
-        proxied().create("sofa");
+        proxied().create("cup");
 
         assertThat(entries).singleElement().satisfies(entry -> {
             assertThat(entry.action()).isEqualTo(AuditAction.CREATE);
@@ -111,85 +109,6 @@ class AuditAspectResultTest {
 
         assertThat(entries).singleElement()
                 .satisfies(entry -> assertThat(entry.resourceId()).isEqualTo(id.toString()));
-    }
-
-    /**
-     * Joined to a transaction its caller began, the method's change commits with the caller's: the SUCCESS entry waits
-     * for that commit, and a rollback records the attempt as a FAILURE instead (ADR-0012: a goods receipt whose lines
-     * were refused must not stay in the trail as created).
-     */
-    @Test
-    void insideAnEnclosingTransactionTheEntryWaitsForItsOutcome() {
-        enclosingTransaction();
-        try {
-            proxied().create("sofa");
-            assertThat(entries).as("nothing is durable yet").isEmpty();
-            complete(TransactionSynchronization.STATUS_COMMITTED);
-        } finally {
-            endTransaction();
-        }
-        assertThat(entries).singleElement().satisfies(entry -> {
-            assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.SUCCESS);
-            assertThat(entry.resourceId()).isEqualTo(Catalogue.NEW_ID.toString());
-            assertThat(entry.occurredAt()).as("when it returned").isEqualTo(Instant.parse("2026-10-04T10:00:00Z"));
-        });
-    }
-
-    @Test
-    void anEnclosingRollbackRecordsTheAttemptAsAFailure() {
-        enclosingTransaction();
-        try {
-            proxied().create("sofa");
-            complete(TransactionSynchronization.STATUS_ROLLED_BACK);
-        } finally {
-            endTransaction();
-        }
-        assertThat(entries).singleElement().satisfies(entry -> {
-            assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.FAILURE);
-            assertThat(entry.resourceId()).isEqualTo(Catalogue.NEW_ID.toString());
-            assertThat(entry.details()).contains("RolledBack").contains("rolled back");
-        });
-    }
-
-    @Test
-    void aFailureInsideAnEnclosingTransactionIsRecordedAtOnce() {
-        enclosingTransaction();
-        try {
-            assertThatThrownBy(() -> proxied().create(" ")).isInstanceOf(IllegalArgumentException.class);
-            assertThat(entries).singleElement()
-                    .satisfies(entry -> assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.FAILURE));
-            assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
-        } finally {
-            endTransaction();
-        }
-    }
-
-    /** REQUIRES_NEW committed its own work by the time it returned: a rollback of its caller does not undo it. */
-    @Test
-    void aMethodWithATransactionOfItsOwnIsRecordedAtOnce() {
-        UUID id = UUID.fromString("01a10000-0000-7000-8000-0000000000cc");
-        enclosingTransaction();
-        try {
-            proxied().updateOnItsOwn(id);
-            assertThat(entries).singleElement()
-                    .satisfies(entry -> assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.SUCCESS));
-            assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
-        } finally {
-            endTransaction();
-        }
-    }
-
-    /** Synchronization with no transaction (a SUPPORTS scope): nothing can roll the change back, so it is written. */
-    @Test
-    void synchronizationWithoutATransactionDefersNothing() {
-        TransactionSynchronizationManager.initSynchronization();
-        try {
-            proxied().create("sofa");
-            assertThat(entries).singleElement()
-                    .satisfies(entry -> assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.SUCCESS));
-        } finally {
-            TransactionSynchronizationManager.clearSynchronization();
-        }
     }
 
     @Test
@@ -231,42 +150,16 @@ class AuditAspectResultTest {
     }
 
     @Test
-    void aNumberThatIsNotJsonIsWrittenAsText() {
-        proxied().notANumber();
-
-        assertThat(entries).singleElement().satisfies(entry ->
-                assertThat(entry.details()).isEqualTo("{\"ratio\":\"NaN\",\"count\":2}"));
-    }
-
-    /** A success's details move under "context" when its enclosing transaction rolls back, as a failure's do. */
-    @Test
-    void anEnclosingRollbackKeepsTheDetailsUnderContext() {
+    void detailsReadTheResultAndProjectAList() {
         UUID id = UUID.fromString("01a10000-0000-7000-8000-0000000000ee");
-        enclosingTransaction();
-        try {
-            proxied().transition(id, "LOCK", "audit", 1);
-            complete(TransactionSynchronization.STATUS_ROLLED_BACK);
-        } finally {
-            endTransaction();
-        }
-        assertThat(entries).singleElement().satisfies(entry -> {
-            assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.FAILURE);
-            assertThat(entry.details()).startsWith("{\"error\":\"RolledBack\"")
-                    .endsWith(",\"context\":{\"change\":\"LOCK\",\"reason\":\"audit\",\"count\":1}}");
-        });
-    }
 
-    private static void enclosingTransaction() {
-        TransactionSynchronizationManager.initSynchronization();
-        TransactionSynchronizationManager.setActualTransactionActive(true);
-    }
+        proxied().place(id, List.of(new Tier(1, new BigDecimal("11000")), new Tier(5, new BigDecimal("10500"))));
+        assertThatThrownBy(() -> proxied().place(id, List.of())).isInstanceOf(IllegalArgumentException.class);
 
-    private static void endTransaction() {
-        TransactionSynchronizationManager.setActualTransactionActive(false);
-        TransactionSynchronizationManager.clearSynchronization();
-    }
-
-    private static void complete(int status) {
-        TransactionSynchronizationManager.getSynchronizations().forEach(sync -> sync.afterCompletion(status));
+        assertThat(entries).hasSize(2);
+        assertThat(entries.get(0).details())
+                .isEqualTo("{\"locationCode\":\"HCM-A01-L1-B01\",\"tiers\":\"[1:11000, 5:10500]\"}");
+        // A failure has no result: the location code is null, the arguments are still there.
+        assertThat(entries.get(1).details()).contains("\"context\":{\"locationCode\":null,\"tiers\":\"[]\"}");
     }
 }

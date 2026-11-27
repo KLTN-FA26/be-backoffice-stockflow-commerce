@@ -87,6 +87,7 @@ class DispatchServiceTest {
     private final DispatchService service = new DispatchService(loads, members, loaded, store, numbers, shipments, locks,
             packages, packageLines, picks, carriers, timeline, context, orders, warehouses, identities, planVehicles,
             leftBehind, new Waybills(loads, waybillChanges, mock(jakarta.persistence.EntityManager.class, org.mockito.Mockito.RETURNS_DEEP_STUBS)), waybillChanges, mock(com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository.class),
+            mock(VehicleRelayout.class), org.springframework.transaction.support.TransactionOperations.withoutTransaction(),
             Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final CurrentUser actor = FulfillmentFixtures.user();
@@ -212,6 +213,26 @@ class DispatchServiceTest {
             });
             assertThat(detail.expectedPackageCount()).isEqualTo(1);
             assertThat(detail.carrierName()).isEqualTo("GHN Express");
+        }
+
+        @Test
+        @DisplayName("each parcel of the detail carries its LPN (the label barcode), null when the row has none")
+        void detailCarriesTheLpn() throws Exception {
+            ShipmentJpaEntity row = shipmentRow();
+            PackageJpaEntity withLpn = parcelOf(row, 1);
+            PackageJpaEntity withoutLpn = parcelOf(row, 2);
+            var field = PackageJpaEntity.class.getDeclaredField("lpn");
+            field.setAccessible(true);
+            field.set(withLpn, "LPN-20261117-000008");
+            onManifest(row);
+            when(packages.findByShipmentIdIn(any())).thenReturn(List.of(withLpn, withoutLpn));
+
+            var parcels = service.get(load.id()).shipments().getFirst().packages();
+
+            assertThat(parcels).extracting(Dispatching.LoadParcel::labelCode, Dispatching.LoadParcel::lpn)
+                    .containsExactlyInAnyOrder(
+                            org.assertj.core.groups.Tuple.tuple("PKG-1", "LPN-20261117-000008"),
+                            org.assertj.core.groups.Tuple.tuple("PKG-2", null));
         }
     }
 

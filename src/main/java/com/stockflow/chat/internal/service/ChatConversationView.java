@@ -12,7 +12,10 @@ import java.util.UUID;
  * A conversation as a list row or a detail page shows it, to the customer or to the staff. Fields only the staff see
  * are null in a customer's view: the escalation reason, the moves open to the caller.
  *
- * @param nextStatuses        the statuses the staff caller may ask for from here (16 §5); null for a customer
+ * @param nextStatuses        the statuses the staff caller may ask for from here (16 §5): none unless they are in charge
+ *                            of it (the agent assigned, or a chat supervisor), and from ESCALATED only for a supervisor;
+ *                            null for a customer. In the staff queue's realtime row, which is everyone's, they are the
+ *                            agent in charge's
  * @param agentOnline         whether the agent in charge has the back office open now (16 §4.1 step 3)
  * @param firstResponseOverdue whether the first answer is late (BR-09); the queue shows it first
  * @param resolutionDueAt     when the conversation is to be resolved (BR-09, {@code stockflow.chat.resolution-target}
@@ -30,6 +33,13 @@ import java.util.UUID;
  * @param canRate             whether the customer may rate it now (resolved, not rated yet)
  * @param csatScore           the customer's rating, 1-5; null until rated
  * @param csatComment         their comment; staff only
+ * @param canReply            whether the staff caller may act for the conversation towards the customer now: answer it,
+ *                            send transfer details, act on a card (a card's {@code staffActions} are the card's own and
+ *                            open only to a caller who may reply). False for a colleague who only watches; null for a
+ *                            customer and in the staff queue's realtime row, which is no one's in particular
+ * @param canClaim            whether the staff caller may take it now (nobody has it); null as {@code canReply}
+ * @param canAssign           whether the staff caller may hand it to someone ({@code POST .../assignment}): a chat
+ *                            supervisor, or the agent in charge their own; null as {@code canReply}
  */
 public record ChatConversationView(UUID id, UUID customerId, String customerName, String subject,
                                    ConversationStatus status, Set<ConversationStatus> nextStatuses,
@@ -41,12 +51,13 @@ public record ChatConversationView(UUID id, UUID customerId, String customerName
                                    ChatMessageView lastMessage, List<Context> contexts,
                                    List<ChatReadMarkerView> readMarkers, boolean withinBusinessHours,
                                    Instant expectedResponseAt, Instant resolvedAt, boolean canRate, Integer csatScore,
-                                   String csatComment, Instant csatSubmittedAt) {
+                                   String csatComment, Instant csatSubmittedAt, Boolean canReply, Boolean canClaim,
+                                   Boolean canAssign) {
 
     /**
      * A document the conversation is about.
      *
-     * @param refId  the document's id (for a customer's SKU, the variant's)
+     * @param refId  the document's id (for a customer's SKU, its {@code product.customer_skus} id)
      * @param label  its number or name (quote, order, contract number; design name); null in list rows
      * @param status its own status in its module; null in list rows
      */

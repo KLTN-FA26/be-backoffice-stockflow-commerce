@@ -41,33 +41,74 @@ import java.util.UUID;
 class ReturnResolutionController {
 
     private final ReturnRequestService returns;
+    private final com.stockflow.identity.api.IdentityService identities;
+    private final com.stockflow.customer.api.CustomerService customers;
 
-    ReturnResolutionController(ReturnRequestService returns) {
+    ReturnResolutionController(ReturnRequestService returns, com.stockflow.identity.api.IdentityService identities,
+                               com.stockflow.customer.api.CustomerService customers) {
         this.returns = returns;
+        this.identities = identities;
+        this.customers = customers;
+    }
+
+    /** The staff view with the names of its people and its customer, as GET /returns/{id} answers it. */
+    private ReturnRequestResponse staff(com.stockflow.order.internal.domain.ReturnRequest request) {
+        return ReturnWebMapper.toResponse(request, List.of(), key -> null, null,
+                ReturnWebMapper.namesOf(request, List.of(), identities, customers));
     }
 
     @PostMapping("/{returnId}/resolution")
     @Operation(summary = "Propose the refund of a RECEIVED return: units per line, at most those approved and back "
-            + "(none listed: every one of them), worth what the order line charged with its VAT. Waits for another "
-            + "person's approval")
+            + "(none listed: every one of them), worth what the order line charged with its VAT. Every line at 0 while "
+            + "units came back usable refuses the refund (WF-05 Q-4): refusalReason required (400 "
+            + "RETURN_REFUSAL_REASON_REQUIRED), refusalNote shown to the customer (required for OTHER). Waits for "
+            + "another person's approval (sales-rma-resolutions:APPROVE). 409 RETURN_RECEIPT_DRAFT_OPEN while a parcel "
+            + "of it is being counted")
     @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<ReturnRequestResponse> propose(@PathVariable UUID returnId,
                                                       @Valid @RequestBody(required = false) ReturnRequests.Refund request,
                                                       @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.proposeRefund(returnId,
-                ReturnWebMapper.toCommand(request), user.userId()), List.of()));
+        return ApiResponse.ok(staff(returns.proposeRefund(returnId,
+                ReturnWebMapper.toCommand(request), user.userId())));
     }
 
     @PostMapping("/{returnId}/settlement-approval")
     @Operation(summary = "Approve the refund (not the proposer): payment takes the goods' value off what the order's "
-            + "installments still owe and makes what was paid refundable; the return is RESOLVED. 409 "
-            + "RETURN_REFUND_NO_INSTALLMENTS for an order not paid through a contract's installments")
+            + "installments still owe and makes what was paid refundable; the return is RESOLVED. A refund of an order "
+            + "with no installments (nothing was paid in the system, WF-05 TH-2) is worth 0 and moves no money")
     @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<ReturnRequestResponse> approve(@PathVariable UUID returnId,
                                                       @Valid @RequestBody(required = false) ReturnRequests.Version request,
                                                       @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.approveSettlement(returnId,
-                request == null ? null : request.version(), user.userId()), List.of()));
+        return ApiResponse.ok(staff(returns.approveSettlement(returnId,
+                request == null ? null : request.version(), user.userId())));
+    }
+
+    @PostMapping("/{returnId}/goods-complete")
+    @Operation(summary = "Say the goods of an AWAITING_RETURN return are all here although fewer than approved came "
+            + "back - the customer sent what they had, or another SKU (WF-05 TH-3): RECEIVED with what its return "
+            + "receipts brought, the units short recorded; the refund is then proposed on those, or the return closed "
+            + "without one. 409 RETURN_INVALID_TRANSITION when not AWAITING_RETURN or when no receipt brought anything "
+            + "yet")
+    @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ReturnRequestResponse> goodsComplete(@PathVariable UUID returnId,
+            @Valid @RequestBody(required = false) ReturnRequests.GoodsComplete request,
+            @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(staff(returns.markGoodsComplete(returnId,
+                request == null ? null : request.note(), request == null ? null : request.version(), user.userId())));
+    }
+
+    @PostMapping("/{returnId}/closure-without-refund")
+    @Operation(summary = "Close a RECEIVED return with no refund, when nothing approved came back usable - every "
+            + "carton counted empty, or only goods the return did not claim (WF-05 TH-4): RESOLVED, no money, no "
+            + "adjustment invoice, one person. 409 RETURN_INVALID_TRANSITION when not RECEIVED; 400 "
+            + "RETURN_QUANTITIES_INVALID while something approved came back and is to be refunded")
+    @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ReturnRequestResponse> closeWithoutRefund(@PathVariable UUID returnId,
+            @Valid @RequestBody(required = false) ReturnRequests.CloseWithoutRefund request,
+            @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(staff(returns.closeWithoutRefund(returnId,
+                request == null ? null : request.note(), request == null ? null : request.version(), user.userId())));
     }
 
     @PostMapping("/{returnId}/settlement-rejection")
@@ -76,7 +117,7 @@ class ReturnResolutionController {
     public ApiResponse<ReturnRequestResponse> reject(@PathVariable UUID returnId,
                                                      @Valid @RequestBody ReturnRequests.Reason request,
                                                      @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.rejectSettlement(returnId, request.reason(),
-                request.version(), user.userId()), List.of()));
+        return ApiResponse.ok(staff(returns.rejectSettlement(returnId, request.reason(),
+                request.version(), user.userId())));
     }
 }

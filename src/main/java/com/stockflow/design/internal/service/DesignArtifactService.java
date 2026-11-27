@@ -267,9 +267,11 @@ public class DesignArtifactService {
     }
 
     /**
-     * The version of the template a file rendered from a layout was drawn on, as it is when the file is attached: a
-     * template is edited in place and a draft follows it (B39), so a submission needs files drawn on it as it is then.
-     * The window between the studio fetching the template and the file arriving is the one this cannot see.
+     * The print version of the template a file rendered from a layout was drawn on, as it is when the file is
+     * attached: a template is edited in place and a draft follows it (B39), so a submission needs files drawn on it as
+     * it is then. The print version, not the optimistic lock's (decision 1): renaming or activating a template changes
+     * nothing a file is drawn on. The window between the studio fetching the template and the file arriving is the one
+     * this cannot see.
      */
     private Long renderedOnTemplate(DesignDraft draft, String documentChecksum) {
         if (documentChecksum == null) {
@@ -278,7 +280,7 @@ public class DesignArtifactService {
         if (draft.templateId() == null) {
             throw new BusinessException(ErrorCode.CONFLICT, "Only a design drawn on a template takes rendered files");
         }
-        return printConfigs.byId(draft.templateId()).map(com.stockflow.product.api.PrintConfig::version)
+        return printConfigs.byId(draft.templateId()).map(com.stockflow.product.api.PrintConfig::printVersion)
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND));
     }
 

@@ -7,6 +7,7 @@ import com.stockflow.procurement.internal.domain.ReturnReceipt;
 import com.stockflow.procurement.internal.domain.ReturnReceiptRepository;
 import com.stockflow.procurement.internal.entity.ReturnReceiptCartonJpaEntity;
 import com.stockflow.procurement.internal.entity.ReturnReceiptJpaEntity;
+import com.stockflow.procurement.internal.entity.ReturnReceiptLooseLineJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
@@ -72,7 +73,11 @@ class ReturnReceiptRepositoryAdapter implements ReturnReceiptRepository, ReturnR
                         receipt.receivedAt(), receipt.receivedBy(), receipt.note()));
         Map<UUID, ReturnReceipt.Carton> wanted = receipt.cartons().stream()
                 .collect(Collectors.toMap(ReturnReceipt.Carton::id, Function.identity()));
-        if (entity.getCartons().removeIf(row -> !wanted.containsKey(row.getId())) && !entity.isNew()) {
+        Map<UUID, ReturnReceipt.LooseLine> wantedLoose = receipt.looseLines().stream()
+                .collect(Collectors.toMap(ReturnReceipt.LooseLine::id, Function.identity()));
+        boolean removed = entity.getCartons().removeIf(row -> !wanted.containsKey(row.getId()));
+        removed |= entity.getLooseLines().removeIf(row -> !wantedLoose.containsKey(row.getId()));
+        if (removed && !entity.isNew()) {
             entityManager.flush();
         }
         Map<UUID, ReturnReceiptCartonJpaEntity> rows = entity.getCartons().stream()
@@ -81,9 +86,28 @@ class ReturnReceiptRepositoryAdapter implements ReturnReceiptRepository, ReturnR
             ReturnReceiptCartonJpaEntity row = rows.get(carton.id());
             if (row == null) {
                 entity.addCarton(new ReturnReceiptCartonJpaEntity(carton.id(), carton.stockPackageId(), carton.lpn(),
-                        carton.sku(), carton.lotNumber(), carton.quantity(), carton.condition(), carton.scannedBy()));
-            } else if (!java.util.Objects.equals(row.getConditionNote(), carton.condition())) {
-                row.noteCondition(carton.condition());
+                        carton.sku(), carton.lotNumber(), carton.quantity(), carton.condition(), carton.scannedBy(),
+                        carton.countedQuantity(), carton.countedBy()));
+            } else {
+                if (!java.util.Objects.equals(row.getConditionNote(), carton.condition())) {
+                    row.noteCondition(carton.condition());
+                }
+                if (row.getCountedQty() != carton.countedQuantity()
+                        || !row.getCountedBy().equals(carton.countedBy())) {
+                    row.recount(carton.countedQuantity(), carton.countedBy());
+                }
+            }
+        }
+        Map<UUID, ReturnReceiptLooseLineJpaEntity> looseRows = entity.getLooseLines().stream()
+                .collect(Collectors.toMap(ReturnReceiptLooseLineJpaEntity::getId, Function.identity()));
+        for (ReturnReceipt.LooseLine line : receipt.looseLines()) {
+            ReturnReceiptLooseLineJpaEntity row = looseRows.get(line.id());
+            if (row == null) {
+                entity.addLooseLine(new ReturnReceiptLooseLineJpaEntity(line.id(), line.sku(), line.lotNumber(),
+                        line.quantity(), line.recordedBy(), line.photoId()));
+            } else if (row.getQuantity() != line.quantity() || !row.getRecordedBy().equals(line.recordedBy())
+                    || !java.util.Objects.equals(row.getPhotoId(), line.photoId())) {
+                row.recount(line.quantity(), line.recordedBy(), line.photoId());
             }
         }
         entity.apply(receipt.status(), receipt.confirmedAt(), receipt.confirmedBy(), receipt.closedAt());
@@ -92,14 +116,27 @@ class ReturnReceiptRepositoryAdapter implements ReturnReceiptRepository, ReturnR
     }
 
     @Override
-    public Optional<ReturnReceipt> findLiveForShipment(UUID shipmentId) {
-        return jpa.findLiveByShipment(shipmentId, GoodsReceiptStatus.CANCELLED).stream().findFirst()
+    public Optional<ReturnReceipt> findDraftForShipment(UUID shipmentId) {
+        return jpa.findByShipmentInStatus(shipmentId, GoodsReceiptStatus.DRAFT).stream().findFirst()
                 .flatMap(this::findById);
     }
 
     @Override
-    public Optional<ReturnReceipt> findLiveForReturnRequest(UUID returnRequestId) {
-        return jpa.findLiveByReturnRequest(returnRequestId, GoodsReceiptStatus.CANCELLED).stream().findFirst()
+    public java.util.Set<String> lpnsReceivedForShipment(UUID shipmentId) {
+        return new java.util.HashSet<>(jpa.lpnsOnShipmentReceipts(shipmentId, GoodsReceiptStatus.CLOSED));
+    }
+
+    @Override
+    public long unitsReceivedForReturn(UUID returnRequestId, String sku, UUID exceptLooseLine) {
+        // The database's own count (V20261218000400), so the service and check_return_receipt_loose_line agree. No
+        // line to leave out is the nil UUID, which no line has: a null bound into a native query has no SQL type.
+        return jpa.unitsReceivedForReturn(returnRequestId, sku,
+                exceptLooseLine == null ? new UUID(0L, 0L) : exceptLooseLine);
+    }
+
+    @Override
+    public Optional<ReturnReceipt> findDraftForReturnRequest(UUID returnRequestId) {
+        return jpa.findByReturnRequestInStatus(returnRequestId, GoodsReceiptStatus.DRAFT).stream().findFirst()
                 .flatMap(this::findById);
     }
 
@@ -125,15 +162,35 @@ class ReturnReceiptRepositoryAdapter implements ReturnReceiptRepository, ReturnR
                 e.getReceivedBy(), e.getClosedAt(), counts.getOrDefault(e.getId(), 0)));
     }
 
+    @Override
+    public List<CartonReceipt> draftsListing(UUID stockPackageId) {
+        java.util.Optional<java.util.Set<UUID>> allowed = WarehouseScope.restriction()
+                .map(com.stockflow.common.security.AssignedWarehouses::ids);
+        return jpa.draftsListing(stockPackageId, GoodsReceiptStatus.DRAFT).stream()
+                .filter(r -> allowed.map(ids -> ids.contains(r.getWarehouseId())).orElse(true))
+                .map(r -> new CartonReceipt(r.getId(), r.getReceiptNumber(), r.getStatus(), r.getWarehouseId(),
+                        r.getQuarantineLocationId()))
+                .toList();
+    }
+
     static ReturnReceipt toDomain(ReturnReceiptJpaEntity e) {
         List<ReturnReceipt.Carton> cartons = e.getCartons().stream()
                 .sorted(java.util.Comparator.comparing(ReturnReceiptCartonJpaEntity::getId))
                 .map(c -> new ReturnReceipt.Carton(c.getId(), c.getStockPackageId(), c.getLpn(), c.getSku(),
-                        c.getLotNumber(), c.getQuantity(), c.getConditionNote(), c.getScannedBy(), c.getScannedAt()))
+                        c.getLotNumber(), c.getQuantity(), c.getConditionNote(), c.getScannedBy(), c.getScannedAt(),
+                        c.getCountedQty(), c.getCountedBy()))
+                .toList();
+        List<ReturnReceipt.LooseLine> loose = e.getLooseLines().stream()
+                .sorted(java.util.Comparator.comparing(ReturnReceiptLooseLineJpaEntity::getId))
+                .map(l -> new ReturnReceipt.LooseLine(l.getId(), l.getSku(), l.getLotNumber(), l.getQuantity(),
+                        l.getRecordedBy(), l.getPhotoId()))
                 .toList();
         return new ReturnReceipt(e.getId(), e.getReceiptNumber(), e.getWarehouseId(), e.getCustomerOrderId(),
                 e.getReturnShipmentId(), e.getReturnRequestId(), e.getQuarantineLocationId(), e.getReceivedAt(),
                 e.getReceivedBy(), e.getNote(), cartons, e.getStatus(), e.getConfirmedAt(), e.getConfirmedBy(),
-                e.getClosedAt(), e.getVersion());
+                e.getClosedAt(), e.getVersion()).restoreLoose(loose)
+                .restoreStocked(e.getCartons().stream().filter(c -> e.getStatus() != GoodsReceiptStatus.DRAFT)
+                        .collect(Collectors.toMap(ReturnReceiptCartonJpaEntity::getId,
+                                ReturnReceiptCartonJpaEntity::isStockEntered)));
     }
 }

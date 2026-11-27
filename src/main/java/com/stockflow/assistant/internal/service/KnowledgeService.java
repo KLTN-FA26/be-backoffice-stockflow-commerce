@@ -86,7 +86,7 @@ import java.util.regex.Pattern;
  * costs more than both. pgvector (an HNSW index, the database returning only the nearest passages) is worth its price —
  * another postgres image in both compose files, the Testcontainers support and the migration-upgrade tests — once the
  * corpus passes a few thousand passages (the read grows with it: some 15 MB a search at 5,000), or reading the vectors
- * reaches tens of milliseconds of a search. The column then converts in place ({@code V20261125000600}).</p>
+ * reaches tens of milliseconds of a search. The column then converts in place ({@code V20270106000600}).</p>
  *
  * <p><b>Embedded after the keyword index, off the start-up thread.</b> Only passages whose text, model or length
  * changed are sent, the rules first (they are what answers cite), in batches of {@value #EMBEDDING_BATCH}, each stored

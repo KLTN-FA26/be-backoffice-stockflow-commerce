@@ -27,10 +27,10 @@ class BlindCountQueriesImpl implements BlindCountQueries {
     }
 
     @Override
-    public Set<UUID> hiddenFromCaller(Collection<UUID> stockItemIds) {
-        if (stockItemIds.isEmpty() || !BookVisibility.of(currentUsers.current()).hidesCountedSlots()) {
+    public Set<UUID> hiddenFromCaller(Collection<UUID> stockPackageIds) {
+        if (stockPackageIds.isEmpty() || !BookVisibility.of(currentUsers.current()).hidesCountedSlots()) {
             return Set.of();
         }
-        return Set.copyOf(browsing.underCount(stockItemIds));
+        return Set.copyOf(browsing.underCount(stockPackageIds));
     }
 }

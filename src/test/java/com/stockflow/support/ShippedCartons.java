@@ -11,7 +11,7 @@ import java.util.UUID;
 
 /**
  * Cartons that left a warehouse on a shipment, as the check station and the dispatch leave them (team plan 4D-2): the
- * carton CONSUMED (its row at nought), the pick line that took it PICKED, the shipping carton row LABELED on a shipment
+ * carton CONSUMED (out of stock), the pick line that took it PICKED, the shipping carton row LABELED on a shipment
  * of the given status. Written as rows, with triggers and foreign keys off for the one transaction (what the goods went
  * through before is {@code CartonCheckStationIntegrationTest}'s subject, not a return receipt's): the facts a return
  * receipt reads are the same either way.
@@ -41,11 +41,29 @@ public final class ShippedCartons {
      */
     public static Shipped ship(JdbcTemplate jdbc, TransactionTemplate tx, UUID orderId, UUID orderLineId, String sku,
                                int count, int perCarton, String lot, String shipmentStatus, UUID staff) {
+        return ship(jdbc, tx, orderId, orderLineId, sku, count, perCarton, lot, shipmentStatus, staff, null);
+    }
+
+    /**
+     * {@code count} cartons labelled onto {@code shipmentId}, a shipment the test already has - one the order module
+     * recorded the handover and delivery of, through {@code OrderService} with a {@link ShipmentRows} row (WF-05 TH-1:
+     * a return is against that very shipment, and its receipt takes that shipment's cartons).
+     */
+    public static Shipped onShipment(JdbcTemplate jdbc, TransactionTemplate tx, UUID orderId, UUID orderLineId,
+                                     String sku, int count, int perCarton, String lot, UUID shipmentId, UUID staff) {
+        return ship(jdbc, tx, orderId, orderLineId, sku, count, perCarton, lot, null, staff, shipmentId);
+    }
+
+    private static Shipped ship(JdbcTemplate jdbc, TransactionTemplate tx, UUID orderId, UUID orderLineId, String sku,
+                                int count, int perCarton, String lot, String shipmentStatus, UUID staff,
+                                UUID existingShipment) {
         UUID newPick = Identifiers.newId();
         UUID newPack = Identifiers.newId();
         UUID[] taken = new UUID[2];
-        UUID shipment = Identifiers.newId();
-        String shipmentCode = "S" + shipment.toString().replace("-", "").substring(0, 12).toUpperCase();
+        UUID shipment = existingShipment == null ? Identifiers.newId() : existingShipment;
+        String shipmentCode = existingShipment == null
+                ? "S" + shipment.toString().replace("-", "").substring(0, 12).toUpperCase()
+                : jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class, shipment);
         List<Carton> shipped = new ArrayList<>();
         tx.executeWithoutResult(s -> {
             jdbc.execute("SET LOCAL session_replication_role = replica");
@@ -71,12 +89,14 @@ public final class ShippedCartons {
             }
             UUID pick = taken[0];
             UUID pack = taken[1];
-            jdbc.update("""
-                    INSERT INTO fulfillment.shipment (id, pack_id, order_id, status, code, warehouse_id, ready_at, created_at,
-                                                      handed_over_at, outcome_at, whole_order_handover)
-                    VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW(), NOW(), TRUE)""", shipment, pack, orderId,
-                    shipmentStatus, shipmentCode, DemoData.WAREHOUSE_HCM);
-            // The cartons go in with the triggers on: tg_stock_item_lot gives each row its lot_id (NOT NULL since 4C-3).
+            if (existingShipment == null) {
+                jdbc.update("""
+                        INSERT INTO fulfillment.shipment (id, pack_id, order_id, status, code, warehouse_id, ready_at,
+                                                          created_at, handed_over_at, outcome_at, whole_order_handover)
+                        VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW(), NOW(), TRUE)""", shipment, pack, orderId,
+                        shipmentStatus, shipmentCode, DemoData.WAREHOUSE_HCM);
+            }
+            // The cartons go in with the triggers on, as any stock does: each is checked against its lot and its unit.
             jdbc.execute("SET LOCAL session_replication_role = origin");
             var stocked = CartonRows.stock(jdbc, sku, "HCM-A01-1-A", count, perCarton, lot,
                     Instant.now().minusSeconds(30L * 86_400), "AVAILABLE");
@@ -86,12 +106,12 @@ public final class ShippedCartons {
                     + "fulfillment.pick_line WHERE pick_id = ?", Integer.class, pick));
             for (CartonRows.Carton carton : stocked) {
                 no++;
-                // The SKU's carton unit says what a carton holds (a demo sofa: one piece), whatever the caller hoped.
-                int held = jdbc.queryForObject("SELECT on_hand FROM inventory.stock_item WHERE id = ?", Integer.class,
-                        carton.stockItemId());
-                jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW() "
-                        + "WHERE id = ?", carton.id());
-                jdbc.update("UPDATE inventory.stock_item SET on_hand = 0 WHERE id = ?", carton.stockItemId());
+                // The SKU's carton unit says what a carton holds (a demo cup SKU: its thung count), whatever the caller hoped.
+                int held = jdbc.queryForObject("SELECT nominal_qty FROM inventory.stock_package WHERE id = ?",
+                        Integer.class, carton.id());
+                // Out of stock, so no stock status (ck_stock_package_stock_status); the lot and the FIFO date stay.
+                jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', stock_status = NULL, "
+                        + "closed_at = NOW() WHERE id = ?", carton.id());
                 UUID line = Identifiers.newId();
                 jdbc.update("""
                         INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, lot_number,
@@ -126,7 +146,7 @@ public final class ShippedCartons {
             jdbc.execute("SET LOCAL session_replication_role = replica");
             String number = jdbc.queryForObject("SELECT order_number FROM ordering.customer_order WHERE id = ?",
                     String.class, orderId);
-            int held = jdbc.queryForObject("SELECT received_qty FROM inventory.stock_package WHERE lpn = ?",
+            int held = jdbc.queryForObject("SELECT nominal_qty FROM inventory.stock_package WHERE lpn = ?",
                     Integer.class, lpn);
             jdbc.update("""
                     INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)
@@ -152,10 +172,8 @@ public final class ShippedCartons {
                     VALUES (?, ?, ?, 1, ?, 'LABELED', ?, ?, NOW(), ?, NOW(), ?, 1, 12, 60, 40, 40, 16)""",
                     Identifiers.newId(), pack, shipment, "AGAIN-" + line.toString().substring(0, 8), line, lpn, staff,
                     staff);
-            jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW() "
-                    + "WHERE lpn = ?", lpn);
-            jdbc.update("UPDATE inventory.stock_item SET on_hand = 0 WHERE stock_package_id = (SELECT id FROM "
-                    + "inventory.stock_package WHERE lpn = ?)", lpn);
+            jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', stock_status = NULL, "
+                    + "closed_at = NOW() WHERE lpn = ?", lpn);
         });
         return shipment;
     }

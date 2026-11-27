@@ -50,6 +50,15 @@ public record ProductVersionResponse(
         String reason,
 
         @Schema(description = "The fields an edit changed")
-        List<String> changedFields
+        List<String> changedFields,
+
+        @Schema(description = "The SKU the entry is about: the variant's, or for an image the SKU of the variant it "
+                + "belongs to. Read with the page, so the screen needs no variant list. Null for the product itself "
+                + "and for a subject deleted since.", example = "CUP-12OZ-WHITE")
+        String subjectSku,
+
+        @Schema(description = "What the subject is called today: the variant's name, or the image's file name (its "
+                + "URL when it was carried over as one). Null for the product itself and for a subject deleted since.")
+        String subjectLabel
 ) {
 }

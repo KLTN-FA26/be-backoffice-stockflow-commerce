@@ -289,7 +289,8 @@ class KnowledgeServiceTest {
     @DisplayName("the build puts the kltn-docs snapshot on the classpath: the glossary and every chapter, no README")
     void theSnapshotIsOnTheClasspath() {
         assertThat(KnowledgeService.documents()).extracting(KnowledgeService.Document::name)
-                .contains("glossary", "01-product-creation", "07-picking", "15-payment", "17-order-management",
+                .contains("glossary", "01-product-creation", "07-picking", "13-catalog", "15-payment",
+                        "17-order-management",
                         "21-e-invoice")
                 .doesNotContain("README", "05-business-rules", "04c-all-flows");
     }

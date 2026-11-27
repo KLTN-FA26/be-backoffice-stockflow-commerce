@@ -10,7 +10,11 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.Collection;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -26,7 +30,7 @@ import java.util.UUID;
  * read-only one.</p>
  */
 @Component
-class WarehouseAssignments implements UserWarehouseLookup {
+public class WarehouseAssignments implements UserWarehouseLookup {
 
     private final UserWarehouseJpaRepository assignments;
     private final WarehouseService warehouses;
@@ -55,5 +59,21 @@ class WarehouseAssignments implements UserWarehouseLookup {
             return new AssignedWarehouses(ids, prefixes);
         });
         return answer == null ? AssignedWarehouses.none() : answer;
+    }
+
+    /**
+     * The warehouses behind ids already resolved for a caller ({@code CurrentUser.warehouseIds()}), sorted by prefix,
+     * for the caller to be told which ones they may work in. Read from the ids rather than from
+     * {@code user_warehouse} again, so the list cannot disagree with what the guarded endpoints allow. The prefixes
+     * {@link #warehousesOf} resolved are an unordered set apart from the ids, so each is looked up again to pair it;
+     * an id with no warehouse is left out.
+     */
+    public List<WarehouseView> named(Collection<UUID> warehouseIds) {
+        return warehouseIds.stream()
+                .distinct()
+                .map(warehouses::findWarehouse)
+                .flatMap(Optional::stream)
+                .sorted(Comparator.comparing(WarehouseView::prefix, Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList();
     }
 }

@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
@@ -100,92 +101,53 @@ class CycleCountIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Cycle count fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Cycle count fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Cycle count fixture");
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             cartonUnit = Identifiers.newId();
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', ?)", cartonUnit, item, CARTON_FACTOR);
+            jdbc.update("insert into inventory.uom_conversions (id, variant_id, unit_of_measure, factor)"
+                    + " values (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', ?)", cartonUnit, item, CARTON_FACTOR);
         });
     }
 
     // ------------------------------------------------------------------ fixtures
 
-    /**
-     * A row in no carton: the history's shape, which no count plans any more - emptied, the only kind the table keeps
-     * since V20261117000100 (ck_stock_item_whole_cartons).
-     */
-    private UUID loose(String location) {
-        UUID id = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
-                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, 0, 0, 'AVAILABLE', 0, now())""",
-                id, sku, location, lot, Timestamp.from(EARLY)));
-        return id;
-    }
-
-    /** A whole carton of the SKU's standard count at {@code location}, IN_STOCK, with its one row holding all of it. */
+    /** A whole carton of the SKU's standard count at {@code location}: IN_STOCK, AVAILABLE, of the test's lot. */
     private UUID carton(String location, String name) {
         UUID id = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        received_qty, location_code, status) values (?, ?, ?, ?, ?, ?, ?, 'IN_STOCK')""",
-                    id, lpn(name), item, cartonUnit, CARTON_FACTOR, CARTON_FACTOR, location);
-            jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at,
-                        on_hand, reserved, status, version, created_at, stock_package_id)
-                    values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, location, lot, Timestamp.from(EARLY), CARTON_FACTOR, id);
-        });
+        tx.executeWithoutResult(s -> jdbc.update("""
+                insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                    counted_at, location_code, status, stock_status, lot_id, received_at)
+                values (?, ?, ?, ?, ?, now(), ?, 'IN_STOCK', 'AVAILABLE', ?, ?)""",
+                id, lpn(name), item, cartonUnit, CARTON_FACTOR, location,
+                com.stockflow.support.CartonRows.lot(jdbc, sku, lot, EARLY), Timestamp.from(EARLY)));
         return id;
     }
 
-    /**
-     * The carton and its rows moved whole to another bin, in one transaction as the commit-time carton check requires
-     * (as {@code StockPackageSchemaMigrationTest} moves one).
-     */
+    /** The carton moved whole to another bin (as {@code StockPackageSchemaMigrationTest} moves one). */
     private void moveWhole(UUID carton, String location) {
-        tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_package set location_code = ? where id = ?", location, carton);
-            jdbc.update("update inventory.stock_item set location_code = ? where stock_package_id = ?", location,
-                    carton);
-        });
+        tx.executeWithoutResult(s ->
+                jdbc.update("update inventory.stock_package set location_code = ? where id = ?", location, carton));
     }
 
-    /** The carton emptied as a last pick would leave it, in one transaction for the commit-time carton check. */
+    /** The carton out of stock as a pick leaves it: CONSUMED, with no stock status. */
     private void consumeWhole(UUID carton) {
-        tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_item set on_hand = 0 where stock_package_id = ?", carton);
-            jdbc.update("update inventory.stock_package set status = 'CONSUMED', closed_at = now() where id = ?",
-                    carton);
-        });
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.stock_package set status = 'CONSUMED',"
+                + " stock_status = null, closed_at = now() where id = ?", carton));
     }
 
     /** The carton gone missing, as an approved count shortage leaves it. */
     private void loseWhole(UUID carton) {
-        tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_item set on_hand = 0 where stock_package_id = ?", carton);
-            jdbc.update("update inventory.stock_package set status = 'LOST', closed_at = now() where id = ?", carton);
-        });
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.stock_package set status = 'LOST',"
+                + " stock_status = null, closed_at = now() where id = ?", carton));
     }
 
     /**
-     * A LOST carton found again, whole, on the row it was emptied from. The row is raised in place, as the application
-     * restocks a carton's own row (StockPackageContents via StockItemRepository.saveMerged): naming the row in
-     * {@code stockflow.same_receipt_merge} for that statement, or the FIFO trigger refuses the raise.
+     * A LOST carton found again, whole, as the application restocks it ({@code StockPackage.found}): in stock and
+     * AVAILABLE again, with the lot and the FIFO date it always had.
      */
     private void findWhole(UUID carton) {
-        tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_package set status = 'IN_STOCK', closed_at = null where id = ?",
-                    carton);
-            UUID row = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?",
-                    UUID.class, carton);
-            jdbc.queryForObject("select set_config('stockflow.same_receipt_merge', ?, true)", String.class,
-                    row.toString());
-            jdbc.update("update inventory.stock_item set on_hand = ? where id = ?", CARTON_FACTOR, row);
-            jdbc.queryForObject("select set_config('stockflow.same_receipt_merge', '', true)", String.class);
-        });
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.stock_package set status = 'IN_STOCK',"
+                + " stock_status = 'AVAILABLE', closed_at = null where id = ?", carton));
     }
 
     private String lpn(String name) {
@@ -213,7 +175,7 @@ class CycleCountIntegrationTest {
         return tx.execute(s -> {
             LocalDate day = BusinessCalendar.date(Instant.now());
             return repository.save(CycleCount.shortPick(repository.nextNumber(day), WAREHOUSE_HCM,
-                    cartonSlot(carton, location), CARTON_FACTOR, "Short pick: found 1", day));
+                    cartonSlot(carton, location), true, "Short pick: found 1", day));
         });
     }
 
@@ -244,6 +206,15 @@ class CycleCountIntegrationTest {
         return view.lines().stream().filter(l -> carton.equals(l.stockPackageId())).findFirst().orElseThrow();
     }
 
+    /** Counts a line found the way a counter does: by scanning its carton's LPN (20 §4.2 b4). */
+    private CycleCountView scanFound(UUID countId, UUID lineId, UUID actor, boolean mayDecide) {
+        String lpn = jdbc.queryForObject("""
+                SELECT p.lpn FROM inventory.cycle_count_line l
+                  JOIN inventory.stock_package p ON p.id = l.stock_package_id
+                 WHERE l.id = ?""", String.class, lineId);
+        return cycleCounts.count(countId, lineId, true, lpn, actor, mayDecide);
+    }
+
     private static Set<String> slots(CycleCountView view) {
         return view.lines().stream().map(l -> l.locationCode() + "|" + l.sku() + "|" + l.lotNumber() + "|"
                 + l.stockPackageId()).collect(Collectors.toSet());
@@ -251,14 +222,14 @@ class CycleCountIntegrationTest {
 
     private List<Map<String, Object>> adjustments() {
         return jdbc.queryForList("""
-                select id, location_code, quantity_delta, status, reason_code, cycle_count_line_id, stock_package_id,
+                select id, location_code, direction, status, reason_code, cycle_count_line_id, stock_package_id,
                        requested_by
-                  from inventory.stock_adjustment where sku = ? order by created_at, quantity_delta""", sku);
+                  from inventory.stock_adjustment where sku = ? order by created_at, direction desc""", sku);
     }
 
     private int onHand(UUID carton) {
-        return jdbc.queryForObject("select coalesce(sum(on_hand), 0) from inventory.stock_item"
-                + " where stock_package_id = ?", Integer.class, carton);
+        return jdbc.queryForObject("select case when status = 'IN_STOCK' then nominal_qty else 0 end"
+                + " from inventory.stock_package where id = ?", Integer.class, carton);
     }
 
     private String status(UUID carton) {
@@ -282,7 +253,7 @@ class CycleCountIntegrationTest {
     private CycleCountView countAllFound(CycleCountView planned) {
         CycleCountView last = planned;
         for (CycleCountView.Line line : planned.lines()) {
-            last = cycleCounts.count(planned.id(), line.id(), true, counter, false);
+            last = scanFound(planned.id(), line.id(), counter, false);
         }
         return last;
     }
@@ -290,9 +261,8 @@ class CycleCountIntegrationTest {
     // ------------------------------------------------------------------ planning (SCRUM-162)
 
     @Test
-    @DisplayName("a shelf plan has one line per carton in stock under that shelf, MANUAL; a loose row is not counted")
+    @DisplayName("a shelf plan has one line per carton in stock under that shelf, MANUAL")
     void planByShelfGeneratesOneLinePerCarton() {
-        loose(BIN);
         UUID inBin = carton(BIN, "A");
         UUID inBin2 = carton(BIN2, "B");
         carton(A02_BIN, "C");
@@ -308,7 +278,7 @@ class CycleCountIntegrationTest {
         assertThat(count.blind()).isTrue();
         assertThat(count.warehouseId()).isEqualTo(WAREHOUSE_HCM);
         assertThat(planned.skipped()).isEmpty();
-        assertThat(count.lines()).as("a loose row, a consumed carton and shelf A02 are not counted")
+        assertThat(count.lines()).as("a consumed carton and shelf A02 are not counted")
                 .extracting(CycleCountView.Line::locationCode, CycleCountView.Line::sku,
                         CycleCountView.Line::lotNumber, CycleCountView.Line::stockPackageId)
                 .containsExactlyInAnyOrder(tuple(BIN, sku, lot, inBin), tuple(BIN2, sku, lot, inBin2));
@@ -323,8 +293,8 @@ class CycleCountIntegrationTest {
         assertThat(cartonLine(books, inBin).found()).isNull();
         assertThat(cartonLine(books, inBin).lpn()).isEqualTo(lpn("A"));
         assertThat(books.note()).isEqualTo("Fixture count");
-        assertThat(jdbc.queryForList("select expected_qty from inventory.cycle_count_line where cycle_count_id = ?",
-                Integer.class, count.id())).as("the book of a carton is one whole carton").containsOnly(CARTON_FACTOR);
+        assertThat(jdbc.queryForList("select booked from inventory.cycle_count_line where cycle_count_id = ?",
+                Boolean.class, count.id())).as("the book of a carton is the carton, present").containsOnly(true);
     }
 
     @Test
@@ -379,8 +349,7 @@ class CycleCountIntegrationTest {
     @Test
     @DisplayName("a scope with no carton is CYCLE_COUNT_EMPTY_SCOPE, one above the cap CYCLE_COUNT_TOO_LARGE (BR-12)")
     void planRefusesEmptyAndTooLarge() {
-        loose(BIN);
-        assertThat(code(catchThrowable(this::planShelfA01))).as("a loose row alone is no scope")
+        assertThat(code(catchThrowable(this::planShelfA01))).as("no carton in stock is no scope")
                 .isEqualTo(ErrorCode.CYCLE_COUNT_EMPTY_SCOPE);
         assertThat(code(catchThrowable(() -> plan(List.of(), List.of(), List.of(), List.of()))))
                 .as("no criterion at all").isEqualTo(ErrorCode.VALIDATION_FAILED);
@@ -411,7 +380,7 @@ class CycleCountIntegrationTest {
         CycleCountView planned = planBin(BIN).count();
         UUID line = planned.lines().get(0).id();
 
-        CycleCountView counted = cycleCounts.count(planned.id(), line, true, counter, false);
+        CycleCountView counted = scanFound(planned.id(), line, counter, false);
 
         assertThat(counted.status()).isEqualTo("IN_PROGRESS");
         assertThat(counted.startedAt()).isNotNull();
@@ -430,20 +399,48 @@ class CycleCountIntegrationTest {
     }
 
     @Test
+    @DisplayName("20 §4.2 b4: a line is found only by scanning its own carton's LPN; another LPN, or none, "
+            + "counts nothing")
+    void foundRequiresTheLinesOwnLpn() {
+        carton(BIN, "K");
+        UUID other = carton(BIN, "O");
+        CycleCountView planned = planBin(BIN).count();
+        UUID line = planned.lines().stream().filter(l -> !other.equals(l.stockPackageId())).findFirst()
+                .orElseThrow().id();
+
+        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, true, lpn("O"), counter, false))))
+                .as("the neighbour's carton").isEqualTo(ErrorCode.CYCLE_COUNT_LPN_MISMATCH);
+        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, true, null, counter, false))))
+                .as("nothing scanned").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, true, "  ", counter, false))))
+                .as("a blank scan").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, false, lpn("K"), counter, false))))
+                .as("not found, yet a carton scanned").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(jdbc.queryForObject("select status from inventory.cycle_count where id = ?", String.class,
+                planned.id())).as("no refused scan starts the count").isEqualTo("PLANNED");
+
+        CycleCountView counted = cycleCounts.count(planned.id(), line, true,
+                " " + lpn("K").toLowerCase(java.util.Locale.ROOT) + " ", counter, false);
+
+        assertThat(counted.lines().stream().filter(l -> l.id().equals(line)).findFirst().orElseThrow().found())
+                .as("a scanner's case and padding do not matter").isTrue();
+    }
+
+    @Test
     @DisplayName("a carton not found is one whole-carton COUNT_VARIANCE; approved, it is LOST with nothing on hand")
     void notFoundIsOneCartonAdjustmentAndLost() {
         UUID kept = carton(BIN, "K");
         UUID gone = carton(BIN, "G");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, kept).id(), true, counter, false);
-        cycleCounts.count(planned.id(), cartonLine(planned, gone).id(), false, counter, false);
+        scanFound(planned.id(), cartonLine(planned, kept).id(), counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, gone).id(), false, null, counter, false);
 
         CycleCountView submitted = cycleCounts.submit(planned.id(), counter, false);
 
         assertThat(submitted.lines()).as("blind: the counter does not see the variance")
                 .allSatisfy(line -> assertThat(line.adjustments()).isEmpty());
         assertThat(adjustments()).singleElement().satisfies(a -> assertThat(a)
-                .containsEntry("quantity_delta", -CARTON_FACTOR).containsEntry("status", "PENDING_APPROVAL")
+                .containsEntry("direction", "WRITE_OFF").containsEntry("status", "PENDING_APPROVAL")
                 .containsEntry("reason_code", "COUNT_VARIANCE").containsEntry("stock_package_id", gone)
                 .containsEntry("cycle_count_line_id", cartonLine(planned, gone).id())
                 .containsEntry("requested_by", counter));
@@ -451,10 +448,10 @@ class CycleCountIntegrationTest {
         assertThat(cartonLine(books, gone).found()).isFalse();
         assertThat(cartonLine(books, gone).booked()).isTrue();
         assertThat(cartonLine(books, gone).adjustments()).singleElement()
-                .satisfies(a -> assertThat(a.quantityDelta()).isEqualTo(-CARTON_FACTOR));
+                .satisfies(a -> assertThat(a.direction()).isEqualTo(com.stockflow.inventory.internal.domain.AdjustmentDirection.WRITE_OFF));
         assertThat(cartonLine(books, kept).adjustments()).isEmpty();
-        assertThat(jdbc.queryForList("select counted_qty from inventory.cycle_count_line where id = ?", Integer.class,
-                cartonLine(books, gone).id())).as("units are recorded internally, still whole").containsExactly(0);
+        assertThat(jdbc.queryForList("select found from inventory.cycle_count_line where id = ?", Boolean.class,
+                cartonLine(books, gone).id())).as("the line records an answer, not units").containsExactly(false);
 
         operations.approve((UUID) adjustments().get(0).get("id"), manager);
 
@@ -471,14 +468,14 @@ class CycleCountIntegrationTest {
         UUID b = carton(BIN, "B");
         UUID c = carton(BIN2, "C");
         CycleCountView planned = planShelfA01().count();
-        cycleCounts.count(planned.id(), cartonLine(planned, a).id(), false, counter, false);
-        cycleCounts.count(planned.id(), cartonLine(planned, b).id(), false, counter, false);
-        cycleCounts.count(planned.id(), cartonLine(planned, c).id(), true, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, a).id(), false, null, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, b).id(), false, null, counter, false);
+        scanFound(planned.id(), cartonLine(planned, c).id(), counter, false);
 
         cycleCounts.submit(planned.id(), counter, false);
 
-        assertThat(adjustments()).extracting(m -> m.get("stock_package_id"), m -> m.get("quantity_delta"))
-                .containsExactlyInAnyOrder(tuple(a, -CARTON_FACTOR), tuple(b, -CARTON_FACTOR));
+        assertThat(adjustments()).extracting(m -> m.get("stock_package_id"), m -> m.get("direction"))
+                .containsExactlyInAnyOrder(tuple(a, "WRITE_OFF"), tuple(b, "WRITE_OFF"));
     }
 
     @Test
@@ -486,7 +483,7 @@ class CycleCountIntegrationTest {
     void submitIsIdempotent() {
         carton(BIN, "A");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), planned.lines().get(0).id(), false, counter, false);
+        cycleCounts.count(planned.id(), planned.lines().get(0).id(), false, null, counter, false);
 
         CycleCountView first = cycleCounts.submit(planned.id(), counter, true);
         CycleCountView second = cycleCounts.submit(planned.id(), counter, true);
@@ -503,7 +500,7 @@ class CycleCountIntegrationTest {
         UUID a = carton(BIN, "A");
         carton(BIN, "B");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, a).id(), true, counter, false);
+        scanFound(planned.id(), cartonLine(planned, a).id(), counter, false);
 
         assertThat(code(catchThrowable(() -> cycleCounts.submit(planned.id(), counter, false))))
                 .isEqualTo(ErrorCode.CYCLE_COUNT_LINE_NOT_COUNTED);
@@ -516,23 +513,23 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "A");
         CycleCountView planned = planBin(BIN).count();
         UUID line = planned.lines().get(0).id();
-        cycleCounts.count(planned.id(), line, false, counter, false);
+        cycleCounts.count(planned.id(), line, false, null, counter, false);
         assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).found()).isFalse();
 
-        cycleCounts.count(planned.id(), line, true, counter, false);
+        scanFound(planned.id(), line, counter, false);
 
         assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).found()).isTrue();
         // The carton is lost between planning and counting: the books no longer have it, and the counter finds it.
         UUID lostBefore = carton(BIN2, "B");
         CycleCountView second = planBin(BIN2).count();
         loseWhole(lostBefore);
-        cycleCounts.count(second.id(), second.lines().get(0).id(), true, counter, false);
+        scanFound(second.id(), second.lines().get(0).id(), counter, false);
         CycleCountView books = cycleCounts.get(second.id(), true);
         assertThat(books.lines().get(0).booked()).as("re-read at counting: not in stock any more").isFalse();
         assertThat(books.lines().get(0).found()).isTrue();
         cycleCounts.submit(second.id(), counter, false);
         assertThat(adjustments()).singleElement().satisfies(a -> assertThat(a)
-                .containsEntry("quantity_delta", CARTON_FACTOR).containsEntry("stock_package_id", lostBefore));
+                .containsEntry("direction", "RESTOCK").containsEntry("stock_package_id", lostBefore));
     }
 
     @Test
@@ -543,14 +540,14 @@ class CycleCountIntegrationTest {
         UUID line = cartonLine(planned, box).id();
         moveWhole(box, BIN2);
 
-        CycleCountView counted = cycleCounts.count(planned.id(), line, false, counter, false);
+        CycleCountView counted = cycleCounts.count(planned.id(), line, false, null, counter, false);
 
         assertThat(cartonLine(counted, box).locationCode()).as("the line follows its carton").isEqualTo(BIN2);
         cycleCounts.submit(planned.id(), counter, false);
 
         assertThat(adjustments()).singleElement().satisfies(a -> assertThat(a)
                 .containsEntry("location_code", BIN2).containsEntry("stock_package_id", box)
-                .containsEntry("quantity_delta", -CARTON_FACTOR).containsEntry("cycle_count_line_id", line));
+                .containsEntry("direction", "WRITE_OFF").containsEntry("cycle_count_line_id", line));
         assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).locationCode()).isEqualTo(BIN2);
     }
 
@@ -562,7 +559,7 @@ class CycleCountIntegrationTest {
         UUID line = cartonLine(planned, box).id();
         consumeWhole(box);
 
-        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, true, counter, false))))
+        assertThat(code(catchThrowable(() -> scanFound(planned.id(), line, counter, false))))
                 .isEqualTo(ErrorCode.CONFLICT);
         assertThat(cartonLine(cycleCounts.get(planned.id(), true), box).found()).as("nothing recorded").isNull();
     }
@@ -575,7 +572,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "S");
         CycleCountView planned = planBin(BIN).count();
         UUID line = cartonLine(planned, box).id();
-        cycleCounts.count(planned.id(), line, false, counter, false);
+        cycleCounts.count(planned.id(), line, false, null, counter, false);
         moveWhole(box, BIN2);
 
         Throwable stale = catchThrowable(() -> cycleCounts.submit(planned.id(), counter, true));
@@ -592,7 +589,7 @@ class CycleCountIntegrationTest {
         UUID emptied = carton(BIN, "E");
         CycleCountView first = planBin(BIN).count();
         UUID line = cartonLine(first, emptied).id();
-        cycleCounts.count(first.id(), line, false, counter, false);
+        cycleCounts.count(first.id(), line, false, null, counter, false);
         consumeWhole(emptied);
 
         Throwable stale = catchThrowable(() -> cycleCounts.submit(first.id(), counter, true));
@@ -603,7 +600,7 @@ class CycleCountIntegrationTest {
 
         UUID lost = carton(BIN2, "L");
         CycleCountView second = planBin(BIN2).count();
-        cycleCounts.count(second.id(), cartonLine(second, lost).id(), false, counter, false);
+        cycleCounts.count(second.id(), cartonLine(second, lost).id(), false, null, counter, false);
         loseWhole(lost);
 
         assertThat(code(catchThrowable(() -> cycleCounts.submit(second.id(), counter, false))))
@@ -635,8 +632,8 @@ class CycleCountIntegrationTest {
         UUID first = carton(BIN, "A");
         UUID second = carton(BIN2, "B");
         CycleCountView planned = planShelfA01().count();
-        cycleCounts.count(planned.id(), cartonLine(planned, first).id(), false, counter, false);
-        cycleCounts.count(planned.id(), cartonLine(planned, second).id(), false, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, first).id(), false, null, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, second).id(), false, null, counter, false);
         consumeWhole(second);
 
         assertThat(code(catchThrowable(() -> cycleCounts.submit(planned.id(), counter, false))))
@@ -651,7 +648,7 @@ class CycleCountIntegrationTest {
     void submitOfACancelledCountIsNotOpen() {
         UUID box = carton(BIN, "C");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, null, counter, false);
         cycleCounts.cancel(planned.id(), "Not needed", "test");
         consumeWhole(box);
 
@@ -667,7 +664,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "L");
         // A first count does not find it, and the manager approves the loss.
         CycleCountView first = planBin(BIN).count();
-        cycleCounts.count(first.id(), cartonLine(first, box).id(), false, counter, false);
+        cycleCounts.count(first.id(), cartonLine(first, box).id(), false, null, counter, false);
         cycleCounts.submit(first.id(), counter, false);
         operations.approve((UUID) adjustments().get(0).get("id"), manager);
         assertThat(status(box)).isEqualTo("LOST");
@@ -675,7 +672,7 @@ class CycleCountIntegrationTest {
         // A count of the next bin: the carton turns up in BIN2, away from its recorded bin - a move, not a count.
         carton(BIN2, "O");
         CycleCountView second = planBin(BIN2).count();
-        cycleCounts.count(second.id(), second.lines().get(0).id(), true, counter, false);
+        scanFound(second.id(), second.lines().get(0).id(), counter, false);
         Throwable elsewhere = catchThrowable(() -> cycleCounts.addLine(second.id(),
                 new AddCountLineCommand(BIN2, lpn("L"), counter, true)));
         assertThat(code(elsewhere)).isEqualTo(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION);
@@ -695,8 +692,8 @@ class CycleCountIntegrationTest {
         assertThat(cartonLine(books, box).booked()).as("a LOST carton is not in the books").isFalse();
         cycleCounts.submit(second.id(), counter, false);
         List<Map<String, Object>> found = adjustments().stream()
-                .filter(a -> box.equals(a.get("stock_package_id")) && ((Integer) a.get("quantity_delta")) > 0).toList();
-        assertThat(found).singleElement().satisfies(a -> assertThat(a).containsEntry("quantity_delta", CARTON_FACTOR));
+                .filter(a -> box.equals(a.get("stock_package_id")) && "RESTOCK".equals(a.get("direction"))).toList();
+        assertThat(found).singleElement().satisfies(a -> assertThat(a).containsEntry("direction", "RESTOCK"));
         operations.approve((UUID) found.get(0).get("id"), manager);
 
         assertThat(status(box)).isEqualTo("IN_STOCK");
@@ -720,7 +717,7 @@ class CycleCountIntegrationTest {
         CycleCountView rest = cycleCounts.get(planned.id(), true);
         for (CycleCountView.Line line : rest.lines()) {
             if (line.found() == null) {
-                cycleCounts.count(planned.id(), line.id(), true, manager, true);
+                scanFound(planned.id(), line.id(), manager, true);
             }
         }
         cycleCounts.submit(planned.id(), manager, true);
@@ -786,7 +783,7 @@ class CycleCountIntegrationTest {
         CycleCount recount = shortPick(box, BIN);
         assertThat(atp()).as("the carton is in doubt").isEqualTo(CARTON_FACTOR);
 
-        cycleCounts.count(recount.id(), recount.lines().get(0).id(), false, counter, false);
+        cycleCounts.count(recount.id(), recount.lines().get(0).id(), false, null, counter, false);
         cycleCounts.submit(recount.id(), counter, false);
 
         assertThat(atp()).as("still in doubt while the variance waits for approval").isEqualTo(CARTON_FACTOR);
@@ -804,13 +801,11 @@ class CycleCountIntegrationTest {
     void shortPickFreezesOnlyThatCarton() {
         carton(BIN, "A");
         UUID box = carton(BIN, "B");
-        UUID boxRow = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
-                box);
 
         shortPick(box, BIN);
 
         assertThat(frozen()).singleElement().satisfies(f -> {
-            assertThat(f.stockItemId()).isEqualTo(boxRow);
+            assertThat(f.stockPackageId()).isEqualTo(box);
             assertThat(f.free()).isEqualTo(CARTON_FACTOR);
         });
         assertThat(atp()).as("the other carton stays sellable").isEqualTo(CARTON_FACTOR);
@@ -822,7 +817,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "A");
         carton(BIN2, "B");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), planned.lines().get(0).id(), false, counter, false);
+        cycleCounts.count(planned.id(), planned.lines().get(0).id(), false, null, counter, false);
         cycleCounts.submit(planned.id(), counter, false);
 
         assertThat(atp()).isEqualTo(CARTON_FACTOR);
@@ -844,8 +839,8 @@ class CycleCountIntegrationTest {
         UUID fine = carton(BIN2, "B");
         CycleCountView planned = planShelfA01().count();
         UUID doubtedLine = cartonLine(planned, doubted).id();
-        cycleCounts.count(planned.id(), doubtedLine, false, counter, false);
-        cycleCounts.count(planned.id(), cartonLine(planned, fine).id(), true, counter, false);
+        cycleCounts.count(planned.id(), doubtedLine, false, null, counter, false);
+        scanFound(planned.id(), cartonLine(planned, fine).id(), counter, false);
         cycleCounts.submit(planned.id(), counter, false);
         UUID adjustment = (UUID) adjustments().get(0).get("id");
 
@@ -880,7 +875,7 @@ class CycleCountIntegrationTest {
                 .as("sent for recount once").isEqualTo(ErrorCode.CONFLICT);
 
         // The recount settles the carton: found this time, so no variance.
-        cycleCounts.count(recount.id(), recount.lines().get(0).id(), true, counter, false);
+        scanFound(recount.id(), recount.lines().get(0).id(), counter, false);
         cycleCounts.submit(recount.id(), counter, false);
         assertThat(adjustments()).as("only the rejected one").hasSize(1);
         assertThat(code(catchThrowable(() -> cycleCounts.recount(planned.id(), List.of(doubtedLine), null, manager))))
@@ -893,7 +888,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN2, "R");
         CycleCountView planned = planBin(BIN2).count();
         UUID doubted = cartonLine(planned, box).id();
-        cycleCounts.count(planned.id(), doubted, false, counter, false);
+        cycleCounts.count(planned.id(), doubted, false, null, counter, false);
         cycleCounts.submit(planned.id(), counter, false);
         operations.reject((UUID) adjustments().get(0).get("id"), manager, "Doubtful");
         consumeWhole(box);
@@ -912,7 +907,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "A");
         CycleCount shortPick = shortPick(box, BIN);
         UUID doubted = shortPick.lines().get(0).id();
-        cycleCounts.count(shortPick.id(), doubted, false, counter, false);
+        cycleCounts.count(shortPick.id(), doubted, false, null, counter, false);
         cycleCounts.submit(shortPick.id(), counter, false);
         operations.reject((UUID) adjustments().get(0).get("id"), manager, "Doubtful figure");
         assertThat(frozen()).as("the rejection decided the shortage").isEmpty();
@@ -960,11 +955,11 @@ class CycleCountIntegrationTest {
         CycleCountView planned = plan(clerk, List.of(), List.of(), List.of(BIN), List.of(sku)).count();
         UUID line = planned.lines().get(0).id();
 
-        assertThat(code(catchThrowable(() -> cycleCounts.count(planned.id(), line, true, colleague, false))))
+        assertThat(code(catchThrowable(() -> scanFound(planned.id(), line, colleague, false))))
                 .isEqualTo(ErrorCode.CYCLE_COUNT_NOT_ASSIGNEE);
-        assertThat(cycleCounts.count(planned.id(), line, false, manager, true).lines().get(0).countedBy())
+        assertThat(cycleCounts.count(planned.id(), line, false, null, manager, true).lines().get(0).countedBy())
                 .as("who decides counts may count").isEqualTo(manager);
-        assertThat(cycleCounts.count(planned.id(), line, true, clerk, false).lines().get(0).countedBy())
+        assertThat(scanFound(planned.id(), line, clerk, false).lines().get(0).countedBy())
                 .isEqualTo(clerk);
         assertThat(code(catchThrowable(() -> cycleCounts.assign(planned.id(), colleague, true))))
                 .as("a count being counted keeps its counter").isEqualTo(ErrorCode.CONFLICT);
@@ -985,7 +980,7 @@ class CycleCountIntegrationTest {
     void aFoundBookedLineWhoseCartonLeftIsStale() {
         UUID picked = carton(BIN, "P");
         CycleCountView first = planBin(BIN).count();
-        cycleCounts.count(first.id(), cartonLine(first, picked).id(), true, counter, false);
+        scanFound(first.id(), cartonLine(first, picked).id(), counter, false);
         consumeWhole(picked);
 
         Throwable stale = catchThrowable(() -> cycleCounts.submit(first.id(), counter, true));
@@ -997,7 +992,7 @@ class CycleCountIntegrationTest {
 
         UUID gone = carton(BIN2, "G");
         CycleCountView second = planBin(BIN2).count();
-        cycleCounts.count(second.id(), cartonLine(second, gone).id(), true, counter, false);
+        scanFound(second.id(), cartonLine(second, gone).id(), counter, false);
         loseWhole(gone);
 
         assertThat(code(catchThrowable(() -> cycleCounts.submit(second.id(), counter, true))))
@@ -1012,7 +1007,7 @@ class CycleCountIntegrationTest {
         UUID box = carton(BIN, "R");
         CycleCountView planned = planBin(BIN).count();
         loseWhole(box);
-        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, null, counter, false);
         CycleCountView books = cycleCounts.get(planned.id(), true);
         assertThat(cartonLine(books, box).booked()).isFalse();
         assertThat(cartonLine(books, box).found()).isFalse();
@@ -1028,7 +1023,7 @@ class CycleCountIntegrationTest {
     void aLineAsJudgedSubmitsWithoutVariance() {
         UUID box = carton(BIN, "K");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), true, counter, false);
+        scanFound(planned.id(), cartonLine(planned, box).id(), counter, false);
 
         assertThat(cycleCounts.submit(planned.id(), counter, false).status()).isEqualTo("COMPLETED");
         assertThat(adjustments()).isEmpty();
@@ -1078,7 +1073,8 @@ class CycleCountIntegrationTest {
                 com.stockflow.inventory.api.StockAdjustmentReason.DAMAGED);
 
         Throwable refused = catchThrowable(() -> operations.requestCountVariance(UUID.randomUUID(),
-                cartonSlot(x, BIN), -CARTON_FACTOR, counter, "CC-1"));
+                cartonSlot(x, BIN), com.stockflow.inventory.internal.domain.AdjustmentDirection.WRITE_OFF, counter,
+                "CC-1"));
 
         assertThat(code(refused)).isEqualTo(ErrorCode.STOCK_PACKAGE_ADJUSTMENT_PENDING);
         assertThat(adjustments()).hasSize(1);
@@ -1156,8 +1152,8 @@ class CycleCountIntegrationTest {
         // count(found=true) of a carton emptied since planning
         UUID line = cartonLine(planned, counted).id();
         consumeWhole(counted);
-        Throwable foundForCounter = catchThrowable(() -> cycleCounts.count(planned.id(), line, true, counter, false));
-        Throwable foundForManager = catchThrowable(() -> cycleCounts.count(planned.id(), line, true, manager, true));
+        Throwable foundForCounter = catchThrowable(() -> scanFound(planned.id(), line, counter, false));
+        Throwable foundForManager = catchThrowable(() -> scanFound(planned.id(), line, manager, true));
         assertThat(code(foundForCounter)).isEqualTo(ErrorCode.CONFLICT);
         assertThat(message(foundForCounter)).doesNotContain("CONSUMED");
         assertThat(message(foundForManager)).contains("CONSUMED");
@@ -1170,7 +1166,7 @@ class CycleCountIntegrationTest {
     void blindStaleSubmitKeepsTheBooksFromTheCounter() {
         UUID box = carton(BIN, "S");
         CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, counter, false);
+        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, null, counter, false);
         moveWhole(box, BIN2);
 
         Throwable forCounter = catchThrowable(() -> cycleCounts.submit(planned.id(), counter, false));

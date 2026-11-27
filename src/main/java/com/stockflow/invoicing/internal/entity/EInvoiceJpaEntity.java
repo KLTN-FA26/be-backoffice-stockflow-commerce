@@ -2,6 +2,7 @@ package com.stockflow.invoicing.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.invoicing.internal.domain.CorrectionBasis;
+import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.EInvoiceType;
 import jakarta.persistence.Column;
@@ -86,11 +87,16 @@ public class EInvoiceJpaEntity extends BaseEntity {
     @Column(name = "lookup_code", length = 64)
     private String lookupCode;
 
-    @Column(name = "issue_date", nullable = false, updatable = false)
+    /** Written again when a draft is dated for the day it is issued (WF-05 Q-1, {@code EInvoice.dateForIssue}). */
+    @Column(name = "issue_date", nullable = false)
     private LocalDate issueDate;
 
-    @Column(name = "issue_due_at", nullable = false, updatable = false)
+    @Column(name = "issue_due_at", nullable = false)
     private Instant issueDueAt;
+
+    /** WF-05 Q-1: the day of the delivery an original invoices, written once with the row. */
+    @Column(name = "delivered_on", updatable = false)
+    private LocalDate deliveredOn;
 
     @Column(name = "due_warned_at")
     private Instant dueWarnedAt;
@@ -191,6 +197,42 @@ public class EInvoiceJpaEntity extends BaseEntity {
     @Column(name = "void_reason", length = 500)
     private String voidReason;
 
+    /**
+     * WF-05 HĐ-3: when the delivery this invoice was at the provider for was corrected to a failure. Read here, never
+     * written ({@code insertable = false, updatable = false}): the mark is set and taken back in SQL by
+     * {@code EInvoiceRepositoryAdapter.markDeliveryFailed} / {@code clearDeliveryFailed}, outside the version, while
+     * the invoice is at the provider and a provider poll may be saving the same row. Were it an ordinary column, any
+     * save from a copy read before the mark would write the old value back and silently unmark it (or, after a
+     * clear, mark it again) - and {@code tg_einvoice_delivery_failed} would refuse only some of those writes. A copy
+     * already in the persistence context does not see a mark set by SQL in the same transaction; the readers of the
+     * mark that decide anything ({@code EInvoiceRepository.deliveryFailed}) ask the database instead.
+     */
+    @Column(name = "delivery_failed_at", insertable = false, updatable = false)
+    private Instant deliveryFailedAt;
+
+    /**
+     * WF-05 HĐ-3, BE-29, BE-36: read here, never written, for the reason {@link #deliveryFailedAt} is: set and taken
+     * back in SQL ({@code EInvoiceRepositoryAdapter.markReversed} / {@code clearReversed}) outside the version.
+     */
+    @Column(name = "reversed_at", insertable = false, updatable = false)
+    private Instant reversedAt;
+
+    /** WF-05 Q-8: how an issued invoice was recorded; null on rows from before (read as PROVIDER). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "issued_via", length = 16)
+    private EInvoice.IssuedVia issuedVia;
+
+    @Column(name = "portal_recorded_by")
+    private UUID portalRecordedBy;
+
+    @Column(name = "portal_recorded_at")
+    private Instant portalRecordedAt;
+
+    /** WF-05 Q-8, BE-29: why the reduction of a failed delivery was voided. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "void_reason_code", length = 32)
+    private EInvoice.VoidReasonCode voidReasonCode;
+
     protected EInvoiceJpaEntity() {
     }
 
@@ -201,8 +243,9 @@ public class EInvoiceJpaEntity extends BaseEntity {
                              String sellerName, String sellerTaxCode, String sellerAddress, String currency,
                              String paymentMethod, BigDecimal subtotal, BigDecimal taxTotal, BigDecimal grandTotal,
                              String amountInWords, String adjustmentReason, CorrectionBasis correctionBasis,
-                             UUID returnRequestId) {
+                             UUID returnRequestId, LocalDate deliveredOn) {
         super(id);
+        this.deliveredOn = deliveredOn;
         this.code = code;
         this.type = type;
         this.orderId = orderId;
@@ -274,10 +317,23 @@ public class EInvoiceJpaEntity extends BaseEntity {
         this.issuedAt = issuedAt;
     }
 
-    public void applyVoid(Instant voidedAt, UUID voidedBy, String voidReason) {
+    public void applyVoid(Instant voidedAt, UUID voidedBy, String voidReason, EInvoice.VoidReasonCode code) {
         this.voidedAt = voidedAt;
         this.voidedBy = voidedBy;
         this.voidReason = voidReason;
+        this.voidReasonCode = code;
+    }
+
+    /** The day it is dated and its deadline: they move together, once, as a draft is dated for its issue. */
+    public void applyDate(LocalDate issueDate, Instant issueDueAt) {
+        this.issueDate = issueDate;
+        this.issueDueAt = issueDueAt;
+    }
+
+    public void applyRecording(EInvoice.IssuedVia issuedVia, UUID portalRecordedBy, Instant portalRecordedAt) {
+        this.issuedVia = issuedVia;
+        this.portalRecordedBy = portalRecordedBy;
+        this.portalRecordedAt = portalRecordedAt;
     }
 
     public String getCode() { return code; }
@@ -330,6 +386,13 @@ public class EInvoiceJpaEntity extends BaseEntity {
     public Instant getVoidedAt() { return voidedAt; }
     public UUID getVoidedBy() { return voidedBy; }
     public String getVoidReason() { return voidReason; }
+    public Instant getDeliveryFailedAt() { return deliveryFailedAt; }
+    public LocalDate getDeliveredOn() { return deliveredOn; }
+    public Instant getReversedAt() { return reversedAt; }
+    public EInvoice.IssuedVia getIssuedVia() { return issuedVia; }
+    public UUID getPortalRecordedBy() { return portalRecordedBy; }
+    public Instant getPortalRecordedAt() { return portalRecordedAt; }
+    public EInvoice.VoidReasonCode getVoidReasonCode() { return voidReasonCode; }
 
     public CorrectionBasis getCorrectionBasis() {
         return correctionBasis;

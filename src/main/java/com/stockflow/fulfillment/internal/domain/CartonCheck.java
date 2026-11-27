@@ -33,7 +33,9 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>The session is PENDING until a worker starts it, then IN_PROGRESS; only that worker, or a warehouse manager,
  *       works it (08 BR-06). Completing in full makes it COMPLETED; in part, it stays IN_PROGRESS for the cartons
- *       picked later (08 §4.4 step 8). Its order cancelled, it is CANCELLED.</li>
+ *       picked later (08 §4.4 step 8). Its order cancelled, it is CANCELLED. A shipment of it cancelled by the
+ *       warehouse manager while it waited for dispatch takes a COMPLETED session back to IN_PROGRESS, for the
+ *       replacement cartons to be checked (08 §5.1, 09 §5.1; RTM-RTDCANCEL, 2026-11-19).</li>
  *   <li>A carton is one picked pick line of the task - its LPN, order line, SKU, lot and count - and starts TO_CHECK
  *       (08 §5.2). Only a carton of the task is accepted (BR-05); scanning it again changes nothing.</li>
  *   <li>A label prints only for a CHECKED carton (BR-08) whose SKU's carton spec declares its size and full weight
@@ -60,7 +62,14 @@ public final class CartonCheck {
          * Sales closed the rest of its order while it was not labelled yet (17 §4.8 step 33; owner decision
          * WF4-CLOSE-REST, 2026-11-13): it is no longer wanted and goes back onto a bin through the put-back queue.
          */
-        REMAINDER_CLOSED
+        REMAINDER_CLOSED,
+        /**
+         * The warehouse manager cancelled its shipment while it waited for dispatch, and did not mark it damaged
+         * (kltn-docs 09 §5.1 "Cancelled"; owner decision RTM-RTDCANCEL, 2026-11-19): the carton is good, it goes back
+         * onto a bin through the put-back queue, and its order line lacks it until a replacement is allocated, picked
+         * and checked. A carton of that shipment marked damaged is removed {@link #DAMAGED} instead.
+         */
+        SHIPMENT_CANCELLED
     }
 
     /**
@@ -261,14 +270,16 @@ public final class CartonCheck {
     }
 
     /**
-     * Shipping labels for the cartons named, or every CHECKED carton when none is (08 §4.3 steps 5-6): each gets its
-     * SKU's carton-spec size, full weight, may-rotate flag and volumetric weight, and label version 1; it is LABELED. A
+     * Shipping labels for the cartons named, or every CHECKED carton when none is (08 §4.3 steps 5-6): each gets the
+     * size, full weight and may-rotate flag of the carton it was received in, its volumetric weight, and label version
+     * 1; it is LABELED. A
      * carton labelled already is left as it is. All or nothing: any SKU without a measured spec stops every label.
      * Retry-safe: asking again for the cartons named labels nothing more; asking for "every CHECKED one" again, once
      * none is CHECKED and one is labelled, is the same call repeated after it worked - it labels nothing and says so by
      * an empty answer, not by an error that would tell the worker their labels failed.
      *
-     * @param specs   the carton spec of each SKU named, by SKU; a SKU missing or not measured has no spec
+     * @param specs   the carton spec of each carton, by LPN (the carton it was received in); missing or not measured
+     *                means no spec
      * @param divisor the volumetric divisor (08 BR-09, 6000 by default)
      * @return the cartons labelled now; none on a retry
      * @throws BusinessException {@code CARTON_NOT_IN_TASK}; {@code CARTON_NOT_CHECKED} for a carton not scanned yet, or
@@ -304,7 +315,7 @@ public final class CartonCheck {
         }
         Set<String> unmeasured = new TreeSet<>();
         chosen.forEach(c -> {
-            Spec spec = specs.get(c.sku);
+            Spec spec = specs.get(c.lpn);
             if (spec == null || !spec.measured()) {
                 unmeasured.add(c.sku);
             }
@@ -316,7 +327,7 @@ public final class CartonCheck {
                     .map(sku -> new FieldError("sku", sku, "CartonSpecUnmeasured")).toList());
         }
         for (Carton carton : chosen) {
-            carton.measure(specs.get(carton.sku), divisor);
+            carton.measure(specs.get(carton.lpn), divisor);
             carton.status = PackageStatus.LABELED;
             carton.labelVersion = 1;
             carton.labeledAt = now;
@@ -531,6 +542,57 @@ public final class CartonCheck {
         return removed;
     }
 
+    /**
+     * The warehouse manager cancelled one of this session's shipments while it waited for dispatch (kltn-docs 09 §5.1
+     * "Cancelled"; owner decision RTM-RTDCANCEL, 2026-11-19). Every carton of it leaves the shipment and the order:
+     * those in {@code damaged} are REMOVED as {@link RemovalReason#DAMAGED} and go into quarantine, the others as
+     * {@link RemovalReason#SHIPMENT_CANCELLED} and go back onto a bin - both through the put-back queue, their labels
+     * void (08 §5.2 "Removed"). The order lines lack them now, as for a carton removed at the station (08 §4.2 step 4).
+     * A COMPLETED session goes back to IN_PROGRESS (08 §5.1 "Completed → In Progress"), so the replacement cartons the
+     * task picks are received, checked and completed into a new shipment; one IN_PROGRESS stays so.
+     *
+     * @param damaged the cartons (package ids) the warehouse manager marked damaged; each must be one of the shipment's
+     * @param note    why the shipment was cancelled, kept on every carton removed
+     * @return the cartons removed
+     * @throws BusinessException {@code PACK_STATE_CONFLICT} for a session cancelled with its order;
+     *         {@code SHIPMENT_STATE_CONFLICT} when no carton of the session is in that shipment;
+     *         {@code VALIDATION_FAILED} for a damaged carton that is not in the shipment
+     */
+    public List<Carton> cancelShipment(UUID shipmentId, Set<UUID> damaged, String note, UUID actor, Instant now) {
+        Objects.requireNonNull(shipmentId, "shipmentId");
+        Objects.requireNonNull(actor, "actor");
+        Objects.requireNonNull(now, "now");
+        if (status == PackStatus.CANCELLED || status == PackStatus.PENDING) {
+            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, "The check of order %s is %s"
+                    .formatted(orderNumber, status));
+        }
+        List<Carton> shipped = cartons.stream().filter(c -> shipmentId.equals(c.shipmentId)).toList();
+        if (shipped.isEmpty()) {
+            throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT,
+                    "No carton of order %s is in this shipment".formatted(orderNumber));
+        }
+        Set<UUID> inShipment = shipped.stream().map(Carton::id).collect(Collectors.toSet());
+        List<FieldError> strangers = damaged.stream().filter(id -> !inShipment.contains(id))
+                .map(id -> new FieldError("damagedPackageIds", id.toString(), "NotInShipment")).toList();
+        if (!strangers.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Only a carton of the shipment is marked damaged", strangers);
+        }
+        for (Carton carton : shipped) {
+            carton.shipmentId = null;
+            carton.removeFor(damaged.contains(carton.id) ? RemovalReason.DAMAGED : RemovalReason.SHIPMENT_CANCELLED,
+                    note, actor, now);
+            changed.add(carton.id);
+        }
+        if (status == PackStatus.COMPLETED) {
+            status = PackStatus.IN_PROGRESS;
+            completedAt = null;
+            completedBy = null;
+            sessionChanged = true;
+        }
+        return shipped;
+    }
+
     /** Whether a carton of the session is labelled - shipped or not: what the closure of the rest keeps. */
     public boolean anyLabeled() {
         return cartons.stream().anyMatch(c -> c.status == PackageStatus.LABELED);
@@ -544,9 +606,16 @@ public final class CartonCheck {
                 .mapToInt(Carton::quantity).sum();
     }
 
+    /**
+     * The carton of the session with this LPN. A good carton of a shipment cancelled before dispatch goes back onto a
+     * bin and may be allocated and picked again for the same order as a replacement (RTM-RTDCANCEL): the session then
+     * holds it twice - the REMOVED carton of its first pick line and the new one of its replacement line - and the live
+     * one answers.
+     */
     public Optional<Carton> carton(String lpn) {
         String wanted = lpn == null ? "" : lpn.trim().toUpperCase(Locale.ROOT);
-        return cartons.stream().filter(c -> c.lpn.equals(wanted)).findFirst();
+        return cartons.stream().filter(c -> c.lpn.equals(wanted))
+                .min(java.util.Comparator.comparing((Carton c) -> c.status == PackageStatus.REMOVED));
     }
 
     /** Unmodifiable: cartons change through this aggregate's methods only. */

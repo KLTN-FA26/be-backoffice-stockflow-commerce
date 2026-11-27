@@ -87,15 +87,15 @@ SELECT md5('qa92:draft')::uuid, c.id, md5('qa92:product')::uuid, 'DRAFT', NOW(),
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa92:snap')::uuid, md5('qa92:draft')::uuid, repeat('c', 64), 'https://example.com/c.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-SELECT md5('qa92:own')::uuid, md5('qa92:product')::uuid, 'QA-EC-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
-       'OWNED-SKU:QA-EC-OWN', 1, 0, NOW(), c.id, md5('qa92:snap')::uuid, md5('qa92:blank')::uuid
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+SELECT md5('qa92:own')::uuid, md5('qa92:product')::uuid, 'QA-EC-OWN', 'QA ly in logo', 'ACTIVE', 0, NOW(),
+       c.id, md5('qa92:snap')::uuid, md5('qa92:blank')::uuid
   FROM qa92_customer c WHERE c.n = 1;
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
-                                       version, created_at, default_shipping)
-SELECT md5('qa92:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(), TRUE
-  FROM inventory.inventory_items i WHERE i.sku = 'QA-EC-OWN';
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
+                                       version, created_at)
+SELECT md5('qa92:carton')::uuid, i.variant_id, 'CARTON', 50, TRUE, 0, NOW()
+  FROM product.customer_skus i WHERE i.sku = 'QA-EC-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 SELECT md5('qa92:order' || c.n)::uuid, 'SO-QA-EC' || c.n, c.id, gen_random_uuid(), 'DRAFT', 4400000, 400000, 'VND',
@@ -109,13 +109,17 @@ INSERT INTO fulfillment.shipment (id, order_id, status, code, warehouse_id, pack
 SELECT md5('qa92:' || s.tag)::uuid, md5('qa92:order' || s.o)::uuid, 'READY_TO_DISPATCH', 'SO-QA-EC-' || upper(s.tag),
        md5('demo:wh:HCM')::uuid, 1, NOW(), NOW()
   FROM (VALUES ('s1', 1), ('s2', 1), ('s3', 1), ('s4', 1), ('x1', 2)) AS s(tag, o);
-INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at)
-SELECT md5('qa92:' || s.tag)::uuid, md5('qa92:order' || s.o)::uuid, 'HANDED_OVER', 1100000, NOW()
+-- S2 was delivered: the returns R1 and R2 are against it (WF-05 TH-1, V20261201000300), as its invoice B is.
+INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, outcome_at)
+SELECT md5('qa92:' || s.tag)::uuid, md5('qa92:order' || s.o)::uuid,
+       CASE s.tag WHEN 's2' THEN 'DELIVERED' ELSE 'HANDED_OVER' END, 1100000, NOW(),
+       CASE s.tag WHEN 's2' THEN NOW() END
   FROM (VALUES ('s1', 1), ('s2', 1), ('s3', 1), ('s4', 1), ('x1', 2)) AS s(tag, o);
 INSERT INTO ordering.return_request (id, rma_number, order_id, customer_id, status, reason_code, requested_at,
-                                     order_number, request_id, channel, requested_by)
+                                     order_number, request_id, channel, requested_by, shipment_id)
 SELECT md5('qa92:' || r.tag)::uuid, 'RMA-QA92-' || r.tag, o.id, o.customer_id, 'REQUESTED', 'DAMAGED_IN_TRANSIT', NOW(),
-       o.order_number, gen_random_uuid(), 'BACK_OFFICE', (SELECT id FROM identity.app_user ORDER BY id LIMIT 1)
+       o.order_number, gen_random_uuid(), 'BACK_OFFICE', (SELECT id FROM identity.app_user ORDER BY id LIMIT 1),
+       md5('qa92:s2')::uuid
   FROM ordering.customer_order o, (VALUES ('r1'), ('r2')) AS r(tag)
  WHERE o.id = md5('qa92:order1')::uuid;
 
@@ -550,9 +554,37 @@ SELECT pg_temp.expect_refused('F16 ... but no return takes off more than the inv
      WHERE id = md5('qa92:ret2')::uuid;
     SELECT pg_temp.correction('f16', 'ADJUSTMENT', 'RETURN', 'b', -8, 'r2');
     SELECT pg_temp.goods('f16', 1, -8) $q$);
-SELECT pg_temp.expect_ok('F17 a return reaches a replacement too: the invoice in force for the shipment, by adjustment', $q$
-    SELECT pg_temp.correction('ret3', 'ADJUSTMENT', 'RETURN', 'rep', -1, 'r1');
+-- WF-05 Q-9 (TT 91 Điều 10 khoản 6 điểm a; SePay 422 INVALID_ORIGIN_INVOICE, sandbox T-5): a replacement is never
+-- adjusted, a return on it included - the accountant reduces it on the provider's portal and records that (Q-8).
+SELECT pg_temp.expect_refused('F17 a return does not adjust a replacement: it is reduced on the portal and recorded',
+    'tg_einvoice_correction_form', $q$
+    SELECT pg_temp.correction('f17', 'ADJUSTMENT', 'RETURN', 'rep', -1, 'r1') $q$);
+SELECT pg_temp.expect_ok('F18 the second return is adjusted on the invoice in force for its shipment (its earlier '
+    || 'draft voided first: F16 rolled back)', $q$
+    UPDATE invoicing.einvoice SET status = 'VOIDED_DRAFT', voided_at = NOW(), void_reason = 'x'
+     WHERE id = md5('qa92:ret2')::uuid;
+    SELECT pg_temp.correction('ret3', 'ADJUSTMENT', 'RETURN', 'b', -1, 'r2');
     SELECT pg_temp.goods('ret3', 1, -1) $q$);
+-- WF-05 BE-30: SePay chooses the series of an adjustment or replacement itself (sandbox T-4); the correction is recorded
+-- under the provider's symbol as it is issued - never while it waits, and never an original.
+SELECT pg_temp.expect_refused('F19 a correction at the provider changes its symbol while it waits', 'tg_einvoice_transaction', $q$
+    SELECT pg_temp.submit('ret3');
+    UPDATE invoicing.einvoice SET symbol = 'C26TSE' WHERE id = md5('qa92:ret3')::uuid $q$);
+SELECT pg_temp.expect_refused('F20 an original is recorded issued under another symbol than it was sent under',
+    'tg_einvoice_transaction', $q$
+    SELECT pg_temp.submit('d');
+    UPDATE invoicing.einvoice SET symbol = 'C26TSE', status = 'ISSUED', invoice_number = 920099,
+           tax_authority_code = 'SBX920099', lookup_code = 'L920099', signed_at = NOW(), issued_at = NOW(),
+           xml_file_key = 'einvoices/2026/11/12/d.xml', pdf_file_key = 'einvoices/2026/11/12/d.pdf'
+     WHERE id = md5('qa92:d')::uuid $q$);
+SELECT pg_temp.expect_ok('F21 a correction is recorded issued under the symbol the provider numbered it under', $q$
+    SELECT pg_temp.submit('ret3');
+    UPDATE invoicing.einvoice SET symbol = 'C26TSE', status = 'ISSUED', invoice_number = 920032,
+           tax_authority_code = 'SBX920032', lookup_code = 'L920032', signed_at = NOW(), issued_at = NOW(),
+           xml_file_key = 'einvoices/2026/11/12/ret3.xml', pdf_file_key = 'einvoices/2026/11/12/ret3.pdf'
+     WHERE id = md5('qa92:ret3')::uuid $q$);
+SELECT pg_temp.expect_true('F22 ... and keeps it', (SELECT symbol = 'C26TSE' AND status = 'ISSUED' FROM invoicing.einvoice
+     WHERE id = md5('qa92:ret3')::uuid));
 
 \echo '--- G. E0 row 5: a trade discount by volume or revenue -> a decrease adjustment with its list of invoices (khoản 5 điểm b)'
 SELECT pg_temp.expect_refused('G1 a trade discount that increases', 'ck_einvoice_decrease', $q$

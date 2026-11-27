@@ -5,16 +5,13 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.PutawayCompleted;
 import com.stockflow.inventory.api.StockPackageView;
-import com.stockflow.inventory.api.UomConversion;
+import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
-import com.stockflow.inventory.internal.domain.StockItem;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
-import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import com.stockflow.warehouse.api.NewPutawayTask;
 import com.stockflow.warehouse.api.PutawaySource;
 import com.stockflow.warehouse.api.PutawayTaskView;
@@ -48,13 +45,17 @@ import java.util.UUID;
  * carton whose task is not open yet (tasks are opened just after a receipt is confirmed) is refused until it is, for
  * the same reason.</p>
  *
+ * <p>A carton that came back opened on a return (WF-05 TH-4) is the exception: it holds fewer units than its label,
+ * so it is not a whole carton any more and never goes back on sale (20 BR-14) - its release is refused
+ * ({@code RETURN_CARTON_OPENED}), and a write-off is the one way out.</p>
+ *
  * <p><b>Release.</b> A putaway task of source {@code QUARANTINE_RELEASE} is opened for the carton, which stays
  * QUARANTINE - out of ATP - where it stands until that task puts it into a bin and makes it AVAILABLE (05 BR-14,
  * {@code PutawayService#confirm}). Nothing moves and nothing is written to the ledger here. Releasing a carton that
  * already has its release task answers that task again.</p>
  *
- * <p>Lock order: the carton's putaway task (as a putaway confirmation takes it first), then the SKU advisory lock, the
- * carton, its rows. A write-off's approval takes the SKU lock before it asks for an open task, so a release and an
+ * <p>Lock order: the carton's putaway task (as a putaway confirmation takes it first), then the SKU advisory lock,
+ * then the carton. A write-off's approval takes the SKU lock before it asks for an open task, so a release and an
  * approval of one carton are decided one after the other.</p>
  */
 @Service
@@ -64,23 +65,22 @@ public class CartonQuarantineService {
 
     private final StockOperations operations;
     private final StockPackageRepository stockPackages;
-    private final StockItemRepository stockItems;
     private final StockAdjustmentRepository adjustments;
-    private final UomConversionRepository units;
     private final InventoryPolicyRepository policies;
     private final PutawayTasks tasks;
     private final WarehouseService warehouses;
     private final ApplicationEventPublisher events;
+    private final ReturnedCartonOwnership ownership;
 
     public CartonQuarantineService(StockOperations operations, StockPackageRepository stockPackages,
-                                   StockItemRepository stockItems, StockAdjustmentRepository adjustments,
-                                   UomConversionRepository units, InventoryPolicyRepository policies,
-                                   PutawayTasks tasks, WarehouseService warehouses, ApplicationEventPublisher events) {
+                                   StockAdjustmentRepository adjustments,
+                                   InventoryPolicyRepository policies,
+                                   PutawayTasks tasks, WarehouseService warehouses, ApplicationEventPublisher events,
+                                   ReturnedCartonOwnership ownership) {
+        this.ownership = ownership;
         this.operations = operations;
         this.stockPackages = stockPackages;
-        this.stockItems = stockItems;
         this.adjustments = adjustments;
-        this.units = units;
         this.policies = policies;
         this.tasks = tasks;
         this.warehouses = warehouses;
@@ -126,34 +126,50 @@ public class CartonQuarantineService {
      * @return the task's id
      * @throws BusinessException {@code STOCK_PACKAGE_NOT_FOUND}; 403 for a carton of another warehouse;
      *         {@code INVALID_STOCK_PACKAGE_TRANSITION} for a carton not in stock; {@code STOCK_PACKAGE_NOT_QUARANTINED};
-     *         {@code STOCK_PACKAGE_DECISION_PENDING} when a write-off of it awaits approval, or it has another open
-     *         putaway task
+     *         {@code RETURN_CARTON_OPENED} for a carton that came back opened on a return - written off only;
+     *         {@code STOCK_PACKAGE_DECISION_PENDING} when a write-off of it awaits approval, it has another open
+     *         putaway task, or it came back on a return whose refund is not decided ({@code returnOwnership}
+     *         PENDING, WF-05 Q-4)
      */
     @Transactional
     public UUID release(String lpn, UUID actorId) {
         StockPackage seen = find(lpn);
-        UomConversion unit = units.findAll(List.of(seen.uomConversionId())).stream().findFirst().orElseThrow(() ->
-                new IllegalStateException("Stock package %s is in no known unit".formatted(seen.lpn())));
-        policies.lock(unit.sku());
+        // A carton's SKU is its own item's: its carton row is its variant's, shared by every SKU of the variant (Q1).
+        policies.lock(seen.sku().code());
         StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("Stock package %s vanished".formatted(seen.lpn())));
         if (carton.status() != StockPackageStatus.IN_STOCK) {
             throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                     "%s is %s; only a carton in stock is released".formatted(carton.lpn(), carton.status()));
         }
-        List<StockItem> live = rows(carton).stream().filter(row -> row.onHand().value() > 0).toList();
-        if (live.isEmpty() || live.stream().anyMatch(row -> row.status() != StockStatus.QUARANTINE)) {
+        if (carton.stockStatus() != StockStatus.QUARANTINE) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_QUARANTINED,
                     "%s is not in quarantine; only a quarantined carton is released".formatted(carton.lpn()),
                     List.of(), Map.of("lpn", carton.lpn()));
+        }
+        if (stockPackages.openedOnReturn(carton.id())) {
+            throw new BusinessException(ErrorCode.RETURN_CARTON_OPENED, ("%s came back opened on a return: it holds "
+                    + "fewer units than its label and is never sold again; write it off").formatted(carton.lpn()),
+                    List.of(), Map.of("lpn", carton.lpn()));
+        }
+        Optional<ReturnedCartonOwnership.Owned> waiting = ownership.owned(carton.id())
+                .filter(owned -> owned.ownership() == ReturnedCartonOwnership.Ownership.PENDING);
+        if (waiting.isPresent()) {
+            // WF-05 Q-4 (H1): the return it came back on has not decided its refund. Not refunded, the goods are the
+            // customer's and leave the books; released now, they would be sold back to the customer who owns them.
+            // The details name the return (audit r3 RAD-4), so the screen says what the carton waits for.
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING, ("%s came back on a return whose "
+                    + "refund is not decided yet: it is released once the refund makes it the company's")
+                    .formatted(carton.lpn()), List.of(), Map.of("lpn", carton.lpn(), "returnOwnership", "PENDING",
+                    "returnRequestId", waiting.get().returnRequestId()));
         }
         if (adjustments.findPendingForPackage(carton.id()).isPresent()) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING,
                     "A write-off of %s awaits approval; it is released once that is rejected or withdrawn"
                             .formatted(carton.lpn()), List.of(), Map.of("lpn", carton.lpn()));
         }
-        int onHand = live.stream().mapToInt(row -> row.onHand().value()).sum();
-        PutawayTaskView task = tasks.open(NewPutawayTask.quarantineRelease(unit.sku(), onHand, carton.id().value()));
+        PutawayTaskView task = tasks.open(NewPutawayTask.quarantineRelease(carton.sku().code(), carton.nominalQty(),
+                carton.id().value()));
         if (task.source() != PutawaySource.QUARANTINE_RELEASE) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING,
                     "%s still has its receipt's putaway task %s open".formatted(carton.lpn(), task.id()),
@@ -171,14 +187,12 @@ public class CartonQuarantineService {
         return carton;
     }
 
-    private List<StockItem> rows(StockPackage carton) {
-        return stockItems.findIdsInStockPackage(carton.id()).stream().map(stockItems::findById)
-                .flatMap(Optional::stream).toList();
-    }
-
-    /** Read without a lock: a task is only ever opened, never removed, so a stale answer only refuses too early. */
+    /**
+     * Read again from the table, after the wait for the task's lock: a putaway finished meanwhile has made the carton
+     * AVAILABLE, and the copy read before the wait would still say INBOUND. Without a lock: a task is only ever
+     * opened, never removed, so a stale answer only refuses too early.
+     */
     private boolean holdsInbound(StockPackage carton) {
-        return carton.status() == StockPackageStatus.IN_STOCK && rows(carton).stream()
-                .anyMatch(row -> row.onHand().value() > 0 && row.status() == StockStatus.INBOUND);
+        return stockPackages.stockStatusOf(carton.id()).filter(status -> status == StockStatus.INBOUND).isPresent();
     }
 }

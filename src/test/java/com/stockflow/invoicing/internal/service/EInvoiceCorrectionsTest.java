@@ -74,7 +74,8 @@ class EInvoiceCorrectionsTest {
     private final EInvoiceProvider provider = mock(EInvoiceProvider.class);
     private final FileTransfers files = mock(FileTransfers.class);
     private final EInvoiceIssuanceSteps steps = new EInvoiceIssuanceSteps(invoices, mock(EInvoiceSending.class),
-            settings, providers, files, mock(ApplicationEventPublisher.class), Clock.fixed(NOW, ZoneOffset.UTC));
+            settings, providers, files, mock(ApplicationEventPublisher.class), Clock.fixed(NOW, ZoneOffset.UTC),
+            new InvoicingProperties(java.time.Duration.ofDays(1), null));
 
     @BeforeEach
     void aRepositoryThatKeepsWhatItIsGiven() {
@@ -82,7 +83,10 @@ class EInvoiceCorrectionsTest {
         when(invoices.save(any())).thenAnswer(call -> call.getArgument(0));
         when(invoices.correctionsOf(any())).thenReturn(EInvoice.Corrections.NONE);
         when(invoices.piecesTakenOff(any())).thenAnswer(call -> new HashMap<UUID, Long>());
-        when(invoices.findEarlierUnissued(any(), any())).thenReturn(Optional.empty());
+        when(invoices.findEarlierSubmitting(any(), any(), any())).thenReturn(Optional.empty());
+        // The invoice a correction corrects, when a test does not hand it out itself: issued at the sandbox, the
+        // provider in use, which is where its correction goes (HĐ-5).
+        when(invoices.findById(any())).thenAnswer(call -> Optional.of(EInvoiceFixtures.in(EInvoiceStatus.ISSUED)));
     }
 
     @BeforeEach

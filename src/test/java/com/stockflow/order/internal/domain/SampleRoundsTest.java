@@ -24,28 +24,26 @@ class SampleRoundsTest {
     private static final LocalDate TODAY = LocalDate.of(2026, 11, 9);
     private static final LocalDate DONE_BY = LocalDate.of(2026, 11, 30);
     private static final UUID COORDINATOR = UUID.randomUUID();
-    private static final UUID MANAGER = UUID.randomUUID();
     private static final UUID CUSTOMER = UUID.randomUUID();
     private static final UUID CUSTOMER_USER = UUID.randomUUID();
 
-    /** SENT: drawn up, submitted and approved by someone else. A first-time SKU wants a sample unless waived. */
+    /** SENT: drawn up and sent by the coordinator. A first-time SKU wants a sample unless waived. */
     private static ProductionOrder sent(boolean sample) {
         ProductionOrder order = ProductionOrder.drawUp("PRD-20261109-0007", UUID.randomUUID(), UUID.randomUUID(),
                 CUSTOMER, UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1), true,
                 List.of(new ProductionOrder.Line(UUID.randomUUID(), UUID.randomUUID(), "CUP-12OZ-ACME", 8, 50,
-                        UUID.randomUUID(), "a".repeat(64), null, 0)), "VND", COORDINATOR, NOW);
+                        UUID.randomUUID(), "a".repeat(64), null, 0)), COORDINATOR, NOW);
         if (!sample) {
-            order.edit(new ProductionOrder.Draft(order.producerId(), order.needByDate(), null, null, false,
+            order.edit(new ProductionOrder.Draft(order.producerId(), order.needByDate(), null, false,
                     "re-run of a tested design", null), java.util.Map.of());
         }
-        order.submit(COORDINATOR, NOW);
-        order.approve(MANAGER, NOW);
+        order.send(COORDINATOR, NOW);
         return order;
     }
 
     private static ProductionOrder accepted(boolean sample) {
         ProductionOrder order = sent(sample);
-        order.accept(DONE_BY, COORDINATOR, NOW);
+        order.accept(DONE_BY, null, COORDINATOR, NOW);
         return order;
     }
 
@@ -63,18 +61,18 @@ class SampleRoundsTest {
     @DisplayName("17 §4.3 step 8: accepted with the producer's day, which moves while goods are to come")
     void acceptedWithItsDay() {
         ProductionOrder order = sent(true);
-        assertThatThrownBy(() -> order.accept(null, COORDINATOR, NOW)).satisfies(e ->
+        assertThatThrownBy(() -> order.accept(null, null, COORDINATOR, NOW)).satisfies(e ->
                 assertThat(code(e)).isEqualTo(ErrorCode.VALIDATION_FAILED));
         assertThatThrownBy(() -> order.expectCompletion(DONE_BY)).as("not before it is accepted").satisfies(e ->
                 assertThat(code(e)).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID));
-        order.accept(DONE_BY, COORDINATOR, NOW);
+        order.accept(DONE_BY, null, COORDINATOR, NOW);
         assertThat(order.status()).isEqualTo(ProductionOrderStatus.ACCEPTED);
         assertThat(order.expectedCompletionDate()).isEqualTo(DONE_BY);
         assertThat(order.pullChanges()).extracting(ProductionOrder.Change::to).endsWith(ProductionOrderStatus.ACCEPTED);
         assertThat(order.expectCompletion(DONE_BY)).as("the same day changes nothing").isFalse();
         assertThat(order.expectCompletion(DONE_BY.plusDays(3))).isTrue();
         assertThat(order.expectedCompletionDate()).isEqualTo(DONE_BY.plusDays(3));
-        assertThatThrownBy(() -> order.accept(DONE_BY, COORDINATOR, NOW)).as("accepted once").satisfies(e ->
+        assertThatThrownBy(() -> order.accept(DONE_BY, null, COORDINATOR, NOW)).as("accepted once").satisfies(e ->
                 assertThat(code(e)).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID));
     }
 

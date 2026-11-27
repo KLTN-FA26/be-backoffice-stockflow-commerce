@@ -1,5 +1,6 @@
 package com.stockflow.assistant.internal.controller;
 
+import com.stockflow.assistant.internal.service.AssistantTelemetry;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -86,7 +87,8 @@ class AssistantPanelControllerTest {
     @DisplayName("a portal customer is refused before any tool runs")
     void customersAreRefused() {
         TodayCard card = mock(TodayCard.class);
-        AssistantPanelController controller = new AssistantPanelController(mock(ToolAvailability.class), card);
+        AssistantPanelController controller = new AssistantPanelController(mock(ToolAvailability.class), card,
+                AssistantTelemetry.NONE);
 
         assertThatThrownBy(() -> controller.today(CUSTOMER))
                 .isInstanceOfSatisfying(BusinessException.class,
@@ -110,7 +112,8 @@ class AssistantPanelControllerTest {
                 new TodayCard.Section("receiptsToPutAway", "findGoodsReceipts", ToolOutcome.FAILED, null,
                         "Chưa đọc được."))));
 
-        TodayResponse response = new AssistantPanelController(mock(ToolAvailability.class), card).today(PLANNER)
+        TodayResponse response = new AssistantPanelController(mock(ToolAvailability.class), card,
+                AssistantTelemetry.NONE).today(PLANNER)
                 .data();
 
         JsonNode written = applicationMapper().readTree(applicationMapper().writeValueAsString(response));

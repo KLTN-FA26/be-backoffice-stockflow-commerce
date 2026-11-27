@@ -73,7 +73,7 @@ class LoadPlanEstimateComparisonTest {
                     new BigDecimal("5000"), List.of(), List.of(), 0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO));
         }
         LoadEstimates.EstimateLine line = new LoadEstimates.EstimateLine(UUID.randomUUID(), "SKU-A", UUID.randomUUID(),
-                boxes, "ITEM_BOX", "PCS", 1, boxes, null, new Layout.Dims(500, 500, 500), new BigDecimal("10"), true, 1);
+                boxes, "LARGEST_PACKING_UNIT", "PCS", 1, boxes, null, new Layout.Dims(500, 500, 500), new BigDecimal("10"), true, 1);
         UUID estimateId = UUID.randomUUID();
         when(estimates.current(LoadEstimates.SourceType.ORDER, orderId)).thenReturn(new LoadEstimates.LoadEstimateView(
                 estimateId, LoadEstimates.SourceType.ORDER, orderId, UUID.randomUUID(), "CURRENT",

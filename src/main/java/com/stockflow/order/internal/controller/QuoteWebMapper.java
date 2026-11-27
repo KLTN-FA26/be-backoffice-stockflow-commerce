@@ -38,7 +38,8 @@ final class QuoteWebMapper {
                         l.tiers().stream().map(t -> new QuoteResponse.Tier(t.minQuantity(), t.unitPrice())).toList(),
                         l.proposedUnitPrice(), l.proposedLineTotal(), l.acceptedCartons(), l.acceptedUnits(),
                         l.acceptedUnitPrice(), l.acceptedLineTotal(), l.taxClass(), l.taxRate(), l.proposedTax(),
-                        l.acceptedTax())).toList(),
+                        l.acceptedTax(), l.purchasability() == null ? null : l.purchasability().name(),
+                        l.designName(), l.previewUrl(), l.productName(), l.variantName())).toList(),
                 q.fees().stream().map(f -> new QuoteResponse.Fee(f.id(), f.kind().name(), f.sku(), f.amount(),
                         f.taxClass(), f.taxRate(), f.tax())).toList(),
                 q.priced(), totals(q.proposed()), totals(q.accepted()), q.proposedTotal(), q.acceptedTotal(), q.sentAt(), q.sentBy(), q.respondedAt(), q.respondedBy(), q.customerFeedback(),
@@ -48,12 +49,30 @@ final class QuoteWebMapper {
                 q.convertedAt(),
                 q.history().stream().map(t -> new QuoteResponse.Transition(t.revision(),
                         t.fromStatus() == null ? null : t.fromStatus().name(), t.toStatus().name(), t.reason(),
-                        t.changedAt(), t.changedBy())).toList(),
-                q.createdAt(), q.createdBy(), q.version());
+                        t.changedAt(), t.changedBy(), t.changedByName())).toList(),
+                q.createdAt(), q.createdBy(), q.version(), q.customerName(), q.customerCode(), q.sentByName(),
+                q.respondedByName(), q.priceReviewPending(),
+                q.priceReview() == null ? null : new QuoteResponse.PriceReview(q.priceReview().id(),
+                        q.priceReview().revision(), q.priceReview().outcome(), q.priceReview().thresholdPercent(),
+                        q.priceReview().submittedAt(), q.priceReview().submittedBy(),
+                        q.priceReview().submittedByName(), q.priceReview().decidedAt(), q.priceReview().decidedBy(),
+                        q.priceReview().decidedByName(), q.priceReview().reason(),
+                        checkLines(q.priceReview().lines())),
+                q.priceCheck() == null ? null : new QuoteResponse.PriceCheck(q.priceCheck().thresholdPercent(),
+                        q.priceCheck().needsApproval(), checkLines(q.priceCheck().lines())));
+    }
+
+    private static List<QuoteResponse.PriceCheckLine> checkLines(List<Quotes.PriceCheckLine> lines) {
+        return lines.stream().map(line -> new QuoteResponse.PriceCheckLine(line.lineNo(), line.sku(), line.cartons(),
+                line.needsApproval(), line.tiers().stream().map(tier -> new QuoteResponse.PriceCheckTier(
+                        tier.minQuantity(), tier.unitPrice(), tier.referencePrice(), tier.source(),
+                        tier.discountPercent(), tier.needsApproval())).toList())).toList();
     }
 
     static QuoteRowResponse toResponse(Quotes.Row r) {
         return new QuoteRowResponse(r.id(), r.quoteNumber(), r.customerId(), r.status().name(), r.revision(),
-                r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(), r.version());
+                r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(), r.version(), r.total(),
+                r.lineCount(), r.firstItemName(), r.customerName(), r.customerCode(), r.convertedOrderNumber(),
+                r.priceReviewPending());
     }
 }

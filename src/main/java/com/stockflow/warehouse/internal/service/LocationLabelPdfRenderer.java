@@ -17,8 +17,8 @@ import java.util.List;
  * <p>Every bar and every QR module is a filled vector rectangle rather than a raster image, so a
  * label is as sharp on a 203 dpi thermal printer as on a 600 dpi office printer. Code 128 is what a
  * handheld 1D scanner reads; the QR code is for phone and tablet cameras, and stays readable when a
- * very long code forces the barcode's bars below what a scanner resolves. The layout is the shared
- * {@link CodeLabelSheet}, the carton label's too.</p>
+ * very long code forces the barcode's bars below what a scanner resolves. The layout is
+ * {@link CodeLabelSheet}, on the carton label's stock and with its symbols.</p>
  *
  * <p>Knows nothing about persistence: it is called after the read-only transaction that chose the
  * labels has ended, so no connection is held while a large PDF is drawn.</p>

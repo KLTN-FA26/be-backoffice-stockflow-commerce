@@ -34,11 +34,26 @@ public interface QuoteCards {
      * @param status        the order module's name: DRAFT, SENT, ACCEPTED, CHANGES_REQUESTED, EXPIRED, CANCELLED,
      *                      CONVERTED
      * @param proposedTotal the total with tax at the proposed cartons; null while a part of it is unknown
+     * @param convertedOrderId     the order it became, once the customer can open it: null while that order is a
+     *                             DRAFT, which the customer does not see until its contract is sent (17 §5.2) - a card
+     *                             linking to it led them to a page that does not exist for them
+     * @param convertedOrderNumber with {@code convertedOrderId}
      * @param version       what an answer to it names (the quote refuses one to a version the customer did not see)
      */
     record Card(UUID id, String number, UUID customerId, String status, int revision, Instant validUntil,
                 LocalDate requestedDeliveryDate, List<Line> lines, BigDecimal proposedTotal, BigDecimal acceptedTotal,
                 UUID convertedOrderId, String convertedOrderNumber, UUID sentBy, Instant sentAt, long version) {
+
+        /**
+         * Whether the customer's portal shows this quote, so its prices are the customer's to read: not a DRAFT (never
+         * sent, or a revision being written) and not CANCELLED (which a draft may become without ever being sent) -
+         * the order module's own rule, {@code QuoteStatus.seenByCustomer}, which {@code QuoteCardSeenByCustomerTest}
+         * keeps this in step with. Published for the assistant's reply draft, which must not quote a price the
+         * customer never got.
+         */
+        public boolean seenByCustomer() {
+            return !"DRAFT".equals(status) && !"CANCELLED".equals(status);
+        }
     }
 
     /**
@@ -55,6 +70,13 @@ public interface QuoteCards {
     }
 
     Optional<Card> quote(UUID quoteId);
+
+    /**
+     * The card of the quote an order was converted from; empty for an order no quote became. What the chat redraws when
+     * the order's contract moves: the order becomes the customer's to open when its contract is sent, and theirs no
+     * longer when the contract is cancelled back to a draft, so the quote's card links to it or stops.
+     */
+    Optional<Card> quoteOfOrder(UUID orderId);
 
     /**
      * The customer accepts on the card, as on the quote's page.

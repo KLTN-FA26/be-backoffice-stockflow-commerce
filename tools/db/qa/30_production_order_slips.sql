@@ -1,8 +1,8 @@
 -- =============================================================================
 -- Adversarial checks + happy paths: production order slips (V20261110000200, team plan 4A-3; kltn-docs 17 §4.3
 -- step 7, BR-23): one slip per production order, only once it is sent, kept as it was sent. The fixtures are QA 21's
--- (a confirmed order of a signed contract shipping from HCM, a producer). Needs the demo seed (demo.editor draws up,
--- demo.approver approves). Rolled back at the end.
+-- (a confirmed order of a signed contract shipping from HCM, a producer). Needs the demo seed (demo.editor draws up
+-- and sends, V20261213000100). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -51,15 +51,15 @@ SELECT md5('qa30:draft')::uuid, c.id, md5('qa30:product')::uuid, 'DRAFT', NOW(),
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa30:snap')::uuid, md5('qa30:draft')::uuid, repeat('c', 64), 'https://example.com/c.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-SELECT md5('qa30:own')::uuid, md5('qa30:product')::uuid, 'QA-SLP-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
-       'OWNED-SKU:QA-SLP-OWN', 1, 0, NOW(), c.id, md5('qa30:snap')::uuid, md5('qa30:blank')::uuid
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+SELECT md5('qa30:own')::uuid, md5('qa30:product')::uuid, 'QA-SLP-OWN', 'QA ly in logo', 'ACTIVE', 0, NOW(),
+       c.id, md5('qa30:snap')::uuid, md5('qa30:blank')::uuid
   FROM customer.customer c ORDER BY c.id LIMIT 1;
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
-                                       version, created_at, default_shipping)
-SELECT md5('qa30:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(), TRUE
-  FROM inventory.inventory_items i WHERE i.sku = 'QA-SLP-OWN';
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
+                                       version, created_at)
+SELECT md5('qa30:carton')::uuid, i.variant_id, 'CARTON', 50, TRUE, 0, NOW()
+  FROM product.customer_skus i WHERE i.sku = 'QA-SLP-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 SELECT md5('qa30:order')::uuid, 'SO-QA-SLP', c.id, gen_random_uuid(), 'DRAFT', 2200000, 200000, 'VND', NOW(), NOW()
@@ -118,7 +118,7 @@ CREATE FUNCTION pg_temp.line(po_id UUID, cartons INTEGER, line_sku TEXT) RETURNS
             repeat('c', 64))
 $$;
 
--- Two production orders of batch 2: po1 is sent below, po2 stays a draft until it is approved together with its slip.
+-- Two production orders of batch 2: po1 is sent below, po2 stays a draft until it is sent together with its slip.
 SELECT pg_temp.draft(md5('qa30:po1')::uuid, 'HCM', TRUE, TRUE, NULL, 'PRD-20261110-0901');
 SELECT pg_temp.line(md5('qa30:po1')::uuid, 5, 'QA-SLP-OWN');
 SELECT pg_temp.draft(md5('qa30:po2')::uuid, 'HCM', TRUE, TRUE, NULL, 'PRD-20261110-0902');
@@ -133,15 +133,10 @@ $$;
 \echo '--- only a sent production order has a slip (17 §4.3 step 7)'
 SELECT pg_temp.expect_fail('SL1 a slip for a draft', $q$
     SELECT pg_temp.slip(md5('qa30:po1')::uuid, 'documents/2026/11/10/a.pdf', repeat('a', 64), 2048) $q$);
-SELECT pg_temp.expect_fail('SL2 a slip for a production order awaiting approval', $q$
-    UPDATE ordering.production_order SET status = 'PENDING_APPROVAL', submitted_at = NOW()
-     WHERE id = md5('qa30:po1')::uuid;
-    SELECT pg_temp.slip(md5('qa30:po1')::uuid, 'documents/2026/11/10/a.pdf', repeat('a', 64), 2048) $q$);
-SELECT pg_temp.expect_ok('SL3 submitted and approved by someone else, so sent', $q$
-    UPDATE ordering.production_order SET status = 'PENDING_APPROVAL', submitted_at = NOW()
-     WHERE id = md5('qa30:po1')::uuid;
-    UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:approver')::uuid,
-           approved_at = NOW(), sent_at = NOW() WHERE id = md5('qa30:po1')::uuid $q$);
+-- (SL2, a slip for a production order awaiting approval, went with the approval step: V20261213000100.)
+SELECT pg_temp.expect_ok('SL3 sent by the coordinator', $q$
+    UPDATE ordering.production_order SET status = 'SENT', sent_by = md5('demo:user:editor')::uuid, sent_at = NOW()
+     WHERE id = md5('qa30:po1')::uuid $q$);
 
 \echo '--- what a slip is: a PDF kept in the documents category, with its SHA-256'
 SELECT pg_temp.expect_fail('SL4 a key outside the documents category', $q$
@@ -168,17 +163,13 @@ SELECT pg_temp.expect_fail('SL10 its file replaced', $q$
 SELECT pg_temp.expect_fail('SL11 removed', $q$
     DELETE FROM ordering.production_order_slip WHERE production_order_id = md5('qa30:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('SL12 another production order''s slip naming the same file', $q$
-    UPDATE ordering.production_order SET status = 'PENDING_APPROVAL', submitted_at = NOW()
+    UPDATE ordering.production_order SET status = 'SENT', sent_by = md5('demo:user:editor')::uuid, sent_at = NOW()
      WHERE id = md5('qa30:po2')::uuid;
-    UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:approver')::uuid,
-           approved_at = NOW(), sent_at = NOW() WHERE id = md5('qa30:po2')::uuid;
     SELECT pg_temp.slip(md5('qa30:po2')::uuid, 'documents/2026/11/10/a.pdf', repeat('a', 64), 2048) $q$);
-SELECT pg_temp.expect_ok('SL13 the slip written before the approval, in the same transaction (checked at commit)', $q$
-    UPDATE ordering.production_order SET status = 'PENDING_APPROVAL', submitted_at = NOW()
-     WHERE id = md5('qa30:po2')::uuid;
+SELECT pg_temp.expect_ok('SL13 the slip written before the sending, in the same transaction (checked at commit)', $q$
     SELECT pg_temp.slip(md5('qa30:po2')::uuid, 'documents/2026/11/10/c.pdf', repeat('c', 64), 4096);
-    UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:approver')::uuid,
-           approved_at = NOW(), sent_at = NOW() WHERE id = md5('qa30:po2')::uuid $q$);
+    UPDATE ordering.production_order SET status = 'SENT', sent_by = md5('demo:user:editor')::uuid, sent_at = NOW()
+     WHERE id = md5('qa30:po2')::uuid $q$);
 SELECT pg_temp.expect_true('SL14 each sent production order has its one slip',
     (SELECT count(*) FROM ordering.production_order_slip
       WHERE production_order_id IN (md5('qa30:po1')::uuid, md5('qa30:po2')::uuid)) = 2);

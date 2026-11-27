@@ -20,14 +20,18 @@ import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
+import com.stockflow.fulfillment.internal.repository.PickNumbers;
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.api.PrePicking;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.OrderHold;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
+import com.stockflow.warehouse.api.WarehouseView;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
@@ -65,10 +69,15 @@ class FulfillmentServiceImpl implements FulfillmentService {
     private final WarehouseService warehouses;
     private final PickListService pickLists;
     private final CartonCheckService cartonChecks;
+    private final PrePicking prePicking;
+    private final PickNumbers numbers;
 
     FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs, OrderService orders,
             IdentityService identities, InventoryService inventory,
-            WarehouseService warehouses, PickListService pickLists, CartonCheckService cartonChecks, Clock clock) {
+            WarehouseService warehouses, PickListService pickLists, CartonCheckService cartonChecks,
+            PrePicking prePicking, PickNumbers numbers, Clock clock) {
+        this.prePicking = prePicking;
+        this.numbers = numbers;
         this.cartonChecks = cartonChecks;
         this.picks = picks;
         this.packs = packs;
@@ -102,6 +111,11 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, PickDestination destination,
                                       String stagingLocationCode, CurrentUser actor) {
         require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.CREATE);
+        if (WarehouseScope.restriction().isPresent()) {
+            // BR-SEC-002 first, for a caller limited to warehouses: before the redelivery and batch lookups answer, and
+            // before the order's row lock is taken for a redelivery - neither is an out-of-scope caller's to cause.
+            requireOrderInScope(requireOrder(orderId));
+        }
         List<PickJpaEntity> existing = picks.findAllByOrderId(orderId);
         // WF-05 fix plan, section 2: goods of a shipment that came back, released to be delivered again, get a task of
         // their own - a second pick of a batch (or an order) picked once already. It comes before a new batch: a
@@ -122,11 +136,14 @@ class FulfillmentServiceImpl implements FulfillmentService {
                 : orders.batchToPick(orderId, pickedBatches);
         if (redelivery.isEmpty() && batch.isEmpty() && !existing.isEmpty()) {
             PickJpaEntity latest = existing.getLast();
-            requireWarehouseAssignee(assignedUserId, latest.getWarehouseId());
             TaskAccess.requireVisible(latest, actor);
+            requireWarehouseAssignee(assignedUserId, latest.getWarehouseId());
             return toTask(latest);
         }
         OrderSummary order = requireOrder(orderId);
+        if (order.status() == OrderStatus.AWAITING_STOCK && redelivery.isEmpty() && batch.isEmpty()) {
+            return prePickTask(order, assignedUserId, destination, stagingLocationCode, actor);
+        }
         // Released - its warehouse chosen: READY_TO_FULFILL (SCRUM-423, kltn-docs 17 BR-02). A later delivery batch is
         // released while the order is PARTIALLY_FULFILLED and picked in that status (17 §4.5: no new order status).
         // WF4-COUNT-EDGE (b): an order held for stock (INVENTORY) from one of those - a carton it was allocated counted
@@ -152,8 +169,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
             orders.startPicking(orderId, actor.userId());
         }
         var now = clock.instant();
-        var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
+        var pick = new PickJpaEntity(Identifiers.newId(), orderId, order.orderNumber(), warehouseId,
                 PickStatus.PENDING, to, stagingArea)
+                .numbered(numbers.next(BusinessCalendar.date(now)))
                 .forDeliveryBatch(redelivery.isPresent() ? redelivery.get().deliveryBatchId()
                         : batch.map(com.stockflow.order.api.ReleasedBatch::batchId).orElse(null))
                 .forRedelivery(redelivery.map(com.stockflow.order.api.RedeliveryToPick::caseId).orElse(null));
@@ -163,6 +181,53 @@ class FulfillmentServiceImpl implements FulfillmentService {
         // SCRUM-267: one line per hold of the order's stock lines, in this warehouse (docs 07 step 2).
         pickLists.planLines(pick, order, actor.userId());
         return toTask(pick, nameOf(assignedUserId), null);
+    }
+
+    /**
+     * Kltn-docs 07 §4.1 step 2, 17 §4.4 step 15: a task for the part held of an order AWAITING_STOCK - its next delivery
+     * batch's cartons held at the shipping warehouse - to the staging area, or to dispatch when Sales allowed a partial
+     * shipment. The order allocates them and stays AWAITING_STOCK ({@link PrePicking#prePick}); the task picks that
+     * batch and is topped up as the rest arrives (07 §4.3 step 7). The order's row lock is taken there, before
+     * anything of the task is written.
+     */
+    private FulfillmentTask prePickTask(OrderSummary order, UUID assignedUserId, PickDestination destination,
+                                        String stagingLocationCode, CurrentUser actor) {
+        PickDestination to = destination == null ? PickDestination.DISPATCH : destination;
+        requireAwaitingStockDestination(order, to);
+        PrePicking.PrePick prePick = prePicking.prePick(order.orderId(), actor.userId());
+        UUID warehouseId = prePick.warehouseId();
+        WarehouseScope.requireWarehouse(warehouseId);
+        requireWarehouseAssignee(assignedUserId, warehouseId);
+        String stagingArea = stagingAreaFor(warehouseId, to, stagingLocationCode);
+        var now = clock.instant();
+        var pick = new PickJpaEntity(Identifiers.newId(), order.orderId(), order.orderNumber(), warehouseId,
+                PickStatus.PENDING, to, stagingArea).numbered(numbers.next(BusinessCalendar.date(now)))
+                .forDeliveryBatch(prePick.deliveryBatchId());
+        pick.assign(assignedUserId, now);
+        picks.saveAndFlush(pick);      // the pick row first: its lines' trigger and foreign key look for it
+        packs.save(new PackJpaEntity(Identifiers.newId(), pick.getId(), PackStatus.PENDING, null));
+        pickLists.planLines(pick, requireOrder(order.orderId()), actor.userId());
+        if (to == PickDestination.DISPATCH) {
+            // SCOPE-PARTIAL-1105: the part held goes straight to dispatch - the first delivery is ready.
+            prePicking.partGoesFirst(order.orderId(), prePick.deliveryBatchId());
+        }
+        return toTask(pick, nameOf(assignedUserId), null);
+    }
+
+    /**
+     * Kltn-docs 07 §4.1 step 2: "Đơn Awaiting Stock chỉ tạo được task khi đích là STAGING, hoặc khi Sale đã cho phép
+     * giao một phần (đích DISPATCH)" (17 §4.4 step 15).
+     */
+    private static void requireAwaitingStockDestination(OrderSummary order, PickDestination to) {
+        if (to != PickDestination.STAGING && !partialShipmentAllowed(order)) {
+            throw new BusinessException(ErrorCode.PICK_AWAITING_STOCK_DESTINATION, ("Order %s awaits stock: its part "
+                    + "held is picked to the staging area, or to dispatch once Sales allow a partial shipment")
+                    .formatted(order.orderNumber()));
+        }
+    }
+
+    private static boolean partialShipmentAllowed(OrderSummary order) {
+        return order.lifecycle() != null && order.lifecycle().allowPartialShipment();
     }
 
     /** WF4-COUNT-EDGE (b): the order is on hold for stock ({@code INVENTORY}), the hold a shortage puts it on. */
@@ -211,8 +276,10 @@ class FulfillmentServiceImpl implements FulfillmentService {
         List<UUID> pickIds = selected.getContent().stream().map(PickJpaEntity::getId).toList();
         Map<UUID, PackJpaEntity> packByPick = pickIds.isEmpty() ? Map.of() : packs.findByPickIdIn(pickIds).stream()
                 .collect(Collectors.toMap(PackJpaEntity::getPickId, java.util.function.Function.identity()));
+        Map<UUID, WarehouseView> warehouseById = warehouses.findWarehouses(selected.getContent().stream()
+                .map(PickJpaEntity::getWarehouseId).collect(Collectors.toSet()));
         return Pages.toResponse(selected, pick -> toTask(pick, packByPick.get(pick.getId()),
-                names.get(pick.getAssignedUserId()), null));
+                names.get(pick.getAssignedUserId()), null, warehouseById.get(pick.getWarehouseId())));
     }
 
     @Override
@@ -249,6 +316,10 @@ class FulfillmentServiceImpl implements FulfillmentService {
                     "A task is given another destination only while PENDING; it is " + pick.getStatus());
         }
         PickDestination to = destination == null ? PickDestination.DISPATCH : destination;
+        // 07 §4.1 step 2: the rule of creation holds for the change - an order awaiting stock goes to staging unless
+        // Sales allowed a partial shipment.
+        orders.findById(pick.getOrderId()).filter(order -> order.status() == OrderStatus.AWAITING_STOCK)
+                .ifPresent(order -> requireAwaitingStockDestination(order, to));
         pick.changeDestination(to, stagingAreaFor(pick.getWarehouseId(), to, stagingLocationCode));
         return toTask(picks.save(pick));
     }
@@ -273,11 +344,22 @@ class FulfillmentServiceImpl implements FulfillmentService {
                     "A task moves to dispatch from STAGED; it is " + pick.getStatus());
         }
         TaskAccess.requireStillInFulfilment(orders, pick);
-        if (orders.lockedStatus(pick.getOrderId()).orElseThrow() == OrderStatus.ON_HOLD) {
+        OrderStatus orderStatus = orders.lockedStatus(pick.getOrderId()).orElseThrow();
+        if (orderStatus == OrderStatus.ON_HOLD) {
             // 07 edge case, an order on hold while its task is STAGED: its cartons stay in the staging area until the
             // hold is resolved.
             throw new BusinessException(ErrorCode.PICK_ORDER_ON_HOLD, "Order %s is on hold; task %s stays staged"
                     .formatted(pick.getOrderNumber(), taskId));
+        }
+        if (orderStatus == OrderStatus.AWAITING_STOCK && !partialShipmentAllowed(requireOrder(pick.getOrderId()))) {
+            // 07 §4.3 step 8: "khi đơn đã sẵn sàng xuất (đủ hàng, hoặc Sale cho phép giao một phần)" - picked before
+            // its release, the order still waits for the rest; its cartons stay in the staging area.
+            throw new BusinessException(ErrorCode.PICK_AWAITING_STOCK_NOT_READY, ("Order %s still awaits stock; task "
+                    + "%s stays staged").formatted(pick.getOrderNumber(), taskId));
+        }
+        if (orderStatus == OrderStatus.AWAITING_STOCK) {
+            // SCOPE-PARTIAL-1105: the part held, allowed to go first, moves to dispatch - the first delivery is ready.
+            prePicking.partGoesFirst(pick.getOrderId(), pick.getDeliveryBatchId());
         }
         pickLists.moveStagedLinesToDispatch(pick, actor.userId());
         pick.moveToDispatch(actor.userId(), clock.instant());
@@ -322,7 +404,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentTask findTask(UUID taskId, CurrentUser actor) {
         var pick = requirePick(taskId);
         TaskAccess.requireVisible(pick, actor);
-        return toTask(pick, nameOf(pick.getAssignedUserId()), linesOf(requireOrder(pick.getOrderId())));
+        OrderSummary order = requireOrder(pick.getOrderId());
+        return toTask(pick, nameOf(pick.getAssignedUserId()), linesOf(order))
+                .withTopUpAvailable(pickLists.topUpAvailable(pick, order));
     }
 
     /**
@@ -333,9 +417,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentTask startPicking(UUID taskId, CurrentUser actor) {
         var pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        pick.requireAssigned(actor.userId());
+        UUID worker = TaskAccess.requireWorker(pick, actor);
         var order = requireOrderInFulfilment(pick);
-        pick.start(actor.userId(), clock.instant());
+        pick.start(worker, clock.instant());
         picks.save(pick);
         pickLists.planLines(pick, order, actor.userId());
         return toTask(pick);
@@ -353,7 +437,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentTask completePicking(UUID taskId, CurrentUser actor) {
         var pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        pick.requireAssigned(actor.userId());
+        UUID worker = TaskAccess.requireWorker(pick, actor);
         if (pick.getStatus() == PickStatus.PICKED || pick.getStatus() == PickStatus.STAGED) {
             return toTask(pick);
         }
@@ -361,7 +445,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (pick.getStatus() == PickStatus.PICKING) {
             pickLists.requireAllPicked(pick, order);
         }
-        pick.complete(actor.userId(), clock.instant());
+        pick.complete(worker, clock.instant());
         return toTask(picks.save(pick));
     }
 
@@ -394,7 +478,8 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     private FulfillmentTask toTask(PickJpaEntity pick, String assignedUserName,
                                    List<FulfillmentTask.Line> lines) {
-        return toTask(pick, packs.findByPickId(pick.getId()).orElse(null), assignedUserName, lines);
+        return toTask(pick, packs.findByPickId(pick.getId()).orElse(null), assignedUserName, lines,
+                warehouses.findWarehouses(List.of(pick.getWarehouseId())).get(pick.getWarehouseId()));
     }
 
     /**
@@ -402,9 +487,10 @@ class FulfillmentServiceImpl implements FulfillmentService {
      * leaves but data loaded around it did (E2E QA 2026-10-21: three seeded picks made {@code GET /tasks} 404 for
      * everyone) - reads as packing not started ({@code PENDING}), logged, rather than failing the task or, worse, a
      * whole list of tasks for one row. Packing itself still requires the row ({@code PackingService}).
+     * {@code warehouse} names the task's warehouse beside its id; null leaves the code and name null.
      */
     private FulfillmentTask toTask(PickJpaEntity pick, PackJpaEntity pack, String assignedUserName,
-                                   List<FulfillmentTask.Line> lines) {
+                                   List<FulfillmentTask.Line> lines, WarehouseView warehouse) {
         if (pack == null) {
             log.warn("Fulfillment task {} (order {}) has no pack row; shown as packing not started", pick.getId(),
                     pick.getOrderNumber());
@@ -414,7 +500,8 @@ class FulfillmentServiceImpl implements FulfillmentService {
                 (pack == null ? PackStatus.PENDING : pack.getStatus()).name(),
                 pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack == null ? null : pack.getPackedAt(),
                 lines, null, null, pick.getDestination(), pick.getStagingLocationCode(), pick.getStagedAt(),
-                pick.getMovedToDispatchAt());
+                pick.getMovedToDispatchAt(), null, pick.getTaskNumber(),
+                warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
     }
 
     private String nameOf(UUID userId) {
@@ -456,6 +543,22 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     private OrderSummary requireOrder(UUID orderId) {
         return orders.findById(orderId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+    }
+
+    /**
+     * BR-SEC-002, before anything is said of the order or done for it: a caller limited to warehouses opens a task only
+     * for an order released to one of theirs, or - not released yet, AWAITING_STOCK - shipping from one. Asked again
+     * where the task's warehouse is settled; asked first too because what comes between would otherwise answer first:
+     * a refusal naming the order's status, a pre-pick allocating the order's stock (rolled back, but taken), or the
+     * order's row lock taken for a redelivery.
+     */
+    private void requireOrderInScope(OrderSummary order) {
+        if (WarehouseScope.restriction().isEmpty()) {
+            return;
+        }
+        UUID where = order.warehouseId() != null ? order.warehouseId()
+                : orders.shippingWarehouseId(order.orderId()).orElse(null);
+        WarehouseScope.requireWarehouse(where);
     }
 
     private static void require(CurrentUser actor, String resource, Action action) {

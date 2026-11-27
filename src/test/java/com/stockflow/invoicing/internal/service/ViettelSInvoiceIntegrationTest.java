@@ -249,10 +249,10 @@ class ViettelSInvoiceIntegrationTest {
         providerAccounts.activate(VIETTEL, configured(VIETTEL).version());
     }
 
-    /** One carton ordered at 10% VAT, paid, released, packed, handed over and delivered; its draft drawn up. */
+    /** One carton ordered at the day's STANDARD VAT, paid, released, packed, handed over and delivered; its draft. */
     private EInvoice.Snapshot deliveredDraft() {
         ConfirmedOrders.Confirmed confirmed = confirmedOrders.confirmed(customer,
-                ConfirmedOrders.Line.cartons(sku, 1, PRICE).withTax(new java.math.BigDecimal("10")));
+                ConfirmedOrders.Line.cartons(sku, 1, PRICE).withTax(com.stockflow.support.VatOfTheDay.standard(jdbc)));
         placed.add(confirmed.orderId());
         confirmedOrders.release(confirmed.orderId(), DemoData.WAREHOUSE_HCM, staff);
         orders.startPicking(confirmed.orderId(), staff);
@@ -350,13 +350,14 @@ class ViettelSInvoiceIntegrationTest {
     // ---- which provider --------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("the sandbox is the provider in use; Viettel SInvoice is there, not in use, and not put in use "
-            + "without an account")
+    @DisplayName("the sandbox is the provider in use; Viettel SInvoice and SePay are there, not in use, and Viettel "
+            + "is not put in use without an account")
     void theSandboxIsTheDefault() {
         assertThat(settings.get().provider().provider()).isEqualTo(SANDBOX);
         assertThat(providerAccounts.providers()).extracting(ProviderAccounts.Account::provider,
                         ProviderAccounts.Account::active, ProviderAccounts.Account::complete)
-                .containsExactly(tuple(SANDBOX, true, false), tuple(VIETTEL, false, false));
+                .containsExactly(tuple(SANDBOX, true, false), tuple(SepayEInvoiceProvider.CODE, false, false),
+                        tuple(VIETTEL, false, false));
         assertThat(providers.require(SANDBOX)).isInstanceOf(SandboxProvider.class);
         assertThat(providers.require(VIETTEL)).isInstanceOf(ViettelSInvoiceProvider.class);
         assertThatThrownBy(() -> providers.require("MISA")).extracting(ViettelSInvoiceIntegrationTest::code)
@@ -409,7 +410,9 @@ class ViettelSInvoiceIntegrationTest {
                 .isInstanceOf(RuntimeException.class);
         assertThat(Arrays.stream(EInvoiceProviderResponse.class.getRecordComponents()).map(c -> c.getName()))
                 .as("what the API answers with has no place for a secret, sealed or not")
-                .containsExactly("provider", "environment", "username", "secretSet", "active", "autoIssue", "version");
+                .containsExactly("provider", "environment", "username", "secretSet", "active", "autoIssue", "version",
+                        "accountInDeployment", "deploymentAccountReady", "issuesCorrections", "adjustsReplacements",
+                        "sendsErrorNotices");
         assertThat(settings.get().provider().secretSet()).as("the sandbox, still in use, has none").isFalse();
 
         assertThatThrownBy(() -> providerAccounts.storeAccount(VIETTEL, "PRODUCTION", USERNAME, null, before.version()))
@@ -489,7 +492,8 @@ class ViettelSInvoiceIntegrationTest {
         assertThat(sent.get("buyerInfo").get("buyerTaxCode").asText()).isEqualTo(taxCode);
         assertThat(sent.get("summarizeInfo").get("totalAmountWithoutTax").decimalValue())
                 .as("one carton of 50 at 2,000").isEqualByComparingTo("100000");
-        assertThat(sent.get("itemInfo").get(0).get("taxAmount").decimalValue()).isEqualByComparingTo("10000");
+        assertThat(sent.get("itemInfo").get(0).get("taxAmount").decimalValue())
+                .isEqualByComparingTo(com.stockflow.support.VatOfTheDay.tax(100_000, com.stockflow.support.VatOfTheDay.standard(jdbc)));
 
         assertThat(stored(issued.xmlFileKey())).as("the invoice in law is Viettel's signed XML, byte for byte - not one "
                 + "the system wrote").isEqualTo(xml);

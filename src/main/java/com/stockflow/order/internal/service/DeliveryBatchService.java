@@ -70,10 +70,13 @@ public class DeliveryBatchService {
     public record BatchLine(UUID orderLineId, String sku, int cartons, int heldCartons) {
     }
 
-    /** One window move (BR-28), as the history shows it. */
+    /**
+     * One window move (BR-28), as the history shows it. {@code changedByName} is who moved it, by name (17 §5.2: the
+     * history names the person - the staff's view; the customer's carries none).
+     */
     public record WindowChangeView(UUID id, LocalDate oldStart, LocalDate oldEnd, LocalDate newStart, LocalDate newEnd,
                                    WindowChangeReason reason, String note, String evidenceFileName,
-                                   UUID evidenceMessageId, UUID changedBy, Instant changedAt) {
+                                   UUID evidenceMessageId, UUID changedBy, String changedByName, Instant changedAt) {
     }
 
     /**
@@ -101,6 +104,7 @@ public class DeliveryBatchService {
     private final DeliveryBatchRecords records;
     private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
     private final com.stockflow.order.api.ConsentMessages consentMessages;
+    private final com.stockflow.identity.api.IdentityService identities;
     private final ShippingWarehouseService shippingWarehouses;
     private final FileTransfers files;
     private final StagedUploads staged;
@@ -111,7 +115,9 @@ public class DeliveryBatchService {
                          ShippingWarehouseService shippingWarehouses, FileTransfers files, StagedUploads staged,
                          TransactionTemplate tx, Clock clock,
                          com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders,
-                         com.stockflow.order.api.ConsentMessages consentMessages) {
+                         com.stockflow.order.api.ConsentMessages consentMessages,
+                         com.stockflow.identity.api.IdentityService identities) {
+        this.identities = identities;
         this.consentMessages = consentMessages;
         this.productionOrders = productionOrders;
         this.orders = orders;
@@ -130,17 +136,18 @@ public class DeliveryBatchService {
     @Transactional(readOnly = true)
     public Schedule schedule(UUID orderId) {
         return scheduleOf(orders.findById(new OrderId(orderId))
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId)));
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId)), true);
     }
 
     /** The schedule of one of the customer's own orders (17 BR-28: the customer sees the windows in force). */
     @Transactional(readOnly = true)
     public Schedule scheduleOfCustomer(UUID customerId, UUID orderId) {
         return scheduleOf(orders.findById(new OrderId(orderId)).filter(o -> customerId.equals(o.customerId()))
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId)));
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId)), false);
     }
 
-    private Schedule scheduleOf(Order order) {
+    /** @param staffNames name who moved each window (the back office's view); the customer's carries no name */
+    private Schedule scheduleOf(Order order, boolean staffNames) {
         SalesContract contract = signedContract(order).orElse(null);
         if (contract == null) {
             return new Schedule(order.id().value(), order.orderNumber().value(), null, List.of());
@@ -151,6 +158,9 @@ public class DeliveryBatchService {
         records.releasesOf(order.id().value()).forEach(r -> releases.put(r.batchId(), r));
         Map<UUID, List<DeliveryBatchRecords.WindowChange>> changes = changesByBatch(order);
         Map<UUID, OrderLine> lines = linesById(order);
+        Map<UUID, String> movers = staffNames ? identities.displayNames(changes.values().stream()
+                .flatMap(List::stream).map(DeliveryBatchRecords.WindowChange::changedBy)
+                .filter(java.util.Objects::nonNull).distinct().toList()) : Map.of();
         LocalDate today = BusinessCalendar.date(clock.instant());
         List<BatchView> batches = new ArrayList<>();
         for (DeliveryBatch batch : sorted(contract)) {
@@ -171,7 +181,7 @@ public class DeliveryBatchService {
             DeliveryBatchRecords.Release release = releases.get(batch.id());
             batches.add(new BatchView(batch.id(), batch.seq(), batch.windowStart(), batch.windowEnd(), start, end,
                     state, late, release == null ? null : release.releasedAt(), batchLines,
-                    moved.stream().map(DeliveryBatchService::view).toList()));
+                    moved.stream().map(c -> view(c, movers)).toList()));
         }
         return new Schedule(order.id().value(), order.orderNumber().value(), contract.contractNumber(), batches);
     }
@@ -201,6 +211,33 @@ public class DeliveryBatchService {
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<DeliveryBatch> nextToRelease(Order order) {
+        Optional<NextUnreleased> next = firstUnreleased(order);
+        if (next.isPresent() && !next.get().previousHandedOver()) {
+            DeliveryBatch batch = next.get().batch();
+            throw new BusinessException(ErrorCode.DELIVERY_BATCH_NOT_NEXT, ("Delivery batch %d of order %s is "
+                    + "released once batch %d is handed over").formatted(batch.seq(), order.orderNumber(),
+                    next.get().previousSeq()));
+        }
+        return next.map(NextUnreleased::batch);
+    }
+
+    /**
+     * The seq of the batch {@link #nextToRelease} would release now, without its refusal: empty when it would refuse
+     * (the batch before still has goods to hand over), when every batch is released, and for an order without a
+     * signed schedule. Read only - for a reader asking what an order waits for ({@code OrderStockCoverage}), who must
+     * not have a refusal thrown through a transactional proxy mark its transaction rollback-only.
+     */
+    @Transactional(readOnly = true)
+    public java.util.OptionalInt releasableNow(Order order) {
+        return firstUnreleased(order).filter(NextUnreleased::previousHandedOver)
+                .map(next -> java.util.OptionalInt.of(next.batch().seq())).orElse(java.util.OptionalInt.empty());
+    }
+
+    /** The earliest batch not released, and whether the one before it was handed over in full. */
+    private record NextUnreleased(DeliveryBatch batch, int previousSeq, boolean previousHandedOver) {
+    }
+
+    private Optional<NextUnreleased> firstUnreleased(Order order) {
         SalesContract contract = signedContract(order).orElse(null);
         if (contract == null || contract.schedule().isEmpty()) {
             return Optional.empty();
@@ -211,12 +248,9 @@ public class DeliveryBatchService {
         DeliveryBatch previous = null;
         for (DeliveryBatch batch : sorted(contract)) {
             if (!released.contains(batch.id())) {
-                if (previous != null && shippedUnits(order, previous.id(), false) < unitsOf(previous, lines)) {
-                    throw new BusinessException(ErrorCode.DELIVERY_BATCH_NOT_NEXT, ("Delivery batch %d of order %s is "
-                            + "released once batch %d is handed over").formatted(batch.seq(), order.orderNumber(),
-                            previous.seq()));
-                }
-                return Optional.of(batch);
+                // RTM-RETURNED: a shipment of the previous batch that came back counts - its units were closed.
+                return Optional.of(new NextUnreleased(batch, previous == null ? 0 : previous.seq(), previous == null
+                        || handedOverUnits(order, previous.id()) >= unitsOf(previous, lines)));
             }
             previous = batch;
         }
@@ -224,8 +258,12 @@ public class DeliveryBatchService {
     }
 
     /**
-     * 4B-8 (15 §4.1, 17 §4.5): the batches every unit of which is in a delivered shipment, each with the moment its last
-     * shipment was delivered - what an installment after delivery tied to the batch counts from.
+     * 4B-8 (15 §4.1, 17 §4.5), WF-05 X-3 (BE-02; Q-3): the batches each unit of which was delivered or closed - its
+     * shipment came back and its return receipt was confirmed, or it was closed as lost - with at least one shipment
+     * delivered; each with the later of the moment its last shipment was delivered and the moment its shipments that
+     * did not arrive were closed: what an installment after delivery tied to the batch counts from. A batch whose goods
+     * came back counted only its delivered units before, so it never was delivered and its installment never fell due.
+     * A batch nothing of which was delivered is not here: nothing after delivery is due for it.
      */
     @Transactional(propagation = Propagation.SUPPORTS)
     public Map<UUID, Instant> deliveredBatches(Order order) {
@@ -237,11 +275,22 @@ public class DeliveryBatchService {
         Map<UUID, OrderLine> lines = linesById(order);
         for (DeliveryBatch batch : contract.schedule()) {
             int units = unitsOf(batch, lines);
-            if (units > 0 && shippedUnits(order, batch.id(), true) >= units) {
-                order.shipments().stream().filter(s -> batch.id().equals(s.deliveryBatchId()))
-                        .filter(s -> s.status() == OrderShipmentStatus.DELIVERED && s.outcomeAt() != null)
-                        .map(com.stockflow.order.internal.domain.OrderShipment::outcomeAt)
-                        .max(Comparator.naturalOrder()).ifPresent(at -> delivered.put(batch.id(), at));
+            List<com.stockflow.order.internal.domain.OrderShipment> ofBatch = order.shipments().stream()
+                    .filter(s -> batch.id().equals(s.deliveryBatchId())).toList();
+            int done = ofBatch.stream().filter(s -> s.status() == OrderShipmentStatus.DELIVERED || !s.holdsUnits())
+                    .mapToInt(s -> s.quantities().values().stream().mapToInt(Integer::intValue).sum()).sum();
+            Optional<Instant> lastDelivery = ofBatch.stream()
+                    .filter(s -> s.status() == OrderShipmentStatus.DELIVERED && s.outcomeAt() != null)
+                    .map(com.stockflow.order.internal.domain.OrderShipment::outcomeAt).max(Comparator.naturalOrder());
+            if (units > 0 && done >= units && lastDelivery.isPresent()) {
+                Instant at = lastDelivery.get();
+                for (var shipment : ofBatch) {
+                    if (shipment.status() != OrderShipmentStatus.DELIVERED && shipment.unitsClosedAt() != null
+                            && shipment.unitsClosedAt().isAfter(at)) {
+                        at = shipment.unitsClosedAt();
+                    }
+                }
+                delivered.put(batch.id(), at);
             }
         }
         return delivered;
@@ -262,7 +311,8 @@ public class DeliveryBatchService {
 
     /**
      * The batch on its way out (17 §4.5): the latest released, with its window in force and the units of the batches
-     * after it. Empty for an order without released batches - it hands over as a whole, as before.
+     * after it - or, for an order picked before its release (07 §4.1 step 2), its first batch. Empty for an order
+     * without released batches otherwise - it hands over as a whole, as before.
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<BatchInFlight> inFlight(Order order) {
@@ -279,15 +329,17 @@ public class DeliveryBatchService {
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<BatchInFlight> inFlight(Order order, UUID redeliveredBatchId) {
         List<DeliveryBatchRecords.Release> releases = records.releasesOf(order.id().value());
-        if (releases.isEmpty()) {
+        // 07 §4.1 step 2, 17 §4.4 step 15: an order picked before its release has its first batch on the way out - its
+        // part held may be handed over first (17 §4.5 step 18), and never before that batch's window (BR-29).
+        if (releases.isEmpty() && !order.prePicked()) {
             return Optional.empty();
         }
         SalesContract contract = signedContract(order).orElse(null);
-        if (contract == null) {
+        if (contract == null || contract.schedule().isEmpty()) {
             return Optional.empty();
         }
-        DeliveryBatchRecords.Release last = releases.getLast();
-        DeliveryBatch batch = contract.schedule().stream().filter(b -> b.id().equals(last.batchId())).findFirst()
+        UUID lastId = releases.isEmpty() ? sorted(contract).getFirst().id() : releases.getLast().batchId();
+        DeliveryBatch batch = contract.schedule().stream().filter(b -> b.id().equals(lastId)).findFirst()
                 .orElse(null);
         if (batch == null) {
             return Optional.empty();
@@ -308,13 +360,14 @@ public class DeliveryBatchService {
     // ---- moving a window (BR-28) ----------------------------------------------------------------------------------
 
     /**
-     * Where the browser uploads the customer's consent (an e-mail, a signed note) before the window is moved. Not
-     * read-only: the order is read as the caller's data scope sees it, which locks its row ({@code findByIdInScope}),
-     * and Postgres refuses {@code SELECT ... FOR UPDATE} in a read-only transaction.
+     * Where the browser uploads the customer's consent (an e-mail, a signed note) before the window is moved. A read:
+     * the order as the caller's data scope sees it, without the row lock ({@code findByIdInScopeForReading}) - a slot
+     * changes nothing, so it neither needs the lock nor should queue behind a change holding it, and Postgres refuses
+     * {@code SELECT ... FOR UPDATE} in a read-only transaction. Moving the window takes the lock and checks again.
      */
-    @Transactional
+    @Transactional(readOnly = true)
     public UploadSlot beginEvidenceUpload(CurrentUser user, UUID orderId, UUID batchId, UploadSlotRequest request) {
-        Order order = orders.findByIdInScope(new OrderId(orderId))
+        Order order = orders.findByIdInScopeForReading(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
         batchOf(order, batchId);
         return staged.begin(FileCategory.DOCUMENT, user.userId(), request);
@@ -372,7 +425,7 @@ public class DeliveryBatchService {
                         change.windowStart());
             }
         }
-        return scheduleOf(order);
+        return scheduleOf(order, true);
     }
 
     private static void requireWellFormed(WindowChange change) {
@@ -480,7 +533,24 @@ public class DeliveryBatchService {
         }).sum();
     }
 
+    /**
+     * The earliest batch of the order's schedule that still has goods to hand over (units handed over, not returned,
+     * below the units it carries) - the delivery the customer waits for next, whatever its state (WF4-COUNT-WHO).
+     * Empty when every batch is handed over in full, or the schedule has none.
+     */
+    static Optional<DeliveryBatch> nextToHandOver(Order order, SalesContract contract) {
+        Map<UUID, OrderLine> lines = linesById(order);
+        return sorted(contract).stream()
+                .filter(batch -> shippedUnits(order, batch.id(), false) < unitsOf(batch, lines)).findFirst();
+    }
+
     /** Units of the batch's shipments: handed over (not returned), or delivered only. */
+    /** The units of the batch's shipments, those that came back included (their units are closed, RTM-RETURNED). */
+    private static int handedOverUnits(Order order, UUID batchId) {
+        return order.shipments().stream().filter(s -> batchId.equals(s.deliveryBatchId()))
+                .mapToInt(s -> s.quantities().values().stream().mapToInt(Integer::intValue).sum()).sum();
+    }
+
     private static int shippedUnits(Order order, UUID batchId, boolean deliveredOnly) {
         return order.shipments().stream().filter(s -> batchId.equals(s.deliveryBatchId()))
                 .filter(s -> deliveredOnly ? s.status() == OrderShipmentStatus.DELIVERED
@@ -488,8 +558,9 @@ public class DeliveryBatchService {
                 .mapToInt(s -> s.quantities().values().stream().mapToInt(Integer::intValue).sum()).sum();
     }
 
-    private static WindowChangeView view(DeliveryBatchRecords.WindowChange c) {
+    private static WindowChangeView view(DeliveryBatchRecords.WindowChange c, Map<UUID, String> movers) {
         return new WindowChangeView(c.id(), c.oldStart(), c.oldEnd(), c.newStart(), c.newEnd(), c.reason(), c.note(),
-                c.evidenceFileName(), c.evidenceMessageId(), c.changedBy(), c.changedAt());
+                c.evidenceFileName(), c.evidenceMessageId(), c.changedBy(),
+                c.changedBy() == null ? null : movers.get(c.changedBy()), c.changedAt());
     }
 }

@@ -2,7 +2,6 @@ package com.stockflow.design.internal.service;
 
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.json.CanonicalJson;
@@ -22,8 +21,6 @@ import com.stockflow.design.internal.repository.DesignAssetJpaRepository;
 import com.stockflow.design.internal.repository.DesignDecisionJpaRepository;
 import com.stockflow.design.internal.repository.DesignDocumentJpaRepository;
 import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
-import com.stockflow.inventory.api.UomConversion;
-import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.product.api.PrintConfig;
 import com.stockflow.product.api.PrintConfigs;
 import jakarta.persistence.EntityManager;
@@ -46,7 +43,7 @@ import org.springframework.transaction.support.TransactionOperations;
 /**
  * A customer submits their design for review (kltn-docs 12 §4.3): the server's preflight runs on the layout as it is
  * saved (BR-05; {@link LayoutPreflight}), and the three files the studio rendered from it must name that layout's
- * checksum (BR-10; plan D2). Passing, the design is locked (BR-07), waits for the Sales Manager, and they are told
+ * checksum (BR-10; plan D2). Passing, the design is locked (BR-07), waits for the coordinator, and they are told
  * through {@link DesignSubmittedForReview}. Failing, it stays a draft and the failure is written to its history
  * ({@code PREFLIGHT_FAILED}), without moving its version.
  *
@@ -60,7 +57,7 @@ import org.springframework.transaction.support.TransactionOperations;
  *       print file and the technical spec must be PDFs.</li>
  *   <li>With no transaction held, the print file - up to 50 MB - is copied to disk, checked against its checksum, and
  *       checked to be the studio's for this template ({@link PrintFileGeometry}): a file the press cannot use never
- *       reaches the Sales Manager. A failure is written to the history in a transaction of its own, committed before the 422.</li>
+ *       reaches the coordinator. A failure is written to the history in a transaction of its own, committed before the 422.</li>
  *   <li>A short transaction locks the design and submits it - only if its version is still the one read in step 1:
  *       every change to the layout or the files moves it.</li>
  * </ol>
@@ -69,7 +66,7 @@ import org.springframework.transaction.support.TransactionOperations;
 @Transactional
 public class DesignSubmissionService {
 
-    /** What the studio renders when the customer submits (plan D2); the Sales Manager approves exactly these. */
+    /** What the studio renders when the customer submits (plan D2); the coordinator approves exactly these. */
     static final Set<DesignArtifactRole> SUBMITTED_FILES = EnumSet.of(DesignArtifactRole.CUSTOMER_PREVIEW,
             DesignArtifactRole.PRINT_READY, DesignArtifactRole.TECHNICAL_SPEC);
 
@@ -87,7 +84,7 @@ public class DesignSubmissionService {
     private final DesignArtifactJpaRepository artifacts;
     private final DesignDecisionJpaRepository decisions;
     private final PrintConfigs printConfigs;
-    private final UomConversionService units;
+    private final TemplateAvailability availability;
     private final ApplicationEventPublisher events;
     private final DraftViews views;
     private final DesignQuoteRequestService quoteRequests;
@@ -99,8 +96,8 @@ public class DesignSubmissionService {
     public DesignSubmissionService(DesignDraftJpaRepository drafts, DesignDocumentJpaRepository documents,
                                    DesignAssetJpaRepository assets, DesignArtifactJpaRepository artifacts,
                                    DesignDecisionJpaRepository decisions, PrintConfigs printConfigs,
-                                   UomConversionService units, ApplicationEventPublisher events, DraftViews views,
-                                   DesignQuoteRequestService quoteRequests, EntityManager entityManager,
+                                   TemplateAvailability availability, ApplicationEventPublisher events,
+                                   DraftViews views, DesignQuoteRequestService quoteRequests, EntityManager entityManager,
                                    TransactionOperations tx, Clock clock, FileStorage storage) {
         this.drafts = drafts;
         this.documents = documents;
@@ -108,7 +105,7 @@ public class DesignSubmissionService {
         this.artifacts = artifacts;
         this.decisions = decisions;
         this.printConfigs = printConfigs;
-        this.units = units;
+        this.availability = availability;
         this.events = events;
         this.views = views;
         this.quoteRequests = quoteRequests;
@@ -116,6 +113,16 @@ public class DesignSubmissionService {
         this.tx = tx;
         this.clock = clock;
         this.storage = storage;
+    }
+
+    /**
+     * The design is still a draft, then at the version its owner saw: status first, so a design submitted, approved or
+     * returned elsewhere answers {@code DESIGN_NOT_DRAFT} - the reason - rather than {@code CONFLICT}, which its version
+     * would also give (FE request 2026-11-17 S-6). A draft at another version is {@code CONFLICT}.
+     */
+    static void requireSubmittable(DesignDraftJpaEntity draft, long version) {
+        CustomerDesignRules.requireDraft(draft.getStatus());
+        DesignWorkflow.requireVersion(draft.getVersion(), version);
     }
 
     /** What the first read found: why the design cannot go, or the print file to check before it does. */
@@ -146,12 +153,12 @@ public class DesignSubmissionService {
             tx.executeWithoutResult(status -> recordFailure(id, actor, issues));
             throw new BusinessException(ErrorCode.DESIGN_PREFLIGHT_FAILED,
                     "The design did not pass preflight: " + issues.size() + " problem(s)", List.of(),
-                    Map.of("issues", LayoutPreflight.asMaps(issues)));
+                    Map.of("issues", LayoutPreflight.asMaps(issues)), "refusal.design.preflightFailed", issues.size());
         }
         if (!plan.outdatedFiles().isEmpty()) {
             throw new BusinessException(ErrorCode.DESIGN_FILES_OUTDATED,
                     "Render the files again from the layout as it is now: " + plan.outdatedFiles(), List.of(),
-                    Map.of("roles", plan.outdatedFiles()));
+                    Map.of("roles", plan.outdatedFiles()), "refusal.design.filesOutdated");
         }
         return tx.execute(status -> submitLocked(id, actor, version, plan, quote));
     }
@@ -163,10 +170,9 @@ public class DesignSubmissionService {
     Plan plan(UUID id, UUID actor, long version, DesignQuoteRequestService.QuoteRequestInput quote) {
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
-        DesignWorkflow.requireVersion(draft.getVersion(), version);
-        CustomerDesignRules.requireDraft(draft.getStatus());
+        requireSubmittable(draft, version);
         if (draft.getTemplateId() == null) {
-            throw new BusinessException(ErrorCode.CONFLICT, "This design was not started on a template");
+            throw new BusinessException(ErrorCode.CONFLICT, "This design was not started on a template").localized("refusal.design.noTemplate");
         }
         if (quote != null) {
             // Before the preflight: a request that could not be opened refuses the submission, not half of it.
@@ -175,14 +181,16 @@ public class DesignSubmissionService {
         PrintConfig template = printConfigs.byId(draft.getTemplateId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND));
         DesignDocumentJpaEntity layout = documents.findById(id)
-                .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "This design has no layout"));
+                .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "This design has no layout")
+                        .localized("refusal.design.noLayout"));
 
         List<LayoutPreflight.Issue> issues = new ArrayList<>();
-        if (!printConfigs.designable(draft.getTemplateId())) {
+        TemplateAvailability.Availability available = availability.of(draft.getTemplateId(), draft.getSku());
+        if (!available.designable()) {
             issues.add(new LayoutPreflight.Issue("VARIANT_UNAVAILABLE", null, null,
                     "The variant or its product can no longer be designed on"));
         }
-        if (!hasCartonSpec(draft.getSku())) {
+        if (!available.hasCartonSpec()) {
             // B25: what a customer orders in; without it nothing printed could be quoted or packed.
             issues.add(new LayoutPreflight.Issue("CARTON_SPEC_MISSING", null, null,
                     "The variant has no carton specification yet; ask the sales staff"));
@@ -196,7 +204,7 @@ public class DesignSubmissionService {
         for (DesignArtifactRole role : SUBMITTED_FILES) {
             DesignArtifactJpaEntity file = files.get(role);
             if (file == null || !layout.getChecksum().equals(file.getDocumentChecksum())
-                    || !Long.valueOf(template.version()).equals(file.getTemplateVersion())) {
+                    || !Long.valueOf(template.printVersion()).equals(file.getTemplateVersion())) {
                 outdated.add(role.name());
             }
         }
@@ -243,8 +251,7 @@ public class DesignSubmissionService {
         List<LayoutPreflight.Issue> issues = reportedIssues(reported);
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
-        DesignWorkflow.requireVersion(draft.getVersion(), version);
-        CustomerDesignRules.requireDraft(draft.getStatus());
+        requireSubmittable(draft, version);
         DesignDecisionJpaEntity decision = recordFailure(id, actor, issues);
         return new DesignWorkflowService.DecisionView(decision.getActorId(), decision.getArtifactId(),
                 decision.getDecision(), decision.getNotes(), decision.getDraftVersion(),
@@ -317,13 +324,14 @@ public class DesignSubmissionService {
      */
     Instant submitOne(DesignDraftJpaEntity draft, UUID actor, long version, Plan plan, UUID roundId) {
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
-        DesignWorkflow.requireVersion(draft.getVersion(), version);
-        CustomerDesignRules.requireDraft(draft.getStatus());
-        long templateNow = printConfigs.byId(draft.getTemplateId()).map(PrintConfig::version).orElse(-1L);
-        if (templateNow != plan.template().version()) {
+        requireSubmittable(draft, version);
+        // The print version, not the lock's: a template renamed or (de)activated meanwhile still fits the files.
+        long templateNow = printConfigs.byId(draft.getTemplateId()).map(PrintConfig::printVersion).orElse(-1L);
+        if (templateNow != plan.template().printVersion()) {
             throw new BusinessException(ErrorCode.DESIGN_FILES_OUTDATED,
                     "The template changed while the design was being submitted", List.of(),
-                    Map.of("roles", SUBMITTED_FILES.stream().map(Enum::name).sorted().toList()));
+                    Map.of("roles", SUBMITTED_FILES.stream().map(Enum::name).sorted().toList()),
+                    "refusal.design.templateChanged");
         }
         Instant now = clock.instant();
         draft.submitForReview(now);
@@ -341,12 +349,6 @@ public class DesignSubmissionService {
                 asset.getAssetId().toString(), new LayoutPreflight.Asset(asset.getContentType(), asset.getSizeBytes(),
                         asset.getWidthPx(), asset.getHeightPx())));
         return found;
-    }
-
-    /** An active packing unit of more than one base unit: the variant's carton specification (kltn-docs 01 BR-03). */
-    private boolean hasCartonSpec(String sku) {
-        return units.conversionsOf(List.of(new Sku(sku))).getOrDefault(sku, List.of()).stream()
-                .anyMatch(UomConversion::cartonCandidate);
     }
 
     /** The design's current file of each role, its own. */

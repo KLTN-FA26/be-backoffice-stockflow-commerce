@@ -114,7 +114,6 @@ abstract class ProductionOrderDispatchFixtures {
 
     protected CurrentUser sales;
     protected UUID coordinator;
-    protected UUID approver;
     protected UUID warehouseManager;
     protected UUID customerId;
     protected IssuedSku sku;
@@ -132,7 +131,6 @@ abstract class ProductionOrderDispatchFixtures {
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        approver = tx.execute(s -> ReferenceRows.user(entityManager));
         warehouseManager = managerOf(a);
         customerId = Identifiers.newId();
         tx.executeWithoutResult(s -> {
@@ -217,18 +215,17 @@ abstract class ProductionOrderDispatchFixtures {
             UUID variant = Identifiers.newId();
             String code = product.sku() + "-D" + variant.toString().substring(24, 28).toUpperCase(Locale.ROOT);
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Printed cup', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), code, "OWNED-SKU:" + code, customerId, design.snapshotId(),
-                    product.variantId());
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Printed cup', 'ACTIVE', 0, NOW())""",
+                    variant, product.productId(), product.variantId(), customerId, design.snapshotId(), code);
+            // The order of the SKU made its inventory item (owner decision Q5); the test stocks or receives it.
+            UUID item = com.stockflow.support.CartonRows.item(jdbc, code);
             UUID carton = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, version, created_at,
-                        default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, FALSE, TRUE, 0, NOW(), TRUE)""",
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
+                    VALUES (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', ?, 4.2, 60, 40, 35, TRUE, 0, NOW())""",
                     carton, item, PER_CARTON);
             return new IssuedSku(code, design.snapshotId(), design.checksum(), carton, printFileKey);
         });
@@ -239,6 +236,11 @@ abstract class ProductionOrderDispatchFixtures {
     }
 
     protected UUID confirmedOrder() {
+        return confirmedOrder(a);
+    }
+
+    /** A confirmed order of 20 cartons in two batches (12, then 8), shipping from {@code at}. */
+    protected UUID confirmedOrder(Warehouse at) {
         UUID orderId = tx.execute(s -> {
             OrderLine line = Order.line(Identifiers.newId(), new Sku(sku.sku()), CARTONS * PER_CARTON,
                     Money.vnd(2_000), null).withCartons(sku.uomConversionId(), CARTONS, PER_CARTON)
@@ -264,19 +266,19 @@ abstract class ProductionOrderDispatchFixtures {
                 IncomingFiles.sent(List.of(new FileUpload("signed.pdf", "application/pdf", scan.length,
                         new ByteArrayInputStream(scan)))), today));
         assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
-        shippingWarehouses.choose(orderId, a.id(), sales.userId());
+        shippingWarehouses.choose(orderId, at.id(), sales.userId());
         return orderId;
     }
 
-    /** A production order for batch 1 (12 cartons), submitted by the coordinator. */
-    protected ProductionOrder pending(Producer by) {
-        ProductionOrder drawn = productionOrders.drawUp(confirmedOrder(), 1, by.id(), coordinator);
-        return productionOrders.submit(drawn.id(), drawn.version(), coordinator);
+    /** A production order for batch 1 (12 cartons), drawn up by the coordinator: a DRAFT, not sent. */
+    protected ProductionOrder drafted(Producer by) {
+        return productionOrders.drawUp(confirmedOrder(), 1, by.id(), coordinator);
     }
 
-    protected ProductionOrder approved(Producer by) {
-        ProductionOrder pending = pending(by);
-        return productionOrders.approve(pending.id(), pending.version(), approver);
+    /** The same, sent to its producer by the coordinator who drew it up. */
+    protected ProductionOrder sent(Producer by) {
+        ProductionOrder draft = drafted(by);
+        return productionOrders.send(draft.id(), draft.version(), coordinator);
     }
 
     protected ProductionOrder reread(UUID id) {

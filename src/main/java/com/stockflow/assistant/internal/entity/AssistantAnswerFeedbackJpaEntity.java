@@ -35,6 +35,14 @@ public class AssistantAnswerFeedbackJpaEntity extends BaseEntity implements Scop
     @Column(name = "reason", length = 500)
     private String reason;
 
+    /** The rater's roles when they rated, '+'-joined; null on a verdict given before V20270107000400. */
+    @Column(name = "rater_roles", length = 200)
+    private String raterRoles;
+
+    /** The warehouses the rater was limited to, ','-joined, empty when none; null exactly when the roles are. */
+    @Column(name = "rater_warehouses", length = 500)
+    private String raterWarehouses;
+
     protected AssistantAnswerFeedbackJpaEntity() {
     }
 
@@ -55,14 +63,18 @@ public class AssistantAnswerFeedbackJpaEntity extends BaseEntity implements Scop
         return null;
     }
 
-    /** The verdict given now, in place of any earlier one. */
-    public void give(FeedbackVerdict verdict, String reason) {
+    /** The verdict given now, in place of any earlier one, by a rater of these roles and warehouses. */
+    public void give(FeedbackVerdict verdict, String reason, String raterRoles, String raterWarehouses) {
         this.verdict = verdict;
         this.reason = reason;
+        this.raterRoles = raterRoles;
+        this.raterWarehouses = raterWarehouses;
     }
 
     public UUID getMessageId() { return messageId; }
     public UUID getOwnerUserId() { return ownerUserId; }
     public FeedbackVerdict getVerdict() { return verdict; }
     public String getReason() { return reason; }
+    public String getRaterRoles() { return raterRoles; }
+    public String getRaterWarehouses() { return raterWarehouses; }
 }

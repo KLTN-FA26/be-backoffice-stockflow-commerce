@@ -6,24 +6,26 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Works out the carton an order line is packed in, from the inventory item's master data (SCRUM-287, decisions
- * LP2-2 to LP2-5). For each SKU, the first level that has a full size (length, width, height) and weight wins:
+ * Works out the carton an order line is packed in, from the carton of the SKU's catalogue variant (owner decision
+ * Q1; SCRUM-287, decisions
+ * LP2-2 to LP2-4). For each SKU, the first level that has a full size (length, width, height) and weight wins:
  *
  * <ol>
- *   <li>the unit marked {@code default_shipping} on the item's units of measure;</li>
- *   <li>the largest active packing unit that has them (most base units per unit, then by code);</li>
- *   <li>the item's box times {@code packageCount}: a kit of N same-size boxes when that is above 1;</li>
- *   <li>the item's unit size and weight.</li>
+ *   <li>the variant's one active unit, its carton;</li>
+ *   <li>should an item have several active units, the largest that has them (most base units per unit, then by
+ *       code).</li>
  * </ol>
  *
- * <p>A level with missing data is skipped and reported as a warning. When even the item's unit is incomplete the
- * line is {@link PackagingSpec.Status#MISSING}; the caller decides what that means (the estimate service answers 422
- * {@code LOAD_ESTIMATE_PACKAGING_MISSING} with a link to the item). Nothing is defaulted.</p>
+ * <p>A SKU has one active carton (01 BR-03, {@code uk_uom_conversions_one_carton}), so the second level is not reached
+ * from the database's data. The item itself has no size or weight
+ * to fall back on (V20261215000100, 01 BR-03, C21): a level with missing data is skipped and reported as a warning,
+ * and when no carton is measured the line is {@link PackagingSpec.Status#MISSING}, as 09 §4 step 129 lists it. The
+ * caller decides what that means (the estimate service answers 422 {@code LOAD_ESTIMATE_PACKAGING_MISSING} with a link
+ * to the item). Nothing is defaulted.</p>
  *
  * <p>Cartons are {@code ceil(quantity / factor)}: the full ones, and a remainder as one more carton of the same
- * size whose weight is the units' weight plus the carton's own packaging (LP2-4). The result depends only on the
- * data read, never on time or randomness, so the same input gives the same answer. Reads join the caller's
- * transaction.</p>
+ * size weighing the full carton's weight pro rata (LP2-4). The result depends only on the data read, never on time or
+ * randomness, so the same input gives the same answer. Reads join the caller's transaction.</p>
  */
 public interface PackagingSpecResolver {
 
@@ -47,7 +49,7 @@ public interface PackagingSpecResolver {
      * One carton of the packing unit {@code uomConversionId} of {@code sku}, as its unit of measure declares it (SCRUM-287
      * PR T, LP2-8): an unopened stock carton shipped as it is starts from these measures - the packer still weighs and
      * measures it. Empty when the unit is not the SKU's or lacks a full size or weight (nothing is defaulted, LP2-3);
-     * the rotatable flag is the item's.
+     * the rotatable flag is the variant's (owner decision Q9).
      */
     java.util.Optional<PackagingSpec.CartonSpec> unitCarton(Sku sku, UUID uomConversionId);
 }

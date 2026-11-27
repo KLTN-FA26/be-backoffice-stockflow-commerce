@@ -10,6 +10,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
+import java.time.Clock;
+
 /**
  * kltn-docs 17 §4.5, BR-03: cancelling an order before it ships stops the warehouse work — the pick
  * and the pack of the order are cancelled, and a pick already started is flagged for its goods to be
@@ -38,13 +40,15 @@ class OrderCancellationListener {
     private final PackJpaRepository packs;
     private final PickListService pickLists;
     private final CartonCheckService cartonChecks;
+    private final Clock clock;
 
     OrderCancellationListener(PickJpaRepository picks, PackJpaRepository packs, PickListService pickLists,
-                              CartonCheckService cartonChecks) {
+                              CartonCheckService cartonChecks, Clock clock) {
         this.picks = picks;
         this.packs = packs;
         this.pickLists = pickLists;
         this.cartonChecks = cartonChecks;
+        this.clock = clock;
     }
 
     @ApplicationModuleListener
@@ -63,7 +67,7 @@ class OrderCancellationListener {
     }
 
     private void cancel(PickJpaEntity pick, String orderNumber) {
-        if (!pick.cancel()) {
+        if (!pick.cancel(clock.instant())) {
             return;
         }
         picks.save(pick);

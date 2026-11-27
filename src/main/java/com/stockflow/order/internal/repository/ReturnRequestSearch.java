@@ -26,12 +26,17 @@ public interface ReturnRequestSearch {
     record Criteria(List<ReturnStatus> statuses, UUID customerId, UUID orderId, String text, Boolean vatAdjustment) {
     }
 
-    /** One return as a list shows it. */
+    /**
+     * One return as a list shows it. {@code receiptDraftOpen} reads {@code open_draft_receipt_id} off the same header
+     * row, so the flag costs no query per row (WF-05 BE-23).
+     */
     record ReturnRequestRow(UUID id, String rmaNumber, UUID orderId, String orderNumber, UUID customerId,
                             ReturnStatus status, ReturnReason reason, ReturnResolution requestedResolution,
                             String channel, Instant requestedAt, Instant returnDeadline, BigDecimal settlementAmount,
                             BigDecimal refundedAmount, BigDecimal offsetAmount, String currency,
-                            boolean vatAdjustmentRequired, Instant closedAt, long version) {
+                            boolean vatAdjustmentRequired, Instant closedAt, long version, UUID shipmentId,
+                            com.stockflow.order.internal.domain.ReturnRefusalReason refusalReason,
+                            boolean receiptOpenable, boolean receiptDraftOpen) {
     }
 
     Page<ReturnRequestRow> search(Criteria criteria, Pageable pageable);

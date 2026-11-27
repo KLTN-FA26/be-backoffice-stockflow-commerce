@@ -11,7 +11,8 @@ import java.util.UUID;
  * @param requestId     de-duplication key: the same request holds once
  * @param warehouseCode the order's shipping warehouse (20 BR-17)
  * @param cartons       the cartons still to hold for the line
- * @param unitsPerCarton the SKU's standard count per carton: a carton is held whole or not at all (BR-21)
+ * @param unitsPerCarton the count of the cartons to hold - the order line's: a carton is held whole or not at all
+ *                       (BR-21), and only cartons of exactly this count are held and later allocated (ADR-0011)
  */
 public record HoldStockCommand(UUID requestId, UUID orderId, Sku sku, String warehouseCode, int cartons,
                                int unitsPerCarton) {

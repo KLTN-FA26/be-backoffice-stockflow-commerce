@@ -16,6 +16,9 @@ public interface PutawayTaskRepository extends AggregateRepository<PutawayTask, 
     /** The PENDING or IN_PROGRESS task of a carton; at most one ({@code uk_putaway_task_open_package}). */
     Optional<PutawayTask> findOpenByStockPackage(UUID stockPackageId);
 
+    /** The open tasks of these cartons, in one read; a carton has at most one ({@code uk_putaway_task_open_package}). */
+    List<PutawayTask> findOpenByStockPackages(java.util.Collection<UUID> stockPackageIds);
+
     /** The loose task of a receipt line, whatever its status: a finished line is not put away a second time. */
     Optional<PutawayTask> findLooseOfReceiptLine(UUID goodsReceiptLineId);
 

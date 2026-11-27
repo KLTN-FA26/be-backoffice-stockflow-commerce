@@ -33,7 +33,7 @@ server, trang đồng ý, và các client chưa hỗ trợ đồng đều. Nó q
   `RunAs.authenticationFor(chủ token, "assistant-mcp")`: cùng cách dựng quyền với lớp theo dõi và với converter của
   JWT. Đổi vai trò, khóa tài khoản hay rút quyền đều có hiệu lực ở lần gọi sau, không ai phải thu hồi token.
 - **Quyền riêng `assistant-mcp:CREATE`, opt-in**, mở endpoint MCP và các endpoint token, tách khỏi khung chat.
-  Migration `V20261125001100` chỉ cấp nó cho SYSTEM_ADMIN. Doanh nghiệp cấp cho vai trò nào được dùng MCP (AQ-17): một
+  Migration `V20270106001100` chỉ cấp nó cho SYSTEM_ADMIN. Doanh nghiệp cấp cho vai trò nào được dùng MCP (AQ-17): một
   token sống tới 90 ngày và gửi dữ liệu tới nhà cung cấp model mà client của người dùng chọn, nên đó không phải mặc
   định đi kèm việc bật MCP.
 - **Chỉ tạo được ngay sau khi đăng nhập** (15 phút, theo `iat` của token đăng nhập). Script chạy trong trang back
@@ -86,7 +86,7 @@ server, trang đồng ý, và các client chưa hỗ trợ đồng đều. Nó q
 ## Sửa đổi ngày 16/11/2026: đợt dọn phạm vi không đổi quyết định này
 
 Đợt dọn của `develop` ([ADR-0010](0010-rescope-b2b-printed-goods.md)) không chạm tới token MCP: `assistant-mcp:CREATE`
-vẫn chỉ cấp cho SYSTEM_ADMIN (`V20261125001100`, đổi số cùng các migration khác của trợ lý), và doanh nghiệp vẫn chọn vai
+vẫn chỉ cấp cho SYSTEM_ADMIN (`V20270106001100`, đổi số cùng các migration khác của trợ lý), và doanh nghiệp vẫn chọn vai
 trò nào được dùng MCP (AQ-17). Thứ đổi là những gì một token mở được: `tools/list` giờ là 15 tool đọc của trợ lý sau đợt
 dọn (tài liệu thiết kế §4.2), lọc theo quyền của chủ token như trước; mười tool đã bỏ (hàng thấp, đề xuất nhập, lô sắp
 hết hạn, PO, điều khoản nhà cung cấp, LSX của xưởng, công nợ, khách nợ quá hạn, chuyển kho, đổi trả cũ) không còn qua

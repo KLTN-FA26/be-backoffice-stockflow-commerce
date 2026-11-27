@@ -4,11 +4,15 @@ import com.stockflow.common.persistence.BaseJpaRepository;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
 import jakarta.persistence.LockModeType;
+import jakarta.persistence.criteria.Predicate;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -24,21 +28,38 @@ public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJ
     Optional<DesignDraftJpaEntity> lockById(@Param("id") UUID id);
 
     /**
-     * Whether a quote request on the design is open: what lets the sales staff read it (plan D7). Asked by a read only
-     * when that decides - a reader holding the right to read quote requests, of a design that is neither theirs nor
-     * waiting for them as a reviewer.
+     * Whether a quote request on the design is open - its own, or a line of its project's open request: what lets the
+     * sales staff read it (plan D7; 12 BR-25, where a project request names a design returned for changes too). Asked
+     * by a read only when that decides - a reader holding the right to read quote requests, of a design that is neither
+     * theirs nor waiting for them as a reviewer.
      */
-    @Query("select count(r) > 0 from DesignQuoteRequestJpaEntity r where r.draftId = :id "
-            + "and r.status = com.stockflow.design.internal.domain.QuoteRequestStatus.OPEN")
+    @Query(value = "SELECT EXISTS (SELECT 1 FROM design.design_quote_request r WHERE r.draft_id = :id "
+            + "AND r.status = 'OPEN') OR EXISTS (SELECT 1 FROM design.design_project_quote_request_line l "
+            + "JOIN design.design_project_quote_request p ON p.id = l.request_id WHERE l.draft_id = :id "
+            + "AND p.status = 'OPEN')", nativeQuery = true)
     boolean hasOpenQuoteRequest(@Param("id") UUID id);
 
-    /** A user's own designs in the given statuses (BR-03: a design is its owner's alone). */
-    @Query("select d from DesignDraftJpaEntity d where d.status in :statuses and d.ownerUserId = :userId")
-    Page<DesignDraftJpaEntity> findOwnedBy(@Param("userId") UUID userId,
-            @Param("statuses") Collection<DesignStatus> statuses, Pageable pageable);
+    /**
+     * A user's own designs in the given statuses (BR-03: a design is its owner's alone), in a design project
+     * ({@code inProject} true), in none (false) or either (null). A specification so that an absent filter binds no
+     * parameter: the storefront asks for the designs a project may still take, and a page filtered after it was cut
+     * would come back short with a total that counted the rest.
+     */
+    static Specification<DesignDraftJpaEntity> ownedBy(UUID userId, Collection<DesignStatus> statuses,
+                                                       Boolean inProject) {
+        return (root, query, cb) -> {
+            List<Predicate> where = new ArrayList<>();
+            where.add(cb.equal(root.get("ownerUserId"), userId));
+            where.add(root.get("status").in(statuses));
+            if (inProject != null) {
+                where.add(inProject ? cb.isNotNull(root.get("projectId")) : cb.isNull(root.get("projectId")));
+            }
+            return cb.and(where.toArray(Predicate[]::new));
+        };
+    }
 
     /**
-     * The Sales Manager's queue (kltn-docs 12 §4.4): customers' designs submitted on their own and waiting for review,
+     * The coordinator's queue (kltn-docs 12 §4.4): customers' designs submitted on their own and waiting for review,
      * the longest waiting first. A design waiting in a project's review round is that round's, one item of the queue
      * of rounds (§4.10).
      */
@@ -50,6 +71,19 @@ public interface DesignDraftJpaRepository extends BaseJpaRepository<DesignDraftJ
             + "d.status = com.stockflow.design.internal.domain.DesignStatus.PENDING_REVIEW and not exists ("
             + "select 1 from DesignReviewRoundDesignJpaEntity m where m.draftId = d.id and m.outcome is null)")
     Page<DesignDraftJpaEntity> reviewQueue(Pageable pageable);
+
+    /** How many designs wait for review on a template. */
+    interface PendingOn {
+        UUID getTemplateId();
+
+        long getPending();
+    }
+
+    /** The designs waiting for review on each of {@code templateIds}, in one grouped count; none, no row. */
+    @Query("select d.templateId as templateId, count(d) as pending from DesignDraftJpaEntity d "
+            + "where d.templateId in :templateIds "
+            + "and d.status = com.stockflow.design.internal.domain.DesignStatus.PENDING_REVIEW group by d.templateId")
+    java.util.List<PendingOn> pendingReviewsOn(@Param("templateIds") Collection<UUID> templateIds);
 
     /** A project's designs, archived ones aside, the oldest first: the project's view, side by side (§4.9 step 30). */
     @Query("select d from DesignDraftJpaEntity d where d.projectId = :projectId "

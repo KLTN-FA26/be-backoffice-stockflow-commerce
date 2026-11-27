@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -38,14 +39,14 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * SCRUM-424 / SCRUM-145 against a real database: the stock rows, the ledger line and the adjustment
+ * SCRUM-424 / SCRUM-145 against a real database: the cartons, the ledger line and the adjustment
  * all land, with the table constraints (four eyes, ledger shape, foreign keys) live. Each test
  * works on its own canonical SKU and lot, so it never disturbs the demo stock other tests read.
  *
  * <p>Moves are of whole cartons by LPN since team plan 4C-2 (kltn-docs 11 BR-04, BR-07): a carton of 10 stands at
- * {@link #BIN} beside another of the same lot. Since review C4 M-5 ({@code ck_stock_item_whole_cartons}) no row in no
- * carton holds stock, so the four-eyes mechanism is exercised on whole-carton write-offs by LPN (kltn-docs 20 BR-14),
- * and the loose path only refuses to add units ({@code STOCK_NOT_IN_CARTON}). Restocking and the other carton paths:
+ * {@link #BIN} beside another of the same lot. The carton is the stock (ADR-0011): there is nothing loose, so the
+ * four-eyes mechanism is exercised on whole-carton write-offs by LPN (kltn-docs 20 BR-14), and a request naming no
+ * carton is only refused ({@code STOCK_NOT_IN_CARTON}). Restocking and the other carton paths:
  * {@code CartonAdjustmentIntegrationTest} (team plan 4C-3).</p>
  */
 // DIRECT_DEPENDENCIES: moves ask warehouse :: api whether a location may take stock (issue #67).
@@ -74,7 +75,7 @@ class StockOperationsIntegrationTest {
         sku = new Sku("MOVE-" + UUID.randomUUID().toString().substring(0, 8));
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         manager = tx.execute(s -> ReferenceRows.user(entityManager));
-        // The demo sofa is explicitly untracked. A test that uses lots needs its own canonical
+        // The demo cups are untracked (lot UNTRACED). A test that uses lots needs its own canonical
         // LOT item, rather than violating that live policy or disabling policy enforcement.
         tx.executeWithoutResult(
                 s -> {
@@ -85,14 +86,7 @@ class StockOperationsIntegrationTest {
                             sku.code(),
                             "Move fixture",
                             sku.code().toLowerCase(Locale.ROOT));
-                    jdbc.update(
-                            """
-insert into product.variants(id,product_id,sku,name,attribute_signature)
-values (?,?,?,'Move fixture','')
-""",
-                            Identifiers.newId(),
-                            product,
-                            sku.code());
+                    StockedSkus.customerSkuOn(jdbc, product, sku.code(), "Move fixture");
                 });
         tx.executeWithoutResult(s -> carton = CartonRows.stock(jdbc, sku.code(), BIN, 1, 10, lot,
                 java.time.Instant.parse("2026-01-02T00:00:00Z")).getFirst());
@@ -107,14 +101,16 @@ values (?,?,?,'Move fixture','')
 
     /** Units of the carton at {@code location}, null when it is not there. */
     private Integer cartonAt(String location) {
-        return jdbc.query("SELECT on_hand FROM inventory.stock_item WHERE id = ? AND location_code = ?",
-                rs -> rs.next() ? rs.getInt(1) : null, carton.stockItemId(), location);
+        return jdbc.query("SELECT CASE WHEN status = 'IN_STOCK' THEN nominal_qty ELSE 0 END FROM"
+                + " inventory.stock_package WHERE id = ? AND location_code = ?",
+                rs -> rs.next() ? rs.getInt(1) : null, carton.id(), location);
     }
 
     /** Units of the other carton (at {@link #BIN}): 10 until a write-off of it posts, 0 after. */
     private Integer onHand(String location) {
-        return jdbc.query("SELECT on_hand FROM inventory.stock_item WHERE id = ? AND location_code = ?",
-                rs -> rs.next() ? rs.getInt(1) : null, other.stockItemId(), location);
+        return jdbc.query("SELECT CASE WHEN status = 'IN_STOCK' THEN nominal_qty ELSE 0 END FROM"
+                + " inventory.stock_package WHERE id = ? AND location_code = ?",
+                rs -> rs.next() ? rs.getInt(1) : null, other.id(), location);
     }
 
     /** The carton's status: IN_STOCK, or CONSUMED / LOST once written off. */
@@ -128,7 +124,7 @@ values (?,?,?,'Move fixture','')
     }
 
     @Test
-    @DisplayName("a carton moved by hand goes whole with its row, one ledger line naming it on both sides; the same "
+    @DisplayName("a carton moved by hand goes whole, one ledger line naming it on both sides; the same "
             + "request again is answered, not moved twice (11 BR-04, BR-07)")
     void moveWritesStockAndLedger() {
         UUID requestId = UUID.randomUUID();
@@ -143,15 +139,15 @@ values (?,?,?,'Move fixture','')
         assertThat(cartonAt(PACKING)).isEqualTo(10);
         assertThat(onHand(BIN)).as("the other carton beside it stays").isEqualTo(10);
         Map<String, Object> line = jdbc.queryForMap(
-                "SELECT * FROM inventory.stock_movement WHERE reference_type = 'MOVE_TASK' AND reference_id = ?",
+                "SELECT m.*, p.nominal_qty AS quantity FROM inventory.stock_movement m JOIN inventory.stock_package p "
+                        + "ON p.id = m.stock_package_id WHERE m.reference_type = 'MOVE_TASK' AND m.reference_id = ?",
                 requestId);
         assertThat(line)
                 .containsEntry("movement_type", "MOVE")
                 .containsEntry("from_location_code", BIN)
                 .containsEntry("to_location_code", PACKING)
                 .containsEntry("quantity", 10)
-                .containsEntry("from_stock_package_id", carton.id())
-                .containsEntry("to_stock_package_id", carton.id())
+                .containsEntry("stock_package_id", carton.id())
                 .containsEntry("actor_id", clerk);
 
         // The same request again is the same move, not a second one, and not an "already there" refusal.
@@ -180,11 +176,8 @@ values (?,?,?,'Move fixture','')
         // One carton of two cannot go (it is consumed): neither moves.
         CartonRows.Carton gone = tx.execute(s -> CartonRows.stock(jdbc, sku.code(), BIN, 1, 10, lot,
                 java.time.Instant.parse("2026-01-03T00:00:00Z")).getFirst());
-        tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE inventory.stock_item SET on_hand = 0 WHERE id = ?", gone.stockItemId());
-            jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW()"
-                    + " WHERE id = ?", gone.id());
-        });
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED',"
+                + " stock_status = NULL, closed_at = NOW() WHERE id = ?", gone.id()));
         assertThatThrownBy(() -> inventory.moveStockPackages(new MoveStockPackagesCommand(
                 List.of(carton.lpn(), gone.lpn()), PACKING, MoveReference.MOVE_TASK, UUID.randomUUID(), clerk)))
                 .extracting(e -> ((BusinessException) e).errorCode())
@@ -198,7 +191,7 @@ values (?,?,?,'Move fixture','')
                     + " ledger line: a carton written off whole")
     void adjustmentFourEyes() {
         StockAdjustmentSummary requested = inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(other.lpn(),
-                -10, StockAdjustmentReason.DAMAGED, "Crushed corner", clerk));
+                StockAdjustmentReason.DAMAGED, "Crushed corner", clerk));
         assertThat(requested.status()).isEqualTo(StockAdjustmentStatus.PENDING_APPROVAL);
         assertThat(requested.number()).matches("ADJ-\\d{8}-\\d{4}");
         assertThat(onHand(BIN)).isEqualTo(10);
@@ -215,9 +208,9 @@ values (?,?,?,'Move fixture','')
         assertThat(
                         jdbc.queryForObject(
                                 """
-SELECT count(*) FROM inventory.stock_movement
-WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type = 'ADJUSTMENT'
-  AND from_location_code = ? AND to_location_code IS NULL AND quantity = 10""",
+SELECT count(*) FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
+WHERE m.reference_type = 'STOCK_ADJUSTMENT' AND m.reference_id = ? AND m.movement_type = 'ADJUSTMENT'
+  AND m.from_location_code = ? AND m.to_location_code IS NULL AND p.nominal_qty = 10""",
                                 Integer.class,
                                 requested.adjustmentId(),
                                 BIN))
@@ -233,9 +226,9 @@ WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type
             "numbers are unique per day, rejection leaves stock alone, and the queue filters by"
                     + " status")
     void numbersRejectionAndQueue() {
-        StockAdjustmentSummary a = inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(carton.lpn(), -10,
+        StockAdjustmentSummary a = inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(carton.lpn(),
                 StockAdjustmentReason.DAMAGED, null, clerk));
-        StockAdjustmentSummary b = inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(other.lpn(), -10,
+        StockAdjustmentSummary b = inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(other.lpn(),
                 StockAdjustmentReason.LOST, null, clerk));
         assertThat(a.number()).isNotEqualTo(b.number());
 
@@ -262,13 +255,13 @@ WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type
     @Test
     @DisplayName("SCRUM-459: a write-off posts, and a withdrawn request is stored with its time, undecided")
     void scrapAndWithdrawal() {
-        StockAdjustmentSummary scrap = inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(other.lpn(), -10,
+        StockAdjustmentSummary scrap = inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(other.lpn(),
                 StockAdjustmentReason.DAMAGED, "Misprint at station 1", clerk));
         assertThat(operations.approve(scrap.adjustmentId(), manager).status()).isEqualTo(StockAdjustmentStatus.POSTED);
         assertThat(onHand(BIN)).isZero();
 
         StockAdjustmentSummary sample = inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(carton.lpn(),
-                -10, StockAdjustmentReason.LOST, null, clerk));
+                StockAdjustmentReason.LOST, null, clerk));
         assertThatThrownBy(() -> operations.withdraw(sample.adjustmentId(), manager))
                 .extracting(e -> ((BusinessException) e).errorCode())
                 .isEqualTo(ErrorCode.ADJUSTMENT_NOT_REQUESTER);
@@ -290,11 +283,11 @@ WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type
             + "anything is looked up or written")
     void scrapAndSampleAreNotCartonReasons() {
         for (StockAdjustmentReason reason : java.util.List.of(StockAdjustmentReason.SCRAP, StockAdjustmentReason.SAMPLE)) {
-            assertThatThrownBy(() -> inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(other.lpn(), -10,
+            assertThatThrownBy(() -> inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(other.lpn(),
                     reason, "x", clerk))).as(reason.name())
                     .extracting(e -> ((BusinessException) e).errorCode())
                     .isEqualTo(ErrorCode.STOCK_ADJUSTMENT_REASON_NOT_FOR_CARTON);
-            assertThatThrownBy(() -> inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton("NO-SUCH-LPN", -10,
+            assertThatThrownBy(() -> inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton("NO-SUCH-LPN",
                     reason, "x", clerk))).as("%s of an unknown carton: the reason is checked first", reason.name())
                     .extracting(e -> ((BusinessException) e).errorCode())
                     .isEqualTo(ErrorCode.STOCK_ADJUSTMENT_REASON_NOT_FOR_CARTON);
@@ -303,9 +296,9 @@ WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type
     }
 
     @Test
-    @DisplayName("review C4 M-5: units are never added to a row in no carton - a loose write-up is STOCK_NOT_IN_CARTON")
+    @DisplayName("review C4 M-5: units are never added to a row in no carton - a request naming no LPN is STOCK_NOT_IN_CARTON")
     void looseSurplusIsRefused() {
-        assertThatThrownBy(() -> inventory.requestAdjustment(new RequestAdjustmentCommand(BIN, sku, lot, 2,
+        assertThatThrownBy(() -> inventory.requestAdjustment(new RequestAdjustmentCommand(null, BIN, sku,
                 StockAdjustmentReason.FOUND, null, clerk)))
                 .extracting(e -> ((BusinessException) e).errorCode())
                 .isEqualTo(ErrorCode.STOCK_NOT_IN_CARTON);
@@ -404,7 +397,7 @@ WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type
         assertThat(codeOf(moved)).isEqualTo(com.stockflow.common.error.ErrorCode.OUT_OF_DATA_SCOPE);
         Throwable adjusted = org.assertj.core.api.Assertions.catchThrowable(() ->
                 com.stockflow.support.WithCurrentUser.run(elsewhere, () -> inventory.requestAdjustment(
-                        new RequestAdjustmentCommand(BIN, sku, lot, -1, StockAdjustmentReason.DAMAGED, "x", clerk))));
+                        new RequestAdjustmentCommand(null, BIN, sku, StockAdjustmentReason.DAMAGED, "x", clerk))));
         assertThat(codeOf(adjusted)).isEqualTo(com.stockflow.common.error.ErrorCode.OUT_OF_DATA_SCOPE);
         assertThat(onHand(BIN)).isEqualTo(10);
 

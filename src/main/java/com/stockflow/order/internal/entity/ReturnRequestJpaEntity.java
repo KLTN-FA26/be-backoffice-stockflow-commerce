@@ -3,6 +3,7 @@ package com.stockflow.order.internal.entity;
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.order.internal.domain.ReturnChannel;
 import com.stockflow.order.internal.domain.ReturnReason;
+import com.stockflow.order.internal.domain.ReturnRefusalReason;
 import com.stockflow.order.internal.domain.ReturnResolution;
 import com.stockflow.order.internal.domain.ReturnStatus;
 import jakarta.persistence.CascadeType;
@@ -108,6 +109,10 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     @Column(name = "window_override_reason", length = 500, updatable = false)
     private String windowOverrideReason;
 
+    /** WF-05 TH-1: the delivered shipment the return is against; null for an order delivered without shipments. */
+    @Column(name = "shipment_id", updatable = false)
+    private UUID shipmentId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "money_mode", length = 16)
     private ReturnResolution moneyMode;
@@ -148,6 +153,30 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     @Column(name = "closed_at")
     private Instant closedAt;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "refusal_reason", length = 24)
+    private ReturnRefusalReason refusalReason;
+
+    @Column(name = "refusal_note", length = 500)
+    private String refusalNote;
+
+    @Column(name = "open_draft_receipt_id")
+    private UUID openDraftReceiptId;
+
+    /** WF-05 Q-4: what the customer chose for goods held for them ({@code ck_return_request_custody_choice}). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "custody_choice", length = 24)
+    private com.stockflow.order.internal.domain.ReturnCustodyChoice custodyChoice;
+
+    @Column(name = "custody_choice_note", length = 500)
+    private String custodyChoiceNote;
+
+    @Column(name = "custody_choice_by")
+    private UUID custodyChoiceBy;
+
+    @Column(name = "custody_choice_at")
+    private Instant custodyChoiceAt;
+
     /** LAZY: a list reads the header only; the detail and every command load the lines with a fetch join. */
     @OneToMany(mappedBy = "request", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("id")
@@ -174,6 +203,11 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.requestedAt = requestedAt;
         this.currency = currency;
         this.windowOverrideReason = windowOverrideReason;
+    }
+
+    /** The delivered shipment the new return is against; set once, with the row ({@code tg_return_request_shipment}). */
+    public void againstShipment(UUID shipmentId) {
+        this.shipmentId = shipmentId;
     }
 
     public void addLine(ReturnRequestLineJpaEntity line) {
@@ -217,6 +251,22 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.vatAdjustmentRequired = vatAdjustmentRequired;
     }
 
+    /** The refusal (WF-05 Q-4) and the draft receipt counting a parcel now (WF-05 BE-23). */
+    public void applyRefusal(ReturnRefusalReason refusalReason, String refusalNote, UUID openDraftReceiptId) {
+        this.refusalReason = refusalReason;
+        this.refusalNote = refusalNote;
+        this.openDraftReceiptId = openDraftReceiptId;
+    }
+
+    /** The customer's choice for goods held for them (WF-05 Q-4). */
+    public void applyCustodyChoice(com.stockflow.order.internal.domain.ReturnCustodyChoice choice, String note,
+                                   UUID by, Instant at) {
+        this.custodyChoice = choice;
+        this.custodyChoiceNote = note;
+        this.custodyChoiceBy = by;
+        this.custodyChoiceAt = at;
+    }
+
     public void applyEnd(UUID cancelledBy, String cancellationReason, Instant closedAt) {
         this.cancelledBy = cancelledBy;
         this.cancellationReason = cancellationReason;
@@ -247,6 +297,7 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     public String getReceivingLocationCode() { return receivingLocationCode; }
     public UUID getGoodsReceiptId() { return goodsReceiptId; }
     public String getWindowOverrideReason() { return windowOverrideReason; }
+    public UUID getShipmentId() { return shipmentId; }
     public ReturnResolution getMoneyMode() { return moneyMode; }
     public BigDecimal getSettlementAmount() { return settlementAmount; }
     public UUID getProposedBy() { return proposedBy; }
@@ -260,5 +311,12 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     public UUID getCancelledBy() { return cancelledBy; }
     public String getCancellationReason() { return cancellationReason; }
     public Instant getClosedAt() { return closedAt; }
+    public ReturnRefusalReason getRefusalReason() { return refusalReason; }
+    public String getRefusalNote() { return refusalNote; }
+    public UUID getOpenDraftReceiptId() { return openDraftReceiptId; }
+    public com.stockflow.order.internal.domain.ReturnCustodyChoice getCustodyChoice() { return custodyChoice; }
+    public String getCustodyChoiceNote() { return custodyChoiceNote; }
+    public UUID getCustodyChoiceBy() { return custodyChoiceBy; }
+    public Instant getCustodyChoiceAt() { return custodyChoiceAt; }
     public List<ReturnRequestLineJpaEntity> getLines() { return lines; }
 }

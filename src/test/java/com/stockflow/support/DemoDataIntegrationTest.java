@@ -1,5 +1,7 @@
 package com.stockflow.support;
 
+import com.stockflow.common.storage.FileCategory;
+import com.stockflow.common.storage.StorageKeys;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,6 +11,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,8 +44,8 @@ class DemoDataIntegrationTest {
     void demoIdIsPostgresMd5() {
         assertThat(DemoData.demoId("demo:wh:HCM"))
                 .isEqualTo(jdbc.queryForObject("select md5('demo:wh:HCM')::uuid", UUID.class));
-        assertThat(DemoData.demoId("Khu B - Bàn"))
-                .isEqualTo(jdbc.queryForObject("select md5('Khu B - Bàn')::uuid", UUID.class));
+        assertThat(DemoData.demoId("Khu B - Ly giấy đỏ"))
+                .isEqualTo(jdbc.queryForObject("select md5('Khu B - Ly giấy đỏ')::uuid", UUID.class));
         assertThat(UUID.nameUUIDFromBytes("demo:wh:HCM".getBytes(StandardCharsets.UTF_8)))
                 .isNotEqualTo(DemoData.WAREHOUSE_HCM);
     }
@@ -109,16 +112,121 @@ class DemoDataIntegrationTest {
     }
 
     @Test
-    @DisplayName("the demo stock sits on locations of the map: no seeded stock item points at a missing code")
+    @DisplayName("the demo stock sits on locations of the map: no seeded carton points at a missing code")
     void demoStockIsOnTheMap() {
         assertThat(jdbc.queryForList("""
-                SELECT s.location_code FROM inventory.stock_item s
-                WHERE s.created_by = 'flyway'
-                  AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location l WHERE l.location_code = s.location_code)
+                SELECT p.location_code FROM inventory.stock_package p
+                WHERE p.created_by = 'V20261206000100'
+                  AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location l WHERE l.location_code = p.location_code)
                 """, String.class)).isEmpty();
+        // The carton is the stock (V20261231000600): the demo cups' cartons stand where the seed's stock rows stood.
         assertThat(jdbc.queryForList("""
-                SELECT location_code FROM inventory.stock_item WHERE created_by = 'flyway' ORDER BY location_code
-                """, String.class))
+                SELECT DISTINCT location_code FROM inventory.stock_package WHERE created_by = 'V20261206000100'
+                 ORDER BY location_code""", String.class))
                 .containsExactly("HCM-A01-2-B", "HCM-A02-1-A", "HCM-B01-1-A", "HCM-QC01");
+    }
+
+    /**
+     * The printed cups took the furniture's place (V20261206000100): the same bins, carton counts, lots and statuses,
+     * so a test that leant on the sofa or the table finds the same shape of stock under a cup SKU.
+     *
+     * <p>Cartons are placed by their opening ledger line, which is append-only, rather than by where they stand now:
+     * the context is shared with every other integration test, and one of them may have picked or moved a carton
+     * before this runs. What the seed wrote does not move.</p>
+     */
+    @Test
+    @DisplayName("the cups stand where the furniture stood, in whole cartons, and nothing of the furniture is left")
+    void demoStockMatchesTheFurnitureItReplaced() {
+        assertThat(seededCartons(DemoData.SKU_STOCKED))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("HCM-A01-2-B AVAILABLE", 25, "HCM-A02-1-A AVAILABLE", 8));
+        assertThat(seededCartons(DemoData.SKU_QUARANTINED))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("HCM-B01-1-A AVAILABLE", 12, "HCM-QC01 QUARANTINE", 30));
+
+        assertThat(jdbc.queryForList("""
+                SELECT i.sku || ' ' || p.nominal_qty || ' ' || u.factor
+                  FROM inventory.stock_package p
+                  JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                  JOIN inventory.uom_conversions u ON u.id = p.uom_conversion_id
+                 WHERE i.sku IN (?, ?) AND p.created_by = 'V20261206000100'
+                 GROUP BY 1
+                """, String.class, DemoData.SKU_STOCKED, DemoData.SKU_QUARANTINED))
+                .as("every seeded carton holds its SKU's carton factor (other classes may add cartons of their own)")
+                .containsExactlyInAnyOrder(DemoData.SKU_STOCKED + " 1000 1000", DemoData.SKU_QUARANTINED + " 500 500");
+
+        for (String sku : List.of(DemoData.SKU_STOCKED, DemoData.SKU_QUARANTINED)) {
+            Integer ledger = jdbc.queryForObject("""
+                    SELECT COALESCE(SUM(p.nominal_qty * ((m.to_location_code IS NOT NULL)::int
+                                                         - (m.from_location_code IS NOT NULL)::int)), 0)
+                      FROM inventory.stock_movement m
+                      JOIN inventory.stock_package p ON p.id = m.stock_package_id WHERE m.sku = ?
+                    """, Integer.class, sku);
+            Integer onHand = jdbc.queryForObject("SELECT COALESCE(SUM(p.nominal_qty), 0) FROM inventory.stock_package p"
+                    + " JOIN inventory.inventory_items i ON i.id = p.inventory_item_id"
+                    + " WHERE i.sku = ? AND p.status = 'IN_STOCK'", Integer.class, sku);
+            assertThat(ledger).as("ledger of %s", sku).isPositive().isEqualTo(onHand);
+        }
+
+        assertThat(jdbc.queryForObject("""
+                SELECT (SELECT count(*) FROM inventory.inventory_items WHERE sku LIKE 'SOFA-3S%' OR sku LIKE 'TABLE-OAK%')
+                     + (SELECT count(*) FROM product.variants WHERE sku LIKE 'SOFA-3S%' OR sku LIKE 'TABLE-OAK%')
+                     + (SELECT count(*) FROM product.products WHERE code LIKE 'SOFA-3S%' OR code LIKE 'TABLE-OAK%')
+                     + (SELECT count(*) FROM inventory.stock_movement WHERE sku LIKE 'SOFA-3S%' OR sku LIKE 'TABLE-OAK%')
+                     + (SELECT count(*) FROM product.brands WHERE code = 'NHAXINH')
+                """, Long.class)).as("rows naming the furniture").isZero();
+
+        assertThat(jdbc.queryForList(
+                "SELECT code FROM product.products WHERE status = 'PUBLISHED' AND created_by = 'flyway'", String.class))
+                .containsExactlyInAnyOrder("LY-GIAY-DEMO", "HOP-GIAY-DEMO");
+        assertThat(row("SELECT code FROM product.products WHERE id = ?", DemoData.PRODUCT_CUP))
+                .containsEntry("code", "LY-GIAY-DEMO");
+        assertThat(row("SELECT code FROM product.products WHERE id = ?", DemoData.PRODUCT_BOX))
+                .containsEntry("code", "HOP-GIAY-DEMO");
+        assertThat(row("SELECT product_id FROM product.variants WHERE sku = ?", DemoData.BLANK_CUP))
+                .containsEntry("product_id", DemoData.PRODUCT_CUP);
+
+        // Owner decisions Q4, Q5 (V20270105000100): the demo's customer SKUs are rows of product.customer_skus drawn on
+        // the blank, no longer variants, and only a customer's SKU has an inventory item - a blank never does.
+        for (String sku : List.of(DemoData.SKU_STOCKED, DemoData.SKU_QUARANTINED)) {
+            assertThat(row("SELECT v.sku AS source FROM product.customer_skus c JOIN product.variants v ON v.id = "
+                    + "c.variant_id WHERE c.sku = ?", sku)).as("%s is a customer's SKU on the blank", sku)
+                    .containsEntry("source", DemoData.BLANK_CUP);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM product.variants WHERE sku = ?", Long.class, sku))
+                    .as("%s is not a variant", sku).isZero();
+        }
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.inventory_items i
+                 WHERE NOT EXISTS (SELECT 1 FROM product.customer_skus c WHERE c.sku = i.sku AND c.variant_id = i.variant_id)
+                """, Long.class)).as("items that are not a customer's SKU's, packed as its variant").isZero();
+    }
+
+    /** Cartons of a SKU the demo seed put in stock, counted by "location status" of their opening ledger line. */
+    private Map<String, Integer> seededCartons(String sku) {
+        Map<String, Integer> cartons = new TreeMap<>();
+        jdbc.query("""
+                SELECT m.to_location_code || ' ' || m.to_status AS place, count(DISTINCT p.id) AS cartons
+                  FROM inventory.stock_package p
+                  JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                  JOIN inventory.stock_movement m ON m.stock_package_id = p.id AND m.movement_type = 'RECEIPT'
+                                                 AND m.reference_type = 'STOCK_PACKAGE' AND m.reference_id = p.id
+                 WHERE i.sku = ? AND m.created_by = 'flyway'
+                 GROUP BY 1
+                """, rs -> {
+            cartons.put(rs.getString("place"), rs.getInt("cartons"));
+        }, sku);
+        return cartons;
+    }
+
+    @Test
+    @DisplayName("the demo return photos have keys the storage layer accepts, so a demo return's detail can sign them")
+    void demoReturnPhotosHaveKnownKeys() {
+        List<String> keys = jdbc.queryForList(
+                "SELECT file_key FROM ordering.return_request_evidence WHERE file_key LIKE '%/demo/%'", String.class);
+        assertThat(keys).isNotEmpty();
+        for (String key : keys) {
+            assertThat(StorageKeys.categoryOf(key)).as(key).isEqualTo(FileCategory.RETURN_EVIDENCE);
+            // What the return detail does with every photo (FileTransfers.evidenceThumbnailLink); it threw for
+            // 'returns/demo/...' and the detail answered 503.
+            assertThat(StorageKeys.evidenceCopyOf(key, 256)).as(key).startsWith("evidence-copies/return-evidence/demo/");
+        }
     }
 }

@@ -73,22 +73,33 @@ class ReceivingPackagesIntegrationTest {
                 packages.length == 0 ? null : carton, RECEIVING, List.of(packages), clerk));
     }
 
+    /** The units of the ledger line a move wrote: the line names a carton and no number (ADR-0011). */
+    private int unitsOfLine(StockMove move) {
+        return jdbc.queryForObject("""
+                select p.nominal_qty from inventory.stock_movement m
+                  join inventory.stock_package p on p.id = m.stock_package_id where m.id = ?""",
+                Integer.class, move.movementId());
+    }
+
     private StockMove receive(int quantity) {
         return inventory.receive(new ReceiveStockCommand(line, new Sku(sku), "LOT-FX", RECEIVING, quantity, clerk,
                 RECEIVED));
     }
 
-    /** "lpn:status:received_qty", by LPN. */
+    /** "lpn:status:units counted into it" (its standard count once counted, null before), by LPN. */
     private List<String> cartons() {
         return jdbc.query("""
-                select lpn, status, received_qty from inventory.stock_package
+                select lpn, status, case when counted_at is not null then nominal_qty end as counted_units
+                  from inventory.stock_package
                  where goods_receipt_line_id = ? order by lpn""",
-                (rs, n) -> rs.getString("lpn") + ":" + rs.getString("status") + ":" + rs.getObject("received_qty"),
+                (rs, n) -> rs.getString("lpn") + ":" + rs.getString("status") + ":" + rs.getObject("counted_units"),
                 line);
     }
 
-    private int stockRows() {
-        return jdbc.queryForObject("select count(*) from inventory.stock_item where sku = ?", Integer.class, sku);
+    /** Cartons of the SKU that are stock: IN_STOCK, so with a stock status. A carton being received is not one. */
+    private int cartonsInStock() {
+        return jdbc.queryForObject("select count(*) from inventory.stock_package p join inventory.inventory_items i"
+                + " on i.id = p.inventory_item_id where i.sku = ? and p.stock_status is not null", Integer.class, sku);
     }
 
     private int receiptLines() {
@@ -120,12 +131,13 @@ class ReceivingPackagesIntegrationTest {
         assertThat(views).extracting(StockPackageView::lpn).doesNotHaveDuplicates().isSorted();
         assertThat(views).extracting(StockPackageView::quantity).containsExactly(1000, 1000);
         assertThat(jdbc.queryForList("""
-                select received_qty from inventory.stock_package where goods_receipt_line_id = ? order by lpn""",
-                Integer.class, line)).containsExactly(1000, 1000);
+                select case when counted_at is not null then nominal_qty end
+                  from inventory.stock_package where goods_receipt_line_id = ? order by lpn""",
+                Integer.class, line)).as("counted in as they were labelled, at the standard").containsExactly(1000, 1000);
         assertThat(jdbc.queryForList("""
                 select distinct location_code from inventory.stock_package where goods_receipt_line_id = ?""",
                 String.class, line)).containsExactly(RECEIVING);
-        assertThat(stockRows()).as("a carton being received holds no stock row").isZero();
+        assertThat(cartonsInStock()).as("a carton being received is not stock yet").isZero();
     }
 
     @Test
@@ -170,25 +182,30 @@ class ReceivingPackagesIntegrationTest {
 
         StockMove move = receive(2000);
 
-        assertThat(move.quantity()).as("the first carton's line is the move returned").isEqualTo(1000);
+        assertThat(unitsOfLine(move)).as("the first carton's line is the move returned: one carton of 1,000")
+                .isEqualTo(1000);
         assertThat(jdbc.queryForList("""
                 select status from inventory.stock_package where goods_receipt_line_id = ?""",
                 String.class, line)).containsExactly("IN_STOCK", "IN_STOCK");
         assertThat(jdbc.query("""
-                select s.on_hand, s.status, s.location_code, p.received_qty from inventory.stock_item s
-                  left join inventory.stock_package p on p.id = s.stock_package_id
-                 where s.sku = ? order by s.on_hand""",
+                select p.nominal_qty as on_hand, p.stock_status as status, p.location_code,
+                       case when p.counted_at is not null then p.nominal_qty end as counted_units
+                  from inventory.stock_package p
+                  join inventory.inventory_items i on i.id = p.inventory_item_id
+                 where i.sku = ? and p.status = 'IN_STOCK' order by p.lpn""",
                 (rs, n) -> rs.getInt("on_hand") + ":" + rs.getString("status") + ":" + rs.getString("location_code")
-                        + ":" + (rs.getObject("received_qty") == null ? "loose" : "carton of " + rs.getInt("received_qty")),
+                        + ":" + (rs.getObject("counted_units") == null ? "loose" : "carton of " + rs.getInt("counted_units")),
                 sku)).containsExactly(
                 "1000:INBOUND:" + RECEIVING + ":carton of 1000",
                 "1000:INBOUND:" + RECEIVING + ":carton of 1000");
         assertThat(jdbc.query("""
-                select quantity, to_stock_package_id from inventory.stock_movement
-                 where movement_type = 'RECEIPT' and reference_type = 'GOODS_RECEIPT_LINE' and reference_id = ?
-                 order by quantity""",
-                (rs, n) -> rs.getInt("quantity") + ":" + (rs.getObject("to_stock_package_id") == null ? "loose" : "carton"),
-                line)).containsExactly("1000:carton", "1000:carton");
+                select p.nominal_qty as quantity, p.status
+                  from inventory.stock_movement m join inventory.stock_package p on p.id = m.stock_package_id
+                 where m.movement_type = 'RECEIPT' and m.reference_type = 'GOODS_RECEIPT_LINE' and m.reference_id = ?
+                 order by m.id""",
+                (rs, n) -> rs.getInt("quantity") + ":carton " + rs.getString("status"),
+                line)).as("one line per carton, each the carton whole")
+                .containsExactly("1000:carton IN_STOCK", "1000:carton IN_STOCK");
         Map<UUID, List<StockPackageView>> shown = inventory.receivingPackagesOf(List.of(line));
         assertThat(shown.get(line)).extracting(StockPackageView::status, StockPackageView::quantity)
                 .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple("IN_STOCK", 1000),
@@ -205,7 +222,7 @@ class ReceivingPackagesIntegrationTest {
                 .extracting(ReceivingPackagesIntegrationTest::code).isEqualTo(ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE);
 
         assertThat(cartons()).hasSize(2).allSatisfy(row -> assertThat(row).contains(":RECEIVING:"));
-        assertThat(stockRows()).isZero();
+        assertThat(cartonsInStock()).isZero();
         assertThat(receiptLines()).isZero();
     }
 
@@ -220,20 +237,21 @@ class ReceivingPackagesIntegrationTest {
                 .extracting(ReceivingPackagesIntegrationTest::code).isEqualTo(ErrorCode.RECEIPT_LINE_NOT_IN_CARTONS);
 
         assertThat(cartons()).singleElement().satisfies(row -> assertThat(row).contains(":RECEIVING:"));
-        assertThat(stockRows()).isZero();
+        assertThat(cartonsInStock()).isZero();
         assertThat(receiptLines()).isZero();
     }
 
     @Test
-    @DisplayName("a draft carton cannot be counted at another figure than its standard, not even with the row triggers "
-            + "off: ck_stock_package_standard_count (V20261113000300); counted again it stays at the standard")
-    void aNonStandardDraftCartonCannotBeWritten() {
+    @DisplayName("a carton cannot go past receiving uncounted, not even with the row triggers off: "
+            + "ck_stock_package_counted (V20261231000300); counted again it is a counted draft carton as before")
+    void anUncountedCartonCannotLeaveReceiving() {
         String lpn = count(PackageCount.fresh(), PackageCount.fresh()).getFirst().lpn();
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> {
             jdbc.execute("SET LOCAL session_replication_role = replica");
-            jdbc.update("update inventory.stock_package set received_qty = 980 where lpn = ?", lpn);
-        })).hasMessageContaining("ck_stock_package_standard_count");
-        assertThat(stockRows()).isZero();
+            jdbc.update("update inventory.stock_package set counted_at = null, status = 'IN_STOCK' where lpn = ?",
+                    lpn);
+        })).hasMessageContaining("ck_stock_package_counted");
+        assertThat(cartonsInStock()).isZero();
 
         count(new PackageCount(lpn), PackageCount.fresh());
         assertThat(cartons()).filteredOn(row -> row.startsWith(lpn)).containsExactly(lpn + ":RECEIVING:1000");
@@ -244,14 +262,14 @@ class ReceivingPackagesIntegrationTest {
     void receiveReplayWritesNothingTwice() {
         count(PackageCount.fresh(), PackageCount.fresh());
         StockMove first = receive(2000);
-        int rows = stockRows();
+        int rows = cartonsInStock();
         int ledger = receiptLines();
 
         StockMove again = receive(2000);
 
         assertThat(again.movementId()).isEqualTo(first.movementId());
-        assertThat(again.quantity()).isEqualTo(1000);
-        assertThat(stockRows()).isEqualTo(rows).isEqualTo(2);
+        assertThat(unitsOfLine(again)).isEqualTo(1000);
+        assertThat(cartonsInStock()).isEqualTo(rows).isEqualTo(2);
         assertThat(receiptLines()).isEqualTo(ledger).isEqualTo(2);
         assertThat(cartons()).hasSize(2).allSatisfy(row -> assertThat(row).contains(":IN_STOCK:"));
     }

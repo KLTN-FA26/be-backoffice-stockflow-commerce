@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -35,10 +36,13 @@ import java.util.stream.Collectors;
  *
  * <p>Counted in whole cartons of the SKU's standard size (13 BR-12, open-questions A9): available to promise is
  * inventory's system-wide figure, every warehouse together (13 BR-07, C3), read through {@code inventory :: api} in one
- * query for the whole page, then divided by the SKU's carton. The carton is the one {@code QuoteService} quotes in: the
- * SKU's single active packing unit of more than one piece, the default shipping one should there be several
- * ({@link UomConversion#cartonOf}). A SKU without one gets no indicator - a guessed carton would promise stock no quote
- * can sell - and the gap is logged.</p>
+ * query for the whole page, in cartons of exactly that size ({@code cartonsToPromise}; ADR-0011): a carton of another
+ * count is never given to a line quoted in this one, so it is not promised either, and dividing every carton's pieces
+ * by the size would count it. The carton is the one {@code QuoteService} quotes in: the
+ * SKU's single active packing unit of more than one piece ({@link UomConversion#cartonOf}) - its catalogue variant's
+ * carton (owner decision Q1), read whether or not the SKU has an inventory item yet. A SKU without one gets no
+ * indicator - a guessed carton would promise stock no quote can sell - and the gap is logged. A SKU no order has named
+ * has no inventory item (Q5, V20270105000100) and so no stock: it reads 0 cartons, out of stock.</p>
  *
  * <p>Not cached. Docs 13 allows ten seconds of lag; the endpoint's own short {@code Cache-Control} absorbs a page being
  * refreshed.</p>
@@ -87,10 +91,12 @@ public class StorefrontAvailabilityService {
         Set<Sku> counted = owned.stream().filter(sku -> cartons.containsKey(sku.code()))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         if (counted.isEmpty()) return List.of();
-        Map<Sku, Integer> atp = inventory.availableToPromise(counted);
+        Map<Sku, Integer> sized = new LinkedHashMap<>();
+        counted.forEach(sku -> sized.put(sku, cartons.get(sku.code())));
+        Map<Sku, Integer> atp = inventory.cartonsToPromise(sized);
         return counted.stream()
-                .map(sku -> new SkuAvailability(sku, Availability.ofCartons(atp.getOrDefault(sku, 0),
-                        cartons.get(sku.code()), properties.lowStockThreshold())))
+                .map(sku -> new SkuAvailability(sku, Availability.of(atp.getOrDefault(sku, 0),
+                        properties.lowStockThreshold())))
                 .toList();
     }
 

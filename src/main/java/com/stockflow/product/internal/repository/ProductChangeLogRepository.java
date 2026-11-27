@@ -45,9 +45,17 @@ public class ProductChangeLogRepository {
         this.clock = clock;
     }
 
-    /** One entry of the history, as stored. */
+    /**
+     * One entry of the history, as stored, with what its subject is called today.
+     *
+     * <p>{@code subjectSku} and {@code subjectLabel} are read with the page, in the same statement, so a history
+     * screen needs no variant list to say which SKU or image a line is about: the SKU of the variant (for an image,
+     * of the variant it belongs to), and the variant's name or the image's file name (its URL when it was carried
+     * over as one). Both are null for the product itself and for a subject deleted since.</p>
+     */
     public record Entry(ProductChangeType type, UUID subjectId, String fromStatus, String toStatus, String reason,
-                        List<String> changedFields, UUID actorId, Instant occurredAt) {
+                        List<String> changedFields, UUID actorId, Instant occurredAt, String subjectSku,
+                        String subjectLabel) {
     }
 
     /**
@@ -93,20 +101,35 @@ public class ProductChangeLogRepository {
         return value.length() <= MAX_REASON ? value : value.substring(0, MAX_REASON - 1) + "…";
     }
 
-    /** Newest first; ties on the time keep a stable order by id. */
+    /**
+     * Newest first; ties on the time keep a stable order by id. The subject's SKU and label come from the same
+     * statement: an image subject joins {@code media}, every other non-product subject is a variant (a SKU's
+     * units, sales units and older logistics entries name the variant too) or a customer's own SKU, which keeps its
+     * id in {@code product.customer_skus} since V20270105000100 (the ids are UUIDv7, so the two joins never both
+     * match).
+     */
     public Page<Entry> page(UUID productId, Pageable pageable) {
         Long total = jdbc.queryForObject(
                 "SELECT count(*) FROM product.product_change_log WHERE product_id = ?", Long.class, productId);
         List<Entry> rows = jdbc.query("""
-                SELECT change_type, subject_id, from_status, to_status, reason, changed_fields, actor_id, occurred_at
-                  FROM product.product_change_log
-                 WHERE product_id = ?
-                 ORDER BY occurred_at DESC, id DESC
+                SELECT l.change_type, l.subject_id, l.from_status, l.to_status, l.reason, l.changed_fields,
+                       l.actor_id, l.occurred_at,
+                       coalesce(v.sku, c.sku, mv.sku) AS subject_sku,
+                       coalesce(v.name, c.name, m.original_name, m.url) AS subject_label
+                  FROM product.product_change_log l
+                  LEFT JOIN product.variants v ON v.id = l.subject_id AND l.subject_type NOT IN ('PRODUCT', 'MEDIA')
+                  LEFT JOIN product.customer_skus c ON c.id = l.subject_id
+                                                   AND l.subject_type NOT IN ('PRODUCT', 'MEDIA')
+                  LEFT JOIN product.media m ON m.id = l.subject_id AND l.subject_type = 'MEDIA'
+                  LEFT JOIN product.variants mv ON mv.id = m.variant_id
+                 WHERE l.product_id = ?
+                 ORDER BY l.occurred_at DESC, l.id DESC
                  LIMIT ? OFFSET ?""",
                 (rs, n) -> new Entry(ProductChangeType.valueOf(rs.getString("change_type")),
                         rs.getObject("subject_id", UUID.class), rs.getString("from_status"),
                         rs.getString("to_status"), rs.getString("reason"), fieldsOf(rs.getArray("changed_fields")),
-                        rs.getObject("actor_id", UUID.class), rs.getTimestamp("occurred_at").toInstant()),
+                        rs.getObject("actor_id", UUID.class), rs.getTimestamp("occurred_at").toInstant(),
+                        rs.getString("subject_sku"), rs.getString("subject_label")),
                 productId, pageable.getPageSize(), pageable.getOffset());
         return new PageImpl<>(rows, PageRequest.of(pageable.getPageNumber(), pageable.getPageSize()),
                 total == null ? 0 : total);

@@ -79,7 +79,7 @@ class ReturnRequestHttpTest {
                     customerA, UUID.randomUUID(), DemoData.WAREHOUSE_HCM, staff, DemoData.WAREHOUSE_HCM, staff);
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                    VALUES (?, ?, 'SOFA-3S-GREY', 3, 1000000, 'VND')""", lineOfA, orderOfA);
+                    VALUES (?, ?, ?, 3, 1000000, 'VND')""", lineOfA, orderOfA, DemoData.SKU_STOCKED);
         });
     }
 
@@ -185,8 +185,14 @@ class ReturnRequestHttpTest {
         http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/settlement-rejection")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"x\"}"))
                 .andExpect(status().isForbidden());
-        // Held but too early: nothing has come back, so there is nothing to refund. (The order is a signed contract's -
-        // contract_signed_at - or the proposal would be refused before that, RETURN_REFUND_NO_INSTALLMENTS, review M-4.)
+        // Held but too early: nothing has come back, so there is nothing to refund, and nothing to call complete.
+        http.asRole(Role.WAREHOUSE_STAFF, staff, post("/api/v1/returns/" + returnId + "/goods-complete")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"x\"}"))
+                .andExpect(status().isForbidden());
+        http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/goods-complete")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"x\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("RETURN_INVALID_TRANSITION"));
         http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/resolution")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"x\"}"))
                 .andExpect(status().isConflict())
@@ -200,14 +206,23 @@ class ReturnRequestHttpTest {
                             .contentType(MediaType.APPLICATION_JSON).content("{\"lines\":[],\"version\":0}"))
                     .andExpect(status().is4xxClientError());
         }
+        // Every id comes named (A5, A11): the customer, who opened it, who made each step - no username lookup.
         http.asRole(Role.WAREHOUSE_STAFF, staff, get("/api/v1/returns/" + returnId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.history[0].to").value("REQUESTED"));
+                .andExpect(jsonPath("$.data.history[0].to").value("REQUESTED"))
+                .andExpect(jsonPath("$.data.history[0].actorName").value("test-" + userA))
+                .andExpect(jsonPath("$.data.requestedByName").value("test-" + userA))
+                .andExpect(jsonPath("$.data.customerName").value("Portal customer"))
+                .andExpect(jsonPath("$.data.customerCode").isNotEmpty())
+                .andExpect(jsonPath("$.data.review.decidedByName").doesNotExist())
+                .andExpect(jsonPath("$.data.cancelledByName").doesNotExist());
         http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/rejection")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"Ngoài chính sách\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("REJECTED"))
-                .andExpect(jsonPath("$.data.review.rejectionReason").value("Ngoài chính sách"));
+                .andExpect(jsonPath("$.data.review.rejectionReason").value("Ngoài chính sách"))
+                .andExpect(jsonPath("$.data.review.decidedByName").value("test-" + staff))
+                .andExpect(jsonPath("$.data.customerName").value("Portal customer"));
     }
 
     @Test
@@ -228,7 +243,9 @@ class ReturnRequestHttpTest {
 
         http.asRole(Role.WAREHOUSE_STAFF, staff, get("/api/v1/returns").param("orderId", orderOfA.toString()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].id").value(returnId));
+                .andExpect(jsonPath("$.data.items[0].id").value(returnId))
+                .andExpect(jsonPath("$.data.items[0].customerName").value("Portal customer"))
+                .andExpect(jsonPath("$.data.items[0].customerCode").isNotEmpty());
         http.asRole(Role.WAREHOUSE_STAFF, unassigned, get("/api/v1/returns").param("orderId", orderOfA.toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items").isEmpty());

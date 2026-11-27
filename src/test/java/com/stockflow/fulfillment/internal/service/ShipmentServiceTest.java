@@ -64,11 +64,22 @@ class ShipmentServiceTest {
     private final ShipmentContext context = mock(ShipmentContext.class);
     private final OrderService orders = mock(OrderService.class);
     private final IdentityService identities = mock(IdentityService.class);
+    private final com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository corrections =
+            mock(com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository.class);
     private final ShipmentService service = new ShipmentService(shipments, locks, events, packages, picks, carriers,
-            loads, members, timeline, context, orders, identities,
-            mock(com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository.class), Clock.fixed(NOW, ZoneOffset.UTC));
+            loads, members, timeline, context, orders, identities, corrections,
+            mock(com.stockflow.fulfillment.internal.repository.FailureReasonCorrectionJpaRepository.class),
+            Clock.fixed(NOW, ZoneOffset.UTC));
 
-    private final com.stockflow.common.security.CurrentUser actor = FulfillmentFixtures.user();
+    /**
+     * The warehouse manager: every outcome recorded by hand takes {@code fulfillment-delivery-outcomes:APPROVE} (09
+     * BR-02; WF-05 Q-7 - RETURNED too).
+     */
+    private final com.stockflow.common.security.CurrentUser actor = new com.stockflow.common.security.CurrentUser(
+            UUID.randomUUID(), "manager", Set.of(com.stockflow.common.security.Role.WAREHOUSE_MANAGER),
+            Set.of(com.stockflow.common.security.PermissionCode.of(FulfillmentPermissions.DELIVERY_OUTCOMES,
+                    com.stockflow.common.security.Action.APPROVE)),
+            DataScope.ALL, Set.of(), Set.of());
 
     @BeforeEach
     void rowsEchoWhatTheyAreSaved() {
@@ -409,6 +420,251 @@ class ShipmentServiceTest {
             service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null), actor);
 
             verify(orders).recordDelivery(eq(row.getOrderId()), any(java.time.Instant.class), eq(actor.userId()));
+        }
+    }
+
+    @Nested
+    @DisplayName("the delivery time a person enters (09 §4.3 step 2)")
+    class TheDeliveryTime {
+
+        private final java.time.Instant handedOverAt = NOW.minus(java.time.Duration.ofHours(5));
+
+        /** A shipment handed over five hours before the clock's now, in the given status. */
+        private ShipmentJpaEntity handedOver(ShipmentStatus status) {
+            Shipment s = FulfillmentFixtures.readyShipment();
+            UUID by = UUID.randomUUID();
+            s.handOver(UUID.randomUUID(), UUID.randomUUID(), false, by, handedOverAt);
+            if (status == ShipmentStatus.DELIVERY_FAILED) {
+                s.recordFailed(com.stockflow.fulfillment.internal.domain.DeliveryFailureReason.REFUSED, null, by,
+                        handedOverAt.plusSeconds(60));
+            }
+            return locked(FulfillmentFixtures.row(s));
+        }
+
+        private OrderSummary orderKnowing(ShipmentJpaEntity row) {
+            var known = new OrderSummary.Shipment(row.getId(), OrderShipmentStatus.HANDED_OVER, BigDecimal.ZERO, NOW,
+                    null, null, List.of(), null);
+            OrderSummary order = FulfillmentFixtures.order(row.getOrderId(), List.of(known));
+            when(orders.findById(row.getOrderId())).thenReturn(Optional.of(order));
+            return order;
+        }
+
+        @Test
+        @DisplayName("a time in the past, after the handover, dates the shipment, its timeline step and the order")
+        void aPastTimeIsTheDeliverys() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.HANDED_OVER);
+            OrderSummary order = orderKnowing(row);
+            java.time.Instant at = NOW.minus(java.time.Duration.ofHours(2));
+            when(orders.recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
+
+            service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null, at), actor);
+
+            assertThat(row.getStatus()).isEqualTo(ShipmentStatus.DELIVERED);
+            assertThat(row.getOutcomeAt()).isEqualTo(at);
+            verify(orders).recordShipmentDelivered(row.getOrderId(), row.getId(), at, actor.userId());
+            var recorded = org.mockito.ArgumentCaptor.forClass(Shipment.class);
+            verify(timeline).record(recorded.capture(), eq(ShipmentStatus.HANDED_OVER), eq(order), eq(null), any(),
+                    any());
+            assertThat(recorded.getValue().pullRecorded()).singleElement()
+                    .satisfies(step -> assertThat(step.at()).isEqualTo(at));
+        }
+
+        @Test
+        @DisplayName("no time: now, as before")
+        void noTimeIsNow() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.HANDED_OVER);
+            OrderSummary order = orderKnowing(row);
+            when(orders.recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
+
+            service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null), actor);
+
+            assertThat(row.getOutcomeAt()).isEqualTo(NOW);
+            verify(orders).recordShipmentDelivered(row.getOrderId(), row.getId(), NOW, actor.userId());
+        }
+
+        @Test
+        @DisplayName("exactly now and exactly the handover are allowed")
+        void theBoundsAreInclusive() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.HANDED_OVER);
+            OrderSummary order = orderKnowing(row);
+            when(orders.recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
+
+            service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null, handedOverAt), actor);
+
+            assertThat(row.getOutcomeAt()).isEqualTo(handedOverAt);
+            ShipmentJpaEntity again = handedOver(ShipmentStatus.HANDED_OVER);
+            orderKnowing(again);
+            service.recordOutcome(again.getId(), new Shipments.Outcome("DELIVERED", null, null, NOW), actor);
+            assertThat(again.getOutcomeAt()).isEqualTo(NOW);
+        }
+
+        @Test
+        @DisplayName("a time in the future is SHIPMENT_DELIVERY_TIME_IN_FUTURE on 'deliveredAt': nothing recorded")
+        void notInTheFuture() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.HANDED_OVER);
+
+            BusinessException thrown = refusal(() -> service.recordOutcome(row.getId(),
+                    new Shipments.Outcome("DELIVERED", null, null, NOW.plusSeconds(1)), actor));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_IN_FUTURE);
+            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("deliveredAt");
+            assertThat(row.getStatus()).isEqualTo(ShipmentStatus.HANDED_OVER);
+            verifyNoInteractions(orders, timeline);
+            verify(shipments, never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("a time before the handover is SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER on 'deliveredAt'")
+        void notBeforeTheHandover() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.HANDED_OVER);
+
+            BusinessException thrown = refusal(() -> service.recordOutcome(row.getId(),
+                    new Shipments.Outcome("DELIVERED", null, null, handedOverAt.minusSeconds(1)), actor));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER);
+            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("deliveredAt");
+            verifyNoInteractions(orders, timeline);
+            verify(shipments, never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("a delivery time goes with DELIVERED only: with a failure or a return it is VALIDATION_FAILED")
+        void onlyWithADelivery() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.HANDED_OVER);
+
+            BusinessException thrown = refusal(() -> service.recordOutcome(row.getId(),
+                    new Shipments.Outcome("DELIVERY_FAILED", "LOST", null, NOW.minusSeconds(60)), actor));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("deliveredAt");
+            verifyNoInteractions(orders, timeline);
+        }
+
+        @Test
+        @DisplayName("a retry that delivers after a failure takes the time too")
+        void aRetryTakesTheTime() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.DELIVERY_FAILED);
+            OrderSummary order = orderKnowing(row);
+            java.time.Instant at = NOW.minus(java.time.Duration.ofHours(1));
+            when(orders.recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
+
+            service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null, at), actor);
+
+            assertThat(row.getOutcomeAt()).isEqualTo(at);
+            verify(orders).recordShipmentDelivered(row.getOrderId(), row.getId(), at, actor.userId());
+        }
+
+        @Test
+        @DisplayName("a retry dated before the failure it follows is SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE")
+        void aRetryBeforeTheFailure() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.DELIVERY_FAILED);
+
+            BusinessException thrown = refusal(() -> service.recordOutcome(row.getId(),
+                    new Shipments.Outcome("DELIVERED", null, null, handedOverAt.plusSeconds(30)), actor));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE);
+            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("deliveredAt");
+            assertThat(row.getStatus()).isEqualTo(ShipmentStatus.DELIVERY_FAILED);
+            verifyNoInteractions(orders, timeline);
+        }
+
+        @Test
+        @DisplayName("a correction to delivered takes the time for the shipment and the order; the correction is dated now")
+        void aCorrectionToDelivered() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.DELIVERY_FAILED);
+            OrderSummary order = orderKnowing(row);
+            java.time.Instant at = NOW.minus(java.time.Duration.ofHours(1));
+            when(orders.recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
+
+            service.correctOutcome(row.getId(), new Shipments.Correction("DELIVERED", null, null, "found", at), actor);
+
+            assertThat(row.getStatus()).isEqualTo(ShipmentStatus.DELIVERED);
+            assertThat(row.getOutcomeAt()).isEqualTo(at);
+            verify(orders).recordShipmentDelivered(row.getOrderId(), row.getId(), at, actor.userId());
+        }
+
+        @Test
+        @DisplayName("a correction to delivered with a time in the future or before the handover is refused")
+        void aCorrectionIsBoundedToo() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.DELIVERY_FAILED);
+
+            assertThat(refusal(() -> service.correctOutcome(row.getId(),
+                    new Shipments.Correction("DELIVERED", null, null, "found", NOW.plusSeconds(60)), actor)).errorCode())
+                    .isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_IN_FUTURE);
+            assertThat(refusal(() -> service.correctOutcome(row.getId(),
+                    new Shipments.Correction("DELIVERED", null, null, "found", handedOverAt.minusSeconds(60)), actor))
+                    .errorCode()).isEqualTo(ErrorCode.SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER);
+            verifyNoInteractions(orders, timeline);
+        }
+
+        /** The correction row saved, as the repository was handed it. */
+        private com.stockflow.fulfillment.internal.entity.DeliveryOutcomeCorrectionJpaEntity savedCorrection() {
+            var captor = org.mockito.ArgumentCaptor.forClass(
+                    com.stockflow.fulfillment.internal.entity.DeliveryOutcomeCorrectionJpaEntity.class);
+            verify(corrections).save(captor.capture());
+            return captor.getValue();
+        }
+
+        @Test
+        @DisplayName("audit r3 EINV-1: GH-2 then the mistake found the next day - the delivery corrected to a failure "
+                + "keeps the time it undid, and the correction back with no time is dated by that delivery, not by "
+                + "the day of the correction; the order hears the same time, and the screen is handed it to fill in")
+        void aCorrectionBackRestoresTheUndoneDelivery() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.HANDED_OVER);
+            OrderSummary order = orderKnowing(row);
+            java.time.Instant deliveredOnD1 = NOW.minus(java.time.Duration.ofHours(2));
+            when(orders.recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
+            service.recordOutcome(row.getId(), new Shipments.Outcome("DELIVERED", null, null, deliveredOnD1), actor);
+            when(orders.correctShipmentToFailed(any(), any(), any(), any(), any(), any())).thenReturn(order);
+
+            service.correctOutcome(row.getId(), new Shipments.Correction("DELIVERY_FAILED", "CUSTOMER_ABSENT", null,
+                    "the customer says it never came"), actor);
+
+            var toFailed = savedCorrection();
+            assertThat(toFailed.getUndoneDeliveredAt()).as("the delivery the correction undid").isEqualTo(deliveredOnD1);
+            assertThat(row.getOutcomeAt()).as("the failure is dated now").isEqualTo(NOW);
+            when(corrections.findFirstByShipmentIdOrderByCorrectedAtDescIdDesc(row.getId()))
+                    .thenReturn(Optional.of(toFailed));
+            when(shipments.findById(row.getId())).thenReturn(Optional.of(row));
+            assertThat(service.get(row.getId()).undoneDeliveredAt()).as("what the screen fills the field with")
+                    .isEqualTo(deliveredOnD1);
+
+            service.correctOutcome(row.getId(), new Shipments.Correction("DELIVERED", null, null,
+                    "the customer found it after all"), actor);
+
+            assertThat(row.getStatus()).isEqualTo(ShipmentStatus.DELIVERED);
+            assertThat(row.getOutcomeAt()).as("the same delivery, not one on the day of the correction")
+                    .isEqualTo(deliveredOnD1);
+            verify(orders, org.mockito.Mockito.times(2)).recordShipmentDelivered(row.getOrderId(), row.getId(),
+                    deliveredOnD1, actor.userId());
+            assertThat(service.get(row.getId()).undoneDeliveredAt()).as("delivered: nothing to restore").isNull();
+        }
+
+        @Test
+        @DisplayName("audit r3 EINV-1: a failure the carrier reported (not a correction of a delivery), corrected to "
+                + "delivered with no time, is dated now as before; a time given always wins")
+        void aCorrectionOfTheCarriersFailureIsDatedNow() {
+            ShipmentJpaEntity row = handedOver(ShipmentStatus.DELIVERY_FAILED);
+            OrderSummary order = orderKnowing(row);
+            when(orders.recordShipmentDelivered(any(), any(), any(java.time.Instant.class), any())).thenReturn(order);
+            when(corrections.findFirstByShipmentIdOrderByCorrectedAtDescIdDesc(row.getId())).thenReturn(Optional.empty());
+
+            service.correctOutcome(row.getId(), new Shipments.Correction("DELIVERED", null, null, "found"), actor);
+
+            assertThat(row.getOutcomeAt()).isEqualTo(NOW);
+            assertThat(savedCorrection().getUndoneDeliveredAt()).as("a correction back names none").isNull();
+        }
+
+        @Test
+        @DisplayName("a correction to a failure takes no delivery time: VALIDATION_FAILED on 'deliveredAt'")
+        void aCorrectionToAFailureTakesNone() {
+            ShipmentJpaEntity row = locked(FulfillmentFixtures.rowIn(ShipmentStatus.DELIVERED));
+
+            BusinessException thrown = refusal(() -> service.correctOutcome(row.getId(),
+                    new Shipments.Correction("DELIVERY_FAILED", "LOST", null, "not there", NOW), actor));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("deliveredAt");
         }
     }
 }

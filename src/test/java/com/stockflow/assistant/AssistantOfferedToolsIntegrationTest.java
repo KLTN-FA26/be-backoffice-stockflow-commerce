@@ -66,8 +66,12 @@ class AssistantOfferedToolsIntegrationTest {
      * The tools that read stock figures or cartons: none is offered to a persona without a stock permission. Since the
      * rescope there are no low-stock, expiry or reorder tools left among them.
      */
+    /**
+     * The tools reading stock figures, which Sales never get. traceLot is not one of them any more: its report has its own
+     * guard since V20261209000300 ({@code inventory-lot-traces}), granted to Sales, who answer customers about a lot.
+     */
     private static final Set<String> STOCK_TOOLS = Set.of("getStockLevels", "getStockLots", "lookupScan",
-            "traceLot");
+            "investigateCarton");
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
@@ -94,7 +98,7 @@ class AssistantOfferedToolsIntegrationTest {
      */
     static Stream<Persona> personas() {
         return Stream.of(new Persona(Role.SYSTEM_ADMIN, false), new Persona(Role.WAREHOUSE_MANAGER, true),
-                // V20261125000500: warehouse staff may open the assistant too.
+                // V20270106000500: warehouse staff may open the assistant too.
                 new Persona(Role.WAREHOUSE_STAFF, true), new Persona(Role.SALES_STAFF, false),
                 new Persona(Role.SALES_MANAGER, false), new Persona(Role.ACCOUNTANT, false),
                 new Persona(Role.PRODUCTION_COORDINATOR, false));

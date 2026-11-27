@@ -37,21 +37,24 @@ public final class ContentTypePolicy {
             throw new BusinessException(ErrorCode.PAYLOAD_TOO_LARGE,
                     "%s files may be at most %d MB, got %d MB".formatted(
                             category, category.maxBytes() / (1024 * 1024),
-                            sizeBytes / (1024 * 1024)));
+                            sizeBytes / (1024 * 1024)))
+                    .localized("refusal.upload.tooLarge", category.maxBytes() / (1024 * 1024));
         }
         if (sizeBytes == 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The uploaded file is empty");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The uploaded file is empty").localized("refusal.upload.empty");
         }
 
         String normalised = normalise(declaredType);
         if (!category.allowedContentTypes().contains(normalised)) {
             throw new BusinessException(ErrorCode.UNSUPPORTED_MEDIA_TYPE,
                     "%s does not accept %s. Accepted: %s".formatted(
-                            category, normalised, String.join(", ", category.allowedContentTypes())));
+                            category, normalised, String.join(", ", category.allowedContentTypes())))
+                    .localized("refusal.upload.type", String.join(", ", category.allowedContentTypes()));
         }
         if (!looksLike(normalised, head)) {
             throw new BusinessException(ErrorCode.UNSUPPORTED_MEDIA_TYPE,
-                    "The file contents do not match the declared type " + normalised);
+                    "The file contents do not match the declared type " + normalised)
+                    .localized("refusal.upload.contentMismatch");
         }
     }
 
@@ -59,7 +62,7 @@ public final class ContentTypePolicy {
     public static String normalise(String declaredType) {
         if (declaredType == null || declaredType.isBlank()) {
             throw new BusinessException(ErrorCode.UNSUPPORTED_MEDIA_TYPE,
-                    "The upload declared no content type");
+                    "The upload declared no content type").localized("refusal.upload.noType");
         }
         int semicolon = declaredType.indexOf(';');
         String base = semicolon < 0 ? declaredType : declaredType.substring(0, semicolon);

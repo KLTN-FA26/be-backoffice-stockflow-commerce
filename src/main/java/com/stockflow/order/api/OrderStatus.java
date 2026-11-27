@@ -27,7 +27,15 @@ import java.util.stream.Collectors;
  *                     (a part handed over: the rest - of the batch, or a later batch - is packed while it stays
  *                      PARTIALLY_FULFILLED, WF4-PF-NEXT)
  *   DELIVERED ─▶ RETURN_REQUESTED ─▶ RETURNED ─▶ REFUNDED / PARTIALLY_REFUNDED ─▶ CLOSED
+ *                                       ▲                 │
+ *                                       └─refund voided───┘
  * </pre>
+ *
+ * <p><b>Closing waits for the refund</b> (TT-4). COMPLETED, REFUNDED and PARTIALLY_REFUNDED close a configured number
+ * of days later only once nothing is owed either way: neither by the customer on the installments nor by the seller as
+ * a refund still to make. A refund record voided after the order moved on to REFUNDED / PARTIALLY_REFUNDED takes it
+ * back to RETURNED, waiting for its refund again; recorded again, it moves forward as before. CLOSED is never
+ * reopened: a void after closing shows only on the accountant's list of refunds still to make.</p>
  *
  * <p><b>No way round the contract</b> (14 §5.3). A draft leaves only for PENDING_CONTRACT or CANCELLED: the old
  * checkout's DRAFT → PENDING_PAYMENT / CONFIRMED / ON_HOLD went with checkout (4B-10, removed from the table in
@@ -62,12 +70,12 @@ import java.util.stream.Collectors;
  * {@code PARTIALLY_FULFILLED}) and left back to the status it was entered from, or to {@code CANCELLED}; a credit hold
  * (an order placed over its limit) is decided through credit approval instead.</p>
  *
- * <p><b>A shipment that comes back</b> (WF-05 fix plan, sections 2-3; 09 §4.3 step 3). The order no longer follows a
- * returned shipment to {@code RETURNED} or {@code PARTIALLY_FULFILLED} by itself: it goes {@code ON_HOLD} for
- * {@code DELIVERY_FAILED} - from {@code SHIPPED} and {@code DELIVERY_FAILED} too - and waits there for Sales to decide
- * its delivery failure case. Decided, it is {@code PARTIALLY_FULFILLED} (the goods are owed a delivery again, or are
- * closed with the rest); {@code RETURNED} is reached only when Sales cancelled everything that was not delivered and
- * nothing of the order was.</p>
+ * <p><b>A shipment that comes back</b> (RTM-RETURNED, owner 18-19/11; kltn-docs 09 §4.3 step 4, 17 §5.1). Its units are
+ * closed - the goods are sent again only on a new order - and their money settled on the installments. The order
+ * follows its shipments: {@code RETURNED} when nothing of it was delivered, {@code PARTIALLY_FULFILLED} while other
+ * shipments arrived, and from there {@code REFUNDED} / {@code PARTIALLY_REFUNDED} once the refund is recorded -
+ * {@code PARTIALLY_FULFILLED} straight to {@code PARTIALLY_REFUNDED}, never through {@code RETURNED} (docs PR #42). The
+ * WF-05 hold for Sales to deliver again is gone.</p>
  *
  * <p><b>Cancellation</b> stops at the first completed package (decision 2026-10-17, BR-ORD-004): {@code PACKED} and
  * later go through a return. There is no {@code PAYMENT_FAILED}: a B2B bank transfer has no failure to report (G3-Q2).</p>
@@ -147,16 +155,20 @@ public enum OrderStatus {
     RETURN_REQUESTED,
 
     /**
-     * The goods came back to the warehouse through an RMA, or - after a failed delivery - Sales cancelled everything
-     * that was not delivered and nothing of the order was. A shipment coming back no longer moves the order here by
-     * itself: it holds it ({@code HoldReason.DELIVERY_FAILED}).
+     * The goods of a claim came back to the warehouse (RMA), or nothing of the order was delivered: every shipment
+     * came back from the carrier or was closed as lost (RTM-RETURNED; WF-05 Q-7, Q-12). The carrier's report moves the
+     * order here; the units and the money wait for the return receipt to be confirmed. Back to the delivery path when
+     * its claims end without money (X-8, {@code Order.returnsEndedWithoutRefund}).
      */
     RETURNED,
 
-    /** Refunded in full (or the receivable reduced in full, kltn-docs 15 §4.4). */
+    /**
+     * Refunded in full (or the receivable reduced in full, kltn-docs 15 §4.4). Back to {@link #RETURNED} when a refund
+     * record of it is voided (TT-4).
+     */
     REFUNDED,
 
-    /** Refunded in part. */
+    /** Refunded in part. Back to {@link #RETURNED} when a refund record of it is voided (TT-4). */
     PARTIALLY_REFUNDED,
 
     /** Closed successfully: delivered, paid, and the return window has passed. */
@@ -164,7 +176,11 @@ public enum OrderStatus {
 
     CANCELLED,
 
-    /** Closed for good (BR-05: immutable); reached a configured number of days after COMPLETED / REFUNDED. */
+    /**
+     * Closed for good (BR-05: immutable); reached a configured number of days after COMPLETED / REFUNDED /
+     * PARTIALLY_REFUNDED, and only once neither the customer nor the seller owes anything on it (TT-4: no refund still
+     * to make). Never reopened: a refund voided afterwards is the accountant's to follow, not the order's.
+     */
     CLOSED;
 
     public boolean isTerminal() {
@@ -246,8 +262,12 @@ public enum OrderStatus {
             // PACKED: the rest packed while nothing was handed over yet (17 §5; WF4-PF-NEXT). SHIPPED: the rest handed
             // over. SHIPPED / DELIVERY_FAILED / DELIVERED /
             // RETURNED: the rest closed by staff, the order then shows its shipments.
+            // PARTIALLY_REFUNDED: a shipment came back while the others arrived and its part is refunded
+            // (RTM-RETURNED-PARTIAL, owner 19/11; 17 §5.1 edge, docs PR #42). CLOSED: the same with nothing made
+            // refundable - nothing was refunded, so not "partly refunded" (WF-05 BE-45, Order.closeWithoutRefund).
             case PARTIALLY_FULFILLED -> target == PACKED || target == SHIPPED || target == DELIVERY_FAILED
-                    || target == DELIVERED || target == RETURNED || target == ON_HOLD;
+                    || target == DELIVERED || target == RETURNED || target == ON_HOLD || target == PARTIALLY_REFUNDED
+                    || target == CLOSED;
             // Not CANCELLED: a completed package goes through a return (decision 2026-10-17). PARTIALLY_FULFILLED: only
             // part of it was handed over.
             case PACKED -> target == SHIPPED || target == PARTIALLY_FULFILLED || target == ON_HOLD;
@@ -256,7 +276,8 @@ public enum OrderStatus {
                     || target == IN_PRODUCTION || target == READY_TO_FULFILL || target == PICKING
                     || target == PARTIALLY_FULFILLED || target == PACKED || target == CANCELLED;
             // PARTIALLY_FULFILLED: before WF-05's fix, a shipment that came back while the others arrived; kept for the
-            // history. ON_HOLD: a shipment came back - the order waits for Sales' decision (hold DELIVERY_FAILED).
+            // history. ON_HOLD: kept for orders held before RTM-RETURNED (hold DELIVERY_FAILED); a shipment coming back
+            // no longer holds the order.
             case SHIPPED -> target == DELIVERED || target == DELIVERY_FAILED || target == PARTIALLY_FULFILLED
                     || target == ON_HOLD;
             case DELIVERY_FAILED -> target == DELIVERED || target == RETURNED || target == PARTIALLY_FULFILLED
@@ -266,11 +287,27 @@ public enum OrderStatus {
             case DELIVERED -> target == COMPLETED || target == RETURN_REQUESTED || target == DELIVERY_FAILED;
             // DELIVERED: the request was refused - back to waiting for the return window and the money, as any
             // delivered order (lead's decision 2026-10-21; 17 §5 wrote COMPLETED, which would skip both checks).
-            case RETURN_REQUESTED -> target == RETURNED || target == DELIVERED;
-            case RETURNED -> target == REFUNDED || target == PARTIALLY_REFUNDED;
+            // WF-05 BE-40: back to whatever the claim was opened from - COMPLETED (not completed again), REFUNDED,
+            // PARTIALLY_REFUNDED - and DELIVERY_FAILED / PARTIALLY_FULFILLED when a delivery was corrected to a
+            // failure while the claim was open (BE-46): the order goes where its shipments say.
+            case RETURN_REQUESTED -> target == RETURNED || target == DELIVERED || target == COMPLETED
+                    || target == REFUNDED || target == PARTIALLY_REFUNDED || target == DELIVERY_FAILED
+                    || target == PARTIALLY_FULFILLED;
+            // X-8 (WF-05 BE-45): its claims ended and none settled anything - back to the delivery path, COMPLETED when
+            // it had completed before the claim; DELIVERY_FAILED / PARTIALLY_FULFILLED as above (BE-46).
+            // CLOSED: the carrier brought every shipment back or lost it, and nothing was made refundable (WF-05 BE-45,
+            // Order.closeWithoutRefund) - never an order a customer's return made RETURNED.
+            case RETURNED -> target == REFUNDED || target == PARTIALLY_REFUNDED || target == DELIVERED
+                    || target == COMPLETED || target == DELIVERY_FAILED || target == PARTIALLY_FULFILLED
+                    || target == CLOSED;
             // RETURN_REQUESTED: a further claim after a return gave money back (Sales open it, 03 §12), or a late claim
             // Sales accepted after the order completed - until the order closes for good (BR-05), it hears its returns.
-            case REFUNDED, PARTIALLY_REFUNDED, COMPLETED -> target == CLOSED || target == RETURN_REQUESTED;
+            // RETURNED (TT-4): a refund record of a refunded order was voided - it waits for its refund again.
+            case REFUNDED -> target == CLOSED || target == RETURN_REQUESTED || target == RETURNED;
+            // PARTIALLY_FULFILLED: the voided refund was of a part that came back, the rest delivered (RTM-RETURNED-PARTIAL).
+            case PARTIALLY_REFUNDED -> target == CLOSED || target == RETURN_REQUESTED || target == RETURNED
+                    || target == PARTIALLY_FULFILLED;
+            case COMPLETED -> target == CLOSED || target == RETURN_REQUESTED;
             case CANCELLED, CLOSED -> false;
         };
     }

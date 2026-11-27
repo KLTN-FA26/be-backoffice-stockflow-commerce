@@ -37,9 +37,11 @@ import java.util.UUID;
 class CreditProfileController {
 
     private final CustomerService customers;
+    private final com.stockflow.identity.api.IdentityService identities;
 
-    CreditProfileController(CustomerService customers) {
+    CreditProfileController(CustomerService customers, com.stockflow.identity.api.IdentityService identities) {
         this.customers = customers;
+        this.identities = identities;
     }
 
     @GetMapping
@@ -60,8 +62,12 @@ class CreditProfileController {
                 request.expectedVersion()))));
     }
 
-    static CreditProfileResponse toResponse(CreditTerms t) {
+    /** The terms, with who approved them by name, so the screen does not show an account id. */
+    private CreditProfileResponse toResponse(CreditTerms t) {
+        String approvedByName = t.approvedBy() == null ? null
+                : identities.displayNames(java.util.List.of(t.approvedBy())).get(t.approvedBy());
         return new CreditProfileResponse(t.customerId(), t.configured(), t.creditLimit(), t.creditTermDays(),
-                t.currency(), t.approvedBy(), t.approvedAt(), t.note(), t.configured() ? t.version() : -1L);
+                t.currency(), t.approvedBy(), t.approvedAt(), t.note(), t.configured() ? t.version() : -1L,
+                approvedByName);
     }
 }

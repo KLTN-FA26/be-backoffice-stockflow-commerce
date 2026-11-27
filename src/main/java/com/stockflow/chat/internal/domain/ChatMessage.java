@@ -106,7 +106,7 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
     public static ChatMessage internalNote(UUID id, UUID conversationId, long seq, Actor author, String body,
                                            Set<UUID> mentions, String clientMessageId, UUID contextId, Instant now) {
         if (!author.isStaff()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the staff write internal notes");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the staff write internal notes").localized("refusal.chat.notesStaffOnly");
         }
         return new ChatMessage(id, conversationId, seq, MessageKind.INTERNAL_NOTE, Visibility.STAFF, SenderType.AGENT,
                 author.userId(), written(body), clientMessageId, contextId, null, now, null, null, null, mentions,
@@ -118,7 +118,7 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
                                          String clientMessageId, List<Attachment> files, Instant now) {
         requirePerson(sender);
         if (files == null || files.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "An attachment message carries a file");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "An attachment message carries a file").localized("refusal.chat.attachmentFile");
         }
         String text = caption == null || caption.isBlank() ? null : written(caption);
         return new ChatMessage(id, conversationId, seq, MessageKind.ATTACHMENT, Visibility.CUSTOMER, sender.type(),
@@ -134,7 +134,7 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
     public static ChatMessage card(UUID id, UUID conversationId, long seq, Actor sender, CardKind kind,
                                    String payloadJson, UUID contextId, String fallbackText, Instant now) {
         if (sender.isCustomer()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "A customer does not send cards");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "A customer does not send cards").localized("refusal.chat.customerNoCards");
         }
         String text = fallbackText == null || fallbackText.isBlank() ? null : requireText(fallbackText);
         return new ChatMessage(id, conversationId, seq, MessageKind.CARD, Visibility.CUSTOMER, sender.type(),
@@ -173,7 +173,7 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
      */
     public ChatMessage edit(Actor by, String text, Instant now, java.time.Duration window) {
         if (kind != MessageKind.TEXT && kind != MessageKind.INTERNAL_NOTE) {
-            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "Only a text or a note is edited");
+            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "Only a text or a note is edited").localized("refusal.chat.editTextOnly");
         }
         requireAuthorInWindow(by, now, window);
         String next = written(text);
@@ -193,7 +193,7 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
      */
     public ChatMessage delete(Actor by, Instant now, java.time.Duration window) {
         if (kind == MessageKind.CARD || kind == MessageKind.SYSTEM) {
-            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "A card or a system line is not deleted");
+            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "A card or a system line is not deleted").localized("refusal.chat.deleteNotCard");
         }
         requireAuthorInWindow(by, now, window);
         return new ChatMessage(id, conversationId, seq, kind, visibility, senderType, senderId, body, clientMessageId,
@@ -202,10 +202,10 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
 
     private void requireAuthorInWindow(Actor by, Instant now, java.time.Duration window) {
         if (deletedAt != null) {
-            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "The message was deleted");
+            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "The message was deleted").localized("refusal.chat.messageDeleted");
         }
         if (by.type() != senderType || !Objects.equals(by.userId(), senderId)) {
-            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "Only its author changes a message");
+            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "Only its author changes a message").localized("refusal.chat.authorOnly");
         }
         if (now.isAfter(sentAt.plus(window))) {
             throw new BusinessException(ErrorCode.CHAT_EDIT_WINDOW_PASSED);
@@ -236,11 +236,11 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
     private static String requireText(String body) {
         String text = body == null ? "" : body.strip();
         if (text.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A message says something");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A message says something").localized("refusal.chat.messageEmpty");
         }
         if (text.length() > MAX_BODY) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "A message is at most " + MAX_BODY + " characters");
+                    "A message is at most " + MAX_BODY + " characters").localized("refusal.chat.messageTooLong", MAX_BODY);
         }
         return text;
     }

@@ -14,6 +14,8 @@ import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionService;
+import com.stockflow.product.api.CustomerSku;
+import com.stockflow.product.api.CustomerSkus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -29,11 +31,18 @@ import java.util.Optional;
  * a quote line starts from, exactly as the customer-prices screen shows it
  * ({@code GET /api/v1/catalog/customer-prices/{customerId}/{sku}}).
  *
- * <p><b>One price, the customer's own.</b> Since the rescope there is no base or group price behind it (kltn-docs 13
- * BR-04, D14): a customer without its own row for the SKU has no price, and Sales set one before quoting. For one of
- * the customer's own SKUs the tiers count cartons (13 BR-05); a row kept on a stock variant counts units. The
- * {@code api} method passes the SKU on as given while the screen trims and upper-cases it, so the tool normalises it
- * the same way ({@link Sku}): "eval-lid-90" would otherwise find no row.</p>
+ * <p><b>The price a quote line starts from, and which one it is</b> (kltn-docs 13 BR-04 as changed on 2026-11-26,
+ * 14 step 2): the customer's own price for its SKU; without one, the standard price of the variant (quy cach) the SKU
+ * was drawn on, which the Sales Manager keeps for a usual print; without either, none. The same order the quote follows
+ * ({@code QuoteService.startingPrice}), read the same way: the variant behind the SKU through {@code product :: api}
+ * {@link CustomerSkus}, its price through {@code CatalogService.standardPrice}. The answer says which kind it is
+ * ({@code priceKind}), because a standard price is not what the customer negotiated: a design printed in more colours
+ * is priced up from it, and a quote priced too far below it waits for the Sales Manager (14 BR-10). Asked about a
+ * catalogue variant itself, the tool answers with its standard price and says it is one: the customer is quoted for its
+ * own SKU drawn on it. Another customer's SKU gets no price at all (13 BR-02: this customer cannot be quoted it).
+ * The standard price is the standard-price screen's ({@code catalog-standard-prices:READ}): a caller without that
+ * permission is told one may exist, never what it is. There is no group or list price behind either. The {@code api} methods pass the SKU on as given while the screen trims and
+ * upper-cases it, so the tool normalises it the same way ({@link Sku}): "eval-lid-90" would otherwise find no row.</p>
  *
  * <p><b>The tier for a quantity</b> is the last tier starting at or below it. Under the first tier the quantity is
  * below the customer's minimum. Worked out here, so the model never picks a tier from a table itself.</p>
@@ -42,11 +51,13 @@ import java.util.Optional;
  * fragment matches; one who may not names the customer exactly. Only the company name and the account status come
  * back - no contact, e-mail, phone or tax code - and the name goes to the model as an alias (ADR-0015).</p>
  *
- * <p><b>What the numbers count.</b> The same tier reads "from 200" whether it means 200 cartons of the customer's own
- * SKU or 200 pieces of a stock variant, and users count in pieces: "10.000 ly" passed as the quantity was read as
- * 10,000 cartons, fifty times the order. So the answer carries the catalog's {@code measure} (CARTON or UNIT, the
- * customer-prices screen's rule) and, when the SKU has one, its carton's pieces ({@code unitsPerCarton}, the carton
- * unit a quote is written in: {@code UomConversion.cartonOf}), and the quantity argument says in what it is counted.
+ * <p><b>What the numbers count.</b> Every price counts whole cartons now - a customer price names only the customer's
+ * own SKU ({@code catalog.check_customer_price_own_sku}) and a standard price counts cartons by definition - while
+ * users count in pieces: "10.000 ly" passed as the quantity was read as 10,000 cartons, fifty times the order. So the
+ * answer carries the catalog's {@code measure} (CARTON; UNIT survives only for a price kept on a stock variant before
+ * 4B-2, which the catalog can no longer hold) and, when the SKU has one, its carton's pieces ({@code unitsPerCarton},
+ * the carton unit a quote is written in: {@code UomConversion.cartonOf}), and the quantity argument says in what it is
+ * counted.
  * The pack size is read through {@code inventory :: api} as the stock tools read it ({@link Packing}): how a figure the
  * user may see is counted, not data of its own; unreadable, it is left out and the price still answers.</p>
  *
@@ -62,24 +73,30 @@ class GetCustomerPriceTool implements AssistantTool {
     static final int MAX_QUANTITY = 100_000_000;
 
     private static final ToolSpec SPEC = new ToolSpec("getCustomerPrice",
-            "The customer's own price for one SKU, which a quote line starts from; there is no list or group price "
-                    + "behind it, so a customer without its own price has none. measure says what minQuantity, moq "
-                    + "and quantity count: CARTON (whole cartons, the customer's own SKU: nearly every price) or UNIT "
-                    + "(pieces, a price kept on a stock product); unitsPerCarton is the pieces in one carton of the "
-                    + "SKU, when it has a carton. tiers: from minQuantity on, unitPrice per piece in currency; moq is "
-                    + "the first tier's quantity, below which this customer has no price. Always name the measure with "
-                    + "a quantity: '200 cartons (10,000 pieces)', never a bare number. Give a quantity to be told "
-                    + "which tier applies (tierForQuantity, the last tier starting at or below it): when belowMoq is "
-                    + "true there is no price for that quantity, so say the quantity is under the minimum and that "
-                    + "Sales agree it separately. Never pick a tier yourself. Prices have no validity dates: they "
-                    + "apply until changed. customerStatus is the customer account's: anything but ACTIVE means the "
-                    + "customer can be neither quoted nor sold to now, so say so beside the price. The "
-                    + "customer is named as the user named it: the company name, whole or in "
-                    + "part, or its tax code. When it does not name exactly one customer, no price is returned and the "
-                    + "note says what to ask; candidates, when given, are the customers that matched, by name: list "
-                    + "them and ask which. When the SKU has no price at all, the note says so. It returns no customer "
-                    + "contact details. For a product named in words, call searchCatalog first for its SKU. When the "
-                    + "user gives quantities per design or per line of one order, call once with their sum.",
+            "The price a quote line for this customer and SKU starts from, and which kind it is (priceKind): "
+                    + "CUSTOMER_PRICE, the customer's own negotiated price for its SKU; or, when the customer has none, "
+                    + "STANDARD_PRICE, the standard price of the variant the SKU was drawn on (standardPriceOf names "
+                    + "that variant), kept by the Sales Manager for a usual print (a 1-2 colour logo). Always say which "
+                    + "kind you give: a standard price is a reference, not a price agreed with this customer; a design "
+                    + "in more colours is priced up from it, and a quote priced too far below it waits for the Sales "
+                    + "Manager's approval. There is no list or group price behind either, so with neither the note says "
+                    + "there is none. measure says what minQuantity, moq and quantity count: CARTON, whole cartons, "
+                    + "for every current price (UNIT, pieces, only on an old price kept on a stock product); "
+                    + "unitsPerCarton is the pieces in one carton of the SKU, when it has a carton. tiers: from "
+                    + "minQuantity on, unitPrice per piece in currency; moq is the first tier's quantity, below which "
+                    + "that price does not apply. Always name the measure with a quantity: '200 cartons (10,000 "
+                    + "pieces)', never a bare number. Give a quantity to be told which tier applies (tierForQuantity, "
+                    + "the last tier starting at or below it): when belowMoq is true there is no price for that "
+                    + "quantity, so say the quantity is under the minimum and that Sales agree it separately. Never "
+                    + "pick a tier yourself. Prices have no validity dates: they apply until changed. customerStatus is "
+                    + "the customer account's: anything but ACTIVE means the customer can be neither quoted nor sold to "
+                    + "now, so say so beside the price. The customer is named as the user named it: the company name, "
+                    + "whole or in part, or its tax code. When it does not name exactly one customer, no price is "
+                    + "returned and the note says what to ask; candidates, when given, are the customers that matched, "
+                    + "by name: list them and ask which. When there is no price, or the SKU is not this customer's, the "
+                    + "note says so. It returns no customer contact details. For a product named in words, call "
+                    + "searchCatalog first for its SKU. When the user gives quantities per design or per line of one "
+                    + "order, call once with their sum.",
             ToolSchema.object()
                     .string("customer", "The customer as the user named it, every word kept: the company name whole "
                             + "or in part, words such as Công ty, Cửa hàng or Khách hàng included, since they can be "
@@ -99,18 +116,29 @@ class GetCustomerPriceTool implements AssistantTool {
     private final CustomerService customers;
     private final CurrentUserProvider currentUsers;
     private final UomConversionService units;
+    private final CustomerSkus customerSkus;
 
     GetCustomerPriceTool(CatalogService catalog, CustomerService customers, CurrentUserProvider currentUsers) {
-        this(catalog, customers, currentUsers, null);
+        this(catalog, customers, currentUsers, null, null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     GetCustomerPriceTool(CatalogService catalog, CustomerService customers, CurrentUserProvider currentUsers,
                          UomConversionService units) {
+        this(catalog, customers, currentUsers, units, null);
+    }
+
+    /**
+     * @param customerSkus the customers' own SKUs, for the variant a SKU was drawn on; null (a test without it) answers
+     *                     with the customer's own price only
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    GetCustomerPriceTool(CatalogService catalog, CustomerService customers, CurrentUserProvider currentUsers,
+                         UomConversionService units, CustomerSkus customerSkus) {
         this.catalog = catalog;
         this.customers = customers;
         this.currentUsers = currentUsers;
         this.units = units;
+        this.customerSkus = customerSkus;
     }
 
     @Override
@@ -138,10 +166,39 @@ class GetCustomerPriceTool implements AssistantTool {
         if (!customer.found()) {
             return Answer.noCustomer(sku, customer);
         }
-        Optional<PriceSchedule> schedule = catalog.customerPrice(customer.customerId(), sku);
-        return schedule.map(found -> Answer.of(customer, found, unitsPerCarton(found.sku()),
-                        quantity == 0 ? null : quantity))
-                .orElseGet(() -> Answer.noPrice(customer, sku));
+        Integer asked = quantity == 0 ? null : quantity;
+        Optional<PriceSchedule> own = catalog.customerPrice(customer.customerId(), sku);
+        if (own.isPresent()) {
+            return Answer.of(customer, own.get().sku(), own.get(), PriceKind.CUSTOMER_PRICE, null,
+                    unitsPerCarton(own.get().sku()), asked, null);
+        }
+        if (customerSkus == null) {
+            return Answer.noPrice(customer, sku);
+        }
+        Optional<CustomerSku> customerSku = customerSkus.find(sku);
+        if (customerSku.isPresent() && !customer.customerId().equals(customerSku.get().ownerCustomerId())) {
+            // 13 BR-02: another customer's SKU is not this customer's to be quoted; whose it is stays unsaid.
+            return Answer.notTheirs(customer, sku);
+        }
+        if (!user.can(ToolPermissions.STANDARD_PRICES, Action.READ)) {
+            // The standard price is the standard-price screen's: a caller who may not open it is not told it here.
+            return Answer.noOwnPrice(customer, sku);
+        }
+        // The customer's own SKU: the standard price of the variant it was drawn on. A catalogue variant (no owner):
+        // its own standard price, said to be one. An unknown code finds none.
+        String variant = customerSku.map(CustomerSku::sourceSku).orElse(sku);
+        Optional<PriceSchedule> standard = variant == null ? Optional.empty() : catalog.standardPrice(variant);
+        if (standard.isEmpty()) {
+            return Answer.noPrice(customer, sku);
+        }
+        return Answer.of(customer, sku, standard.get(), PriceKind.STANDARD_PRICE, standard.get().sku(),
+                unitsPerCarton(sku), asked, customerSku.isPresent() ? null : variantNote(sku));
+    }
+
+    private static String variantNote(String sku) {
+        return sku + " is a catalogue variant, not one of this customer's own SKUs: this is its standard price. A "
+                + "quote is written for the customer's own SKU drawn on it, which the customer gets once its design is "
+                + "approved.";
     }
 
     /**
@@ -162,7 +219,18 @@ class GetCustomerPriceTool implements AssistantTool {
         }
     }
 
+    /** Which price the answer gives (13 BR-04 as changed on 2026-11-26), in the order a quote line starts from. */
+    enum PriceKind {
+        /** The customer's own price for its SKU: negotiated with this customer. */
+        CUSTOMER_PRICE,
+        /** The standard price of the variant behind the SKU: a reference for a usual print, not negotiated. */
+        STANDARD_PRICE
+    }
+
     /**
+     * @param sku             the SKU asked about, as the catalog spells it
+     * @param priceKind       which price it is; null without a price
+     * @param standardPriceOf the variant whose standard price it is, when {@code priceKind} is STANDARD_PRICE
      * @param measure         what {@code moq}, the tiers' {@code minQuantity} and {@code quantity} count: CARTON or
      *                        UNIT ({@link PriceSchedule.Measure}); null without a price
      * @param unitsPerCarton  pieces in one carton of the SKU; null when it has no single carton unit or without a price
@@ -172,12 +240,13 @@ class GetCustomerPriceTool implements AssistantTool {
      * @param candidates      the customers the text matched, when it named none exactly
      * @param note            why there is no price, when there is none
      */
-    record Answer(CustomerName customerName, String customerStatus, String sku, String measure,
-                  Integer unitsPerCarton, Integer moq,
+    record Answer(CustomerName customerName, String customerStatus, String sku, PriceKind priceKind,
+                  String standardPriceOf, String measure, Integer unitsPerCarton, Integer moq,
                   String currency, List<Tier> tiers, Integer quantity, Tier tierForQuantity, Boolean belowMoq,
                   List<CustomerMatch.Candidate> candidates, String note) {
 
-        static Answer of(CustomerMatch customer, PriceSchedule schedule, Integer unitsPerCarton, Integer quantity) {
+        static Answer of(CustomerMatch customer, String sku, PriceSchedule schedule, PriceKind kind,
+                         String standardPriceOf, Integer unitsPerCarton, Integer quantity, String note) {
             List<Tier> tiers = schedule.tiers().stream()
                     .map(tier -> new Tier(tier.minQuantity(), tier.unitPrice().amount())).toList();
             Optional<Tier> applies = quantity == null ? Optional.empty() : tiers.stream()
@@ -185,22 +254,37 @@ class GetCustomerPriceTool implements AssistantTool {
                     .max(Comparator.comparingInt(Tier::minQuantity));
             String currency = schedule.tiers().isEmpty() ? null
                     : schedule.tiers().getFirst().unitPrice().currency().getCurrencyCode();
-            return new Answer(customer.customerName(), customer.status(), schedule.sku(),
+            return new Answer(customer.customerName(), customer.status(), sku, kind, standardPriceOf,
                     schedule.measure() == null ? null : schedule.measure().name(), unitsPerCarton, schedule.moq(),
                     currency, tiers, quantity, applies.orElse(null), quantity == null ? null : applies.isEmpty(),
-                    List.of(), null);
+                    List.of(), note);
         }
 
         static Answer noCustomer(String sku, CustomerMatch customer) {
-            return new Answer(null, null, sku, null, null, null, null, List.of(), null, null, null,
+            return new Answer(null, null, sku, null, null, null, null, null, null, List.of(), null, null, null,
                     customer.candidates(), customer.note());
         }
 
         static Answer noPrice(CustomerMatch customer, String sku) {
-            return new Answer(customer.customerName(), customer.status(), sku, null, null, null, null, List.of(),
-                    null, null, null, List.of(), "This customer has no price of its own for " + sku
-                    + ", and there is no list or group price behind it: Sales set the customer's price before quoting. The SKU may also be "
+            return new Answer(customer.customerName(), customer.status(), sku, null, null, null, null, null, null,
+                    List.of(), null, null, null, List.of(), "This customer has no price of its own for " + sku
+                    + ", and no standard price stands behind it (none is set for the variant it was drawn on); there "
+                    + "is no list or group price either: Sales price the quote line themselves. The SKU may also be "
                     + "mistyped; say so and suggest checking the code, never a price.");
+        }
+
+        static Answer noOwnPrice(CustomerMatch customer, String sku) {
+            return new Answer(customer.customerName(), customer.status(), sku, null, null, null, null, null, null,
+                    List.of(), null, null, null, List.of(), "This customer has no price of its own for " + sku
+                    + ". A standard price of the variant it was drawn on may stand behind it, but this account may not "
+                    + "read standard prices (catalog-standard-prices:READ): say so, never a price.");
+        }
+
+        static Answer notTheirs(CustomerMatch customer, String sku) {
+            return new Answer(customer.customerName(), customer.status(), sku, null, null, null, null, null, null,
+                    List.of(), null, null, null, List.of(), sku + " is not one of this customer's own SKUs: this "
+                    + "customer has no price of its own for it, no standard price applies, and it cannot be quoted it. "
+                    + "Say so, and suggest checking the code; never say whose SKU it is.");
         }
     }
 

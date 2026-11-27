@@ -11,8 +11,8 @@ import java.util.List;
  * name documents the way people do. A customer appears by order number only; nothing personal. Since the rescope
  * goods come back printed against a production order (no purchase order, no supplier) and nothing expires.</p>
  *
- * @param origin              {@code GOODS_RECEIPT}, or {@code UNTRACED} for stock that entered without a recorded
- *                            receipt
+ * @param origin              {@code PRODUCTION_ORDER}, or {@code UNTRACED} for stock that entered without a
+ *                            recorded receipt; a lot no longer names the receipt that brought it (V20261214000200)
  * @param productionOrderCode the production order the lot was printed for; null for a lot that is not one's
  * @param receivedQuantity    units its receipt brought in
  * @param onHand              units of it on hand now, in any status
@@ -20,7 +20,7 @@ import java.util.List;
  * @param held                units on hand now allocated to an order being picked
  */
 public record LotTraceView(String sku, String lotNumber, Instant receivedAt, String origin,
-                           String goodsReceiptNumber, String productionOrderCode,
+                           String productionOrderCode,
                            long receivedQuantity, long onHand, long available, long held,
                            List<Balance> balances, List<Hold> holds, List<OrderLeg> orders) {
 

@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.inventory.internal.service.CycleCountView;
@@ -77,8 +78,7 @@ class CycleCountHttpSecurityIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Cycle count HTTP fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Cycle count HTTP fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Cycle count HTTP fixture");
             carton = CartonRows.stock(jdbc, sku, BIN, 1, 10, "L1",
                     Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE").getFirst();
         });
@@ -105,7 +105,7 @@ class CycleCountHttpSecurityIntegrationTest {
                 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
                                                  version, created_at)
                 VALUES (?, 'Elsewhere', 'ACTIVE', ?, 'Somewhere', 'M', 50, 50, 0, NOW())""", id,
-                "E" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT)));
+                ReferenceRows.warehousePrefix("E")));
         return id;
     }
 
@@ -129,6 +129,11 @@ class CycleCountHttpSecurityIntegrationTest {
         return "{\"found\":" + found + "}";
     }
 
+    /** The first line's carton scanned present: found, with its LPN (20 §4.2 b4). */
+    private static String scanned(CycleCountView count) {
+        return "{\"found\":true,\"lpn\":\"" + count.lines().get(0).lpn() + "\"}";
+    }
+
     private UUID variance(CycleCountView count) {
         return jdbc.queryForObject("select id from inventory.stock_adjustment where cycle_count_line_id = ?",
                 UUID.class, count.lines().get(0).id());
@@ -144,7 +149,7 @@ class CycleCountHttpSecurityIntegrationTest {
     @DisplayName("after submission a counter still sees no booked state, note or adjustment; the manager does")
     void counterNeverSeesTheBooks() throws Exception {
         CycleCountView count = planned();
-        cycleCounts.count(count.id(), count.lines().get(0).id(), false, counter, false);
+        cycleCounts.count(count.id(), count.lines().get(0).id(), false, null, counter, false);
         cycleCounts.submit(count.id(), counter, false);
 
         mvc.asRole(Role.WAREHOUSE_STAFF, counter, get(BASE + "/" + count.id()))
@@ -161,7 +166,8 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.lines[0].booked").value(true))
                 .andExpect(jsonPath("$.data.lines[0].found").value(false))
-                .andExpect(jsonPath("$.data.lines[0].adjustments[0].quantityDelta").value(-10))
+                .andExpect(jsonPath("$.data.lines[0].adjustments[0].direction").value("WRITE_OFF"))
+                .andExpect(jsonPath("$.data.lines[0].adjustments[0].quantityDelta").doesNotExist())
                 .andExpect(jsonPath("$.data.lines[0].adjustments[0].status").value("PENDING_APPROVAL"))
                 .andExpect(jsonPath("$.data.note").value("Count the top shelf"));
     }
@@ -177,7 +183,7 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andReturn().getResponse().getContentAsString();
         String id = com.jayway.jsonpath.JsonPath.read(managers, "$.data.count.id");
         cycleCounts.count(UUID.fromString(id), UUID.fromString(com.jayway.jsonpath.JsonPath.read(managers,
-                "$.data.count.lines[0].id")), false, counter, false);
+                "$.data.count.lines[0].id")), false, null, counter, false);
 
         String row = "$.data.items[?(@.id == '" + id + "')]";
         String list = BASE + "?warehouseId=" + WAREHOUSE_HCM + "&status=IN_PROGRESS&size=50";
@@ -186,6 +192,7 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andExpect(jsonPath(row + ".lineCount").value(org.hamcrest.Matchers.contains(1)))
                 .andExpect(jsonPath(row + ".countedCount").value(org.hamcrest.Matchers.contains(1)))
                 .andExpect(jsonPath(row + ".varianceCount").doesNotExist())
+                .andExpect(jsonPath(row + ".warehouseCode").value(org.hamcrest.Matchers.contains("HCM")))
                 .andExpect(jsonPath(row + ".note").doesNotExist())
                 .andExpect(jsonPath(row + ".lines").doesNotExist());
         mvc.asRole(Role.WAREHOUSE_MANAGER, manager, get(list))
@@ -235,22 +242,27 @@ class CycleCountHttpSecurityIntegrationTest {
     }
 
     @Test
-    @DisplayName("a count body is {found}: no body, no found, the old quantity shapes and a non-boolean are 400; "
-            + "then a count goes through")
+    @DisplayName("a count body is {found, lpn}: no body, no found, found without the LPN, the old quantity shapes and "
+            + "a non-boolean are 400; another carton's LPN is 409; then a count goes through")
     void countBodyNeedsFound() throws Exception {
         CycleCountView count = planned();
         String path = BASE + "/" + count.id() + "/lines/" + count.lines().get(0).id() + "/count";
 
         for (String body : List.of("{}", "{\"countedQty\":9}", "{\"present\":true}", "{\"found\":null}",
-                "{\"found\":\"maybe\"}")) {
+                "{\"found\":\"maybe\"}", "{\"found\":true}", "{\"found\":true,\"lpn\":\" \"}",
+                "{\"found\":false,\"lpn\":\"" + count.lines().get(0).lpn() + "\"}")) {
             mvc.asRole(Role.WAREHOUSE_STAFF, counter, put(path).contentType(MediaType.APPLICATION_JSON)
                             .content(body))
                     .andExpect(status().isBadRequest());
         }
-        assertThat(jdbc.queryForObject("select counted_qty from inventory.cycle_count_line where id = ?",
-                Integer.class, count.lines().get(0).id())).as("nothing recorded by a refused body").isNull();
         mvc.asRole(Role.WAREHOUSE_STAFF, counter, put(path).contentType(MediaType.APPLICATION_JSON)
-                        .content(found(true)))
+                        .content("{\"found\":true,\"lpn\":\"LPN-NOT-THIS-ONE\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CYCLE_COUNT_LPN_MISMATCH"));
+        assertThat(jdbc.queryForObject("select found from inventory.cycle_count_line where id = ?",
+                Boolean.class, count.lines().get(0).id())).as("nothing recorded by a refused body").isNull();
+        mvc.asRole(Role.WAREHOUSE_STAFF, counter, put(path).contentType(MediaType.APPLICATION_JSON)
+                        .content(scanned(count)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"))
                 .andExpect(jsonPath("$.data.lines[0].found").value(true))
@@ -291,7 +303,7 @@ class CycleCountHttpSecurityIntegrationTest {
         // A colleague who is not the assignee still gets the assignment refusal.
         UUID colleague = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
         mvc.asRole(Role.WAREHOUSE_STAFF, colleague, put(countPath(count)).contentType(MediaType.APPLICATION_JSON)
-                        .content(found(true)))
+                        .content(scanned(count)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("CYCLE_COUNT_NOT_ASSIGNEE"));
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put(countPath(count)).contentType(MediaType.APPLICATION_JSON)
@@ -300,17 +312,29 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"))
                 .andExpect(jsonPath("$.data.lines[0].found").value(false))
                 .andExpect(jsonPath("$.data.lines[0].countedBy").value(clerk.toString()))
+                // Names and the warehouse beside the ids: the account has no full name, so its username
+                .andExpect(jsonPath("$.data.lines[0].countedByName").value("test-" + clerk))
+                .andExpect(jsonPath("$.data.assignedUserName").value("test-" + clerk))
+                .andExpect(jsonPath("$.data.warehouseCode").value("HCM"))
+                .andExpect(jsonPath("$.data.warehouseName").isNotEmpty())
                 .andExpect(jsonPath("$.data.lines[0].booked").doesNotExist());
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post(BASE + "/" + count.id() + "/submission"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.data.lines[*].adjustments[*]").isEmpty());
-        assertThat(jdbc.queryForObject("select quantity_delta from inventory.stock_adjustment"
-                + " where cycle_count_line_id = ?", Integer.class, count.lines().get(0).id())).isEqualTo(-10);
+        assertThat(jdbc.queryForObject("select direction from inventory.stock_adjustment"
+                + " where cycle_count_line_id = ?", String.class, count.lines().get(0).id())).isEqualTo("WRITE_OFF");
         // Staff submit the variance; they do not decide it.
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post("/api/v1/inventory/adjustments/" + variance(count) + "/approval"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+        // The variance names who asked for it and who counted it - here the same clerk
+        UUID decider = staff("WAREHOUSE_MANAGER", WAREHOUSE_HCM);
+        mvc.asRole(Role.WAREHOUSE_MANAGER, decider, get("/api/v1/inventory/adjustments/" + variance(count)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.countedBy").value(clerk.toString()))
+                .andExpect(jsonPath("$.data.countedByName").value("test-" + clerk))
+                .andExpect(jsonPath("$.data.decidedByName").doesNotExist());
     }
 
     @Test
@@ -323,12 +347,14 @@ class CycleCountHttpSecurityIntegrationTest {
 
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put(path).contentType(MediaType.APPLICATION_JSON).content(found(false)))
                 .andExpect(status().isOk());
-        mvc.asRole(Role.WAREHOUSE_MANAGER, manager, put(path).contentType(MediaType.APPLICATION_JSON).content(found(true)))
+        mvc.asRole(Role.WAREHOUSE_MANAGER, manager, put(path).contentType(MediaType.APPLICATION_JSON)
+                        .content(scanned(count)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("CYCLE_COUNT_LINE_COUNTED_BY_OTHER"));
-        assertThat(jdbc.queryForObject("select counted_qty from inventory.cycle_count_line where id = ?",
-                Integer.class, count.lines().get(0).id())).as("the assignee's answer stands: not found").isZero();
-        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put(path).contentType(MediaType.APPLICATION_JSON).content(found(true)))
+        assertThat(jdbc.queryForObject("select found from inventory.cycle_count_line where id = ?",
+                Boolean.class, count.lines().get(0).id())).as("the assignee's answer stands: not found").isFalse();
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put(path).contentType(MediaType.APPLICATION_JSON)
+                        .content(scanned(count)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.lines[0].found").value(true));
         cycleCounts.cancel(count.id(), "next case", "test");
@@ -339,14 +365,14 @@ class CycleCountHttpSecurityIntegrationTest {
                         .content(found(false)))
                 .andExpect(status().isOk());
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put(countPath(second)).contentType(MediaType.APPLICATION_JSON)
-                        .content(found(true)))
+                        .content(scanned(second)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.lines[0].countedBy").value(clerk.toString()));
         cycleCounts.cancel(second.id(), "next case", "test");
 
         CycleCountView open = planned();
         mvc.asRole(Role.WAREHOUSE_STAFF, counter, put(countPath(open)).contentType(MediaType.APPLICATION_JSON)
-                        .content(found(true)))
+                        .content(scanned(open)))
                 .andExpect(status().isOk());
         mvc.asRole(Role.WAREHOUSE_MANAGER, manager, put(countPath(open)).contentType(MediaType.APPLICATION_JSON)
                         .content(found(false)))
@@ -362,7 +388,7 @@ class CycleCountHttpSecurityIntegrationTest {
         UUID otherManager = staff("WAREHOUSE_MANAGER", WAREHOUSE_HCM);
         CycleCountView count = plannedFor(clerk);
         // The manager enters the figure on the clerk's count; the clerk submits it, so the clerk is the requester.
-        cycleCounts.count(count.id(), count.lines().get(0).id(), false, manager, true);
+        cycleCounts.count(count.id(), count.lines().get(0).id(), false, null, manager, true);
         cycleCounts.submit(count.id(), clerk, false);
         UUID adjustment = variance(count);
         String approval = "/api/v1/inventory/adjustments/" + adjustment + "/approval";
@@ -376,16 +402,16 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("ADJUSTMENT_SELF_APPROVAL"));
         assertThat(jdbc.queryForObject("select status from inventory.stock_adjustment where id = ?", String.class,
                 adjustment)).isEqualTo("PENDING_APPROVAL");
-        assertThat(jdbc.queryForObject("select on_hand from inventory.stock_item where sku = ?", Integer.class, sku))
-                .as("nothing posted").isEqualTo(10);
+        assertThat(jdbc.queryForObject("select stock_status from inventory.stock_package where id = ?", String.class,
+                carton.id())).as("nothing posted").isEqualTo("AVAILABLE");
         assertThat(jdbc.queryForObject("select status from inventory.stock_package where id = ?", String.class,
                 carton.id())).isEqualTo("IN_STOCK");
 
         mvc.asRole(Role.WAREHOUSE_MANAGER, otherManager, post(approval))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("POSTED"));
-        assertThat(jdbc.queryForObject("select on_hand from inventory.stock_item where sku = ?", Integer.class, sku))
-                .as("the carton written off").isZero();
+        assertThat(jdbc.queryForObject("select stock_status from inventory.stock_package where id = ?", String.class,
+                carton.id())).as("the carton written off: out of stock, no stock status").isNull();
         assertThat(jdbc.queryForObject("select status from inventory.stock_package where id = ?", String.class,
                 carton.id())).isEqualTo("LOST");
     }
@@ -395,7 +421,7 @@ class CycleCountHttpSecurityIntegrationTest {
     void requesterStillCannotDecide() {
         UUID clerk = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
         CycleCountView count = plannedFor(clerk);
-        cycleCounts.count(count.id(), count.lines().get(0).id(), false, manager, true);
+        cycleCounts.count(count.id(), count.lines().get(0).id(), false, null, manager, true);
         cycleCounts.submit(count.id(), clerk, false);
         UUID adjustment = variance(count);
 

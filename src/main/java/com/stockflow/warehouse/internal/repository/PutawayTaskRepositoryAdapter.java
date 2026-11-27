@@ -65,6 +65,12 @@ class PutawayTaskRepositoryAdapter implements PutawayTaskRepository {
     }
 
     @Override
+    public List<PutawayTask> findOpenByStockPackages(java.util.Collection<UUID> stockPackageIds) {
+        return stockPackageIds.isEmpty() ? List.of() : jpa.findByStockPackageIdInAndStatusIn(stockPackageIds, OPEN)
+                .stream().map(PutawayTaskRepositoryAdapter::toDomain).toList();
+    }
+
+    @Override
     public Optional<PutawayTask> findLooseOfReceiptLine(UUID goodsReceiptLineId) {
         return jpa.findFirstByGoodsReceiptLineIdAndStockPackageIdIsNull(goodsReceiptLineId)
                 .map(PutawayTaskRepositoryAdapter::toDomain);

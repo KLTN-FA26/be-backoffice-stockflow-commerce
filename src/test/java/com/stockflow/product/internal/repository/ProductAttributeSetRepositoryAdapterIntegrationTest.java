@@ -20,6 +20,7 @@ import com.stockflow.product.internal.domain.DescriptiveSpec;
 import com.stockflow.product.internal.domain.DescriptiveValue;
 import com.stockflow.product.internal.domain.ProductAttributeSet;
 import com.stockflow.product.internal.domain.ProductAttributeSetRepository;
+import com.stockflow.product.internal.domain.ProductAxis;
 import com.stockflow.product.internal.service.AttributeDictionaryService;
 import com.stockflow.product.internal.service.AttributeDictionaryService.AttributeView;
 import com.stockflow.support.IntegrationTest;
@@ -51,7 +52,7 @@ import static com.stockflow.product.internal.domain.AttributeDataType.MULTISELEC
 import static com.stockflow.product.internal.domain.AttributeDataType.NUMBER;
 import static com.stockflow.product.internal.domain.AttributeDataType.SELECT;
 import static com.stockflow.product.internal.domain.AttributeDataType.TEXT;
-import static com.stockflow.support.DemoData.PRODUCT_SOFA;
+import static com.stockflow.support.DemoData.PRODUCT_BOX;
 import static com.stockflow.support.DemoData.demoId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
@@ -138,21 +139,24 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
     }
 
     @Test
-    void theDemoSofaLoadsWithItsAxisAndDescriptive() {
-        var set = repository.load(PRODUCT_SOFA, ProductStatus.PUBLISHED);
+    void theDemoBoxLoadsWithItsTwoAxes() {
+        var set = repository.load(PRODUCT_BOX, ProductStatus.PUBLISHED);
 
-        assertThat(set.axes()).singleElement()
-                .satisfies(a -> assertThat(a.attributeId()).isEqualTo(demoId("demo:attr:COLOR")));
-        assertThat(set.descriptives()).singleElement()
-                .satisfies(d -> assertThat(d.values()).extracting(DescriptiveValue::valueId)
-                        .containsExactly(demoId("demo:val:MATERIAL:FABRIC")));
-        assertThat(repository.valueIdsUsedByVariants(PRODUCT_SOFA)).containsExactly(demoId("demo:val:COLOR:GREY"));
+        assertThat(set.axes()).extracting(ProductAxis::attributeId)
+                .containsExactlyInAnyOrder(demoId("demo:attr:COLOR"), demoId("demo:attr:MATERIAL"));
+        assertThat(set.axes()).filteredOn(a -> a.attributeId().equals(demoId("demo:attr:COLOR"))).singleElement()
+                .satisfies(a -> assertThat(a.options()).extracting(AxisOption::valueId).containsExactlyInAnyOrder(
+                        demoId("demo:val:COLOR:GREY"), demoId("demo:cups:attribute-value:COLOR:BLUE")));
+        assertThat(set.descriptives()).isEmpty();
+        assertThat(repository.valueIdsUsedByVariants(PRODUCT_BOX)).containsExactlyInAnyOrder(
+                demoId("demo:val:COLOR:GREY"), demoId("demo:cups:attribute-value:COLOR:BLUE"),
+                demoId("demo:cups:attribute-value:MATERIAL:PAPER"));
     }
 
     @Test
     void aSetRoundTrips() {
         var size = attribute("SIZE", SELECT, "S", "M");
-        var material = attribute("MATERIAL", SELECT, "FABRIC", "OAK");
+        var material = attribute("MATERIAL", SELECT, "PAPER", "KRAFT");
         var tags = attribute("TAGS", MULTISELECT, "A", "B");
         var note = attribute("NOTE", TEXT);
         var weight = attribute("WEIGHT", NUMBER);
@@ -163,7 +167,7 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
         set.replaceAxes(List.of(new AxisSpec(size.id(), 0, List.of(value(size, "S"), value(size, "M")))), dict,
                 Set.of(), Identifiers::newId);
         set.replaceDescriptives(List.of(
-                new DescriptiveSpec(material.id(), 0, List.of(value(material, "FABRIC")), null, null, null),
+                new DescriptiveSpec(material.id(), 0, List.of(value(material, "PAPER")), null, null, null),
                 new DescriptiveSpec(tags.id(), 1, List.of(value(tags, "A"), value(tags, "B")), null, null, null),
                 new DescriptiveSpec(note.id(), 2, List.of(), "hand wash", null, null),
                 new DescriptiveSpec(weight.id(), 3, List.of(), null, new BigDecimal("12.5"), null),
@@ -180,7 +184,7 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
         assertThat(loaded.descriptives()).extracting(DescriptiveAttribute::attributeId)
                 .containsExactly(material.id(), tags.id(), note.id(), weight.id(), flag.id());
         assertThat(loaded.descriptives().get(0).values()).extracting(DescriptiveValue::valueId)
-                .containsExactly(value(material, "FABRIC"));
+                .containsExactly(value(material, "PAPER"));
         assertThat(loaded.descriptives().get(1).values()).extracting(DescriptiveValue::valueId)
                 .containsExactlyInAnyOrder(value(tags, "A"), value(tags, "B"));
         assertThat(loaded.descriptives().get(2).values()).extracting(DescriptiveValue::text).containsExactly("hand wash");
@@ -191,13 +195,13 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
     @Test
     void savingAnUnchangedSetTouchesNoRow() {
         var size = attribute("SIZE", SELECT, "S", "M");
-        var material = attribute("MATERIAL", SELECT, "FABRIC", "OAK");
+        var material = attribute("MATERIAL", SELECT, "PAPER", "KRAFT");
         var tags = attribute("TAGS", MULTISELECT, "A", "B");
         var weight = attribute("WEIGHT", NUMBER);
         var dict = dictionaryOf(size, material, tags, weight);
         List<AxisSpec> axes = List.of(new AxisSpec(size.id(), 0, List.of(value(size, "S"), value(size, "M"))));
         List<DescriptiveSpec> descriptives = List.of(
-                new DescriptiveSpec(material.id(), 0, List.of(value(material, "FABRIC")), null, null, null),
+                new DescriptiveSpec(material.id(), 0, List.of(value(material, "PAPER")), null, null, null),
                 new DescriptiveSpec(tags.id(), 1, List.of(value(tags, "A"), value(tags, "B")), null, null, null),
                 new DescriptiveSpec(weight.id(), 2, List.of(), null, new BigDecimal("12.5"), null));
         var first = draftSet();
@@ -223,11 +227,11 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
 
     @Test
     void aSingleDescriptiveValueIsChangedInPlace() {
-        var material = attribute("MATERIAL", SELECT, "FABRIC", "OAK");
+        var material = attribute("MATERIAL", SELECT, "PAPER", "KRAFT");
         var dict = dictionaryOf(material);
         var first = draftSet();
         first.replaceDescriptives(List.of(
-                new DescriptiveSpec(material.id(), 0, List.of(value(material, "FABRIC")), null, null, null)),
+                new DescriptiveSpec(material.id(), 0, List.of(value(material, "PAPER")), null, null, null)),
                 dict, Identifiers::newId);
         persisted(first);
         UUID rowId = jdbc.queryForObject("select r.id from (" + ownRows("product_descriptive_values") + ") r",
@@ -235,7 +239,7 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
 
         var second = draftSet();
         second.replaceDescriptives(List.of(
-                new DescriptiveSpec(material.id(), 0, List.of(value(material, "OAK")), null, null, null)),
+                new DescriptiveSpec(material.id(), 0, List.of(value(material, "KRAFT")), null, null, null)),
                 dict, Identifiers::newId);
         persisted(second);
 
@@ -243,7 +247,7 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
         assertThat(jdbc.queryForList("select r.id from (" + ownRows("product_descriptive_values") + ") r",
                 UUID.class, productId)).containsExactly(rowId);
         assertThat(jdbc.queryForList("select r.attribute_value_id from (" + ownRows("product_descriptive_values")
-                + ") r", UUID.class, productId)).containsExactly(value(material, "OAK"));
+                + ") r", UUID.class, productId)).containsExactly(value(material, "KRAFT"));
     }
 
     @Test
@@ -324,13 +328,13 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
     @Test
     void loadingIsTwoQueries() {
         var size = attribute("SIZE", SELECT, "S", "M");
-        var material = attribute("MATERIAL", SELECT, "FABRIC");
+        var material = attribute("MATERIAL", SELECT, "PAPER");
         var dict = dictionaryOf(size, material);
         var set = draftSet();
         set.replaceAxes(List.of(new AxisSpec(size.id(), 0, List.of(value(size, "S"), value(size, "M")))), dict,
                 Set.of(), Identifiers::newId);
         set.replaceDescriptives(List.of(
-                new DescriptiveSpec(material.id(), 0, List.of(value(material, "FABRIC")), null, null, null)),
+                new DescriptiveSpec(material.id(), 0, List.of(value(material, "PAPER")), null, null, null)),
                 dict, Identifiers::newId);
         persisted(set);
 

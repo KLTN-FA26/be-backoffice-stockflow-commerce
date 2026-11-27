@@ -73,8 +73,10 @@ class PickListServiceTest {
             mock(com.stockflow.fulfillment.internal.repository.PackJpaRepository.class);
     private final com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages =
             mock(com.stockflow.fulfillment.internal.repository.PackageJpaRepository.class);
+    private final com.stockflow.order.api.PrePicking prePicking = mock(com.stockflow.order.api.PrePicking.class);
     private final PickListService service = new PickListService(picks, pickLines, orders, inventory, itemControls,
-            consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations, packs, packages);
+            consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations, packs, packages,
+            mock(com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository.class), prePicking);
 
     private final UUID picker = UUID.randomUUID();
     private final CurrentUser actor = new CurrentUser(picker, "picker",
@@ -85,7 +87,7 @@ class PickListServiceTest {
 
     @BeforeEach
     void aTaskBeingPicked() {
-        task = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
+        task = new PickJpaEntity(UUID.randomUUID(), UUID.randomUUID(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
         task.assign(picker, NOW.minusSeconds(120));
         task.start(picker, NOW.minusSeconds(60));
         when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
@@ -94,7 +96,7 @@ class PickListServiceTest {
         when(orders.findById(task.getOrderId())).thenReturn(Optional.of(FulfillmentFixtures.orderWith(
                 task.getOrderId(), OrderStatus.PICKING, List.of(), null)));
         when(itemControls.logistics(any())).thenAnswer(call -> new InventoryItemLogistics("X", 0, new ItemLogistics(
-                "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1)));
+                "PCS", "8930000000017")));
     }
 
     private PickLineJpaEntity line(String sku, String location, int allocated, UUID reservation) {
@@ -110,11 +112,11 @@ class PickListServiceTest {
     }
 
     private void taskIs(PickStatus status) {
-        task = new PickJpaEntity(task.getId(), null, task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
+        task = new PickJpaEntity(task.getId(), task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
         task.assign(picker, NOW);
         switch (status) {
             case PICKING -> task.start(picker, NOW);
-            case CANCELLED -> task.cancel();
+            case CANCELLED -> task.cancel(NOW);
             default -> { }
         }
         when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
@@ -384,6 +386,23 @@ class PickListServiceTest {
             assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "LPN-SKU-A", other))
                     .errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
             verifyNoInteractions(consumption);
+        }
+
+        @Test
+        @DisplayName("whoever holds task assignment (the warehouse manager) confirms on behalf, in their own name (WF4-QLK-TAKEOVER)")
+        void whoAssignsMayConfirmOnBehalf() {
+            UUID managerId = UUID.randomUUID();
+            CurrentUser manager = new CurrentUser(managerId, "manager",
+                    java.util.Set.of(com.stockflow.common.security.Role.WAREHOUSE_MANAGER),
+                    java.util.Set.of(com.stockflow.common.security.PermissionCode.of(
+                            FulfillmentPermissions.TASK_ASSIGNMENT, com.stockflow.common.security.Action.UPDATE)),
+                    DataScope.ALL, java.util.Set.of(), java.util.Set.of());
+
+            var view = service.confirm(task.getId(), row.getId(), "HCM-A-01", "LPN-SKU-A", manager);
+
+            assertThat(view.status()).isEqualTo("PICKED");
+            assertThat(task.getAssignedUserId()).isEqualTo(picker);
+            verify(consumption).consumeForPick(reservation, row.getId(), managerId);
         }
 
         @Test
@@ -703,6 +722,32 @@ class PickListServiceTest {
 
             verify(orders, never()).putOnHold(any(), any(), any(), any());
         }
+
+        @Test
+        @DisplayName("WF4-BE3-HOLD: at the removal itself the order is held INVENTORY, as a short pick report holds it; "
+                + "held already, it is left")
+        void holdsAtTheRemoval() {
+            service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
+
+            verify(orders).putOnHold(eq(task.getOrderId()), eq(HoldReason.INVENTORY), any(), eq(picker));
+
+            orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY);
+            service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
+            verify(orders, org.mockito.Mockito.times(1)).putOnHold(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("WF4-BE3-HOLD: a line whose carton was not removed, or whose carton is replaced already, does not "
+                + "hold the order")
+        void doesNotHoldWhatIsNotLacking() {
+            service.holdForRemovedCarton(task.getId(), stored.get(1).getId(), actor);
+            PickLineJpaEntity replacement = new PickLineJpaEntity(UUID.randomUUID(), task.getId(), orderLine, newHold,
+                    "SKU-A", "HCM-B-01", "LOT-2", 3, 5, "LPN-NEW", true);
+            stored.add(replacement);
+            service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
+
+            verify(orders, never()).putOnHold(any(), any(), any(), any());
+        }
     }
 
     @Nested
@@ -813,10 +858,10 @@ class PickListServiceTest {
 
         @BeforeEach
         void aCancelledTaskWithAPickedLine() {
-            task = new PickJpaEntity(task.getId(), null, task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
+            task = new PickJpaEntity(task.getId(), task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
             task.assign(picker, NOW);
             task.start(picker, NOW);
-            task.cancel();
+            task.cancel(NOW);
             when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
             row = line("SKU-A", "HCM-A-01", 3, reservation);
             row.apply(3, PickLineStatus.PICKED, picker, NOW, NOW, "HCM-A-01", "LPN-SKU-A", 0, null, null, null);
@@ -944,8 +989,8 @@ class PickListServiceTest {
         @Test
         @DisplayName("a task that was not started before it was cancelled has nothing to put back")
         void nothingToPutBack() {
-            task = new PickJpaEntity(task.getId(), null, task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
-            task.cancel();
+            task = new PickJpaEntity(task.getId(), task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING);
+            task.cancel(NOW);
             when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
             binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
 
@@ -1014,7 +1059,7 @@ class PickListServiceTest {
 
         /** The task of the enclosing test, redrawn with a STAGING destination and walked to {@code status}. */
         private void stagingTaskIs(PickStatus status) {
-            task = new PickJpaEntity(task.getId(), null, task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING,
+            task = new PickJpaEntity(task.getId(), task.getOrderId(), "SO-0001", WAREHOUSE, PickStatus.PENDING,
                     com.stockflow.fulfillment.api.PickDestination.STAGING, AREA);
             task.assign(picker, NOW);
             if (status != PickStatus.PENDING) {
@@ -1024,7 +1069,7 @@ class PickListServiceTest {
                 task.complete(picker, NOW);
             }
             if (status == PickStatus.CANCELLED) {
-                task.cancel();
+                task.cancel(NOW);
             }
             when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
             when(picks.findById(task.getId())).thenReturn(Optional.of(task));

@@ -79,19 +79,29 @@ class LoadEstimateTrialIntegrationTest {
         return id;
     }
 
+    /** A line of boxes of 1 kg each; a line with no boxes still weighs 1 kg, so only its quantity is wrong. */
     private static String line(int length, int width, int height, int quantity) {
+        return line(length, width, height, quantity, String.valueOf(Math.max(quantity, 1)), false);
+    }
+
+    private static String line(int length, int width, int height, int quantity, String totalKg, boolean fill) {
         return """
-                {"name":"Box %d","group":"G1","lengthMm":%d,"widthMm":%d,"heightMm":%d,"quantity":%d,"rotatable":true}"""
-                .formatted(length, length, width, height, quantity);
+                {"name":"Box %d","group":"G1","lengthMm":%d,"widthMm":%d,"heightMm":%d,"quantity":%d,\
+                "totalWeightKg":%s,"rotatable":true,"fill":%b}"""
+                .formatted(length, length, width, height, quantity, totalKg, fill);
     }
 
     private static String body(String lines, UUID... types) {
+        return body("SINGLE_TYPE", lines, types);
+    }
+
+    private static String body(String mode, String lines, UUID... types) {
         StringBuilder ids = new StringBuilder();
         for (UUID t : types) {
             ids.append(ids.isEmpty() ? "" : ",").append('"').append(t).append('"');
         }
         return """
-                {"lines":[%s],"vehicleTypeIds":[%s],"selectionMode":"SINGLE_TYPE"}""".formatted(lines, ids);
+                {"lines":[%s],"vehicleTypeIds":[%s],"selectionMode":"%s"}""".formatted(lines, ids, mode);
     }
 
     private ResultActions trial(Role role, UUID user, String body) throws Exception {
@@ -191,24 +201,53 @@ class LoadEstimateTrialIntegrationTest {
     }
 
     @Test
-    @DisplayName("the payload is not checked: boxes outweigh a vehicle's payload and still load; size is still checked")
-    void payloadIsNotChecked() throws Exception {
-        // A payload of 5 g: 30 boxes of the 1 g placeholder weigh 30 g.
-        UUID featherweight = tx.execute(s -> vehicleType("ACTIVE", "0.005"));
+    @DisplayName("WF4-TRIAL-EST: the payload is checked against the sheet's weights; size is still checked")
+    void payloadIsChecked() throws Exception {
+        // A 100 kg payload: 30 boxes weighing 300 kg in all, 10 kg each - only 10 load.
+        UUID light = tx.execute(s -> vehicleType("ACTIVE", "100"));
 
         JsonNode answer = json.readTree(trial(Role.SALES_STAFF, coordinator,
-                body(line(600, 400, 300, 30), featherweight)).andExpect(status().isOk())
+                body(line(600, 400, 300, 30, "300", false), light)).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString()).get("data");
-        assertThat(answer.path("unplaced")).isEmpty();
-        assertThat(answer.path("vehicles").get(0).path("boxes")).hasSize(30);
+        assertThat(answer.path("vehicles").get(0).path("boxes")).hasSize(10);
+        assertThat(answer.path("vehicles").get(0).path("usedWeightKg").decimalValue()).isEqualByComparingTo("100");
+        assertThat(answer.path("unplaced").get(0).path("quantity").asInt()).isEqualTo(20);
 
         // A box longer than the vehicle is reported, not loaded.
         JsonNode tooLong = json.readTree(trial(Role.SALES_STAFF, coordinator,
-                body(line(13_000, 400, 300, 2), featherweight)).andExpect(status().isOk())
+                body(line(13_000, 400, 300, 2), light)).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString()).get("data");
         assertThat(tooLong.path("vehicles")).isEmpty();
         assertThat(tooLong.path("unplaced").get(0).path("reason").asText()).isEqualTo("TOO_LARGE");
         assertThat(tooLong.path("unplaced").get(0).path("quantity").asInt()).isEqualTo(2);
         assertThat(List.of(tooLong.path("unplaced").get(0).path("refs").size())).containsExactly(2);
+    }
+
+    @Test
+    @DisplayName("a line without its total weight is 400 on lines[i].totalWeightKg")
+    void weightIsRequired() throws Exception {
+        trial(Role.SALES_STAFF, coordinator, """
+                {"lines":[{"name":"Box","lengthMm":600,"widthMm":400,"heightMm":300,"quantity":1}]}""")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[0].totalWeightKg"));
+        trial(Role.SALES_STAFF, coordinator, body(line(600, 400, 300, 1, "0", false), container))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[0].totalWeightKg"));
+    }
+
+    @Test
+    @DisplayName("every docs mode is accepted and echoed; a mode is still validated by name")
+    void everyModeIsAccepted() throws Exception {
+        String lines = line(600, 400, 300, 10) + "," + line(500, 500, 500, 4, "4", true);
+        for (String mode : List.of("SINGLE_TYPE", "FEWEST_VEHICLES", "KEEP_LINES", "PRIORITY_FILL",
+                "OVER_CAPACITY")) {
+            trial(Role.SALES_STAFF, coordinator, body(mode, lines, container))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.selectionMode").value(mode))
+                    .andExpect(jsonPath("$.data.meta.placedBoxes").value(14));
+        }
+        trial(Role.SALES_STAFF, coordinator, body("MANUAL", lines, container))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("selectionMode"));
     }
 }

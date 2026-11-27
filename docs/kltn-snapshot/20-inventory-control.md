@@ -10,6 +10,7 @@ Giữ cho **số tồn trong hệ thống đúng với hàng thực tế** và c
 - **Thùng hàng (LPN – License Plate Number):** mọi tồn nằm trong thùng do đơn vị sản xuất đóng sẵn; thùng là đơn vị lưu trữ, di chuyển, xuất và kiểm kê.
 - **Sổ biến động tồn (Stock movement ledger) & truy xuất lô (Lot traceability):** mọi thay đổi tồn đều để lại một dòng sổ có chứng từ nguồn; từ một lô — lô chính là **mã Đơn sản xuất (Production Order)** — truy được về Đơn sản xuất và phiếu nhận, và tới đơn khách (BR-22).
 - **Cách ly hàng lỗi (Quarantine):** tách thùng lỗi và **hàng hoàn** (nhập lại qua [03](../03-receipt/README.md)) chờ xử lý khỏi tồn bán được.
+- **Báo cáo xuất – nhập – tồn (Stock summary):** tồn đầu, nhập, xuất, điều chỉnh, tồn cuối theo SKU × kho trong một kỳ, tính từ sổ biến động tồn (§4.10).
 
 Các module khác **ghi** tồn: nhận thành phẩm theo Đơn sản xuất và nhận hàng hoàn ([03](../03-receipt/README.md)), cất ([05](../05-putaway/README.md)), lấy — kể cả lấy về khu chờ xuất `STAGING` ([07](../07-picking/README.md)), di chuyển trong kho ([11](../11-intra-warehouse-transfer/README.md)). Module này **kiểm soát** tồn: nó định nghĩa trạng thái và số lượng, và sửa sai lệch.
 
@@ -34,10 +35,11 @@ Các module khác **ghi** tồn: nhận thành phẩm theo Đơn sản xuất v�
 | Actor | Vai trò |
 |-------|---------|
 | **Nhân viên kho (Warehouse Staff)** | Đếm phiếu kiểm kê được giao. Ở phiếu kiểm mù, không thấy số sổ sách. Đề nghị điều chỉnh tồn và rút lại đề nghị của chính mình. Xem sổ biến động, truy xuất lô và tra cứu tồn của kho mình. |
-| **Quản lý kho (Warehouse Manager)** | Lập phiếu kiểm kê và giao người đếm. Xem số sổ sách. Yêu cầu đếm lại, huỷ phiếu kiểm kê. Đề nghị điều chỉnh tồn. **Duyệt / từ chối điều chỉnh tồn** (không duyệt đề nghị của chính mình). **Cách ly / gỡ cách ly** thùng lỗi; **quyết định hàng hoàn** trong khu cách ly (§4.4, §4.8). Có đủ quyền thao tác như nhân viên kho. |
+| **Quản lý kho (Warehouse Manager)** | Lập phiếu kiểm kê và giao người đếm. Xem số sổ sách. Yêu cầu đếm lại, huỷ phiếu kiểm kê. Đề nghị điều chỉnh tồn. **Duyệt / từ chối điều chỉnh tồn** (không duyệt đề nghị của chính mình). **Cách ly / gỡ cách ly** thùng lỗi; **quyết định hàng hoàn** trong khu cách ly (§4.4, §4.8). Xem và **xuất Excel** **báo cáo xuất – nhập – tồn** của kho mình (§4.10). Có đủ quyền thao tác như nhân viên kho. |
 | **Quản trị hệ thống (System Admin)** | Toàn quyền. **Duyệt điều chỉnh tồn** khi kho chỉ có một quản lý và người đó là người đề nghị (BR-05). |
 | **Nhân viên Sale (Sales Staff)** | Xem tồn khả dụng theo kho khi chọn kho xuất và lập báo giá / đơn ([17](../../ecommerce/17-order-management/README.md)). Không thao tác tồn. |
 | **Điều phối sản xuất (Production Coordinator)** *(thêm 2026-11-07)* | Xem tồn khả dụng theo kho khi lập Đơn sản xuất; **nhận thông báo** khi thùng thuộc lô một Đơn sản xuất bị ghi giảm `DAMAGED` và lập **Đơn sản xuất bù** ([17 §4.13](../../ecommerce/17-order-management/README.md)). Không thao tác tồn. |
+| **Quản lý kinh doanh (Sales Manager)**, **Kế toán (Accountant)** *(thêm 2026-11-15)* | Xem **báo cáo xuất – nhập – tồn** của mọi kho (§4.10); Kế toán xuất Excel. Không thao tác tồn. |
 | **Hệ thống** | Tự mở phiếu kiểm kê khi có short pick ([07](../07-picking/README.md)). Ghi sổ biến động cho mọi thay đổi tồn. Tính ATP. |
 
 - Mọi thao tác chỉ trong phạm vi **các kho được gán** cho người dùng.
@@ -68,6 +70,7 @@ Các module khác **ghi** tồn: nhận thành phẩm theo Đơn sản xuất v�
 | **Phiếu kiểm kê** và chênh lệch từng thùng | Quản lý kho |
 | **Phiếu điều chỉnh tồn** (`Pending Approval` → `Posted` / `Rejected` / `Withdrawn`) | Quản lý kho, Kế toán |
 | **Dòng sổ biến động tồn** cho mọi thay đổi | Truy vết, kiểm toán |
+| **Báo cáo xuất – nhập – tồn** theo SKU × kho trong một kỳ: tồn đầu, nhập (Đơn sản xuất), hàng hoàn, nhập lại sau lấy, xuất (lấy hàng), điều chỉnh tăng / giảm, khác, tồn cuối — theo số cái và số thùng; xem chi tiết dòng sổ; xuất Excel (§4.10) *(✅ 2026-11-15)* | Quản lý kho, Quản lý kinh doanh, Kế toán |
 | **Báo cáo truy xuất lô**: nguồn gốc (Đơn sản xuất, phiếu nhận) → thùng còn lại theo vị trí → khoản đang giữ → đơn khách đã xuất | Quản lý kho, Sale (CSKH), Điều phối sản xuất, thu hồi hàng (recall) |
 | **Thông báo thùng lỗi bị ghi giảm** (điều chỉnh `DAMAGED` đã duyệt của thùng có lô là một Đơn sản xuất): thùng, SKU, lô, đơn bán đang thiếu — căn cứ lập Đơn sản xuất bù *(✅ 2026-11-07)* | Điều phối sản xuất ([17 §4.13](../../ecommerce/17-order-management/README.md)) |
 
@@ -208,6 +211,32 @@ Các module khác **ghi** tồn: nhận thành phẩm theo Đơn sản xuất v�
 4. Khu chờ xuất được kiểm kê như vị trí khác (§4.2); thùng không thấy là chênh lệch thiếu của phần đang giữ cho đơn, đơn phải xử lý như thiếu hàng ([07](../07-picking/README.md)).
 
 > **Đã chốt 2026-11-05:** Quản lý kho quyết định có dùng khu chờ xuất cho đơn hay không. ✅ Đã chốt 2026-11-05: tồn ở `STAGING` đã gắn đơn, không khả dụng cho đơn khác. Lấy về khu chờ xuất chưa trừ tồn (chỉ đổi vị trí), tồn bị trừ khi chuyển cả tác vụ sang khu xuất hàng. Xem [open-questions](../../open-questions/README.md).
+
+### 4.10. Báo cáo xuất – nhập – tồn (Stock summary)
+
+> ✅ Đã chốt 2026-11-15: có báo cáo xuất – nhập – tồn theo **SKU × kho** trong một kỳ, tính từ **sổ biến động tồn** (mọi thay đổi tồn đều có dòng sổ — §4.7, BR-16), theo **số cái** và quy ra **số thùng**. Báo cáo chỉ có số lượng: hệ thống không tính giá trị tồn (không giá vốn).
+
+1. **Kỳ báo cáo** — từ ngày – đến ngày theo **lịch Việt Nam** (Asia/Ho_Chi_Minh), tính trọn cả hai ngày; mặc định **30 ngày** gần nhất tính đến hôm nay, tối đa **366 ngày**.
+2. **Mỗi dòng là một SKU tại một kho**, kèm khách sở hữu SKU (SKU riêng của khách) và số cái / thùng:
+
+   | Cột | Cách tính từ các dòng sổ (BR-16) |
+   |-----|----------------------------------|
+   | **Tồn đầu** | Tổng các dòng sổ của SKU tại kho **trước** ngày đầu kỳ |
+   | **Nhập (Đơn sản xuất)** | `RECEIPT` của phiếu nhập thành phẩm theo Đơn sản xuất ([03](../03-receipt/README.md) §4.1) |
+   | **Nhập hàng hoàn** | `RECEIPT` của phiếu nhập Hàng hoàn (§4.4) |
+   | **Nhập lại sau lấy (put-back)** | `PUT_BACK` — cất lại thùng đã trừ tồn của đơn bị huỷ ([07](../07-picking/README.md) §4.5) |
+   | **Xuất (lấy hàng)** | `PICK` — thùng lấy sang khu xuất hàng (§4.9) |
+   | **Điều chỉnh tăng** · **Điều chỉnh giảm** | `ADJUSTMENT` đã duyệt (§4.3), kể cả chênh lệch kiểm kê, theo chiều |
+   | **Nhập khác** · **Xuất khác** | Mọi dòng sổ còn lại làm đổi tồn của kho (loại của các luồng đã bỏ còn trong sổ cũ), để tồn đầu + các cột nhập − các cột xuất luôn bằng tồn cuối |
+   | **Tồn cuối** | Tổng mọi dòng sổ tới hết ngày cuối kỳ |
+
+   Mỗi cột có **số cái** và **số thùng** (= số cái ÷ số cái / thùng); SKU chưa có quy cách thùng, hoặc số cái không chia hết cho số cái / thùng, thì chỉ có số cái, kèm ghi chú.
+3. **Di chuyển trong cùng một kho tính bằng 0** — cất hàng, di chuyển thùng, cách ly / gỡ cách ly, lấy về khu chờ xuất và cất lại từ khu chờ xuất là dòng sổ giữa hai vị trí của **cùng kho**: không đổi tồn của kho nên không vào cột nào.
+4. **Lọc** theo kho, khách, SKU; mặc định bỏ các dòng mọi cột bằng 0 (chọn để hiện cả). Sắp theo SKU (mặc định), kho, tồn đầu, nhập, xuất, tồn cuối. Người dùng gắn với kho chỉ thấy kho của mình (BR-19).
+5. **Xem chi tiết** — từ một dòng mở **các dòng sổ** tương ứng, lọc theo từ ngày, đến ngày, kho, SKU; danh sách này có cả các dòng di chuyển trong kho (tính bằng 0 ở bước 3).
+6. **Xuất Excel** — mọi dòng của bộ lọc, mỗi cột tách số thùng / số cái; mỗi lần xuất ghi nhật ký. Quản lý kho xem và xuất của kho mình; Quản lý kinh doanh xem, Kế toán xem và xuất, mọi kho.
+
+> ⚠️ Giả định: **tồn đầu kỳ** khi đưa hệ thống vào dùng (lô `UNTRACED` — §4.7 bước 3) được nạp kèm **một dòng sổ mở đầu**; tồn nạp vào mà không có dòng sổ thì báo cáo không thấy (tồn cuối lệch tồn thực tế). Xem [open-questions C45](../../open-questions/README.md).
 
 ---
 

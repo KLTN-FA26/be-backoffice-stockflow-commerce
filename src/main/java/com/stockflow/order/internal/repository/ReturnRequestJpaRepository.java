@@ -21,6 +21,10 @@ interface ReturnRequestJpaRepository extends BaseJpaRepository<ReturnRequestJpaE
     @Query("select r.orderId from ReturnRequestJpaEntity r where r.id = :id")
     Optional<UUID> findOrderIdOf(@Param("id") UUID id);
 
+    /** Id and RMA number of each of the returns, as pairs: one statement for a page of cartons (audit r3 RAD-4). */
+    @Query("select r.id, r.rmaNumber from ReturnRequestJpaEntity r where r.id in :ids")
+    java.util.List<Object[]> findRmaNumbers(@Param("ids") java.util.Collection<UUID> ids);
+
     /** One return with its lines in one query: a command reads the whole aggregate, never line by line. */
     @Query("select distinct r from ReturnRequestJpaEntity r left join fetch r.lines where r.id = :id")
     Optional<ReturnRequestJpaEntity> findByIdWithLines(@Param("id") UUID id);
@@ -43,6 +47,7 @@ interface ReturnRequestJpaRepository extends BaseJpaRepository<ReturnRequestJpaE
     @Query("""
             select r.id from ReturnRequestJpaEntity r
             where r.status = com.stockflow.order.internal.domain.ReturnStatus.AWAITING_RETURN and r.returnDeadline < :now
+              and r.openDraftReceiptId is null
             order by r.returnDeadline, r.id""")
     List<UUID> awaitingReturnPast(@Param("now") Instant now, Pageable page);
 }

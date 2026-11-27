@@ -24,19 +24,21 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * See {@link UomConversionService}. Writes take the SKU's advisory lock (the one logistics and policy
- * edits take), so two people marking different default purchase (or default shipping) units are serialised and
- * the {@code uk_uom_conversions_default_purchase} and {@code uk_uom_conversions_default_shipping} indexes never
- * surface as a 500. Marking a default shipping unit unmarks the previous one in the same transaction rather than
- * answering 409: the user's intent ("this is the carton") is unambiguous, and it is how the default purchase unit
- * already behaves.
+ * See {@link UomConversionService}. A carton is its catalogue variant's and every SKU of the variant - its customers'
+ * SKUs included - is packed in it (owner decision Q1, V20270104000100). Writes therefore take the advisory lock of every
+ * SKU of the variant, sorted (the lock logistics edits and every carton move of a SKU take): two people declaring or
+ * re-activating a carton are serialised and asked about in turn (below) rather than racing to the unique index, and a
+ * new size is judged against the bins while no carton of any of those SKUs moves (06 BR-23).
  *
- * <p>BR-10 ("hệ số quy đổi đã phát sinh giao dịch không được sửa"): stock packages, purchase order lines
- * (and their revisions) and goods receipt lines record the unit they were made or counted in, and none of
+ * <p>BR-10 ("hệ số quy đổi đã phát sinh giao dịch không được sửa"): stock packages and goods receipt lines
+ * record the unit they were made or counted in, and none of
  * them copies the factor (V20261020000400), so a unit one of them uses keeps its factor and its code. The
  * database refuses such a change (V20261020000600); asking first turns that into
- * {@code UOM_CONVERSION_IN_USE} rather than a generic 409. Its size, weight and default purchase and shipping
- * marks stay editable, and retiring it is the way out BR-10 names: declare a new unit, retire this one.</p>
+ * {@code UOM_CONVERSION_IN_USE} rather than a generic 409. Its size and weight stay editable, and retiring it is the way out BR-10 names: retire this one, then declare the new one.</p>
+ *
+ * <p>01 BR-03: a SKU has one active packing unit, its carton ({@code uk_uom_conversions_one_carton},
+ * V20261214000400). Declaring or re-activating a second is asked about first, under the SKU lock, so the index never
+ * surfaces as a bare 409 and the user is told to retire the other first; retired units stay beside it as history.</p>
  */
 @Service
 @Transactional
@@ -59,7 +61,7 @@ class UomConversionServiceImpl implements UomConversionService {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<UomConversion> conversions(Sku sku, int page, int size) {
-        itemId(sku);
+        variantOf(sku);
         var pageable = Pages.of(page, size);
         return PageResponse.of(conversions.page(sku.code(), pageable.getPageSize(), pageable.getOffset()),
                 page, size, conversions.count(sku.code()));
@@ -68,7 +70,7 @@ class UomConversionServiceImpl implements UomConversionService {
     @Override
     @Transactional(readOnly = true)
     public UomConversion conversion(Sku sku, UUID id) {
-        itemId(sku);
+        variantOf(sku);
         return conversions.find(sku.code(), id).orElseThrow(() -> notFound(sku, id));
     }
 
@@ -86,75 +88,83 @@ class UomConversionServiceImpl implements UomConversionService {
     }
 
     @Override
-    @Transactional(readOnly = true)
-    public UomConversion baseUnit(Sku sku) {
-        itemId(sku);
-        return conversions.base(sku.code()).orElseThrow(() -> new IllegalStateException(sku + " has no base unit"));
-    }
-
-    @Override
     public UomConversion add(Sku sku, UomConversionDraft draft) {
         UomConversionRules.validatePacking(draft);
-        items.lock(sku.code());
-        UUID itemId = itemId(sku);
-        if (conversions.unitTaken(itemId, draft.unitOfMeasure(), null)) throw duplicate(sku, draft);
-        String actor = actor();
+        UUID variantId = lockVariant(sku);
+        if (conversions.unitTaken(variantId, draft.unitOfMeasure(), null)) throw duplicate(sku, draft);
+        if (draft.active()) requireNoOtherActiveCarton(sku, variantId, null);
         UUID id = Identifiers.newId();
-        if (draft.defaultPurchase()) conversions.clearDefaultPurchase(itemId, id, actor);
-        if (draft.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
-        conversions.insert(id, itemId, draft, actor);
+        conversions.insert(id, variantId, draft, actor());
         return conversion(sku, id);
     }
 
     @Override
     public UomConversion change(Sku sku, UUID id, long expectedVersion, UomConversionDraft draft) {
-        items.lock(sku.code());
-        UUID itemId = itemId(sku);
+        UUID variantId = lockVariant(sku);
         UomConversion current = conversions.find(sku.code(), id).orElseThrow(() -> notFound(sku, id));
-        if (current.base()) {
-            UomConversionRules.validateBase(current, draft);
-        } else {
-            UomConversionRules.validatePacking(draft);
-            if (conversions.unitTaken(itemId, draft.unitOfMeasure(), id)) throw duplicate(sku, draft);
-        }
+        UomConversionRules.validatePacking(draft);
+        if (conversions.unitTaken(variantId, draft.unitOfMeasure(), id)) throw duplicate(sku, draft);
+        if (draft.active()) requireNoOtherActiveCarton(sku, variantId, id);
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
-        // The base unit's code follows the item's and its factor is 1 (V20261019000300): nothing to lock here.
         boolean converts = current.factor() != draft.factor() || !current.unitOfMeasure().equals(draft.unitOfMeasure());
-        if (!current.base() && converts && conversions.inUse(id)) throw inUse(sku, current);
+        if (converts && conversions.inUse(id)) throw inUse(sku, current);
         // 06 BR-23: new measures must not leave a carton of this unit standing in a bin it no longer fits. Under the
-        // SKU lock, which every carton move of the SKU takes too.
-        if (!current.base() && resized(current, draft)) {
+        // locks of every SKU of the variant, which every carton move of those SKUs takes too.
+        if (resized(current, draft)) {
             stranding.requireUnitResizable(id, draft.lengthCm(), draft.widthCm(), draft.heightCm());
         }
-        String actor = actor();
-        if (draft.defaultPurchase() && !current.defaultPurchase()) conversions.clearDefaultPurchase(itemId, id, actor);
-        if (draft.defaultShipping() && !current.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
-        if (!conversions.update(id, expectedVersion, draft, current.base(), actor)) {
+        if (!conversions.update(id, expectedVersion, draft, actor())) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         }
-        conversions.defaultToBaseIfNone(itemId, actor);
         return conversion(sku, id);
     }
 
     @Override
     public void remove(Sku sku, UUID id, long expectedVersion) {
-        items.lock(sku.code());
-        UUID itemId = itemId(sku);
+        lockVariant(sku);
         UomConversion current = conversions.find(sku.code(), id).orElseThrow(() -> notFound(sku, id));
-        if (current.base()) {
-            throw new BusinessException(ErrorCode.UOM_CONVERSION_IN_USE, "The base unit of " + sku + " cannot be deleted");
-        }
         if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         if (conversions.inUse(id)) throw inUse(sku, current);
         if (!conversions.delete(id, expectedVersion)) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
         }
-        conversions.defaultToBaseIfNone(itemId, actor());
     }
 
-    private UUID itemId(Sku sku) {
-        return conversions.itemId(sku.code()).orElseThrow(
-                () -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + sku));
+    /**
+     * The variant whose cartons {@code sku} names, with the lock of {@code sku} and of every SKU of the variant that has
+     * an item taken in sorted order (the order every multi-SKU lock in inventory takes): the asked code serialises two
+     * writes of the variant's cartons even while no SKU of it has an item yet, the items' codes hold their cartons
+     * still. A write is named by the variant's own code: a customer's SKU resolves to the same variant, so the
+     * database cannot refuse it, and it would change the carton of every customer of the variant -
+     * {@code UOM_CARTON_OF_CUSTOMER_SKU} (owner decision Q1).
+     */
+    private UUID lockVariant(Sku sku) {
+        UUID variantId = variantOf(sku);
+        if (conversions.customerSku(sku.code())) {
+            throw new BusinessException(ErrorCode.UOM_CARTON_OF_CUSTOMER_SKU,
+                    "%s is a customer's SKU; declare its cartons on the variant it is drawn on".formatted(sku));
+        }
+        java.util.SortedSet<String> codes = new java.util.TreeSet<>(conversions.skusOfVariant(variantId));
+        codes.add(sku.code());
+        codes.forEach(items::lock);
+        return variantId;
+    }
+
+    private void requireNoOtherActiveCarton(Sku sku, UUID variantId, UUID except) {
+        conversions.activeCartonOf(variantId, except).ifPresent(code -> {
+            throw new BusinessException(ErrorCode.UOM_CARTON_ALREADY_DECLARED,
+                    "%s already has the carton unit %s; retire it before declaring another (01 BR-03)"
+                            .formatted(sku, code));
+        });
+    }
+
+    /**
+     * The catalogue variant {@code sku} is packed as, whether or not the SKU has an item (a catalogue variant never
+     * does, V20270105000100). {@code INVENTORY_ITEM_NOT_FOUND} for a code nobody knows, the answer this gave before.
+     */
+    private UUID variantOf(Sku sku) {
+        return conversions.variantId(sku.code()).orElseThrow(
+                () -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No SKU " + sku));
     }
 
     private String actor() {
@@ -176,7 +186,7 @@ class UomConversionServiceImpl implements UomConversionService {
 
     private static BusinessException inUse(Sku sku, UomConversion unit) {
         return new BusinessException(ErrorCode.UOM_CONVERSION_IN_USE,
-                "%s %s (factor %d) is used by a document; declare a new unit and retire this one (BR-10)"
+                "%s %s (factor %d) is used by a document; retire it, then declare the new one (BR-10)"
                         .formatted(sku, unit.unitOfMeasure(), unit.factor()));
     }
 

@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -46,6 +47,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 /**
@@ -96,8 +98,7 @@ class CartonQuarantineIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Quarantine fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Quarantine fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Quarantine fixture");
             // Every SKU is FIFO and lot-tracked since team plan 5-5: nothing to configure on the item.
             jdbc.update("INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width,"
                     + " map_height, version, created_at) VALUES (?, 'Quarantine', 'ACTIVE', ?, 'Test address',"
@@ -185,8 +186,11 @@ class CartonQuarantineIntegrationTest {
 
     private Map<String, Object> cartonRow(String lpn) {
         return jdbc.queryForMap("""
-                SELECT p.status AS carton, p.location_code AS location, i.status AS stock, i.on_hand, i.reserved
-                  FROM inventory.stock_package p JOIN inventory.stock_item i ON i.stock_package_id = p.id
+                SELECT p.status AS carton, p.location_code AS location, p.stock_status AS stock,
+                       CASE WHEN p.status = 'IN_STOCK' THEN p.nominal_qty ELSE 0 END AS on_hand,
+                       (SELECT COALESCE(SUM(r.cartons * r.units_per_carton), 0)::int FROM inventory.stock_reservation r
+                         WHERE r.stock_package_id = p.id AND r.status = 'HELD') AS reserved
+                  FROM inventory.stock_package p
                  WHERE p.lpn = ?""", lpn);
     }
 
@@ -208,8 +212,8 @@ class CartonQuarantineIntegrationTest {
                 .containsEntry("stock", "QUARANTINE").containsEntry("on_hand", 10);
         assertThat(jdbc.queryForList("""
                 SELECT m.movement_type, m.from_location_code, m.to_location_code, m.from_status, m.to_status,
-                       m.quantity, m.reference_type, m.reason
-                  FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.to_stock_package_id
+                       p.nominal_qty AS quantity, m.reference_type, m.reason
+                  FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE p.lpn = ?""", lpn)).singleElement().satisfies(line -> {
                     assertThat(line).containsEntry("movement_type", "STATUS_CHANGE")
                             .containsEntry("from_location_code", bin).containsEntry("to_location_code", quarantineArea)
@@ -318,16 +322,40 @@ class CartonQuarantineIntegrationTest {
     }
 
     @Test
+    @DisplayName("WF-05 TH-4: a carton that came back opened on a return is never released (RETURN_CARTON_OPENED), the "
+            + "database refuses its stock AVAILABLE whatever path tries and keeps the mark; it is only written off")
+    void anOpenedReturnCartonIsOnlyWrittenOff() {
+        String lpn = carton(2);
+        quarantine(lpn, quarantineArea);
+        // What the return receipt's confirmation leaves on a carton it counted short (CartonReturnService).
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE inventory.stock_package SET return_opened_at = NOW() WHERE lpn = ?", lpn));
+
+        assertThat(refusal(() -> quarantine.release(lpn, manager)).errorCode())
+                .isEqualTo(ErrorCode.RETURN_CARTON_OPENED);
+        assertThat(cartonRow(lpn)).containsEntry("stock", "QUARANTINE");
+        Throwable onSale = catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE inventory.stock_package SET stock_status = 'AVAILABLE' WHERE lpn = ?", lpn)));
+        assertThat(onSale).as("an opened return carton is never AVAILABLE")
+                .hasMessageContaining("ck_stock_package_opened_return");
+        Throwable unmarked = catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE inventory.stock_package SET return_opened_at = NULL WHERE lpn = ?", lpn)));
+        assertThat(unmarked).as("tg_stock_package_return_opened").hasMessageContaining("came back opened");
+
+        StockAdjustmentSummary asked = operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn,
+                StockAdjustmentReason.DAMAGED, "Came back opened, 8 of 10 inside", manager));
+        operations.approve(asked.adjustmentId(), approver);
+        assertThat(cartonRow(lpn)).containsEntry("carton", "CONSUMED").containsEntry("on_hand", 0);
+    }
+
+    @Test
     @DisplayName("a quarantined carton is written off whole by an approved DAMAGED adjustment of its LPN")
     void writeOffByDamagedAdjustment() {
         String lpn = carton(2);
         quarantine(lpn, quarantineArea);
 
-        assertThat(refusal(() -> operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn, -4,
-                StockAdjustmentReason.DAMAGED, null, manager))).errorCode())
-                .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
         StockAdjustmentSummary asked = operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(
-                lpn.toLowerCase(Locale.ROOT), -10, StockAdjustmentReason.DAMAGED, "Water damage", manager));
+                lpn.toLowerCase(Locale.ROOT), StockAdjustmentReason.DAMAGED, "Water damage", manager));
         assertThat(asked.status().name()).isEqualTo("PENDING_APPROVAL");
         // Nothing has left yet, and the carton cannot be released while its write-off waits.
         assertThat(cartonRow(lpn)).containsEntry("on_hand", 10).containsEntry("stock", "QUARANTINE");
@@ -340,8 +368,10 @@ class CartonQuarantineIntegrationTest {
 
         assertThat(cartonRow(lpn)).containsEntry("carton", "CONSUMED").containsEntry("on_hand", 0);
         assertThat(jdbc.queryForMap("""
-                SELECT m.movement_type, m.from_location_code, m.to_location_code, m.from_status, m.quantity
-                  FROM inventory.stock_movement m WHERE m.reference_type = 'STOCK_ADJUSTMENT' AND m.reference_id = ?""",
+                SELECT m.movement_type, m.from_location_code, m.to_location_code, m.from_status,
+                       p.nominal_qty AS quantity
+                  FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
+                 WHERE m.reference_type = 'STOCK_ADJUSTMENT' AND m.reference_id = ?""",
                 asked.adjustmentId())).containsEntry("movement_type", "ADJUSTMENT")
                 .containsEntry("from_location_code", quarantineArea).containsEntry("from_status", "QUARANTINE")
                 .containsEntry("quantity", 10);
@@ -372,7 +402,7 @@ class CartonQuarantineIntegrationTest {
         quarantine(lpn, quarantineArea);
         quarantine.release(lpn, manager);
 
-        assertThat(refusal(() -> operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn, -10,
+        assertThat(refusal(() -> operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn,
                 StockAdjustmentReason.DAMAGED, null, manager))).errorCode())
                 .isEqualTo(ErrorCode.STOCK_PACKAGE_DECISION_PENDING);
     }
@@ -382,13 +412,13 @@ class CartonQuarantineIntegrationTest {
     void writeOffAskedBeforeAReleaseIsNotApprovedAfterIt() {
         String lpn = carton(2);
         quarantine(lpn, quarantineArea);
-        StockAdjustmentSummary asked = operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn, -10,
+        StockAdjustmentSummary asked = operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn,
                 StockAdjustmentReason.DAMAGED, null, manager));
         // The release refuses while it waits; withdrawn, the release goes ahead, and a second request is refused.
         operations.withdraw(asked.adjustmentId(), manager);
         quarantine.release(lpn, manager);
 
-        assertThat(refusal(() -> operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn, -10,
+        assertThat(refusal(() -> operations.requestAdjustment(RequestAdjustmentCommand.ofCarton(lpn,
                 StockAdjustmentReason.DAMAGED, null, manager))).errorCode())
                 .isEqualTo(ErrorCode.STOCK_PACKAGE_DECISION_PENDING);
         assertThat(cartonRow(lpn)).containsEntry("on_hand", 10).containsEntry("stock", "QUARANTINE");

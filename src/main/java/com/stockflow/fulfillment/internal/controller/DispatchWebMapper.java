@@ -42,11 +42,11 @@ class DispatchWebMapper {
         return new LoadRowResponse(r.loadId(), r.code(), r.warehouseId(), r.status(), r.carrierId(),
                 r.carrierName(), r.vehiclePlate(), r.driverName(), r.shipmentCount(), r.packageCount(),
                 r.loadingStartedAt(), r.dispatchedAt(), r.version(), r.loadPlanId(), r.loadPlanCode(), r.vehicleSeq(),
-                r.waybillNo());
+                r.waybillNo(), r.warehouseCode(), r.warehouseName());
     }
 
     LoadResponse toResponse(Dispatching.LoadDetail d) {
-        return new LoadResponse(d.loadId(), d.code(), d.warehouseId(), d.status(), d.carrierId(),
+        return new LoadResponse(d.loadId(), d.code(), d.warehouseId(), d.warehouseName(), d.status(), d.carrierId(),
                 d.carrierCode(), d.carrierName(), d.vehiclePlate(), d.driverName(), d.driverPhone(),
                 d.loadingStartedAt(), d.loadingStartedBy(), d.dispatchedAt(), d.dispatchedBy(), d.dispatchedByName(),
                 d.carrierRepresentative(), d.signatureRef(), d.handoverNote(), d.cancelledAt(), d.cancelReason(),
@@ -54,7 +54,8 @@ class DispatchWebMapper {
                 d.version(), d.shipments().stream().map(s -> new LoadResponse.Shipment(s.shipmentId(), s.code(),
                         s.orderId(), s.orderNumber(), s.taskId(), s.status(), s.packageCount(), s.loadedCount(),
                         s.packages().stream().map(p -> new LoadResponse.Parcel(
-                                p.packageId(), p.labelCode(), p.weightKg(), p.loaded(), p.loadedAt(), p.loadedBy()))
+                                p.packageId(), p.labelCode(), p.lpn(), p.weightKg(), p.loaded(), p.loadedAt(), p.loadedBy(),
+                                p.loadedByName()))
                         .toList())).toList(), d.loadPlanId(), d.loadPlanCode(), d.vehicleSeq(),
                 d.vehicleTypeCode(),
                 d.bookedAt(), d.bookedBy(), d.bookingCancelledAt(), d.bookingCancelReason(),
@@ -66,7 +67,8 @@ class DispatchWebMapper {
                         d.carrierBooking().trackingLink(), d.carrierBooking().requestedAt(),
                         d.carrierBooking().bookedAt(), d.carrierBooking().lastError()),
                 d.handoverWarnings().stream().map(w -> new LoadResponse.HandoverWarning(w.orderId(), w.orderNumber(),
-                        w.reasonCode(), w.amountDue(), w.currency(), w.deliveryBatchSeq(), w.windowStart())).toList());
+                        w.reasonCode(), w.reasonCodes(), w.amountDue(), w.currency(), w.deliveryBatchSeq(),
+                        w.windowStart())).toList(), d.loadingStartedByName(), d.bookedByName(), d.warehouseCode());
     }
 
     ControlledCancelResponse toResponse(Dispatching.ControlledCancelResult r) {
@@ -101,6 +103,9 @@ class DispatchWebMapper {
                         p.weightKg(), p.lengthCm(), p.widthCm(), p.heightCm()))
                         .toList(),
                 d.timeline().stream().map(s -> new ShipmentResponse.Step(s.status(), s.occurredAt(), s.recordedBy(),
-                        s.recordedByName(), s.note())).toList());
+                        s.recordedByName(), s.note(), s.source(), s.carrierEventId())).toList(),
+                d.reasonCorrections().stream().map(c -> new ShipmentResponse.ReasonCorrection(c.fromReason(),
+                        c.fromNote(), c.toReason(), c.toNote(), c.reason(), c.correctedBy(), c.correctedByName(),
+                        c.correctedAt())).toList(), d.undoneDeliveredAt());
     }
 }

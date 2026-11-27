@@ -8,23 +8,28 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
-import java.sql.Types;
+import java.sql.Array;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
  * What the given bins hold right now, and what a carton takes of a bin, for putting it away (SCRUM-92; kltn-docs
- * 05 BR-03, 06 BR-19). Grouped reads of the inventory schema only: sizes and weights come from the carton units and
- * the item master of the same schema, never from another module's tables.
+ * 05 BR-03, 06 BR-19) and for suggesting bins to a move of a group of cartons (issue #412; 11 §4.1, docs#46), which
+ * judges room by putaway's rule and so must read it the same way. Grouped reads of the inventory schema only: sizes and
+ * weights come from the carton units of the same schema, never from another module's tables; whether a carton may be
+ * turned is its catalogue variant's, asked once per read through {@link VariantRotations} (owner decision Q9).
  *
- * <p>A bin's load is every carton on its rows - any SKU, any status - because the shelf is as full of a quarantined
+ * <p>A bin's load is every carton in stock standing in it - any SKU, any stock status - because the shelf is as full of a quarantined
  * or held carton as of a sellable one. A carton takes its carton unit's length x width x height and weighs what that
- * unit says a full carton weighs (05 BR-03, decided 2026-11-05); a unit without a recorded weight falls back to the
- * item's unit weight times the units, and without either the carton weighs nothing here, so the rule cannot be
- * broken by a number nobody knows. Units outside any carton (history, before V20261111000110) take no volume and
- * weigh their unit weight.</p>
+ * unit says a full carton weighs (05 BR-03, decided 2026-11-05); a unit without a recorded weight weighs nothing here,
+ * so the rule cannot be broken by a number nobody knows. The item has no weight of its own to stand in
+ * (V20261215000100, kltn-docs 01 BR-03).</p>
  */
 @Repository
 public class BinOccupancyQuery {
@@ -36,9 +41,11 @@ public class BinOccupancyQuery {
     public static final int BIN_LOCK_SEED = 704;
 
     private final JdbcTemplate jdbc;
+    private final VariantRotations rotations;
 
-    public BinOccupancyQuery(JdbcTemplate jdbc) {
+    public BinOccupancyQuery(JdbcTemplate jdbc, VariantRotations rotations) {
         this.jdbc = jdbc;
+        this.rotations = rotations;
     }
 
     /**
@@ -58,82 +65,147 @@ public class BinOccupancyQuery {
 
     /**
      * The occupancy of each of these bins; a bin holding nothing is absent, which the ranker reads as empty.
-     * {@code holdsSku} / {@code holdsLot} refer to the SKU (and lot number) being put away.
+     * {@code holdsSku} / {@code holdsLot} refer to the SKU (and lot number) being put away: the group of one carton,
+     * read by {@link #contentsOf} and reduced by {@link BinContents#toOccupancy}.
      *
      * @param leaveOut a carton not to count, or null: the one being put away, when somebody already moved it into
      *                 the bin by hand. Counted, a carton that fills a bin exactly would not fit the bin it stands in
      */
     public Map<String, Occupancy> occupancyOf(Collection<String> locationCodes, String sku, String lotNumber,
                                               UUID leaveOut) {
+        Set<SkuLot> group = Set.of(new SkuLot(sku, lotNumber));
+        Map<String, Occupancy> out = new HashMap<>();
+        contentsOf(locationCodes, group, leaveOut == null ? List.of() : List.of(leaveOut))
+                .forEach((code, contents) -> out.put(code, contents.toOccupancy(group)));
+        return out;
+    }
+
+    /** A SKU and a lot number of it; a null lot is a carton without one, which never matches a lot. */
+    public record SkuLot(String sku, String lotNumber) {
+    }
+
+    /**
+     * What a bin holds: its load over every carton on it, and of a group of cartons to put there, the SKUs and the
+     * (SKU, lot) pairs it already holds - only those of the group, so the set stays as small as the group.
+     */
+    public record BinContents(int units, BigDecimal volumeM3, BigDecimal weightKg, Set<String> skus,
+                              Set<SkuLot> lots) {
+
+        public static final BinContents EMPTY =
+                new BinContents(0, BigDecimal.ZERO, BigDecimal.ZERO, Set.of(), Set.of());
+
+        /**
+         * The bin as the ranker reads it for this group: it holds the SKU when it holds every SKU of the group, and the
+         * lot when it holds every pair of the group and no pair lacks a lot. For a group of one this is the
+         * single-carton rule exactly; for a bigger group a bin holding only part of it is not "the same" bin, or a
+         * group would be grouped by whichever of its cartons the bin happens to share.
+         */
+        public Occupancy toOccupancy(Set<SkuLot> group) {
+            boolean holdsSku = !group.isEmpty()
+                    && group.stream().allMatch(pair -> pair.sku() != null && skus.contains(pair.sku()));
+            boolean holdsLot = !group.isEmpty()
+                    && group.stream().allMatch(pair -> pair.lotNumber() != null && lots.contains(pair));
+            return new Occupancy(units, volumeM3, weightKg, holdsSku, holdsLot);
+        }
+    }
+
+    /**
+     * What each of these bins holds, in one statement; a bin holding nothing is absent. The load counts every carton
+     * on the bin (see the class), the SKUs and pairs only those of {@code group}. A pair of the group without a lot
+     * names its SKU but never a pair.
+     *
+     * @param leaveOut cartons not to count: the ones being put away or moved, wherever they stand now - counted, a
+     *                 carton already in the bin would be judged against room it takes itself
+     */
+    public Map<String, BinContents> contentsOf(Collection<String> locationCodes, Set<SkuLot> group,
+                                               Collection<UUID> leaveOut) {
         if (locationCodes.isEmpty()) {
             return Map.of();
         }
-        Map<String, Occupancy> out = new HashMap<>();
+        List<SkuLot> pairs = List.copyOf(group);
+        Map<String, BinContents> out = new HashMap<>();
         jdbc.query("""
-                with r as (
-                    select s.location_code, s.stock_package_id, s.sku, sum(s.on_hand) as on_hand,
-                           bool_or(s.lot_number is not distinct from cast(? as text)) as same_lot
-                    from inventory.stock_item s
-                    where s.location_code = any (?)
-                      and s.on_hand > 0
-                      and (cast(? as uuid) is null or s.stock_package_id is distinct from cast(? as uuid))
-                    group by s.location_code, s.stock_package_id, s.sku)
-                select r.location_code,
-                       sum(r.on_hand) as units,
-                       sum(case when r.stock_package_id is null then 0
-                                else coalesce(u.length_cm * u.width_cm * u.height_cm / 1000000, 0) end) as volume_m3,
-                       sum(case when r.stock_package_id is not null and u.weight_kg is not null then u.weight_kg
-                                else r.on_hand * coalesce(i.weight_kg, 0) end) as weight_kg,
-                       coalesce(bool_or(r.sku = ?), false) as holds_sku,
-                       coalesce(bool_or(r.sku = ? and r.same_lot and cast(? as text) is not null), false) as holds_lot
-                from r
-                left join inventory.stock_package p on p.id = r.stock_package_id
-                left join inventory.uom_conversions u on u.id = p.uom_conversion_id
-                left join inventory.inventory_items i on i.sku = r.sku
-                group by r.location_code""", ps -> {
-            ps.setString(1, lotNumber);
-            ps.setArray(2, ps.getConnection().createArrayOf("text", locationCodes.toArray()));
-            ps.setObject(3, leaveOut, Types.OTHER);
-            ps.setObject(4, leaveOut, Types.OTHER);
-            ps.setString(5, sku);
-            ps.setString(6, sku);
-            ps.setString(7, lotNumber);
+                with g as (
+                    select g.sku, g.lot_number, g.i
+                    from unnest(cast(? as text[]), cast(? as text[])) with ordinality as g(sku, lot_number, i)),
+                s as (
+                    select p.location_code, p.uom_conversion_id, i.sku, l.lot_number, p.nominal_qty as units,
+                           i.sku in (select g.sku from g) as in_group
+                    from inventory.stock_package p
+                    join inventory.inventory_items i on i.id = p.inventory_item_id
+                    left join inventory.stock_lot l on l.id = p.lot_id
+                    where p.location_code = any (?)
+                      and p.status = 'IN_STOCK'
+                      and p.id <> all (cast(? as uuid[]))),
+                held as (
+                    select s.location_code, array_agg(distinct g.i) as pairs
+                    from s
+                    join g on g.sku = s.sku and g.lot_number = s.lot_number
+                    group by s.location_code)
+                select s.location_code,
+                       sum(s.units) as units,
+                       sum(coalesce(u.length_cm * u.width_cm * u.height_cm / 1000000, 0)) as volume_m3,
+                       coalesce(sum(u.weight_kg), 0) as weight_kg,
+                       array_agg(distinct s.sku) filter (where s.in_group) as skus,
+                       (select held.pairs from held where held.location_code = s.location_code) as pairs
+                from s
+                join inventory.uom_conversions u on u.id = s.uom_conversion_id
+                group by s.location_code""", ps -> {
+            ps.setArray(1, ps.getConnection().createArrayOf("text", pairs.stream().map(SkuLot::sku).toArray()));
+            ps.setArray(2, ps.getConnection().createArrayOf("text",
+                    pairs.stream().map(SkuLot::lotNumber).toArray()));
+            ps.setArray(3, ps.getConnection().createArrayOf("text", locationCodes.toArray()));
+            ps.setArray(4, ps.getConnection().createArrayOf("uuid", leaveOut.toArray()));
         }, rs -> {
-            out.put(rs.getString("location_code"), new Occupancy(rs.getInt("units"),
-                    orZero(rs.getBigDecimal("volume_m3")), orZero(rs.getBigDecimal("weight_kg")),
-                    rs.getBoolean("holds_sku"), rs.getBoolean("holds_lot")));
+            Set<String> skus = new HashSet<>();
+            Array skuArray = rs.getArray("skus");
+            if (skuArray != null) {
+                skus.addAll(Arrays.asList((String[]) skuArray.getArray()));
+            }
+            Set<SkuLot> held = new HashSet<>();
+            Array pairArray = rs.getArray("pairs");
+            if (pairArray != null) {
+                for (Long i : (Long[]) pairArray.getArray()) {
+                    held.add(pairs.get(i.intValue() - 1));
+                }
+            }
+            out.put(rs.getString("location_code"), new BinContents(rs.getInt("units"),
+                    orZero(rs.getBigDecimal("volume_m3")), orZero(rs.getBigDecimal("weight_kg")), Set.copyOf(skus),
+                    Set.copyOf(held)));
         });
         return out;
     }
 
     /**
-     * What each of these cartons takes of a bin: its carton unit's size, whether its item may be turned on the
-     * horizontal ({@code rotatable}, docs 01) and its full weight - the unit's, else the item's unit weight times its
-     * standard count. A carton that does not exist is absent.
+     * What each of these cartons takes of a bin: its carton unit's size, whether its variant's cartons may be turned on
+     * the horizontal ({@code rotatable}, docs 01; owner decision Q9) and its full weight - the unit's, null when nobody
+     * recorded it. A carton that does not exist is absent.
      */
     public Map<UUID, Need> needsOf(Collection<UUID> cartonIds) {
         if (cartonIds.isEmpty()) {
             return Map.of();
         }
-        Map<UUID, Need> out = new HashMap<>();
-        jdbc.query("""
-                select p.id, u.length_cm, u.width_cm, u.height_cm, i.rotatable,
-                       coalesce(u.weight_kg, i.weight_kg * p.nominal_qty) as weight_kg
+        record Row(UUID id, UUID variantId, BigDecimal length, BigDecimal width, BigDecimal height, BigDecimal weight) { }
+        java.util.List<Row> rows = jdbc.query("""
+                select p.id, u.variant_id, u.length_cm, u.width_cm, u.height_cm, u.weight_kg
                 from inventory.stock_package p
                 join inventory.uom_conversions u on u.id = p.uom_conversion_id
-                join inventory.inventory_items i on i.id = p.inventory_item_id
                 where p.id = any (?)""",
                 ps -> ps.setArray(1, ps.getConnection().createArrayOf("uuid", cartonIds.toArray())),
-                rs -> {
-                    out.put(rs.getObject("id", UUID.class), new Need(new CartonFit.Carton(rs.getBigDecimal("length_cm"),
-                            rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"), rs.getBoolean("rotatable")),
-                            rs.getBigDecimal("weight_kg")));
-                });
+                (rs, n) -> new Row(rs.getObject("id", UUID.class), rs.getObject("variant_id", UUID.class),
+                        rs.getBigDecimal("length_cm"), rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"),
+                        rs.getBigDecimal("weight_kg")));
+        Map<UUID, Boolean> rotatable = rotations.of(rows.stream().map(Row::variantId).toList());
+        Map<UUID, Need> out = new HashMap<>();
+        for (Row row : rows) {
+            out.put(row.id(), new Need(new CartonFit.Carton(row.length(), row.width(), row.height(),
+                    VariantRotations.rotatable(rotatable, row.variantId())), row.weight()));
+        }
         return out;
     }
 
     /**
-     * The volume and full weight of those of {@code cartonIds} that hold units of {@code lotNumber}: the rest of a lot
+     * The volume and full weight of those of {@code cartonIds} that are in stock and of lot {@code lotNumber}: the rest of a lot
      * still to put away, which empty bins are ranked by (05 §4.2). Unmeasured cartons add nothing.
      */
     public PutawayRanker.Lot lotOf(Collection<UUID> cartonIds, String lotNumber) {
@@ -142,13 +214,13 @@ public class BinOccupancyQuery {
         }
         return jdbc.query("""
                 select coalesce(sum(u.length_cm * u.width_cm * u.height_cm / 1000000), 0) as volume_m3,
-                       coalesce(sum(coalesce(u.weight_kg, i.weight_kg * p.nominal_qty)), 0) as weight_kg
+                       coalesce(sum(u.weight_kg), 0) as weight_kg
                 from inventory.stock_package p
                 join inventory.uom_conversions u on u.id = p.uom_conversion_id
-                join inventory.inventory_items i on i.id = p.inventory_item_id
                 where p.id = any (?)
-                  and exists (select 1 from inventory.stock_item s where s.stock_package_id = p.id
-                                 and s.on_hand > 0 and s.lot_number = ?)""", ps -> {
+                  and p.status = 'IN_STOCK'
+                  and exists (select 1 from inventory.stock_lot l where l.id = p.lot_id and l.lot_number = ?)""",
+                ps -> {
             ps.setArray(1, ps.getConnection().createArrayOf("uuid", cartonIds.toArray()));
             ps.setString(2, lotNumber);
         }, rs -> {
@@ -172,11 +244,11 @@ public class BinOccupancyQuery {
         Map<UUID, CartonLoad> out = new HashMap<>();
         jdbc.query("""
                 select p.id, i.sku,
-                       (select min(s.lot_number) from inventory.stock_item s
-                         where s.stock_package_id = p.id and s.on_hand > 0) as lot_number,
-                       coalesce(p.received_qty, p.nominal_qty) as units,
+                       (select l.lot_number from inventory.stock_lot l
+                         where l.id = p.lot_id and p.status = 'IN_STOCK') as lot_number,
+                       p.nominal_qty as units,
                        coalesce(u.length_cm * u.width_cm * u.height_cm / 1000000, 0) as volume_m3,
-                       coalesce(u.weight_kg, i.weight_kg * p.nominal_qty, 0) as weight_kg
+                       coalesce(u.weight_kg, 0) as weight_kg
                 from inventory.stock_package p
                 join inventory.uom_conversions u on u.id = p.uom_conversion_id
                 join inventory.inventory_items i on i.id = p.inventory_item_id
@@ -194,33 +266,77 @@ public class BinOccupancyQuery {
     public record CartonIn(String locationCode, UUID cartonId, UUID unitId, String lpn, CartonFit.Carton carton) {
     }
 
-    /** The cartons holding units at these locations, in LPN order; an empty carton (picked, closed) is not there. */
+    /** The cartons in stock at these locations, in LPN order; a carton that left stock (picked, lost) is not there. */
     public java.util.List<CartonIn> cartonsIn(Collection<String> locationCodes) {
         if (locationCodes.isEmpty()) {
             return java.util.List.of();
         }
-        return jdbc.query("""
-                select p.location_code, p.id, p.uom_conversion_id, p.lpn, u.length_cm, u.width_cm, u.height_cm,
-                       i.rotatable
+        record Row(String locationCode, UUID id, UUID unitId, String lpn, UUID variantId, BigDecimal length,
+                   BigDecimal width, BigDecimal height) { }
+        java.util.List<Row> rows = jdbc.query("""
+                select p.location_code, p.id, p.uom_conversion_id, p.lpn, u.variant_id, u.length_cm, u.width_cm,
+                       u.height_cm
                 from inventory.stock_package p
                 join inventory.uom_conversions u on u.id = p.uom_conversion_id
-                join inventory.inventory_items i on i.id = p.inventory_item_id
                 where p.location_code = any (?)
-                  and exists (select 1 from inventory.stock_item s where s.stock_package_id = p.id and s.on_hand > 0)
+                  and p.status = 'IN_STOCK'
                 order by p.lpn""",
                 ps -> ps.setArray(1, ps.getConnection().createArrayOf("text", locationCodes.toArray())),
-                (rs, n) -> new CartonIn(rs.getString("location_code"), rs.getObject("id", UUID.class),
+                (rs, n) -> new Row(rs.getString("location_code"), rs.getObject("id", UUID.class),
                         rs.getObject("uom_conversion_id", UUID.class), rs.getString("lpn"),
-                        new CartonFit.Carton(rs.getBigDecimal("length_cm"), rs.getBigDecimal("width_cm"),
-                                rs.getBigDecimal("height_cm"), rs.getBoolean("rotatable"))));
+                        rs.getObject("variant_id", UUID.class), rs.getBigDecimal("length_cm"),
+                        rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm")));
+        Map<UUID, Boolean> rotatable = rotations.of(rows.stream().map(Row::variantId).toList());
+        return rows.stream().map(row -> new CartonIn(row.locationCode(), row.id(), row.unitId(), row.lpn(),
+                new CartonFit.Carton(row.length(), row.width(), row.height(),
+                        VariantRotations.rotatable(rotatable, row.variantId())))).toList();
     }
 
-    /** Where cartons of this carton unit holding units stand, by location code. */
+    /** A carton standing at {@code locationCode}, named by its LPN. */
+    public record CartonAt(String locationCode, String lpn) {
+    }
+
+    /**
+     * The cartons that stand at these locations, by their own status: labelled on a receipt not yet confirmed
+     * ({@code RECEIVING}) or in stock ({@code IN_STOCK}). Unlike {@link #cartonsIn}, a carton not in stock yet - one
+     * just labelled on a draft receipt - counts: it is on the floor all the same (kltn-docs 06 BR-04).
+     *
+     * @return how many there are, and the first {@code limit} in location code then LPN order
+     */
+    public Standing standingAt(Collection<String> locationCodes, int limit) {
+        if (locationCodes.isEmpty()) {
+            return new Standing(0, java.util.List.of());
+        }
+        java.util.List<CartonAt> first = new java.util.ArrayList<>();
+        long[] total = {0};
+        jdbc.query("""
+                select p.location_code, p.lpn, count(*) over () as total
+                from inventory.stock_package p
+                where p.location_code = any (?)
+                  and p.status in ('RECEIVING', 'IN_STOCK')
+                order by p.location_code, p.lpn
+                limit ?""", ps -> {
+            ps.setArray(1, ps.getConnection().createArrayOf("text", locationCodes.toArray()));
+            ps.setInt(2, Math.max(limit, 1));
+        }, rs -> {
+            total[0] = rs.getLong("total");
+            if (first.size() < limit) {
+                first.add(new CartonAt(rs.getString("location_code"), rs.getString("lpn")));
+            }
+        });
+        return new Standing(total[0], first);
+    }
+
+    /** @param first at most the limit asked for */
+    public record Standing(long total, java.util.List<CartonAt> first) {
+    }
+
+    /** Where cartons of this carton unit stand in stock, by location code. */
     public java.util.List<String> locationsOfUnit(UUID unitId) {
         return jdbc.queryForList("""
                 select distinct p.location_code from inventory.stock_package p
                 where p.uom_conversion_id = ?
-                  and exists (select 1 from inventory.stock_item s where s.stock_package_id = p.id and s.on_hand > 0)
+                  and p.status = 'IN_STOCK'
                 order by 1""", String.class, unitId);
     }
 

@@ -62,7 +62,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The Sales Manager decides a customer's design, over HTTP (kltn-docs 12 §4.4, §4.5): they read it while it waits;
+ * The coordinator decides a customer's design, over HTTP (kltn-docs 12 §4.4, §4.5): they read it while it waits;
  * returning needs a reason and gives the customer a draft again; approving stamps the print file, draws the production
  * instruction, freezes layout, images and template in a snapshot that verifies, and issues the customer's own SKU - in
  * one step, so a SKU that cannot be issued leaves the design pending (BR-09).
@@ -87,13 +87,21 @@ class DesignReviewIntegrationTest {
     @MockitoBean UploadInspection inspection;
     @MockitoBean CurrentUserProvider users;
 
+    /** The cup template the design is drawn on; {@code CUP12-OTHER} names a second one on the same variant. */
+    private static final String TEMPLATE = "{\"code\":\"CUP12-BODY\",\"name\":\"Ly 12oz\","
+            + "\"allowedFileFormats\":[\"image/png\"],\"maxFileSizeMb\":20,\"model\":{\"kind\":\"parametric-cup\","
+            + "\"topDiameterMm\":90,\"bottomDiameterMm\":60,\"heightMm\":110,\"rimMm\":3,\"seamMm\":8,"
+            + "\"bandTopOffsetMm\":6,\"bandBottomOffsetMm\":8,\"material\":\"paper-white\"},\"printAreas\":[{"
+            + "\"code\":\"BODY\",\"name\":\"Thân ly\",\"safeMarginMm\":3,\"bleedMm\":2}]}";
+
     private UUID staff;
-    private UUID manager;
+    private UUID coordinator;
     private UUID owner;
     private UUID customerId;
     private String sku;
     private String design;
     private String templateId;
+    private String templatesBase;
     private String logo;
     private String taxCode;
     private PrintSurface surface;
@@ -101,7 +109,7 @@ class DesignReviewIntegrationTest {
     @BeforeEach
     void aSubmittedDesign() throws Exception {
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
-        manager = tx.execute(s -> ReferenceRows.user(entityManager));
+        coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
         as(staff, false);
         String code = "REV-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         UUID productId = products.create(new CreateProductCommand(code, "Ly giấy 12oz", "Paper cup 12oz", null, null,
@@ -115,19 +123,15 @@ class DesignReviewIntegrationTest {
         var variant = variants.list(productId, 0, 1).items().getFirst();
         sku = variant.sku();
         String base = "/api/v1/products/" + productId + "/variants/" + variant.id() + "/customization-templates";
-        JsonNode template = data(mvc.perform(TemplateModelFiles.create(base,
-                "{\"code\":\"CUP12-BODY\",\"name\":\"Ly 12oz\",\"allowedFileFormats\":[\"image/png\"],"
-                        + "\"maxFileSizeMb\":20,\"model\":{\"kind\":\"parametric-cup\",\"topDiameterMm\":90,"
-                        + "\"bottomDiameterMm\":60,\"heightMm\":110,\"rimMm\":3,\"seamMm\":8,\"bandTopOffsetMm\":6,"
-                        + "\"bandBottomOffsetMm\":8,\"material\":\"paper-white\"},\"printAreas\":[{\"code\":\"BODY\","
-                        + "\"name\":\"Thân ly\",\"safeMarginMm\":3,\"bleedMm\":2}]}")).andExpect(status().isCreated()));
+        templatesBase = base;
+        JsonNode template = data(mvc.perform(TemplateModelFiles.create(base, TEMPLATE)).andExpect(status().isCreated()));
         templateId = template.get("templateId").asText();
         mvc.perform(post(base + "/" + templateId + "/activation").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"version\":" + template.get("version") + "}")).andExpect(status().isOk());
         var config = printConfigs.byId(UUID.fromString(templateId)).orElseThrow();
         surface = PrintSurface.of(config.model(), config.printAreas().get(0));
         units.add(new Sku(sku), new UomConversionDraft("CARTON", 50, new BigDecimal("4.2"), new BigDecimal("60"),
-                new BigDecimal("40"), new BigDecimal("35"), false, true, true));
+                new BigDecimal("40"), new BigDecimal("35"), true));
         taxCode = Long.toString(java.util.concurrent.ThreadLocalRandom.current().nextLong(1_000_000_000L,
                 9_999_999_999L));
         UUID[] account = tx.execute(s -> {
@@ -140,9 +144,13 @@ class DesignReviewIntegrationTest {
         owner = account[0];
         customerId = account[1];
         as(owner, false);
+        // Every design is started in one of its customer's projects (BR-23.2).
+        String startedIn = data(mvc.perform(post("/api/v1/design-projects").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Quán A\"}")).andExpect(status().isCreated())).get("id").asText();
         design = data(mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku
-                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"Ly quán A\"}"))
+                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"Ly quán A\",\"projectId\":\"" + startedIn
+                        + "\"}"))
                 .andExpect(status().isCreated())).get("id").asText();
         logo = data(mvc.perform(multipart("/api/v1/designs/" + design + "/assets")
                 .file(new MockMultipartFile("file", "logo.png", "image/png", png(1200, 1200))))
@@ -216,7 +224,7 @@ class DesignReviewIntegrationTest {
 
     @Test
     void aReviewerReadsTheDesignWhileItWaitsAndNobodyElseDoes() throws Exception {
-        as(manager, true);
+        as(coordinator, true);
         String base = "/api/v1/designs/" + design;
         mvc.perform(get(base)).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"));
         mvc.perform(get(base + "/document")).andExpect(status().isOk());
@@ -235,14 +243,14 @@ class DesignReviewIntegrationTest {
 
     @Test
     void aReturnedDesignIsADraftAgainWithTheReason() throws Exception {
-        as(manager, true);
+        as(coordinator, true);
         long version = version();
         decide(version, false, null).andExpect(status().isBadRequest());
         decide(version, false, "Logo quá sát mép, xin dời vào giữa")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("DRAFT"))
                 .andExpect(jsonPath("$.data.reviewNotes").value("Logo quá sát mép, xin dời vào giữa"))
-                .andExpect(jsonPath("$.data.reviewedBy").value(manager.toString()))
+                .andExpect(jsonPath("$.data.reviewedBy").value(coordinator.toString()))
                 .andExpect(jsonPath("$.data.reviewedAt").exists());
 
         assertThat(decisions()).last().isEqualTo("RETURNED");
@@ -252,13 +260,25 @@ class DesignReviewIntegrationTest {
         mvc.perform(get("/api/v1/designs/review-queue"))
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + design + "')]").isEmpty());
         as(owner, false);
+        // The customer learns who returned it, by name, on the design and on its history.
+        String coordinatorName = jdbc.queryForObject(
+                "SELECT COALESCE(NULLIF(full_name, ''), username) FROM identity.app_user WHERE id = ?", String.class,
+                coordinator);
+        mvc.perform(get("/api/v1/designs/" + design)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.reviewedByName").value(coordinatorName));
+        mvc.perform(get("/api/v1/designs")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + design + "')].reviewedByName").value(coordinatorName));
+        mvc.perform(get("/api/v1/designs/" + design + "/history")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].decision").value("RETURNED"))
+                .andExpect(jsonPath("$.data.items[0].actorId").value(coordinator.toString()))
+                .andExpect(jsonPath("$.data.items[0].actorName").value(coordinatorName));
         mvc.perform(put("/api/v1/designs/" + design + "/name").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"version\":" + version() + ",\"name\":\"Ly quán A - sửa\"}")).andExpect(status().isOk());
     }
 
     @Test
     void anApprovedDesignIsFrozenStampedAndGivenItsOwnSku() throws Exception {
-        as(manager, true);
+        as(coordinator, true);
         decide(version() - 1, true, null).andExpect(status().isConflict());
         decide(version(), true, "In đúng màu Pantone 186C")
                 .andExpect(status().isOk())
@@ -275,8 +295,11 @@ class DesignReviewIntegrationTest {
         String customerSku = snapshot.get("customerSku").asText();
         assertThat(customerSku).startsWith(jdbc.queryForObject("SELECT code FROM product.products p JOIN "
                 + "product.variants v ON v.product_id = p.id WHERE v.sku = ?", String.class, sku) + "-" + taxCode + "-");
-        assertThat(jdbc.queryForObject("SELECT status FROM product.variants WHERE sku = ?", String.class, customerSku))
-                .isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForObject("SELECT status FROM product.customer_skus WHERE sku = ?", String.class,
+                customerSku)).isEqualTo("ACTIVE");
+        // Q5: the approval issues the SKU and nothing in inventory; its item comes with the first order of it.
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class,
+                customerSku)).isZero();
 
         // The snapshot adds up, layout and images included, and the files are where it says.
         UUID snapshotId = UUID.fromString(snapshot.get("id").asText());
@@ -307,14 +330,14 @@ class DesignReviewIntegrationTest {
                         .get("artifactId").asText());
         try (var in = storage.download(sheetKey); PDDocument sheet = Loader.loadPDF(in.readAllBytes())) {
             String text = new org.apache.pdfbox.text.PDFTextStripper().getText(sheet);
-            assertThat(text.lines().filter(line -> line.contains("SKU riêng của khách")))
+            assertThat(text.lines().filter(line -> line.contains("Mã hàng của khách")))
                     .singleElement().asString().contains(customerSku);
             assertThat(text.lines().filter(line -> line.startsWith("Quy cách")))
                     .anySatisfy(line -> assertThat(line).contains(sku));
         }
 
         assertThat(decisions()).last().isEqualTo("APPROVED");
-        // The Sales Manager's note stays in the history with the decision (BR-13).
+        // The coordinator's note stays in the history with the decision (BR-13).
         assertThat(jdbc.queryForObject("SELECT notes FROM design.design_decision WHERE draft_id = ?::uuid AND "
                 + "decision = 'APPROVED'", String.class, design)).contains(customerSku, "In đúng màu Pantone 186C");
         assertThat(recorded.matching(DesignReviewed.class, e -> e.designId().toString().equals(design)))
@@ -332,7 +355,7 @@ class DesignReviewIntegrationTest {
     void aSkuThatCannotBeIssuedLeavesTheDesignPending() throws Exception {
         // The variant stopped being sold after the design was submitted (kltn-docs 12 edge cases): no SKU, no approval.
         tx.executeWithoutResult(s -> jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku));
-        as(manager, true);
+        as(coordinator, true);
 
         decide(version(), true, null)
                 .andExpect(status().isConflict())
@@ -346,9 +369,182 @@ class DesignReviewIntegrationTest {
         decide(version(), false, "Quy cách đã ngừng bán").andExpect(status().isOk());
     }
 
+    /**
+     * FE request BE-2: the queue says whose each design is, the approval answers with the SKU it issued, and the
+     * customer's list of approved designs carries it - the snapshot that also holds it is the owner's alone.
+     */
+    @Test
+    void theQueueNamesTheCustomerAndTheApprovedDesignCarriesItsOwnSku() throws Exception {
+        String customerName = jdbc.queryForObject("SELECT full_name FROM customer.customer WHERE id = ?",
+                String.class, customerId);
+        as(coordinator, true);
+        JsonNode queued = queued();
+        assertThat(queued.get("customerName").asText()).isEqualTo(customerName);
+        assertThat(queued.get("customerSku")).as("no SKU before the approval").isNull();
+
+        JsonNode approved = data(decide(version(), true, null).andExpect(status().isOk()));
+        String issued = jdbc.queryForObject("SELECT c.sku FROM product.customer_skus c JOIN design.design_snapshot s "
+                + "ON s.id = c.design_snapshot_id WHERE s.draft_id = ?::uuid", String.class, design);
+        assertThat(approved.get("customerSku").asText()).isEqualTo(issued);
+        assertThat(approved.get("customerName").asText()).isEqualTo(customerName);
+
+        as(owner, false);
+        mvc.perform(get("/api/v1/designs").param("status", "APPROVED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + design + "')].customerSku").value(issued))
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + design + "')].customerName").value(customerName));
+        mvc.perform(get("/api/v1/designs/" + design)).andExpect(jsonPath("$.data.customerSku").value(issued));
+    }
+
+    /** The design in the review queue, looked for page by page: other classes' designs may wait before it. */
+    private JsonNode queued() throws Exception {
+        for (int page = 0; page < 50; page++) {
+            JsonNode found = data(mvc.perform(get("/api/v1/designs/review-queue").param("page", "" + page)
+                    .param("size", "200")).andExpect(status().isOk()));
+            for (JsonNode item : found.get("items")) {
+                if (item.get("id").asText().equals(design)) {
+                    return item;
+                }
+            }
+            if (!found.get("hasNext").asBoolean()) {
+                break;
+            }
+        }
+        throw new AssertionError("design " + design + " is not in the review queue");
+    }
+
+    /**
+     * Decision 3: files drawn on a print configuration edited since are refused at review in the reviewer's words -
+     * the customer renders them again - under the code the customer's own refusal carries.
+     */
+    @Test
+    void filesOutdatedAtReviewAreToldToTheReviewer() throws Exception {
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.customization_templates SET print_version = "
+                + "print_version + 1 WHERE id = ?::uuid", templateId));
+        as(coordinator, true);
+
+        mvc.perform(post("/api/v1/designs/" + design + "/reviews").header("Accept-Language", "vi")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":" + version() + ",\"approved\":true}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_FILES_OUTDATED"))
+                .andExpect(jsonPath("$.message").value("Bộ file in của thiết kế này được xuất theo cấu hình in cũ; "
+                        + "khách cần xuất lại và gửi duyệt lại."));
+        mvc.perform(post("/api/v1/designs/" + design + "/reviews").header("Accept-Language", "en")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":" + version() + ",\"approved\":true}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("the customer must")));
+        assertThat(decisions()).doesNotContain("APPROVED");
+    }
+
+    /** FE request BE-18: the customer who designs and the Sales Manager read the same font list. */
+    @Test
+    void theStudiosFontsAreListedInOrder() throws Exception {
+        for (boolean reviewer : new boolean[] {false, true}) {
+            as(reviewer ? coordinator : owner, reviewer);
+            mvc.perform(get("/api/v1/design-fonts"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.length()").value(8))
+                    .andExpect(jsonPath("$.data[0].code").value("be-vietnam-pro"))
+                    .andExpect(jsonPath("$.data[0].label").value("Be Vietnam Pro"))
+                    .andExpect(jsonPath("$.data[7].code").value("pacifico"))
+                    .andExpect(jsonPath("$.data[7].label").value("Pacifico"));
+        }
+    }
+
+    // ---- decision 1: the print version ----
+
+    private JsonNode template(String id) throws Exception {
+        return data(mvc.perform(get(templatesBase + "/" + id)).andExpect(status().isOk()));
+    }
+
+    private ResultActions activation(String id, String action) throws Exception {
+        return mvc.perform(post(templatesBase + "/" + id + "/" + action).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"version\":" + template(id).get("version") + "}"));
+    }
+
+    private ResultActions edit(String json) throws Exception {
+        return mvc.perform(put(templatesBase + "/" + templateId).contentType(MediaType.APPLICATION_JSON)
+                .content(json.substring(0, json.length() - 1) + ",\"version\":" + template(templateId).get("version")
+                        + "}"));
+    }
+
+    /**
+     * Decision 1: renaming the template, retiring it by activating another on the variant, deactivating and activating
+     * it again, and attaching a reference die-line change nothing the files are drawn on - the design waiting for
+     * review stays approvable, and the template says one design waits on it.
+     */
+    @Test
+    void whatTheFilesAreNotDrawnOnLeavesAPendingDesignApprovable() throws Exception {
+        long printVersion = template(templateId).get("printVersion").asLong();
+        long lockVersion = template(templateId).get("version").asLong();
+        assertThat(template(templateId).get("pendingReviewCount").asLong()).isEqualTo(1);
+
+        String other = data(mvc.perform(TemplateModelFiles.create(templatesBase,
+                TEMPLATE.replace("CUP12-BODY", "CUP12-OTHER"))).andExpect(status().isCreated())).get("templateId")
+                .asText();
+        activation(other, "activation").andExpect(status().isOk());
+        assertThat(template(templateId).get("active").asBoolean()).as("retired by the other's activation").isFalse();
+        activation(other, "deactivation").andExpect(status().isOk());
+        activation(templateId, "activation").andExpect(status().isOk());
+        edit(TEMPLATE.replace("\"name\":\"Ly 12oz\"", "\"name\":\"Ly 12oz - đổi tên\""))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.name").value("Ly 12oz - đổi tên"));
+        mvc.perform(multipart(templatesBase + "/" + templateId + "/reference-file")
+                        .file(new MockMultipartFile("file", "khuon-ly.png", "image/png", png(20, 10)))
+                        .param("version", template(templateId).get("version").asText())
+                        .with(request -> {
+                            request.setMethod("PUT");
+                            return request;
+                        }))
+                .andExpect(status().isOk());
+
+        JsonNode now = template(templateId);
+        assertThat(now.get("version").asLong()).as("every write moved the lock").isGreaterThan(lockVersion);
+        assertThat(now.get("printVersion").asLong()).isEqualTo(printVersion);
+        assertThat(now.get("pendingReviewCount").asLong()).isEqualTo(1);
+        assertThat(template(other).get("pendingReviewCount").asLong()).as("only the designs on that template")
+                .isZero();
+        as(coordinator, true);
+        decide(version(), true, null).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        as(staff, false);
+        assertThat(template(templateId).get("pendingReviewCount").asLong()).as("decided, it waits no more").isZero();
+    }
+
+    /** Decision 1: raising the minimum resolution changes what the files must meet - they are outdated. */
+    @Test
+    void aChangeOfWhatTheFilesAreDrawnOnOutdatesThem() throws Exception {
+        long printVersion = template(templateId).get("printVersion").asLong();
+        edit(TEMPLATE.replace("\"maxFileSizeMb\":20,", "\"maxFileSizeMb\":20,\"minDpi\":600,"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.printVersion").value(printVersion + 1));
+
+        as(coordinator, true);
+        decide(version(), true, null)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DESIGN_FILES_OUTDATED"));
+        assertThat(decisions()).doesNotContain("APPROVED");
+    }
+
+    /** Decision 1: the print area's bleed is geometry the print file is stamped with. */
+    @Test
+    void aChangeOfThePrintAreaOutdatesTheFiles() throws Exception {
+        long printVersion = template(templateId).get("printVersion").asLong();
+        edit(TEMPLATE.replace("\"bleedMm\":2", "\"bleedMm\":3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.printVersion").value(printVersion + 1));
+        // Its name is a label: no file depends on it.
+        edit(TEMPLATE.replace("\"bleedMm\":2", "\"bleedMm\":3").replace("Thân ly", "Thân"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.printVersion").value(printVersion + 1));
+
+        as(coordinator, true);
+        decide(version(), true, null).andExpect(jsonPath("$.errorCode").value("DESIGN_FILES_OUTDATED"));
+    }
+
     @Test
     void onlyAPendingDesignIsDecided() throws Exception {
-        as(manager, true);
+        as(coordinator, true);
         decide(version(), false, "Chưa đạt").andExpect(status().isOk());
         decide(version(), true, null).andExpect(status().isConflict());
     }

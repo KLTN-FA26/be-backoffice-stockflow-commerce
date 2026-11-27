@@ -55,7 +55,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * A customer submits their design (kltn-docs 12 §4.3), over HTTP: the server's preflight refuses with each finding
  * located and records the failure without moving the version; the three files must be rendered from the layout as it
- * is; passing, the design is locked, waits in the Sales Manager's queue, and the reviewers are told.
+ * is; passing, the design is locked, waits in the coordinator's queue, and the reviewers are told.
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
@@ -111,7 +111,7 @@ class DesignSubmissionIntegrationTest {
         surface = PrintSurface.of(config.model(), config.printAreas().get(0));
         // The carton a customer orders in (B25): without it the design cannot be submitted.
         units.add(new Sku(sku), new UomConversionDraft("CARTON", 50, new BigDecimal("4.2"), new BigDecimal("60"),
-                new BigDecimal("40"), new BigDecimal("35"), false, true, true));
+                new BigDecimal("40"), new BigDecimal("35"), true));
         owner = tx.execute(s -> {
             UUID user = ReferenceRows.user(entityManager);
             UUID customer = ReferenceRows.customer(entityManager);
@@ -119,9 +119,13 @@ class DesignSubmissionIntegrationTest {
             return user;
         });
         as(owner);
+        // Every design is started in one of its customer's projects (BR-23.2).
+        String startedIn = data(mvc.perform(post("/api/v1/design-projects").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Quán A\"}")).andExpect(status().isCreated())).get("id").asText();
         design = data(mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku
-                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"Ly quán A\"}"))
+                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"Ly quán A\",\"projectId\":\"" + startedIn
+                        + "\"}"))
                 .andExpect(status().isCreated())).get("id").asText();
     }
 
@@ -275,11 +279,15 @@ class DesignSubmissionIntegrationTest {
     @Test
     void aVariantNoLongerOnSaleOrWithoutACartonCannotBeSubmitted() throws Exception {
         uploadFiles(saveLogoLayout(uploadLogo(1200)));
+        // BE-11: the template endpoint answers the submission's own two questions, before and after they change.
+        mvc.perform(get("/api/v1/designs/" + design + "/template")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.designable").value(true))
+                .andExpect(jsonPath("$.data.hasCartonSpec").value(true));
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku);
-            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE NOT is_base "
-                    + "AND inventory_item_id = "
-                    + "(SELECT id FROM inventory.inventory_items WHERE sku = ?)", sku);
+            // The variant has no inventory item (V20270105000100): its cartons are found by its own id.
+            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE variant_id = "
+                    + "(SELECT id FROM product.variants WHERE sku = ?)", sku);
         });
 
         JsonNode issues = json.readTree(submit(version())
@@ -287,6 +295,9 @@ class DesignSubmissionIntegrationTest {
                 .andReturn().getResponse().getContentAsString()).get("details").get("issues");
         assertThat(issues.findValuesAsText("rule")).containsExactly("VARIANT_UNAVAILABLE", "CARTON_SPEC_MISSING");
         assertThat(issues.get(0).has("surfaceCode")).isFalse();
+        mvc.perform(get("/api/v1/designs/" + design + "/template")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.designable").value(false))
+                .andExpect(jsonPath("$.data.hasCartonSpec").value(false));
     }
 
     @Test
@@ -296,15 +307,16 @@ class DesignSubmissionIntegrationTest {
         as(stranger);
         submit(version).andExpect(status().isNotFound());
         as(owner);
-        assertThat(decisions()).containsExactly("CREATED");
+        // Nothing past what starting it in its project wrote (BR-23.2).
+        assertThat(decisions()).containsExactly("ADDED_TO_PROJECT", "CREATED");
     }
 
     /** Review of 2F-5: a template edited in place after the files were drawn on it leaves them outdated. */
     @Test
     void filesDrawnOnATemplateSinceEditedAreOutdated() throws Exception {
         uploadFiles(saveLogoLayout(uploadLogo(1200)));
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.customization_templates SET version = version + 1 "
-                + "WHERE id = ?::uuid", templateId));
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.customization_templates SET print_version = "
+                + "print_version + 1 WHERE id = ?::uuid", templateId));
 
         submit(version())
                 .andExpect(status().isConflict())
@@ -312,7 +324,7 @@ class DesignSubmissionIntegrationTest {
                 .andExpect(jsonPath("$.details.roles.length()").value(3));
     }
 
-    /** Review of 2F-5: the print file is checked before the design reaches the Sales Manager. */
+    /** Review of 2F-5: the print file is checked before the design reaches the coordinator. */
     @Test
     void aPrintFileThePressCannotUseIsRefused() throws Exception {
         String checksum = saveLogoLayout(uploadLogo(1200));

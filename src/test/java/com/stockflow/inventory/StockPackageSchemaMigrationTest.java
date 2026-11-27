@@ -9,7 +9,6 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
-import java.sql.Statement;
 
 import static com.stockflow.support.RawSql.refused;
 import static com.stockflow.support.RawSql.text;
@@ -18,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 /**
- * The rules V20261020000100-0600 (and V20261113000300, whole-carton counts) put on stock packages and the units
+ * The rules V20261020000100-0600 (and V20261231000600, the carton is the stock) put on stock packages and the units
  * documents count in, on a fresh database with the demo seed. tools/db/qa/15_stock_packages.sql holds the full set; these are the ones the build must keep, since no
  * workflow runs that script: a later migration replacing one of these functions would otherwise pass CI.
  *
@@ -26,8 +25,9 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  */
 class StockPackageSchemaMigrationTest {
 
-    private static final String SOFA = "md5('demo:item:SOFA-3S-GREY')::uuid";
-    private static final String TABLE = "md5('demo:item:TABLE-OAK-160')::uuid";
+    /** The item of the demo cup {@code LY-GIAY-DEMO-12OZ-XANH}. */
+    private static final String BLUE_CUP =
+            "(SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH')";
 
     private static PostgreSQLContainer<?> pg;
 
@@ -48,57 +48,59 @@ class StockPackageSchemaMigrationTest {
         return DriverManager.getConnection(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword());
     }
 
-    /** A packing unit of SOFA-3S-GREY, factor 10. */
+    /** A packing unit of LY-GIAY-DEMO-12OZ-XANH, factor 10. */
     private static String unit(Connection db, String name) throws SQLException {
+        // 01 BR-03: the item has one active carton, so the earlier tests' units are retired (their cartons stay).
+        update(db, "UPDATE inventory.uom_conversions SET active = FALSE WHERE "
+                + "variant_id = " + variantOf(BLUE_CUP) + " AND active");
+        return unit(db, name, true);
+    }
+
+    private static String unit(Connection db, String name, boolean active) throws SQLException {
         String id = "md5('it:unit:" + name + "')::uuid";
-        update(db, "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor) VALUES ("
-                + id + ", " + SOFA + ", '" + name + "', 10)");
+        update(db, "INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active) "
+                + "VALUES (" + id + ", " + variantOf(BLUE_CUP) + ", '" + name + "', 10, " + active + ")");
         return id;
     }
 
-    /** A whole stock package of 10 in stock at {@code location}, holding its 10 sofas in one row (lot UNTRACED). */
+    /** The catalogue variant whose cartons an item is packed in (owner decision Q1, V20270104000100). */
+    private static String variantOf(String item) {
+        return "(SELECT variant_id FROM inventory.inventory_items WHERE id = " + item + ")";
+    }
+
+    /** The UNTRACED lot of the blue cup these cartons are of, opened the first time. */
+    private static final String LOT = "md5('it:lot:UNTRACED')::uuid";
+
+    private static void lot(Connection db) throws SQLException {
+        update(db, "INSERT INTO inventory.stock_lot (id, sku, lot_number, origin_type, created_at) VALUES (" + LOT
+                + ", 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', 'UNTRACED', NOW()) ON CONFLICT (id) DO NOTHING");
+    }
+
+    /** A whole stock package of 10 in stock at {@code location}, AVAILABLE, of lot UNTRACED: the carton is the stock. */
     private static String inStock(Connection db, String name, String unit, String location) throws SQLException {
         String id = "md5('it:pk:" + name + "')::uuid";
-        transaction(db,
-                "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
-                        + " received_qty, location_code, status) VALUES (" + id + ", 'IT-" + name + "', "
-                        + SOFA + ", " + unit + ", 10, 10, '" + location + "', 'IN_STOCK')",
-                "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status,"
-                        + " created_at, received_at, stock_package_id) VALUES (md5('it:pk:" + name
-                        + ":row')::uuid, 'SOFA-3S-GREY', '" + location + "', 'UNTRACED', 10, 0, 'AVAILABLE', NOW(),"
-                        + " NOW() - interval '1 day', " + id + ")");
+        lot(db);
+        update(db, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
+                + " counted_at, location_code, status, stock_status, lot_id, received_at) VALUES (" + id + ", 'IT-"
+                + name + "', " + BLUE_CUP + ", " + unit + ", 10, NOW(), '" + location + "', 'IN_STOCK', 'AVAILABLE', "
+                + LOT + ", NOW() - interval '1 day')");
         return id;
-    }
-
-    /** The statements as one transaction, so the deferred checks run once, at its commit. */
-    private static void transaction(Connection db, String... statements) throws SQLException {
-        db.setAutoCommit(false);
-        try (Statement st = db.createStatement()) {
-            for (String sql : statements) {
-                st.execute(sql);
-            }
-            db.commit();
-        } catch (SQLException e) {
-            db.rollback();
-            throw e;
-        } finally {
-            db.setAutoCommit(true);
-        }
     }
 
     @Test
     void aUnitInUseKeepsItsFactorItemAndName() throws Exception {
         try (Connection db = connect()) {
             String carton = unit(db, "LOCKED");
-            String unused = unit(db, "UNUSED");
+            String unused = unit(db, "UNUSED", false);
             update(db, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
-                    + " location_code) VALUES (gen_random_uuid(), 'IT-LOCKED', " + SOFA + ", " + carton
+                    + " location_code) VALUES (gen_random_uuid(), 'IT-LOCKED', " + BLUE_CUP + ", " + carton
                     + ", 10, 'HCM-A01-1-A')");
 
             refused(db, "the factor of a unit in use", "UPDATE inventory.uom_conversions SET factor = 12 WHERE id = "
                     + carton);
-            refused(db, "a unit in use moved to another item",
-                    "UPDATE inventory.uom_conversions SET inventory_item_id = " + TABLE + " WHERE id = " + carton);
+            refused(db, "a unit in use moved to another variant",
+                    "UPDATE inventory.uom_conversions SET variant_id = (SELECT id FROM product.variants"
+                            + " WHERE sku = 'HOP-GIAY-DEMO-GREY-PAPER') WHERE id = " + carton);
             refused(db, "a unit in use renamed",
                     "UPDATE inventory.uom_conversions SET unit_of_measure = 'BOX' WHERE id = " + carton);
             assertThat(text(db, "SELECT unit_of_measure || ':' || factor FROM inventory.uom_conversions WHERE id = "
@@ -118,7 +120,7 @@ class StockPackageSchemaMigrationTest {
             String carton = unit(writer, "RACED");
             writer.setAutoCommit(false);
             update(writer, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id,"
-                    + " nominal_qty, location_code) VALUES (gen_random_uuid(), 'IT-RACED', " + SOFA + ", " + carton
+                    + " nominal_qty, location_code) VALUES (gen_random_uuid(), 'IT-RACED', " + BLUE_CUP + ", " + carton
                     + ", 10, 'HCM-A01-1-A')");
             // Anything that waits is a failure here: the lock_timeout turns a wait into an error at once.
             update(editor, "SET lock_timeout = '1s'");
@@ -147,7 +149,7 @@ class StockPackageSchemaMigrationTest {
             update(db, "UPDATE inventory.uom_conversions SET active = FALSE WHERE id = " + old);
             refused(db, "a stock package made in the warehouse in a retired unit",
                     "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
-                            + " location_code) VALUES (gen_random_uuid(), 'IT-RETIRED', " + SOFA + ", " + old
+                            + " location_code) VALUES (gen_random_uuid(), 'IT-RETIRED', " + BLUE_CUP + ", " + old
                             + ", 10, 'HCM-A01-1-A')");
         }
     }
@@ -157,40 +159,51 @@ class StockPackageSchemaMigrationTest {
         try (Connection db = connect()) {
             String pkg = inStock(db, "LEDGER", unit(db, "LEDGER"), "HCM-A01-1-A");
             String row = "INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code,"
-                    + " to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id,"
-                    + " to_stock_package_id) VALUES (gen_random_uuid(), 'MOVE', '%s', '%s', '%s', 1, 'MOVE_TASK',"
-                    + " gen_random_uuid(), NOW(), " + pkg + ", " + pkg + ")";   // a move by hand names its carton both sides
+                    + " to_location_code, reference_type, reference_id, occurred_at, stock_package_id)"
+                    + " VALUES (gen_random_uuid(), 'MOVE', '%s', '%s', '%s', 'MOVE_TASK',"
+                    + " gen_random_uuid(), NOW(), " + pkg + ")";   // a move by hand names its carton
 
-            refused(db, "a stock package of another SKU", row.formatted("TABLE-OAK-160", "HCM-A01-1-A", "HCM-A01-1-B"));
+            refused(db, "a stock package of another SKU",
+                    row.formatted("LY-GIAY-DEMO-12OZ-DO", "HCM-A01-1-A", "HCM-A01-1-B"));
             refused(db, "a stock package at a bin the movement never touched",
-                    row.formatted("SOFA-3S-GREY", "HCM-A01-1-B", "HCM-RCV01"));
-            update(db, row.formatted("SOFA-3S-GREY", "HCM-A01-1-A", "HCM-A01-1-B"));
+                    row.formatted("LY-GIAY-DEMO-12OZ-XANH", "HCM-A01-1-B", "HCM-RCV01"));
+            update(db, row.formatted("LY-GIAY-DEMO-12OZ-XANH", "HCM-A01-1-A", "HCM-A01-1-B"));
         }
     }
 
     @Test
-    void aCartonIsOneStockRowAndItsRowFollowsIt() throws Exception {
+    void aCartonIsTakenByOneLiveAllocationAndKeepsItsLotAndFifoDate() throws Exception {
         try (Connection db = connect()) {
-            String pkg = inStock(db, "ONEROW", unit(db, "ONEROW"), "HCM-A01-1-A");
-            String second = "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,"
-                    + " status, created_at, received_at, stock_package_id) VALUES (gen_random_uuid(), 'SOFA-3S-GREY',"
-                    + " 'HCM-A01-1-A', 'UNTRACED', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', " + pkg + ")";
+            String pkg = inStock(db, "ONEHOLD", unit(db, "ONEHOLD"), "HCM-A01-1-A");
+            String order = "(SELECT id FROM ordering.customer_order ORDER BY id LIMIT 1)";
+            String hold = "md5('it:hold:ONEHOLD')::uuid";
+            // The SKU-level hold the allocations are made from: marked ALLOCATED, as a release leaves it.
+            update(db, "INSERT INTO inventory.stock_reservation (id, sku, order_id, root_request_id, request_id, cartons,"
+                    + " units_per_carton, reserved_at, status, closed_at) VALUES (" + hold
+                    + ", 'LY-GIAY-DEMO-12OZ-XANH', " + order + ", gen_random_uuid(), gen_random_uuid(), 1, 10, NOW(),"
+                    + " 'ALLOCATED', NOW())");
+            String allocation = "INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id,"
+                    + " root_request_id, request_id, cartons, units_per_carton, reserved_at, status, allocated_from_id)"
+                    + " VALUES (gen_random_uuid(), " + pkg + ", 'LY-GIAY-DEMO-12OZ-XANH', " + order
+                    + ", gen_random_uuid(), gen_random_uuid(), 1, 10, NOW(), 'HELD', " + hold + ")";
 
-            // V20261113000300 (kltn-docs 20 BR-18): a carton is one row, put back or found again it fills the same row.
-            SQLException twice = catchThrowableOfType(SQLException.class, () -> update(db, second));
-            assertThat(twice == null ? "accepted" : twice.getSQLState()).as("a second row of one carton")
+            // ADR-0011: "is this carton taken" is its one live allocation; there is no reserved counter to drift.
+            update(db, allocation);
+            SQLException twice = catchThrowableOfType(SQLException.class, () -> update(db, allocation));
+            assertThat(twice == null ? "accepted" : twice.getSQLState()).as("a second live allocation of one carton")
                     .isEqualTo("23505");
-            assertThat((Throwable) twice).hasMessageContaining("uk_stock_item_package");
+            assertThat((Throwable) twice).hasMessageContaining("uk_stock_reservation_live_carton");
 
-            // Moved whole, its row goes with it - in one transaction, for the commit-time check.
-            transaction(db,
-                    "UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = " + pkg,
-                    "UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE stock_package_id = " + pkg);
-            assertThat(text(db, "SELECT count(*) || ' row at ' || min(location_code) FROM inventory.stock_item"
-                    + " WHERE stock_package_id = " + pkg)).isEqualTo("1 row at HCM-A01-1-B");
-            SQLException apart = catchThrowableOfType(SQLException.class, () -> transaction(db,
-                    "UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-A' WHERE id = " + pkg));
-            assertThat((Throwable) apart).as("the carton moved without its row").hasMessageContaining("is at");
+            // Moved whole: there is no row to follow it, and its allocation goes with it.
+            update(db, "UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = " + pkg);
+            assertThat(text(db, "SELECT location_code || ':' || stock_status FROM inventory.stock_package WHERE id = "
+                    + pkg)).isEqualTo("HCM-A01-1-B:AVAILABLE");
+
+            // FIFO: the lot and the receipt date are written when the carton goes into stock, never after.
+            refused(db, "the receipt date of a carton in stock",
+                    "UPDATE inventory.stock_package SET received_at = NOW() WHERE id = " + pkg);
+            refused(db, "the lot of a carton in stock",
+                    "UPDATE inventory.stock_package SET lot_id = NULL WHERE id = " + pkg);
         }
     }
 
@@ -200,57 +213,59 @@ class StockPackageSchemaMigrationTest {
             String pkg = inStock(db, "DOC", unit(db, "DOC"), "HCM-A01-1-A");
             String user = "(SELECT id FROM identity.app_user ORDER BY id LIMIT 1)";
             String adjustment = "INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku,"
-                    + " quantity_delta, reason_code, requested_by, stock_package_id) VALUES (gen_random_uuid(), '%s', '%s',"
-                    + " '%s', -10, 'DAMAGED', " + user + ", " + pkg + ")";
+                    + " direction, reason_code, requested_by, stock_package_id) VALUES (gen_random_uuid(), '%s', '%s',"
+                    + " '%s', 'WRITE_OFF', 'DAMAGED', " + user + ", " + pkg + ")";
             refused(db, "an adjustment naming a carton of another SKU",
-                    adjustment.formatted("ADJ-IT-DOC-1", "HCM-A01-1-A", "TABLE-OAK-160"));
+                    adjustment.formatted("ADJ-IT-DOC-1", "HCM-A01-1-A", "LY-GIAY-DEMO-12OZ-DO"));
             refused(db, "an adjustment naming a carton at another bin",
-                    adjustment.formatted("ADJ-IT-DOC-2", "HCM-A01-1-B", "SOFA-3S-GREY"));
-            update(db, adjustment.formatted("ADJ-IT-DOC-3", "HCM-A01-1-A", "SOFA-3S-GREY"));
+                    adjustment.formatted("ADJ-IT-DOC-2", "HCM-A01-1-B", "LY-GIAY-DEMO-12OZ-XANH"));
+            update(db, adjustment.formatted("ADJ-IT-DOC-3", "HCM-A01-1-A", "LY-GIAY-DEMO-12OZ-XANH"));
 
             // One count line per carton: two cartons of one SKU, bin and lot are two lines. A line names a carton.
             String count = "md5('it:count:DOC')::uuid";
             update(db, "INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type) SELECT " + count
                     + ", 'CC-IT-DOC', id, 'MANUAL' FROM warehouse.warehouse WHERE prefix = 'HCM'");
             String other = inStock(db, "DOC2", unit(db, "DOC2"), "HCM-A01-1-A");
-            String line = "INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty,"
-                    + " stock_package_id) VALUES (gen_random_uuid(), " + count + ", '%s', 'SOFA-3S-GREY', 10, %s)";
+            String line = "INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, booked,"
+                    + " stock_package_id) VALUES (gen_random_uuid(), " + count
+                    + ", '%s', 'LY-GIAY-DEMO-12OZ-XANH', TRUE, %s)";
             update(db, line.formatted("HCM-A01-1-A", pkg));
             update(db, line.formatted("HCM-A01-1-A", other));
             refused(db, "the same carton twice in one count", line.formatted("HCM-A01-1-A", pkg));
             refused(db, "a count line naming a carton at another bin", line.formatted("HCM-A01-1-B", pkg));
-            refused(db, "a loose line: a count states cartons (V20261113000300)", line.formatted("HCM-A01-1-A", "NULL"));
+            refused(db, "a loose line: a count line names its carton (NOT NULL since V20261231000100)", line.formatted("HCM-A01-1-A", "NULL"));
         }
     }
 
     @Test
-    void aCartonInStockIsCountedAtItsStandardAndHoldsExactlyThatAndReadsAsOneRow() throws Exception {
+    void aCartonInStockIsCountedAndHasItsStockStatusAndItsLot() throws Exception {
         try (Connection db = connect()) {
             String unit = unit(db, "FULL");
             String pkg = "md5('it:pk:FULL')::uuid";
+            lot(db);
             String carton = "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id,"
-                    + " nominal_qty, received_qty, location_code, status) VALUES (" + pkg + ", 'IT-FULL', "
-                    + SOFA + ", " + unit + ", 10, %d, 'HCM-A01-1-A', 'IN_STOCK')";
-            String row = "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,"
-                    + " status, created_at, received_at, stock_package_id) VALUES (md5('it:pk:FULL:row')::uuid,"
-                    + " 'SOFA-3S-GREY', 'HCM-A01-1-A', 'UNTRACED', %d, 0, 'AVAILABLE', NOW(),"
-                    + " NOW() - interval '1 day', " + pkg + ")";
+                    + " nominal_qty, counted_at, location_code, status, stock_status, lot_id, received_at) VALUES ("
+                    + pkg + ", 'IT-FULL', " + BLUE_CUP + ", " + unit + ", 10, %s, 'HCM-A01-1-A', '%s', %s, %s,"
+                    + " NOW() - interval '1 day')";
 
-            refused(db, "a carton in stock counted in at 6 of a standard 10 (ck_stock_package_standard_count)",
-                    carton.formatted(6));
-            SQLException partial = catchThrowableOfType(SQLException.class,
-                    () -> transaction(db, carton.formatted(10), row.formatted(7)));
-            assertThat((Throwable) partial).as("a carton in stock holding 7 of the 10 it was counted at")
-                    .hasMessageContaining("a carton in stock is whole");
-            SQLException overfilled = catchThrowableOfType(SQLException.class,
-                    () -> transaction(db, carton.formatted(10), row.formatted(11)));
-            assertThat((Throwable) overfilled).as("a carton in stock holding 11").hasMessageContaining("holds 11");
+            refused(db, "a carton in stock that was never counted in (ck_stock_package_counted)",
+                    carton.formatted("NULL", "IN_STOCK", "'AVAILABLE'", LOT));
+            // The carton is the stock (V20261231000600): it holds no quantity that could be 7 or 11 of its 10, and it
+            // says what stock it is exactly while it is in stock.
+            refused(db, "a carton in stock with no stock status (ck_stock_package_stock_status)",
+                    carton.formatted("NOW()", "IN_STOCK", "NULL", LOT));
+            refused(db, "a carton still being received with a stock status (ck_stock_package_stock_status)",
+                    carton.formatted("NOW()", "RECEIVING", "'AVAILABLE'", "NULL"));
+            refused(db, "a carton in stock with no lot (ck_stock_package_lot)",
+                    carton.formatted("NOW()", "IN_STOCK", "'AVAILABLE'", "NULL"));
 
-            transaction(db, carton.formatted(10), row.formatted(10));
-            assertThat(text(db, "SELECT lpn || ':' || sku || ':' || unit_of_measure || ':' || received_qty || ':'"
-                    + " || on_hand || ':' || reserved || ':' || available || ':' || status || ':' || lot_number"
-                    + " FROM inventory.stock_package_balance WHERE stock_package_id = " + pkg))
-                    .isEqualTo("IT-FULL:SOFA-3S-GREY:FULL:10:10:0:10:IN_STOCK:UNTRACED");
+            update(db, carton.formatted("NOW()", "IN_STOCK", "'AVAILABLE'", LOT));
+            assertThat(text(db, "SELECT p.lpn || ':' || i.sku || ':' || u.unit_of_measure || ':' || p.nominal_qty || ':'"
+                    + " || p.status || ':' || p.stock_status || ':' || l.lot_number FROM inventory.stock_package p"
+                    + " JOIN inventory.inventory_items i ON i.id = p.inventory_item_id"
+                    + " JOIN inventory.uom_conversions u ON u.id = p.uom_conversion_id"
+                    + " JOIN inventory.stock_lot l ON l.id = p.lot_id WHERE p.id = " + pkg))
+                    .isEqualTo("IT-FULL:LY-GIAY-DEMO-12OZ-XANH:FULL:10:IN_STOCK:AVAILABLE:UNTRACED");
         }
     }
 }

@@ -3,6 +3,7 @@ package com.stockflow.assistant.internal.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.assistant.internal.domain.AnswerFeedback;
 import com.stockflow.assistant.internal.domain.AnswerFeedbackRepository;
+import com.stockflow.assistant.internal.domain.MarkedAnswer;
 import com.stockflow.assistant.internal.domain.Conversation;
 import com.stockflow.assistant.internal.domain.ConversationRepository;
 import com.stockflow.assistant.internal.domain.FeedbackVerdict;
@@ -162,12 +163,13 @@ class ConversationServiceTest {
                 DataScope.ALL, Set.of());
         UUID answer = UUID.randomUUID();
         AnswerFeedback down = new AnswerFeedback(FeedbackVerdict.DOWN, "  Sai số tồn  ");
-        when(verdicts.record(CONVERSATION, answer, owner.userId(), down)).thenReturn(true);
+        when(verdicts.record(CONVERSATION, answer, owner.userId(), down, ConversationService.raterOf(owner)))
+                .thenReturn(true);
 
         service.rateAnswer(CONVERSATION, answer, owner, down);
 
         verify(verdicts).record(CONVERSATION, answer, owner.userId(), new AnswerFeedback(FeedbackVerdict.DOWN,
-                "Sai số tồn"));
+                "Sai số tồn"), new MarkedAnswer.Rater("SYSTEM_ADMIN", List.of()));
         UUID question = UUID.randomUUID();
         assertThatThrownBy(() -> service.rateAnswer(CONVERSATION, question, owner, down))
                 .isInstanceOf(NotFoundException.class).hasMessageContaining("Answer");
@@ -175,7 +177,7 @@ class ConversationServiceTest {
         when(store.findInScope(someoneElses)).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.rateAnswer(someoneElses, answer, owner, down))
                 .isInstanceOf(NotFoundException.class).hasMessageContaining("Conversation");
-        verify(verdicts, never()).record(eq(someoneElses), any(), any(), any());
+        verify(verdicts, never()).record(eq(someoneElses), any(), any(), any(), any());
     }
 
     @Test

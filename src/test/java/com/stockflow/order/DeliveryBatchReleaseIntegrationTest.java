@@ -29,6 +29,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,6 +48,7 @@ class DeliveryBatchReleaseIntegrationTest {
 
     @Autowired OrderReleases releases;
     @Autowired DeliveryBatchService batches;
+    @Autowired com.stockflow.identity.api.IdentityService identities;
     @Autowired ApplicationContext context;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -163,13 +165,20 @@ class DeliveryBatchReleaseIntegrationTest {
             assertThat(c.evidenceMessageId()).isEqualTo(consent);
             assertThat(c.evidenceFileName()).isNull();
             assertThat(c.changedBy()).isEqualTo(sales.userId());
+            // 17 BR-28 history: who moved it, by name (resolved through identity :: api).
+            assertThat(c.changedByName()).isNotBlank()
+                    .isEqualTo(identities.displayNames(List.of(sales.userId())).get(sales.userId()));
         });
+        assertThat(schedule(orderId).batches().get(1).windowChanges()).singleElement()
+                .satisfies(c -> assertThat(c.changedByName()).as("the staff's read names the mover").isNotBlank());
         assertThat(now.state()).isEqualTo(DeliveryBatchService.BatchState.AWAITING_STOCK);
         assertThat(now.late()).isFalse();
 
         DeliveryBatchService.Schedule theirs = as(() -> batches.scheduleOfCustomer(customer, orderId));
         assertThat(theirs.batches().get(1).windowStart()).as("the customer sees the window in force")
                 .isEqualTo(today.plusDays(21));
+        assertThat(theirs.batches().get(1).windowChanges()).singleElement()
+                .satisfies(c -> assertThat(c.changedByName()).as("no staff name for the customer").isNull());
         assertThat(theirs.contractNumber()).isNotBlank();
         Throwable notTheirs = catchThrowable(() -> as(() -> batches.scheduleOfCustomer(stranger, orderId)));
         assertThat(((BusinessException) notTheirs).errorCode()).as("another customer's order")

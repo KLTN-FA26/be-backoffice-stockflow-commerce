@@ -24,14 +24,21 @@ import java.util.UUID;
  * @param printAreas         the printable surfaces, in display order
  * @param referenceFileKey   storage key of the reference die-line the Sales Manager attached, or null
  * @param referenceFileName  that file's name as uploaded, or null
- * @param version            optimistic-lock version
+ * @param version            optimistic-lock version: moves with every write, renaming and (de)activation included
  * @param model3d            the {@code .glb} the model was measured from and its print-area-to-mesh map; never null
+ * @param printVersion       the print version: moves only when what a customer's exported files are drawn on
+ *                           changes (product owner, 2026-11-20, decision 1) - the model and its print areas'
+ *                           geometry, margins and bleed; the resolution, colour mode, file formats and size, colour
+ *                           count and fonts; the {@code .glb} and its mesh map. Not the name, an area's name, being
+ *                           active or not, nor the reference die-line, which only sits beside the design for comparison
+ *                           and goes into no exported file. A design's files are current while the print version they
+ *                           were drawn on is the template's
  */
 public record PrintConfig(UUID templateId, UUID productId, UUID variantId, String sku, String code, String name,
                           int minDpi, String colorMode, List<String> allowedFileFormats, int maxFileSizeMb,
                           Integer maxColors, List<String> allowedFontCodes, boolean active, ProductModel model,
                           List<PrintArea> printAreas, String referenceFileKey, String referenceFileName,
-                          long version, TemplateModel3d model3d) {
+                          long version, TemplateModel3d model3d, long printVersion) {
 
     public PrintConfig {
         allowedFileFormats = List.copyOf(allowedFileFormats);
@@ -40,14 +47,14 @@ public record PrintConfig(UUID templateId, UUID productId, UUID variantId, Strin
         model3d = model3d == null ? TemplateModel3d.NONE : model3d;
     }
 
-    /** A template with no 3D model. */
+    /** A template with no 3D model, its print version its version (as every template was until decision 1). */
     public PrintConfig(UUID templateId, UUID productId, UUID variantId, String sku, String code, String name,
                        int minDpi, String colorMode, List<String> allowedFileFormats, int maxFileSizeMb,
                        Integer maxColors, List<String> allowedFontCodes, boolean active, ProductModel model,
                        List<PrintArea> printAreas, String referenceFileKey, String referenceFileName, long version) {
         this(templateId, productId, variantId, sku, code, name, minDpi, colorMode, allowedFileFormats, maxFileSizeMb,
                 maxColors, allowedFontCodes, active, model, printAreas, referenceFileKey, referenceFileName, version,
-                TemplateModel3d.NONE);
+                TemplateModel3d.NONE, version);
     }
 
     /** The print area with {@code code}, or null when the template has none. */

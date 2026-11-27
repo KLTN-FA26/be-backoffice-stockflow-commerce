@@ -117,7 +117,7 @@
   },
   {
     "id": "U4-03", "useCase": "U4", "variant": "refusal-permission",
-    "persona": {"role": "SALES_STAFF", "warehouses": []},
+    "persona": {"role": "ACCOUNTANT", "warehouses": []},
     "question": "Lô EVAL-LOT-2401 đi đâu rồi?",
     "expectTools": [],
     "forbidden": ["SO-20991231-900003"],
@@ -289,7 +289,7 @@
     "persona": {"role": "SYSTEM_ADMIN", "warehouses": []},
     "question": "Cốc kraft 12oz còn bao nhiêu trong kho?",
     "expectTools": ["searchCatalog", "getStockLevels"],
-    "facts": ["EVAL-KRAFT-12OZ", "120"],
+    "facts": ["EVAL-KRAFT-12OZ-KH", "120"],
     "oracle": [{"tool": "searchCatalog", "arguments": {"text": "cốc giấy kraft", "limit": 5}}, {"tool": "getStockLevels", "arguments": {"sku": "EVAL-KRAFT-12OZ"}}]
   },
   {
@@ -304,11 +304,11 @@
   {
     "id": "S-09", "useCase": "S", "variant": "first-in-first-out",
     "persona": {"role": "SYSTEM_ADMIN", "warehouses": []},
-    "question": "Lô nào của TABLE-OAK-160 xuất trước và đang nằm ở đâu?",
+    "question": "Lô nào của EVAL-PLATE-9IN xuất trước và đang nằm ở đâu?",
     "expectTools": ["getStockLots"],
-    "factsQuery": "with first as (select lot_number, location_code from inventory.stock_item where sku = 'TABLE-OAK-160' and status = 'AVAILABLE' and on_hand > 0 order by received_at nulls last, id limit 1) select lot_number from first union all select location_code from first",
+    "factsQuery": "with first as (select l.lot_number, p.location_code from inventory.stock_package p join inventory.inventory_items i on i.id = p.inventory_item_id join inventory.stock_lot l on l.id = p.lot_id where i.sku = 'EVAL-PLATE-9IN' and p.status = 'IN_STOCK' and p.stock_status = 'AVAILABLE' order by p.received_at nulls last, p.id limit 1) select lot_number from first union all select location_code from first",
     "forbidden": ["EVAL-LOT-2401"],
-    "oracle": {"tool": "getStockLots", "arguments": {"sku": "TABLE-OAK-160"}}
+    "oracle": {"tool": "getStockLots", "arguments": {"sku": "EVAL-PLATE-9IN"}}
   },
   {
     "id": "U3-10", "useCase": "U3", "variant": "hold-queue",
@@ -390,7 +390,7 @@
     "persona": {"role": "SALES_STAFF", "warehouses": []},
     "question": "Khách nhận hàng hơn hai tháng rồi mới báo muốn trả, mình còn nhận trả không?",
     "expectTools": ["searchKnowledge"],
-    "expectRetrieved": ["17 §4.6", "17 BR-20"],
+    "expectRetrieved": ["17 §4.6 (2)", "17 BR-20"],
     "facts": ["7 ngày"],
     "oracle": {"tool": "searchKnowledge", "arguments": {"query": "thời hạn đổi trả ngày kể từ giao tự hoàn tất"}}
   },

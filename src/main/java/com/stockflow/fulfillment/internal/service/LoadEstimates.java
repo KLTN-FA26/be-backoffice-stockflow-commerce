@@ -12,7 +12,7 @@ import java.util.UUID;
 
 /**
  * The advisory load estimate (SCRUM-287 PR EST; design v2 §2, §5): how a released order's lines would load on trucks
- * or containers before anything is packed, from the item master data. Advisory only (LP2-1): it never confirms a plan
+ * or containers before anything is packed, from each SKU's carton unit. Advisory only (LP2-1): it never confirms a plan
  * and never books a vehicle - kltn-docs 09 BR-09 lets only Packed parcels into a real load plan.
  *
  * <p>Only what is still to ship is estimated: per line, its quantity less what went out in shipments not returned and
@@ -34,13 +34,21 @@ public interface LoadEstimates {
 
     /**
      * @param sources        what to estimate; one source per estimate for now
-     * @param warehouseId    required for a CONFIRMED order (not released yet: the warehouse the release dialog is about
-     *                       to send it to); for a released order its own warehouse is used and a different one refused
+     * @param warehouseId    optional: if given, it must be the order's own shipping warehouse (released to, or chosen by
+     *                       Sales while CONFIRMED); it never chooses one - an order with none is refused (09 §4.0 step 1)
      * @param vehicleTypeIds the vehicle types the plan may use; empty: every active type
      * @param selectionMode  null: SINGLE_TYPE (docs 09 §3 default "Một loại")
+     * @param fillOrderLineIds the order's lines that are filler cargo ("hàng chèn"; PRIORITY_FILL only, owner answer
+     *                       RTM-LPGROUP 19/11); null or empty: every line is main cargo
      */
     record CreateEstimate(List<Source> sources, UUID warehouseId, List<UUID> vehicleTypeIds,
-                          SelectionMode selectionMode) {
+                          SelectionMode selectionMode, List<UUID> fillOrderLineIds) {
+
+        /** Every line main cargo. */
+        public CreateEstimate(List<Source> sources, UUID warehouseId, List<UUID> vehicleTypeIds,
+                              SelectionMode selectionMode) {
+            this(sources, warehouseId, vehicleTypeIds, selectionMode, null);
+        }
 
         /** Without a target warehouse: a released order. */
         public CreateEstimate(List<Source> sources, List<UUID> vehicleTypeIds, SelectionMode selectionMode) {
@@ -51,8 +59,8 @@ public interface LoadEstimates {
     /**
      * How one order line is packed, as the resolver decided.
      *
-     * @param rule     the rule level used (DEFAULT_SHIPPING_UNIT, LARGEST_PACKING_UNIT, ITEM_BOX, ITEM_UNIT)
-     * @param uom      the unit the carton is (PALLET, CTN, the item's unit)
+     * @param rule     the rule level used (DEFAULT_SHIPPING_UNIT, LARGEST_PACKING_UNIT)
+     * @param uom      the unit the carton is (PALLET, CTN)
      * @param factor   base units per carton
      * @param quantity the units estimated: what is still to ship (ordered less shipped less closed), in base units
      * @param cartons  cartons of the line, the partial one included; each is {@code kitParts} boxes
@@ -67,15 +75,16 @@ public interface LoadEstimates {
 
     record Partial(int units, BigDecimal weightKg) { }
 
-    /** Something the resolver skipped or noticed on a line (an incomplete packing unit, an unknown unit weight). */
+    /** Something the resolver skipped or noticed on a line (an incomplete packing unit). */
     record EstimateWarning(UUID orderLineId, String sku, String code, String unitOfMeasure, List<String> fields,
                            String message) { }
 
     /**
-     * A line blocked because its item has no size or weight at any level (LP2-3): left out of the plan; the screen
-     * links to the inventory item to complete.
+     * A line blocked because its item's carton has no full size and weight (LP2-3): left out of the plan; the screen
+     * links to the inventory item, where the carton unit is declared.
      *
-     * @param missingFields the item's empty (or zero) fields: lengthCm, widthCm, heightCm, weightKg
+     * @param missingFields the carton's empty (or zero) fields: lengthCm, widthCm, heightCm, weightKg; all four when
+     *                      the item has no active carton unit at all
      */
     record MissingLine(UUID orderLineId, String sku, UUID inventoryItemId, List<String> missingFields) { }
 
@@ -112,32 +121,37 @@ public interface LoadEstimates {
      * One carton line of a trial estimate (LP2-9): what an EasyCargo sheet row says. The sizes are as measured; the
      * length runs along the vehicle, as the sheet's Length does.
      *
-     * @param name      what the box is (the sheet's Description): the viewer's legend and colour key; null or blank:
-     *                  the group, else {@code Line <n>}
-     * @param group     the sheet's Group, a label only; null or blank: none
-     * @param quantity  how many identical boxes
-     * @param rotatable false keeps the box as measured (the sheet's Rotable)
+     * @param name          what the box is (the sheet's Description): the viewer's legend and colour key; null or
+     *                      blank: the group, else {@code Line <n>}
+     * @param group         the sheet's Group, a label only; null or blank: none
+     * @param quantity      how many identical boxes
+     * @param totalWeightKg the sheet's Total weight: what all the line's boxes weigh together, shared out evenly over
+     *                      them (WF4-TRIAL-EST); positive
+     * @param rotatable     false keeps the box as measured (the sheet's Rotable)
+     * @param fill          the sheet's "Hàng chèn": lower-priority cargo; only {@link SelectionMode#PRIORITY_FILL} reads
+     *                      it (docs 09 §3 "Phân nhóm kiện chính / phụ")
      */
     record TrialLine(String name, String group, int lengthMm, int widthMm, int heightMm, int quantity,
-                     boolean rotatable) { }
+                     BigDecimal totalWeightKg, boolean rotatable, boolean fill) { }
 
     /** @param vehicleTypeIds the vehicle types the plan may use; empty: every active type */
     record TrialEstimate(List<TrialLine> lines, List<UUID> vehicleTypeIds, SelectionMode selectionMode) { }
 
     /**
      * A trial's answer: the viewer's contract of an estimate, without the identity and packaging of a stored one
-     * ({@code vehicles}, {@code unplaced}, {@code meta}). Weights in it are the placeholder, not data.
+     * ({@code vehicles}, {@code unplaced}, {@code meta}).
      */
     record TrialView(SelectionMode selectionMode, List<UUID> vehicleTypeIds, List<Layout> vehicles,
                      List<Layout.UnplacedLine> unplaced, EstimateMeta meta) { }
 
     /**
-     * The trial estimate (LP2-9; owner decision TRIAL-FLOW 29/10): how a pasted box list loads, with no source and no
-     * packaging. The planner runs as for an estimate (same seed, budget and box cap) but the payload is ignored - the
-     * list has no weights, as the original tool's - and <b>nothing is persisted</b>: no estimate row, no event.
+     * The trial estimate (LP2-9; owner decisions TRIAL-FLOW 29/10, WF4-TRIAL-EST 18/11): how a pasted box list
+     * loads, with no source and no packaging. The planner runs as for an estimate (same seed, budget and box cap, the
+     * payload checked against the sheet's weights) in any {@link SelectionMode}, and <b>nothing is persisted</b>: no
+     * estimate row, no event.
      *
-     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} (no line, a size or quantity
-     *         that is not positive), {@code VEHICLE_TYPE_NOT_FOUND}, {@code VEHICLE_TYPE_INACTIVE},
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} (no line, a size, quantity or
+     *         weight that is not positive), {@code VEHICLE_TYPE_NOT_FOUND}, {@code VEHICLE_TYPE_INACTIVE},
      *         {@code LOAD_ESTIMATE_TOO_MANY_CARTONS}
      */
     TrialView trial(TrialEstimate command);

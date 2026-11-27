@@ -151,11 +151,23 @@ public interface OrderService {
     OrderSummary recordShipmentReturned(UUID orderId, UUID shipmentId, java.time.Instant at, UUID by);
 
     /**
+     * The real reason a shipment's delivery failed, corrected by the warehouse manager (kltn-docs 09 edge "hoàn hàng
+     * khi còn Handed Over ... Quản lý kho sửa lý do thất bại nếu biết lý do thật"): the shipment failed or came back,
+     * and its returned goods were not received yet - a delivery failure case keeps the reason it was opened with.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code SHIPMENT_FAILURE_REASON_LOCKED} once the case is
+     *         opened; {@code ORDER_SHIPMENT_INVALID_TRANSITION}; {@code VALIDATION_FAILED} (OTHER without a note)
+     */
+    OrderSummary correctShipmentFailureReason(UUID orderId, UUID shipmentId, DeliveryFailureReason reason,
+                                              String note);
+
+    /**
      * A delivery the carrier reported wrongly, corrected to a failure by the warehouse manager (09 §4.3 step 5, E17):
-     * the order follows, while it is not completed and the delivery billed nothing.
+     * the order follows, while it is not completed and the delivery billed nothing, and while no return request
+     * against the shipment is open or resolved.
      *
      * @throws com.stockflow.common.error.BusinessException {@code ORDER_DELIVERY_NOT_CORRECTABLE};
-     *         {@code ORDER_SHIPMENT_INVALID_TRANSITION}
+     *         {@code ORDER_DELIVERY_HAS_RETURN}; {@code ORDER_SHIPMENT_INVALID_TRANSITION}
      */
     OrderSummary correctShipmentToFailed(UUID orderId, UUID shipmentId, DeliveryFailureReason reason, String note,
                                          java.time.Instant at, UUID by);
@@ -257,6 +269,13 @@ public interface OrderService {
     Optional<OrderStatus> lockedStatus(UUID orderId);
 
     /**
+     * The warehouse the order ships from: the one it was released to, else the one Sales chose while it is CONFIRMED
+     * (kltn-docs 17 §4.2). Empty for an unknown order, or one whose shipping warehouse is not chosen yet - which a load
+     * estimate refuses (09 §4.0 step 1).
+     */
+    Optional<UUID> shippingWarehouseId(UUID orderId);
+
+    /**
      * SCRUM-245/WBS 3.17.7. One customer's own order history, newest first, paginated. {@code
      * lines} is empty on every row — see {@code OrderSearchRepository} for why; a single order's
      * lines are available from {@link #findById}.
@@ -271,6 +290,12 @@ public interface OrderService {
      * transition after that; an order with no recorded change returns an empty list.
      */
     java.util.List<OrderStatusChange> history(UUID orderId);
+
+    /**
+     * Every closure of the rest of the order, oldest first (WF4-CLOSE-HIST-SCHEMA): entries of the order's history that
+     * are not status changes - a closure that leaves the order's status where it was is one too.
+     */
+    java.util.List<RemainderClosure> remainderClosures(UUID orderId);
 
     /**
      * 4B-8 (kltn-docs 09 BR-18, 15 BR-08, 17 BR-29): the orders among {@code orderIds} whose goods may not leave at

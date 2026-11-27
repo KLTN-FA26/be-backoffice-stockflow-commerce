@@ -57,6 +57,16 @@ public final class Order extends AggregateRoot {
      */
     private static final java.util.Set<OrderStatus> LABELLABLE = java.util.EnumSet.of(OrderStatus.READY_TO_FULFILL,
             OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED);
+    /**
+     * Where Sales may change the delivery address (kltn-docs 17 §4.7 step 24): a DRAFT order is edited freely (14), and
+     * from PENDING_PAYMENT to PICKING the address alone changes, until the first carton is labelled (17 BR-16, 08 BR-04).
+     * An order ON_HOLD counts as the status it was held from: a wrong address is held ADDRESS, corrected, then released
+     * (08 §6 edge case). PENDING_CONTRACT is not here: the contract sent carries the address, so Sales cancels it and
+     * the order is a DRAFT again (14 §4.3 step 16).
+     */
+    private static final java.util.Set<OrderStatus> ADDRESS_CHANGEABLE = java.util.EnumSet.of(OrderStatus.DRAFT,
+            OrderStatus.PENDING_PAYMENT, OrderStatus.CONFIRMED, OrderStatus.AWAITING_STOCK, OrderStatus.READY_TO_FULFILL,
+            OrderStatus.PICKING);
 
     private final OrderId id;
     private final OrderNumber orderNumber;
@@ -64,7 +74,8 @@ public final class Order extends AggregateRoot {
     private final String contactName;
     private final String contactEmail;
     private final String contactPhone;
-    private final OrderAddressSnapshot shippingAddress;
+    /** Changed only by {@link #changeShippingAddress}, until the first label (17 BR-16). */
+    private OrderAddressSnapshot shippingAddress;
     private final OrderAddressSnapshot billingAddress;
     private final UUID requestId;
     private final List<OrderLine> lines;
@@ -119,6 +130,16 @@ public final class Order extends AggregateRoot {
     private Instant completedAt;
     private Instant refundedAt;
     private Instant closedAt;
+    /**
+     * WF-05 BE-40: while a claim is open or its goods are back (RETURN_REQUESTED, RETURNED), the status the claim was
+     * opened from - where the order goes back when its claims end without a refund. Null otherwise.
+     */
+    private OrderStatus statusBeforeReturn;
+    /**
+     * D23 (15 BR-09): when the rest of the order was last closed ({@link #closeRemainder}); null when it never was. One
+     * of the moments {@link #deliveredInFullAt} takes the latest of.
+     */
+    private Instant remainderClosedAt;
     /** Set while DELIVERY_FAILED: the reason of the (first) failed delivery. */
     private DeliveryFailureReason deliveryFailureReason;
     /**
@@ -352,12 +373,17 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * Its contract cancelled before it was signed, to be drawn up again (14 §4.3 step 16): PENDING_CONTRACT → DRAFT. A
-     * contract cancelled while still a draft leaves the order as it was.
+     * Its contract cancelled before it was signed, to be drawn up again (14 §4.3 step 16): PENDING_CONTRACT → DRAFT,
+     * the history saying {@code CONTRACT_CANCELLED: <reason>} so the order's timeline tells why, as every other
+     * {@code CODE: note} row does. A contract cancelled while still a draft leaves the order as it was, with no history
+     * row: the order's history holds status changes only ({@code ck_order_status_history_change}), and the contract
+     * keeps its own reason.
      */
-    public void withdrawContract(UUID by, Instant at) {
+    public void withdrawContract(UUID by, String reason, Instant at) {
         if (status == OrderStatus.PENDING_CONTRACT) {
-            transitionTo(OrderStatus.DRAFT, by, "CONTRACT_CANCELLED", at);
+            String history = withNote("CONTRACT_CANCELLED", trimmed(reason));
+            // The history column holds 500.
+            transitionTo(OrderStatus.DRAFT, by, history.length() > 500 ? history.substring(0, 500) : history, at);
         }
     }
 
@@ -430,7 +456,8 @@ public final class Order extends AggregateRoot {
     private void requireCreditHold() {
         if (status != OrderStatus.ON_HOLD || holdReason != HoldReason.CREDIT) {
             throw new BusinessException(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD,
-                    "Order %s is %s, not waiting for a credit decision".formatted(orderNumber, status));
+                    "Order %s is %s, not waiting for a credit decision".formatted(orderNumber, status))
+                    .localized("refusal.credit.notHeldStatus", orderNumber.value(), status);
         }
     }
 
@@ -548,6 +575,55 @@ public final class Order extends AggregateRoot {
     }
 
     /**
+     * The warehouse opens a task for the part of an AWAITING_STOCK order already held (kltn-docs 07 §4.1 step 2, 17 §4.4
+     * step 15): the order stays AWAITING_STOCK (07 §4.1 step 2: "Đơn Awaiting Stock ... giữ nguyên trạng thái") and is
+     * not released - it becomes READY_TO_FULFILL when its batch is held in full (17 §5.1). What is recorded is that its
+     * task exists, the fact the list of orders waiting for a task reads ({@code fulfilment_started_at}).
+     *
+     * @return whether this changed the order
+     * @throws InvalidOrderTransitionException in any other status, or once released
+     */
+    public boolean startPrePicking(Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status != OrderStatus.AWAITING_STOCK || releasedAt != null) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "only an order awaiting stock, not released yet, is picked before its release");
+        }
+        if (fulfilmentStartedAt != null) {
+            return false;
+        }
+        this.fulfilmentStartedAt = at;
+        return true;
+    }
+
+    /**
+     * The first partial delivery of an order picked before its release goes towards dispatch - its part held, Sales
+     * having allowed a partial shipment (17 §4.5 step 18): owner decision SCOPE-PARTIAL-1105, "đợt BEFORE_DELIVERY đến
+     * hạn ở lần giao đầu tiên sẵn sàng" (15 §4.1 step 2). {@code OrderReleased} names the batch, so payment makes due
+     * what that batch waits for, as at a release; the order stays AWAITING_STOCK and is not released (its batch is
+     * released once held in full). Payment ignores a second notice for an installment already due.
+     *
+     * @throws InvalidOrderTransitionException unless AWAITING_STOCK, picked before its release, allowed in parts
+     */
+    public void releasePartFirst(String warehouseCode, UUID deliveryBatchId, Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (status != OrderStatus.AWAITING_STOCK || !prePicked() || !allowPartialShipment) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "only an order awaiting stock, picked ahead and allowed to ship in parts, sends its part held first");
+        }
+        registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(id.value(), warehouseCode, at,
+                deliveryBatchId)));
+    }
+
+    /**
+     * Whether the warehouse picks the order before its release (07 §4.1 step 2, 17 §4.4 step 15): a task was opened
+     * for the part held while it was AWAITING_STOCK, and its batch was not released since.
+     */
+    public boolean prePicked() {
+        return fulfilmentStartedAt != null && releasedAt == null;
+    }
+
+    /**
      * The warehouse starts picking (kltn-docs 17 §4.2 step 6): READY_TO_FULFILL → PICKING. Only a released order -
      * its warehouse chosen (17 BR-02). An order already picking, packed or partly shipped is left as it is. An order held
      * for stock ({@code INVENTORY}) from READY_TO_FULFILL stays held and goes back PICKING when the hold is resolved
@@ -646,6 +722,17 @@ public final class Order extends AggregateRoot {
                 recordPacked(at);
                 return true;
             }
+            case AWAITING_STOCK -> {
+                // 17 §5.1 "Awaiting Stock → Partially Fulfilled (giao trước phần có sẵn)", §4.5 step 18: Sales allowed
+                // the part already held to go first while the rest is produced (08 §4.1 step 1).
+                if (!allowPartialShipment) {
+                    throw new InvalidOrderTransitionException(orderNumber, status,
+                            "an order awaiting stock ships its part held only when Sales allowed a partial shipment");
+                }
+                transitionTo(OrderStatus.PARTIALLY_FULFILLED, by, null, at);
+                recordPacked(at);
+                return true;
+            }
             case ON_HOLD -> throw new InvalidOrderTransitionException(orderNumber, status,
                     "resolve the hold before packing");
             default -> throw new InvalidOrderTransitionException(orderNumber, status, OrderStatus.PARTIALLY_FULFILLED);
@@ -669,13 +756,19 @@ public final class Order extends AggregateRoot {
     /**
      * 4B-8 (17 §4.5, BR-03, BR-29): the first delivery batch released - the order goes to the warehouse as before, but
      * only the lines that batch carries need their stock held ({@code batchLines}; null: every line, an order without a
-     * schedule). {@code OrderReleased} names the batch, so payment makes due only what that batch waits for.
+     * schedule). {@code OrderReleased} names the batch, so payment makes due only what that batch waits for. An order
+     * picked before its release ({@link #prePicked}) whose part held was handed over first is PARTIALLY_FULFILLED when
+     * its batch is held in full; it is released then and stays PARTIALLY_FULFILLED (07 §4.3 step 7).
      */
     public void release(UUID warehouse, String warehouseCode, UUID by, Instant now, UUID deliveryBatchId,
                         java.util.Set<UUID> batchLines) {
         java.util.Objects.requireNonNull(warehouse, "warehouse");
         java.util.Objects.requireNonNull(by, "by");
-        if (status != OrderStatus.CONFIRMED && !(status == OrderStatus.AWAITING_STOCK && paidByContract())) {
+        // 07 §4.3 step 7, 17 §4.4 step 16: an order picked before its release whose part held left first (Sales allowed
+        // it, 17 §4.5 step 18) is PARTIALLY_FULFILLED; its batch is released once held in full, and it stays so.
+        boolean partShippedFirst = status == OrderStatus.PARTIALLY_FULFILLED && prePicked() && paidByContract();
+        if (status != OrderStatus.CONFIRMED && !(status == OrderStatus.AWAITING_STOCK && paidByContract())
+                && !partShippedFirst) {
             throw new InvalidOrderTransitionException(orderNumber, status, "only a confirmed order can be released");
         }
         if (paidByContract() && shippingWarehouseId == null) {
@@ -695,7 +788,9 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_STOCK_NOT_HELD, ("Order %s holds no stock for some of its "
                     + "lines: choose its shipping warehouse and hold its stock first").formatted(orderNumber));
         }
-        transitionTo(OrderStatus.READY_TO_FULFILL);
+        if (!partShippedFirst) {
+            transitionTo(OrderStatus.READY_TO_FULFILL);
+        }
         this.warehouseId = warehouse;
         this.releasedAt = now;
         this.releasedBy = by;
@@ -792,11 +887,22 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_CANCELLED,
                     "Order %s is cancelled; none of its cartons is labelled".formatted(orderNumber));
         }
+        if (firstLabeledAt != null && (status == OrderStatus.PACKED
+                || status == OrderStatus.ON_HOLD && holdReason == HoldReason.INVENTORY)) {
+            // RTM-RTDCANCEL (owner 2026-11-19; 09 §5.1, 08 §5.1): a shipment of the packed order was cancelled before
+            // dispatch and its replacement cartons are labelled in the reopened check, while the order waits on the
+            // shortage hold that cancellation put on it (or once it is PACKED again). The order was locked by its first
+            // label already; this one changes nothing. Which held order may be labelled at all is the station's call.
+            return false;
+        }
         if (status == OrderStatus.ON_HOLD) {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, ("Order %s is on hold (%s); its cartons are "
                     + "labelled once the hold is resolved").formatted(orderNumber, holdReason));
         }
-        if (!LABELLABLE.contains(status)) {
+        // 08 §4.1 step 1: an order still AWAITING_STOCK is checked and labelled only when Sales allowed its part held to
+        // go first (17 §4.5 step 18).
+        boolean partFirst = status == OrderStatus.AWAITING_STOCK && allowPartialShipment;
+        if (!LABELLABLE.contains(status) && !partFirst) {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,
                     "Order %s is %s; its cartons are not labelled now".formatted(orderNumber, status));
         }
@@ -808,6 +914,38 @@ public final class Order extends AggregateRoot {
     }
 
     public Instant firstLabeledAt() { return firstLabeledAt; }
+
+    /**
+     * Sales change the delivery address (kltn-docs 17 §4.7 steps 23-24, BR-16; 08 BR-04), under the order's row lock -
+     * the lock the first label takes ({@link #recordFirstLabel}), so no label is printed between this check and the
+     * change. The same address again changes nothing.
+     *
+     * @return whether the address changed
+     * @throws BusinessException {@code ORDER_CANCELLED}; {@code ORDER_ADDRESS_LOCKED} once a carton of the order is
+     *         labelled, or in a status where the address does not change ({@link #ADDRESS_CHANGEABLE})
+     */
+    public boolean changeShippingAddress(OrderAddressSnapshot to) {
+        java.util.Objects.requireNonNull(to, "to");
+        if (status == OrderStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.ORDER_CANCELLED,
+                    "Order %s is cancelled; its delivery address does not change".formatted(orderNumber));
+        }
+        if (firstLabeledAt != null) {
+            throw new BusinessException(ErrorCode.ORDER_ADDRESS_LOCKED, ("Order %s has a carton labelled since %s; its "
+                    + "delivery address does not change (kltn-docs 08 BR-04)").formatted(orderNumber, firstLabeledAt));
+        }
+        OrderStatus standing = status == OrderStatus.ON_HOLD ? statusBeforeHold : status;
+        if (!ADDRESS_CHANGEABLE.contains(standing)) {
+            throw new BusinessException(ErrorCode.ORDER_ADDRESS_LOCKED, (standing == OrderStatus.PENDING_CONTRACT
+                    ? "Order %s waits for its contract to be signed; cancel the contract to change the address"
+                    : "Order %s is %s; its delivery address does not change now").formatted(orderNumber, status));
+        }
+        if (to.equals(shippingAddress)) {
+            return false;
+        }
+        shippingAddress = to;
+        return true;
+    }
 
     /** Rehydration of when the first shipping label was printed. */
     public void restoreFirstLabeled(Instant at) {
@@ -868,7 +1006,7 @@ public final class Order extends AggregateRoot {
         }
         if (holdReason == HoldReason.DELIVERY_FAILED) {
             throw new BusinessException(ErrorCode.ORDER_DELIVERY_FAILURE_USE_DECISION, ("Order %s is held for a failed "
-                    + "delivery; decide its delivery failure case - deliver again, or cancel what was not delivered")
+                    + "delivery (from before RTM-RETURNED); cancel what was not delivered on its delivery failure case")
                     .formatted(orderNumber));
         }
         if (holdReason == HoldReason.CREDIT || statusBeforeHold == null) {
@@ -1118,6 +1256,34 @@ public final class Order extends AggregateRoot {
         }
     }
 
+    /**
+     * Every reason {@link #requireHandoverAllowed(BigDecimal, BatchInFlight, java.time.LocalDate)} would refuse the
+     * goods now, as error codes, in the order that method checks them (its own answer is the first). Empty when the
+     * goods may leave. A vehicle's refusal lists them all, so one signing shows everything still in the way.
+     */
+    public java.util.List<String> handoverBlockReasons(BigDecimal installmentsDue, BatchInFlight batch,
+                                                       java.time.LocalDate day) {
+        java.util.List<String> reasons = new java.util.ArrayList<>();
+        try {
+            requireNotCancelled("its goods are not handed over");
+            if (status != OrderStatus.PICKING && status != OrderStatus.PACKED
+                    && status != OrderStatus.PARTIALLY_FULFILLED) {
+                throw new InvalidOrderTransitionException(orderNumber, status, "goods are not handed over in this status");
+            }
+        } catch (BusinessException refused) {
+            reasons.add(refused.errorCode().name());
+        }
+        try {
+            requireHandoverPaid(installmentsDue);
+        } catch (BusinessException refused) {
+            reasons.add(refused.errorCode().name());
+        }
+        if (batch != null && batch.windowStart() != null && day != null && day.isBefore(batch.windowStart())) {
+            reasons.add(ErrorCode.DELIVERY_BATCH_WINDOW_NOT_OPEN.name());
+        }
+        return reasons;
+    }
+
     /** @param installmentsDue as for {@link #markShipped(Instant, UUID, BigDecimal)} */
     public boolean recordHandover(ShipmentHandover handover, BigDecimal installmentsDue) {
         return recordHandover(handover, installmentsDue, null, null);
@@ -1148,7 +1314,7 @@ public final class Order extends AggregateRoot {
                     ErrorCode.VALIDATION_FAILED, "Line %s is not on order %s".formatted(entry.getKey(), orderNumber)));
             // Units that came back count as left to ship: they may be shipped again (split shipments, G4-Q3), and
             // outstandingUnits / markPacked count them the same way.
-            int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
+            int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id());
             if (entry.getValue() > left) {
                 throw new BusinessException(ErrorCode.ORDER_SHIPMENT_QUANTITY_EXCEEDED,
                         "Line %s of order %s has %d unit(s) left to ship, not %d".formatted(line.sku().code(),
@@ -1184,16 +1350,16 @@ public final class Order extends AggregateRoot {
      * What a shipment leaving with {@code quantities} is worth (4B-3): what the shipments still out - with the carrier
      * or delivered - are worth once it has left, less what they carry already. Out, they are worth each line's units
      * out as a share of the line with tax (14 BR-21), and the fee lines, once (14 BR-09): the fee lines carry no units
-     * and go with the first shipment. A shipment that came back took its value with it, so the next one carries it
-     * again - the fee lines too - and the rounded shares of a line still add up to the line, whatever order the
+     * and go with the first shipment. A shipment whose units were closed (its return receipt confirmed, or closed as
+     * lost) took its value with it, so the next one carries it again - the fee lines too - and the rounded shares of a line still add up to the line, whatever order the
      * shipments went and came back in. On an order without VAT or fee lines this is the units at their price.
      */
     private Money worthWith(Map<UUID, Integer> quantities) {
         Money worth = feesGross();
         for (OrderLine line : lines) {
-            worth = worth.plus(line.grossOf(shippedUnits(line.id(), false) + quantities.getOrDefault(line.id(), 0)));
+            worth = worth.plus(line.grossOf(shippedUnits(line.id()) + quantities.getOrDefault(line.id(), 0)));
         }
-        BigDecimal carried = shipments.stream().filter(s -> !s.isReturned()).map(OrderShipment::amount)
+        BigDecimal carried = shipments.stream().filter(OrderShipment::holdsUnits).map(OrderShipment::amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         return worth.minus(new Money(carried, worth.currency()));
     }
@@ -1252,6 +1418,12 @@ public final class Order extends AggregateRoot {
      * billed on delivery since 4B-10 (the money ledger went; 4B-11 dropped what a shipment billed), so no delivery is
      * held back for that.
      *
+     * <p>WF-05 BE-46: also while a claim on another shipment is open or settled (RETURN_REQUESTED, RETURNED, REFUNDED,
+     * PARTIALLY_REFUNDED) - a return against shipment A says nothing of whether B arrived. The caller refuses the
+     * shipment a return is against. The order keeps its status there ({@link #followShipments}): the return path decides
+     * where it goes next, and {@link #close} waits for the corrected shipment. Never once the order completed - a
+     * COMPLETED order, or one that completed before a late claim - nor once it is closed or cancelled.</p>
+     *
      * @return whether this changed the order
      * @throws BusinessException {@code ORDER_DELIVERY_NOT_CORRECTABLE} for an order past its deliveries;
      *         {@code ORDER_SHIPMENT_INVALID_TRANSITION} for a shipment not delivered
@@ -1267,20 +1439,60 @@ public final class Order extends AggregateRoot {
         if (shipment.status() == OrderShipmentStatus.DELIVERY_FAILED) {
             return false;
         }
-        if (status != OrderStatus.DELIVERED && status != OrderStatus.SHIPPED && status != OrderStatus.DELIVERY_FAILED
-                && status != OrderStatus.PARTIALLY_FULFILLED) {
-            throw new BusinessException(ErrorCode.ORDER_DELIVERY_NOT_CORRECTABLE, ("Order %s is %s: its deliveries "
-                    + "are no longer corrected").formatted(orderNumber, status));
+        if (!DELIVERIES_CORRECTABLE.contains(status) || completedAt != null) {
+            throw new BusinessException(ErrorCode.ORDER_DELIVERY_NOT_CORRECTABLE, ("Order %s is %s%s: its deliveries "
+                    + "are no longer corrected").formatted(orderNumber, status,
+                    completedAt == null ? "" : ", completed on " + completedAt));
         }
         if (!shipment.correctedToFailed(reason, trimmed, at, by)) {
             return false;
         }
+        // No longer delivered in full: followShipments takes the date away (followDeliveredAt), except where the
+        // status needs one (RETURN_REQUESTED) - payment reads deliveredInFullAt, which no longer has one.
         followShipments(ShipmentChange.OUTCOME, at, by);
-        if (status != OrderStatus.DELIVERED) {
-            // No longer delivered: the time it was shows nowhere.
-            this.deliveredAt = null;
+        return true;
+    }
+
+    /**
+     * The real reason a shipment's delivery failed, as the warehouse manager learnt it (09 edge "hoàn hàng khi còn
+     * Handed Over"): the shipment's reason and note change; an order waiting on that failure shows the reason of its
+     * failed shipments again. OTHER needs a note.
+     *
+     * @return whether this changed the order
+     * @throws BusinessException {@code ORDER_SHIPMENT_INVALID_TRANSITION} for a shipment neither failed nor returned
+     */
+    public boolean correctShipmentFailureReason(UUID shipmentId, DeliveryFailureReason reason, String note) {
+        java.util.Objects.requireNonNull(reason, "reason");
+        String trimmed = trimmed(note);
+        if (reason == DeliveryFailureReason.OTHER && trimmed == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A failure for another reason says what it was");
+        }
+        OrderShipment shipment = requireShipment(shipmentId);
+        if (shipment.unitsClosedAt() != null && shipment.status() == OrderShipmentStatus.DELIVERY_FAILED) {
+            // Q-12: closed as lost on the carrier's confirmation - the reason is what the closure stands on.
+            throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION, ("Shipment %s of order %s was "
+                    + "closed as lost: its failure reason stays").formatted(shipmentId, orderNumber));
+        }
+        if (!shipment.correctFailureReason(reason, trimmed)) {
+            return false;
+        }
+        if (status == OrderStatus.DELIVERY_FAILED) {
+            this.deliveryFailureReason = shipments.stream()
+                    .filter(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED && s.pending())
+                    .map(OrderShipment::failureReason).findFirst().orElse(deliveryFailureReason);
         }
         return true;
+    }
+
+    /**
+     * RTM-RETURNED-PARTIAL: the order's deliveries are over ({@link #deliveriesOver} - so every shipment that came back
+     * has its return receipt confirmed and its units closed, Q-7), some of its shipments delivered and some came back
+     * or were lost. What its refund moves on to PARTIALLY_REFUNDED ({@link #partRefunded}).
+     */
+    public boolean partlyReturnedAndDone() {
+        return deliveriesOver()
+                && shipments.stream().anyMatch(OrderShipment::endedUndelivered)
+                && shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERED);
     }
 
     /** The carrier could not deliver one shipment (09 §4.3 step 2). OTHER needs a note. */
@@ -1299,37 +1511,293 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * One failed shipment came back from the carrier (09 §4.3 step 3): its units are no longer on their way to the
-     * customer, and were never billed. The order does not move on by itself any more (WF-05 fix plan, sections 2-3): it
-     * goes ON_HOLD for {@link HoldReason#DELIVERY_FAILED}, held from PARTIALLY_FULFILLED - part of it did not reach the
-     * customer - and waits for Sales to decide, once the goods are received back, whether they are delivered again or
-     * what was not delivered is cancelled ({@link #resolveDeliveryFailure}). The goods are printed to the customer's
-     * design and sold to nobody else, so neither RETURNED nor a refund is what a failed delivery means by default.
+     * One failed shipment came back from the carrier (09 §4.3 step 3), as the warehouse manager or the carrier reported
+     * it: the shipment is RETURNED and the order follows its shipments - RETURNED when nothing of it was delivered,
+     * PARTIALLY_FULFILLED while other shipments arrived (RTM-RETURNED, owner 18-19/11; 17 §5.1).
      *
-     * <p>An order already on hold for another reason is held for the failed delivery from then on: that decision comes
-     * first, and resolving the earlier hold with a note would let the order go on past it.</p>
+     * <p>Nothing else moves yet (WF-05 decision Q-7). The report is the carrier's word; the goods are not seen until the
+     * warehouse confirms their return receipt. So the shipment keeps its units - they are on their way back, neither
+     * owed again nor closed - and no money is settled: {@link #closeReturnedShipment} closes them, and payment settles
+     * them, when the receipt is confirmed.</p>
+     *
+     * @return whether this changed the order
      */
     public boolean recordShipmentReturned(UUID shipmentId, Instant at, UUID by) {
         OrderShipment shipment = requireShipment(shipmentId);
         if (!shipment.returned(at, by)) {
             return false;
         }
-        String why = shipment.failureReason() == null ? null : shipment.failureReason().name();
-        if (status != OrderStatus.ON_HOLD) {
-            transitionTo(OrderStatus.ON_HOLD, by, withNote(HoldReason.DELIVERY_FAILED.name(), why), at);
-        }
-        this.holdReason = HoldReason.DELIVERY_FAILED;
-        this.statusBeforeHold = OrderStatus.PARTIALLY_FULFILLED;
-        this.holdNote = why;
-        // ck_order_delivery_failure: the reason is the order's only while it is DELIVERY_FAILED; the shipment keeps it.
-        this.deliveryFailureReason = null;
+        followShipments(ShipmentChange.RETURNED, at, by,
+                shipment.failureReason() == null ? "RETURNED" : "RETURNED_" + shipment.failureReason().name());
         return true;
     }
 
     /**
+     * What closing one shipment's units settled (WF-05 Q-2, Q-7, Q-12): the closure's id - the key payment settles it
+     * under and {@code ShipmentReturnSettled.closureId} - and the value of the units closed with their VAT, worked out
+     * with {@code OrderLine.grossBetween} so that every unit of a line closed adds up to the line. The share of the
+     * shipping fee waived with them (Q-19) is payment's to work out from that value and the order's goods.
+     */
+    public record ShipmentClosure(UUID closureId, UUID shipmentId, UUID deliveryBatchId, BigDecimal goodsValue,
+                                  Instant goodsBackAt) {
+    }
+
+    /**
+     * The return receipt of a shipment the carrier brought back was confirmed (WF-05 Q-7; 03 §4.2 step 12): the goods
+     * are seen, so the shipment's units are closed on their lines now - they are sent again only on a new order
+     * (RTM-RETURNED) - and the caller has payment settle their value (Q-2) in this transaction, dated by its own clock
+     * (BE-32). {@code ShipmentReturnSettled} tells payment and invoicing after the commit.
+     *
+     * <p>Once per shipment: a second receipt of the same shipment (BE-13), a replayed event, or a shipment closed before
+     * the closure moved to the receipt (its units closed when it was reported, or owed again under the old hold) closes
+     * nothing and announces nothing - empty.</p>
+     *
+     * @param goodsBackAt when the receipt was confirmed: the day installments after delivery may count from (Q-3)
+     * @param settledAt   the transaction clock
+     * @throws BusinessException {@code ORDER_SHIPMENT_INVALID_TRANSITION} for a shipment not RETURNED
+     */
+    public Optional<ShipmentClosure> closeReturnedShipment(UUID shipmentId, Instant goodsBackAt, Instant settledAt,
+                                                           UUID by) {
+        OrderShipment shipment = requireShipment(shipmentId);
+        if (!shipment.isReturned()) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION, ("Shipment %s of order %s is %s: "
+                    + "only a shipment that came back is closed at its return receipt").formatted(shipmentId,
+                    orderNumber, shipment.status()));
+        }
+        if (!shipment.holdsUnits()) {
+            return Optional.empty();
+        }
+        return Optional.of(closeShipment(shipment, com.stockflow.contracts.ShipmentReturnSettled.Cause.CARRIER_RETURN,
+                java.util.Objects.requireNonNull(goodsBackAt, "goodsBackAt"), settledAt, by, "RETURN_RECEIVED"));
+    }
+
+    /**
+     * Sales close a shipment the carrier lost (WF-05 decision Q-12; 09 line 613): it failed with reason LOST and will
+     * never come back, so its units are closed on their lines now and the caller has payment settle them as a carrier
+     * return (Q-2), at this moment (no goods come back to be counted). The shipment stays DELIVERY_FAILED with its
+     * reason; the order follows its shipments as if it had come back - PARTIALLY_FULFILLED when others arrived,
+     * RETURNED when none did. Before this, such an order sat in DELIVERY_FAILED with no way out but a false RETURNED.
+     *
+     * <p>Goods found and brought back afterwards are owed to nobody: the shipment may still be recorded RETURNED, and
+     * its receipt closes nothing again ({@link #closeReturnedShipment}). It is never delivered on this order any more
+     * ({@link OrderShipment#delivered} refuses it).</p>
+     *
+     * <p>Also a shipment the carrier reported coming back whose goods never reached the warehouse (RETURNED, its
+     * receipt never to be confirmed): lost on the way back. Without this its order waited for a receipt for good
+     * (L-I6) - the carrier's word alone still closes nothing, Sales' closure with the carrier's confirmation does.</p>
+     *
+     * @throws BusinessException {@code ORDER_SHIPMENT_NOT_LOST_CLOSABLE} for a shipment that is neither DELIVERY_FAILED
+     *         for LOST nor RETURNED awaiting its receipt, or whose units were closed already, or an order cancelled or
+     *         closed; {@code VALIDATION_FAILED} without a note of at most 1000 characters
+     */
+    public ShipmentClosure closeLostShipment(UUID shipmentId, String note, Instant at, UUID by) {
+        String trimmed = trimmed(note);
+        if (trimmed == null || trimmed.length() > 1000) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Closing a lost shipment says why, in at most "
+                    + "1000 characters");
+        }
+        OrderShipment shipment = requireShipment(shipmentId);
+        boolean lost = shipment.status() == OrderShipmentStatus.DELIVERY_FAILED
+                && shipment.failureReason() == DeliveryFailureReason.LOST;
+        if (!(lost || shipment.awaitingReturnReceipt()) || !shipment.holdsUnits()
+                || status == OrderStatus.CANCELLED || status == OrderStatus.CLOSED) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPMENT_NOT_LOST_CLOSABLE, ("Shipment %s of order %s is %s%s%s: "
+                    + "only a shipment failed as LOST, or reported back with no receipt, its units still on it, is "
+                    + "closed as lost").formatted(
+                    shipmentId, orderNumber, shipment.status(),
+                    shipment.failureReason() == null ? "" : " (" + shipment.failureReason() + ")",
+                    shipment.holdsUnits() ? "" : ", its units closed already"));
+        }
+        return closeShipment(shipment, com.stockflow.contracts.ShipmentReturnSettled.Cause.LOST, at, at, by,
+                "LOST_CLOSED");
+    }
+
+    /** The closure both {@link #closeReturnedShipment} and {@link #closeLostShipment} make. */
+    private ShipmentClosure closeShipment(OrderShipment shipment,
+                                          com.stockflow.contracts.ShipmentReturnSettled.Cause cause,
+                                          Instant goodsBackAt, Instant settledAt, UUID by, String reason) {
+        BigDecimal value = closeUnitsOf(shipment, goodsBackAt);
+        shipment.recordClosedValue(value);
+        // One closure per shipment, so its id is the shipment's: a unit of work run again after a rollback settles under
+        // the same key, and payment's idempotency on it holds whatever happened in between.
+        this.lastClosureId = shipmentClosureId(shipment.id());
+        followShipments(ShipmentChange.CLOSED, settledAt, by, reason);
+        // The one definition of "nothing delivered" (deliveredSomething): what liquidates the contract (Q-6) and what
+        // payment waives the whole shipping fee by (Q-19).
+        boolean nothingDelivered = !deliveredSomething();
+        registerEvent(new OrderEvent.ShipmentSettled(new com.stockflow.contracts.ShipmentReturnSettled(id.value(),
+                orderNumber.value(), customerId, shipment.id(), shipment.deliveryBatchId(), lastClosureId, cause,
+                settledAt, goodsBackAt, nothingDelivered, deliveriesOver())));
+        return new ShipmentClosure(lastClosureId, shipment.id(), shipment.deliveryBatchId(), value, goodsBackAt);
+    }
+
+    /**
+     * What payment waived of the order's shipping fee with a shipment it just settled (WF-05 Q-19): kept on the shipment,
+     * once, in the transaction that closed its units - payment works the share out; invoicing reads it here.
+     */
+    public void recordShippingFeeWaived(UUID shipmentId, BigDecimal waived) {
+        if (waived != null && waived.signum() > 0) {
+            requireShipment(shipmentId).recordShippingFeeWaived(waived);
+        }
+    }
+
+    /** The id of the one closure of a shipment's units: what payment settles it under. */
+    public static UUID shipmentClosureId(UUID shipmentId) {
+        return UUID.nameUUIDFromBytes(("shipment-units-closed:" + shipmentId)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * The units a shipment still holds, closed on their lines, and the shipment marked closed; their gross value. Each
+     * line closes the shipment's units, never more than the line has open beside what its other shipments hold.
+     *
+     * <p>At the contract's rate, unlike a return's refund (WF-05 O-1, {@link OrderLine#grossAt}): these goods never
+     * reached the customer. No invoice charges them - or the one issued for a delivery corrected to a failure is reduced
+     * in full (HĐ-3) - so the only charge left to take back is the installments', which hold them at the contract's
+     * value; taking off the invoiced value instead would leave the customer owing the difference for goods they never
+     * had. A closure of the rest (below) is the same: nothing of it was delivered or invoiced.</p>
+     */
+    private BigDecimal closeUnitsOf(OrderShipment shipment, Instant at) {
+        Money closed = Money.zero(total().currency());
+        for (OrderLine line : lines) {
+            int carried = shipment.quantityOf(line.id());
+            if (carried == 0) {
+                continue;
+            }
+            int open = line.quantity() - line.cancelledQuantity();
+            int others = shippedUnits(line.id()) - (shipment.holdsUnits() ? carried : 0);
+            int units = Math.min(carried, open - others);
+            if (units > 0) {
+                line.closeUnits(units);
+                closed = closed.plus(line.grossBetween(open - units, open));
+            }
+        }
+        shipment.closeUnits(at);
+        return closed.amount();
+    }
+
+    /**
+     * Whether the order's deliveries are over (WF-05 X-3; {@code ShipmentReturnSettled.nothingMoreComing}): it has
+     * shipments, no unit is left to ship, and none of them is still to be decided - in transit, failed and neither
+     * delivered again nor closed as lost, or reported back by the carrier with its return receipt not confirmed yet.
+     */
+    public boolean deliveriesOver() {
+        return !shipments.isEmpty() && outstandingUnits() == 0
+                && shipments.stream().noneMatch(s -> s.pending() || s.awaitingReturnReceipt());
+    }
+
+    /**
+     * When the order counts as delivered in full (WF-05 decision Q-3; kltn-docs 15 BR-09, D23), from its facts and
+     * whatever its status: once its deliveries are over and something of it was delivered, the latest of its last
+     * delivery, the closure of a shipment that came back (its receipt confirmed) or was lost, and the closure of its
+     * rest. Empty while anything is still to come, or when nothing was delivered. What payment reaches the installments
+     * after delivery from ({@code InstallmentOrders.deliveredInFullAt}), and what {@link #deliveredAt} holds then.
+     *
+     * <p>The latest delivery, not the last one recorded (BE-04): a delivery recorded late with its real, earlier date
+     * does not pull the date back, and neither does a correction back to DELIVERED. An order delivered whole, without
+     * shipments (G4-Q5, historical), was delivered when it was recorded so.</p>
+     */
+    public Optional<Instant> deliveredInFullAt() {
+        if (shipments.isEmpty()) {
+            return status == OrderStatus.RETURNED || status == OrderStatus.DELIVERY_FAILED
+                    ? Optional.empty() : Optional.ofNullable(deliveredAt);
+        }
+        return lastDelivery().isPresent() ? deliveriesEndedAt() : Optional.empty();
+    }
+
+    /**
+     * When an order that delivered nothing ended (WF-05 Q-3, Q-19; audit r2 money M-1 / lifecycle M-2): its deliveries
+     * are over and no shipment of it is DELIVERED - every one came back (its receipt confirmed) or was lost, the rest
+     * closed or never there - at the latest of those closures. Empty otherwise, and while anything is still to come.
+     *
+     * <p>What the installments after delivery of such an order count from: it has no "delivered in full"
+     * ({@link #deliveredInFullAt} needs a delivery), and what they still owe - the plate fee Q-19 keeps - would never
+     * fall due. Q-3's day is "the later of the last delivery and the goods back", and with no delivery that is the goods
+     * back; Q-19 sets no second rule. One rule, read from the order's facts, for every path that ends such an order:
+     * the last shipment's closure ({@code ShipmentReturnSettled}) and a closure of the rest ({@code
+     * OrderRemainderClosed}) alike - before, only the first carried a fallback, on its event, so an order whose rest
+     * was closed last kept its installments NOT_DUE for good.</p>
+     */
+    public Optional<Instant> endedWithNothingDeliveredAt() {
+        return shipments.isEmpty() || deliveredSomething() ? Optional.empty() : deliveriesEndedAt();
+    }
+
+    /**
+     * When the order's deliveries ended: once they are over ({@link #deliveriesOver}), the latest of its last delivery,
+     * the closure of a shipment that came back (its receipt confirmed) or was lost, and the closure of its rest. Empty
+     * while anything is still to come. {@link #deliveredInFullAt} when something was delivered,
+     * {@link #endedWithNothingDeliveredAt} when nothing was, and the day an order that ended with nothing to refund
+     * counts its closing delay from ({@link #closeWithoutRefund}).
+     */
+    public Optional<Instant> deliveriesEndedAt() {
+        if (!deliveriesOver()) {
+            return Optional.empty();
+        }
+        Instant latest = lastDelivery().orElse(null);
+        for (OrderShipment shipment : shipments) {
+            if (shipment.unitsClosedAt() != null && (latest == null || shipment.unitsClosedAt().isAfter(latest))) {
+                latest = shipment.unitsClosedAt();
+            }
+        }
+        if (remainderClosedAt != null && (latest == null || remainderClosedAt.isAfter(latest))) {
+            latest = remainderClosedAt;
+        }
+        return Optional.ofNullable(latest);
+    }
+
+    /**
+     * Whether no shipment of the order is still to be decided or on its way back with its receipt not confirmed (L-I6):
+     * its deliveries' money is settled. What closing the order waits for.
+     */
+    public boolean deliveriesSettled() {
+        return shipments.stream().noneMatch(s -> s.pending() || s.awaitingReturnReceipt());
+    }
+
+    /**
+     * Whether goods of the order reached the customer (WF-05 Q-6, L-I4): a shipment of it DELIVERED, or - an order
+     * delivered whole before shipments were recorded (G4-Q5, historical) - its delivery date. What tells a contract to
+     * complete from one to liquidate; {@code ordering.order_delivered_something} answers the same in the database.
+     * The one definition of "nothing delivered" in the order module: its negation is published as
+     * {@code ShipmentReturnSettled.nothingDelivered} and is what payment waives the whole shipping fee by (Q-19, owner
+     * 23/11: no shipment delivered, even with the rest closed before it shipped).
+     */
+    public boolean deliveredSomething() {
+        return lastDelivery().isPresent() || shipments.isEmpty() && deliveredAt != null;
+    }
+
+    /**
+     * Whether Sales may pause the order's completion now (WF-05 GH-2, Q-17 = a): it has a delivery to dispute - a
+     * shipment DELIVERED, or a delivery date for an order delivered whole - and none of the edges the pause keeps it
+     * from is behind it. Those edges are completion, closing (also from the refund branch) and → PARTIALLY_REFUNDED, so
+     * every status before CLOSED counts - DELIVERED, PARTIALLY_FULFILLED, RETURN_REQUESTED, RETURNED, REFUNDED,
+     * PARTIALLY_REFUNDED, and SHIPPED / DELIVERY_FAILED with one shipment arrived - except COMPLETED and CANCELLED, and an
+     * order that completed once (a late claim open on it): its deliveries are no longer corrected, and the claim's end
+     * takes it back to COMPLETED. The one rule {@code OrderCompletionHolds.hold} applies and the order's settlement
+     * block shows ({@code completionHoldable}), so the back office offers the action exactly where it is accepted.
+     */
+    public boolean completionHoldable() {
+        boolean delivered = deliveredAt != null
+                || shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERED);
+        return delivered && completedAt == null && status != OrderStatus.COMPLETED && status != OrderStatus.CLOSED
+                && status != OrderStatus.CANCELLED;
+    }
+
+    /** The latest outcome of the shipments delivered; empty when none is. What the return windows count from. */
+    public Optional<Instant> lastDeliveryAt() {
+        return lastDelivery();
+    }
+
+    /** The latest outcome of the shipments delivered; empty when none is. */
+    private Optional<Instant> lastDelivery() {
+        return shipments.stream().filter(s -> s.status() == OrderShipmentStatus.DELIVERED)
+                .map(OrderShipment::outcomeAt).filter(java.util.Objects::nonNull).max(Instant::compareTo);
+    }
+
+    /**
      * Staff close what is left of a partly fulfilled order (17 edge "short pick: phần còn lại huỷ + hoàn tiền phần
-     * thiếu"; 17 §5 "Partially Fulfilled → chốt"): the units not shipped - never picked, or come back - will not be
-     * delivered. The order then shows its shipments (SHIPPED, DELIVERY_FAILED, DELIVERED or RETURNED);
+     * thiếu"; 17 §5 "Partially Fulfilled → chốt"): the units in no shipment - never picked, or owed again by a shipment
+     * that came back before WF-05 Q-7 - will not be delivered. A shipment the carrier reported back still holds its
+     * units until its return receipt closes them ({@link #closeReturnedShipment}): this closes none of them. The order then shows its shipments (SHIPPED, DELIVERY_FAILED, DELIVERED or RETURNED);
      * {@code OrderRemainderClosed} tells fulfillment to stop the rest; the money is settled on the contract's installments
      * by payment in the caller's transaction (4B-9). Only from PARTIALLY_FULFILLED: an order on hold is resolved first.
      * Nothing is left labelled at dispatch here; see {@link #closeRemainder(CancellationReasonCode, String,
@@ -1387,7 +1855,7 @@ public final class Order extends AggregateRoot {
         // Per line, the units closed: neither shipped nor in a labelled carton waiting at dispatch (WF4-CLOSE-REST).
         Map<UUID, Integer> closing = new LinkedHashMap<>();
         for (OrderLine line : lines) {
-            int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
+            int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id());
             int closes = left - Math.min(left, Math.max(0, kept.getOrDefault(line.id(), 0)));
             if (closes > 0) {
                 closing.put(line.id(), closes);
@@ -1433,6 +1901,8 @@ public final class Order extends AggregateRoot {
             reason = reason + " (fee " + fee.stripTrailingZeros().toPlainString() + ": " + agreedFee.reason() + ")";
             reason = reason.length() > 500 ? reason.substring(0, 500) : reason;
         }
+        // D23 (15 BR-09): the rest closed counts towards when the order was delivered in full (deliveredInFullAt).
+        this.remainderClosedAt = at;
         // With labelled cartons still to hand over, the order stays PARTIALLY_FULFILLED (followShipments leaves it so,
         // or has no shipment to look at yet); their last handover makes it SHIPPED.
         followShipments(ShipmentChange.CLOSED, at, by, reason);
@@ -1450,19 +1920,47 @@ public final class Order extends AggregateRoot {
         followShipments(change, at, by, null);
     }
 
+    /** The statuses a delivery of the order may be corrected to a failure in (BE-46), before it ever completed. */
+    private static final java.util.Set<OrderStatus> DELIVERIES_CORRECTABLE = java.util.EnumSet.of(
+            OrderStatus.SHIPPED, OrderStatus.DELIVERY_FAILED, OrderStatus.DELIVERED, OrderStatus.PARTIALLY_FULFILLED,
+            OrderStatus.RETURN_REQUESTED, OrderStatus.RETURNED, OrderStatus.REFUNDED, OrderStatus.PARTIALLY_REFUNDED);
+
+    /**
+     * The statuses an order keeps whatever its shipments do (WF-05 BE-46): a claim is open or decided on it, or it
+     * completed, closed or was cancelled. A delivery corrected to a failure on such an order (a shipment no return is
+     * against) and what that shipment does next - delivered again, brought back, closed as lost - change its
+     * shipments and {@link #deliveredAt}, never this status: the return path decides where it goes next
+     * ({@link #withdrawReturn}, {@link #returnsEndedWithoutRefund}), and {@link #close} waits for the shipment.
+     */
+    private static final java.util.Set<OrderStatus> STATUS_OF_ITS_OWN = java.util.EnumSet.of(
+            OrderStatus.RETURN_REQUESTED, OrderStatus.REFUNDED, OrderStatus.PARTIALLY_REFUNDED, OrderStatus.COMPLETED,
+            OrderStatus.CLOSED, OrderStatus.CANCELLED);
+
     /**
      * The order's status from its shipments, after one of them changed (see {@link OrderStatus}): an order with units
-     * neither shipped nor closed is partial (or stays PACKED while those are packed and nothing came back); one with
-     * every unit shipped or closed is in transit while a shipment is, failed once all have an outcome and one failed,
-     * delivered once all arrived, returned when every shipment came back and their units were closed. On hold it
-     * waits: resolving looks again.
+     * not in any shipment and not closed is partial (or stays PACKED while those are packed and nothing came back); one
+     * with every unit in a shipment or closed is in transit while a shipment is, failed once all have an outcome and one
+     * failed and is still to be decided, delivered once all arrived, partly fulfilled when some arrived and others came
+     * back or were lost (RTM-RETURNED-PARTIAL), returned when none arrived. On hold it waits: resolving looks again. An
+     * order on its return path keeps its status ({@link #STATUS_OF_ITS_OWN}; a RETURNED order with goods delivered is
+     * one too - its claim came back).
      *
-     * <p>Units that came back are neither shipped nor closed: they are owed a delivery again until Sales close them
-     * (WF-05 fix plan, section 3), so an order whose every shipment came back is partial, not RETURNED - it was
-     * RETURNED here before any goods were received back, and nothing ever moved it on.</p>
+     * <p>A shipment the carrier reported back still holds its units until its return receipt is confirmed (Q-7), so it
+     * counts as having come back here already - the order is RETURNED or PARTIALLY_FULFILLED from the report - while
+     * {@link #deliveriesOver} and the money wait for the receipt.</p>
+     *
+     * <p>Every time, the date it was delivered in full is worked out again from the facts ({@link #deliveredInFullAt},
+     * BE-02, BE-04): set once nothing more is coming and something was delivered, whatever the status, and never
+     * the date of whichever delivery happened to be recorded last.</p>
      */
     private void followShipments(ShipmentChange change, Instant at, UUID by, String reason) {
-        if (shipments.isEmpty() || status == OrderStatus.ON_HOLD) {
+        if (shipments.isEmpty()) {
+            return;
+        }
+        boolean anyDelivered = shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERED);
+        if (status == OrderStatus.ON_HOLD || STATUS_OF_ITS_OWN.contains(status)
+                || status == OrderStatus.RETURNED && anyDelivered) {
+            followDeliveredAt();
             return;
         }
         OrderStatus target;
@@ -1474,40 +1972,70 @@ public final class Order extends AggregateRoot {
             } else {
                 target = status;
             }
-        } else if (shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.HANDED_OVER)) {
-            target = OrderStatus.SHIPPED;
-        } else if (shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED)) {
-            target = OrderStatus.DELIVERY_FAILED;
-        } else if (shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERED)) {
-            target = OrderStatus.DELIVERED;
         } else {
-            target = OrderStatus.RETURNED;
+            target = shipmentsStatus();
         }
-        if (target == status) {
-            return;
-        }
-        if (reason == null && target == OrderStatus.DELIVERY_FAILED) {
-            reason = shipments.stream().filter(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED)
-                    .map(s -> s.failureReason().name()).findFirst().orElse(null);
-        }
-        transitionTo(target, by, reason, at);
-        Instant lastHandover = shipments.stream().map(OrderShipment::handedOverAt).max(Instant::compareTo).orElse(at);
-        switch (target) {
-            case SHIPPED -> this.shippedAt = lastHandover;
-            case DELIVERY_FAILED -> {
-                this.shippedAt = shippedAt == null ? lastHandover : shippedAt;
-                this.deliveryFailureReason = shipments.stream()
-                        .filter(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED)
-                        .map(OrderShipment::failureReason).findFirst().orElse(DeliveryFailureReason.OTHER);
+        if (target != status) {
+            if (reason == null && target == OrderStatus.DELIVERY_FAILED) {
+                reason = shipments.stream().filter(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED && s.pending())
+                        .map(s -> s.failureReason().name()).findFirst().orElse(null);
             }
-            case DELIVERED -> {
-                this.shippedAt = shippedAt == null ? lastHandover : shippedAt;
-                this.deliveredAt = at;
+            transitionTo(target, by, reason, at);
+            Instant lastHandover = shipments.stream().map(OrderShipment::handedOverAt).max(Instant::compareTo)
+                    .orElse(at);
+            switch (target) {
+                case SHIPPED -> this.shippedAt = lastHandover;
+                case DELIVERY_FAILED, DELIVERED -> this.shippedAt = shippedAt == null ? lastHandover : shippedAt;
+                default -> { }
             }
-            default -> { }
         }
-        if (target != OrderStatus.DELIVERY_FAILED) {
-            this.deliveryFailureReason = null;
+        this.deliveryFailureReason = status == OrderStatus.DELIVERY_FAILED
+                ? shipments.stream().filter(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED && s.pending())
+                        .map(OrderShipment::failureReason).findFirst().orElse(DeliveryFailureReason.OTHER)
+                : null;
+        followDeliveredAt();
+    }
+
+    /**
+     * What the order's shipments say, every unit of it being in a shipment or closed: in transit while one is, failed
+     * while one failed and is still to be decided, delivered when all arrived, partly fulfilled when some arrived and
+     * the others came back or were lost, returned when none arrived. An order delivered whole, with no shipment, is
+     * DELIVERED.
+     */
+    private OrderStatus shipmentsStatus() {
+        if (shipments.isEmpty()) {
+            return OrderStatus.DELIVERED;
+        }
+        if (outstandingUnits() > 0) {
+            return OrderStatus.PARTIALLY_FULFILLED;
+        }
+        if (shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.HANDED_OVER)) {
+            return OrderStatus.SHIPPED;
+        }
+        if (shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED && s.pending())) {
+            return OrderStatus.DELIVERY_FAILED;
+        }
+        if (shipments.stream().anyMatch(s -> s.status() == OrderShipmentStatus.DELIVERED)) {
+            // RTM-RETURNED-PARTIAL (owner 19/11): a shipment came back (or was lost) while the others arrived - the order
+            // is partly fulfilled, its part that did not arrive refunded (then PARTIALLY_REFUNDED), never DELIVERED.
+            return shipments.stream().anyMatch(OrderShipment::endedUndelivered) ? OrderStatus.PARTIALLY_FULFILLED
+                    : OrderStatus.DELIVERED;
+        }
+        return OrderStatus.RETURNED;
+    }
+
+    /**
+     * {@link #deliveredAt} from the facts (BE-02, BE-04): when the order was delivered in full, else nothing. A claim
+     * open or a completed order keeps the date it has ({@code ck_order_delivered_at}): a delivery of it corrected to a
+     * failure meanwhile (BE-46) takes its money's date away through {@link #deliveredInFullAt}, which payment reads, not
+     * through this column.
+     */
+    private void followDeliveredAt() {
+        Optional<Instant> full = deliveredInFullAt();
+        if (full.isPresent()) {
+            this.deliveredAt = full.get();
+        } else if (status != OrderStatus.RETURN_REQUESTED && status != OrderStatus.COMPLETED) {
+            this.deliveredAt = null;
         }
     }
 
@@ -1520,31 +2048,45 @@ public final class Order extends AggregateRoot {
                 "Order %s has no shipment %s handed over".formatted(orderNumber, shipmentId)));
     }
 
-    /** Units of a line in shipments, counting the ones that came back or not. */
     /** Units of the line neither shipped nor closed: what is still to come of it. */
     public int unshippedUnits(UUID lineId) {
         OrderLine line = lines.stream().filter(l -> l.id().equals(lineId)).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("No line " + lineId + " on " + orderNumber));
-        return line.quantity() - line.cancelledQuantity() - shippedUnits(lineId, false);
-    }
-
-    private int shippedUnits(UUID lineId, boolean includingReturned) {
-        return shipments.stream().filter(s -> includingReturned || !s.isReturned())
-                .mapToInt(s -> s.quantityOf(lineId)).sum();
+        return line.quantity() - line.cancelledQuantity() - shippedUnits(lineId);
     }
 
     /**
-     * Whether the order still owes a unit of a line {@code shipmentId} carried: neither shipped again nor closed. A
-     * shipment that came back is owed until it is delivered again or the rest of the order is closed - after a closure
-     * its goods, received back later, are owed to nobody (WF-05 review F1).
+     * Units of a line that shipments still hold (WF-05 Q-7): with the carrier, with the customer, or on their way back
+     * from a carrier's return whose receipt is not confirmed yet. A shipment whose units were closed - its return
+     * receipt confirmed, or closed as lost - holds none: they are closed on the line (or, on a row from before the
+     * closure moved to the receipt, owed again until Sales closed them).
+     */
+    private int shippedUnits(UUID lineId) {
+        return shipments.stream().filter(OrderShipment::holdsUnits).mapToInt(s -> s.quantityOf(lineId)).sum();
+    }
+
+    /**
+     * Whether the order still owes the units {@code shipmentId} carried, for Sales to decide (BE-16): true only for a
+     * shipment of an order from before RTM-RETURNED whose units were owed again when it came back - closed by the
+     * backfill, with no value settled ({@link OrderShipment#closedBeforeSettlement}) - while a line it carried still
+     * has a unit in no shipment and not closed. A shipment the carrier reported back still holds its units until its
+     * receipt closes them (WF-05 Q-7), so this is false for it. After a closure its goods, received back later, are
+     * owed to nobody (WF-05 review F1).
+     *
+     * <p>Not "the line has a unit unshipped" alone (audit r2 lifecycle M-3): a shipment Sales closed as lost (Q-12) and
+     * the carrier later found and brought back holds no units either, and a later batch of the same line still to ship
+     * made it read as owed - its goods opened a decision case nothing ever closed, and the order never settled. Its
+     * closure is final (settled, with its value); only the backfill's rows were never settled.</p>
      */
     public boolean owesUnitsOf(UUID shipmentId) {
-        return requireShipment(shipmentId).quantities().keySet().stream().anyMatch(line -> unshippedUnits(line) > 0);
+        OrderShipment shipment = requireShipment(shipmentId);
+        return shipment.closedBeforeSettlement()
+                && shipment.quantities().keySet().stream().anyMatch(line -> unshippedUnits(line) > 0);
     }
 
     /** Units neither closed nor in a shipment that is still with the carrier or the customer. */
     public int outstandingUnits() {
-        return lines.stream().mapToInt(l -> l.quantity() - l.cancelledQuantity() - shippedUnits(l.id(), false)).sum();
+        return lines.stream().mapToInt(l -> l.quantity() - l.cancelledQuantity() - shippedUnits(l.id())).sum();
     }
 
     /**
@@ -1633,20 +2175,93 @@ public final class Order extends AggregateRoot {
 
     /**
      * Closed for good a while after it was completed or refunded (G3-Q1, default 30 days): BR-05, nothing changes it
-     * any more. Never while the customer still owes on it: its installments still owe, and closing it would put the debt
-     * out of the order's sight for good - COMPLETED already waits for the money ({@link #complete}), so REFUNDED and
-     * PARTIALLY_REFUNDED wait too.
+     * any more. So it is never closed while money is still owed on it, either way - closing it would put the debt out
+     * of the order's sight for good:
+     * <ul>
+     *   <li>the customer's: its installments still owe. COMPLETED already waits for the money ({@link #complete}), so
+     *       REFUNDED and PARTIALLY_REFUNDED wait too;</li>
+     *   <li>the seller's (TT-4): a refund its settlements made refundable is not made in full - not yet recorded, or
+     *       recorded and voided since. Completion does not wait for it (a refund is not the customer's to finish);
+     *       closing does, and the nightly run tries again until the accountant has recorded it.</li>
+     * </ul>
+     * The order keeps no money of its own (4B-10): the caller asks payment for both and passes the answers.
      *
-     * @param owing as for {@link #complete}
+     * @param owing       as for {@link #complete}
+     * @param refundOwed  whether the seller still owes the customer a refund of this order (payment's
+     *                    {@code RefundProgress.outstanding} above zero); false for an order with nothing to refund
      * @return whether this changed the order
      */
-    public boolean close(Instant now, java.time.Duration after, boolean owing) {
+    public boolean close(Instant now, java.time.Duration after, boolean owing, boolean refundOwed) {
+        return close(now, after, owing, refundOwed, false, null);
+    }
+
+    /**
+     * As {@link #close(Instant, java.time.Duration, boolean, boolean)}, with what else keeps an order open for good:
+     * <ul>
+     *   <li>a completion hold Sales placed (WF-05 Q-17, L-I3): the delivery it protects could no longer be corrected;</li>
+     *   <li>a return window still open on a delivered shipment (Q-16 = b, BE-19): the refund branch never waited for the
+     *       contract's days, so a customer could lose a claim the contract still grants (Luật Thương mại Điều 318) -
+     *       {@code windowsCloseAt} is the latest end of those windows, null when the caller has nothing to wait for;</li>
+     *   <li>a shipment still to be decided or on its way back (L-I6): a delivery corrected to a failure on a refunded
+     *       order (BE-46), or a carrier's return whose receipt is not confirmed - its money is not settled yet.</li>
+     * </ul>
+     */
+    public boolean close(Instant now, java.time.Duration after, boolean owing, boolean refundOwed, boolean held,
+                         Instant windowsCloseAt) {
         Instant since = switch (status) {
             case COMPLETED -> completedAt;
             case REFUNDED, PARTIALLY_REFUNDED -> refundedAt;
             default -> null;
         };
-        if (since == null || since.plus(after).isAfter(now) || owing) {
+        return closeSince(since, now, after, owing, refundOwed, held, windowsCloseAt);
+    }
+
+    /**
+     * Whether the order's deliveries ended with the carrier bringing shipments back or losing them, and are settled
+     * (RTM-RETURNED, WF-05 Q-7, Q-12): the whole order - RETURNED, nothing of it delivered - or part of it -
+     * PARTIALLY_FULFILLED, the other shipments delivered ({@link #partlyReturnedAndDone}). Every shipment that came
+     * back has its receipt confirmed and nothing is left to ship. An order RETURNED by a customer's return has a
+     * shipment DELIVERED and is not one: its claims decide where it goes. What both the refund branch
+     * ({@code DeliveryFailureService.followRefunds}) and {@link #closeWithoutRefund} ask first.
+     */
+    public boolean endedByCarrier() {
+        return switch (status) {
+            case RETURNED -> deliveriesOver() && shipments.stream().anyMatch(OrderShipment::endedUndelivered)
+                    && shipments.stream().noneMatch(s -> s.status() == OrderShipmentStatus.DELIVERED);
+            case PARTIALLY_FULFILLED -> partlyReturnedAndDone();
+            default -> false;
+        };
+    }
+
+    /**
+     * Closes an order the carrier's returns or losses ended ({@link #endedByCarrier}) whose settlements made nothing
+     * refundable (WF-05 Q-4 / BE-45; audit r2 contract M-6): nothing was refunded, so it never enters the refund branch
+     * - "Hoàn một phần" (PARTIALLY_REFUNDED) at 0 đồng told staff and the customer's history something that did not
+     * happen, and "refunded" in full would too. It stays RETURNED or PARTIALLY_FULFILLED, which is what its shipments
+     * say, and closes from there on the same conditions as the refund branch: the closing delay - counted from when its
+     * deliveries ended ({@link #deliveriesEndedAt}), the moment it was settled - nothing owed, no hold, every
+     * delivered shipment's return window ended, nothing still on its way back.
+     *
+     * <p>Stated twice: here and {@code ordering.check_order_closed_without_refund} (V20261223000100), which refuses
+     * RETURNED / PARTIALLY_FULFILLED → CLOSED while a shipment is still to be decided or on its way back, for an order a
+     * customer's return made RETURNED, or once a settlement of it made money refundable.</p>
+     *
+     * @param madeRefundable whether a settlement of the order made money refundable (payment's
+     *                       {@code RefundProgress.refundable} above zero): such an order is the refund branch's
+     * @return whether this changed the order
+     */
+    public boolean closeWithoutRefund(Instant now, java.time.Duration after, boolean owing, boolean madeRefundable,
+                                      boolean held, Instant windowsCloseAt) {
+        if (madeRefundable || !endedByCarrier()) {
+            return false;
+        }
+        return closeSince(deliveriesEndedAt().orElse(null), now, after, owing, false, held, windowsCloseAt);
+    }
+
+    private boolean closeSince(Instant since, Instant now, java.time.Duration after, boolean owing, boolean refundOwed,
+                               boolean held, Instant windowsCloseAt) {
+        if (since == null || since.plus(after).isAfter(now) || owing || refundOwed || held
+                || windowsCloseAt != null && windowsCloseAt.isAfter(now) || !deliveriesSettled()) {
             return false;
         }
         transitionTo(OrderStatus.CLOSED, null, "CLOSED_AFTER_SETTLEMENT", now);
@@ -1666,21 +2281,33 @@ public final class Order extends AggregateRoot {
      * and is settled again by it. An order already RETURN_REQUESTED - another of its returns is open - stays as it is,
      * and so does a CLOSED one: BR-05, nothing changes it; the return goes on without moving it.
      *
+     * <p>The status it was opened from is kept ({@link #statusBeforeReturn}, BE-40): a claim that ends without goods or
+     * money takes the order back there - a COMPLETED order is not completed a second time, a REFUNDED one does not wait
+     * for its return window again ({@link #withdrawReturn}, {@link #returnsEndedWithoutRefund}).</p>
+     *
      * @return whether this changed the order
      */
     public boolean requestReturn(UUID by, Instant at, String reason) {
         if (status == OrderStatus.RETURN_REQUESTED || !status.canTransitionTo(OrderStatus.RETURN_REQUESTED)) {
             return false;
         }
+        OrderStatus origin = status;
         transitionTo(OrderStatus.RETURN_REQUESTED, by, reason, at);
+        this.statusBeforeReturn = origin;
         return true;
     }
 
     /**
      * Every return of the order ended before its goods came back - refused, withdrawn, expired (lead's decision
      * 2026-10-21 for a refusal; the same for the others, since the customer keeps what was delivered and owes what they
-     * owed): RETURN_REQUESTED → DELIVERED (17 §5.1), back to waiting for its return window and its money before it
-     * completes. The delivery date is unchanged, so the window is not reopened.
+     * owed): RETURN_REQUESTED → the status the claim was opened from (WF-05 BE-40). DELIVERED goes back to waiting for
+     * its return window and its money before it completes (17 §5.1); COMPLETED stays completed - its {@code completedAt}
+     * and its contract are not done again (17 BR-19); REFUNDED / PARTIALLY_REFUNDED keep their refund and close as
+     * before. The delivery date is unchanged, so the window is not reopened.
+     *
+     * <p>A delivery corrected to a failure while the claim was open (BE-46) is not undone by the claim ending: an order
+     * opened from DELIVERED goes where its shipments say ({@link #deliveryPathStatus}) - DELIVERY_FAILED while that
+     * shipment is still to be decided, PARTIALLY_FULFILLED once it came back.</p>
      *
      * @return whether this changed the order
      */
@@ -1688,8 +2315,66 @@ public final class Order extends AggregateRoot {
         if (status != OrderStatus.RETURN_REQUESTED) {
             return false;
         }
-        transitionTo(OrderStatus.DELIVERED, by, reason, at);
+        OrderStatus origin = statusBeforeReturn != null ? statusBeforeReturn
+                : completedAt != null ? OrderStatus.COMPLETED : OrderStatus.DELIVERED;
+        leaveReturnPath(origin == OrderStatus.DELIVERED ? deliveryPathStatus() : origin, by, reason, at);
         return true;
+    }
+
+    /**
+     * X-8 (WF-05 BE-45, called by the return service once every return of a RETURNED order ended and none of them
+     * settled anything): nothing was refunded, so "refunded in part" would be false. RETURNED → COMPLETED when the order
+     * had completed before the claim ({@code completedAt}), else back to the delivery path - DELIVERED, from where it
+     * completes and closes as an order nothing was returned from; or, when one of its deliveries was corrected to a
+     * failure meanwhile (BE-46), where its shipments say ({@link #deliveryPathStatus}). History reason
+     * {@code RETURN_SETTLED_WITHOUT_REFUND}.
+     *
+     * <p>Only an order RETURNED by a claim: one the carrier brought back delivered nothing, so its shipments keep it
+     * RETURNED and this changes nothing. A claim opened from REFUNDED / PARTIALLY_REFUNDED goes back there (BE-40); one
+     * whose earlier refund was voided while it was open (origin RETURNED, BE-52) stays RETURNED, waiting for it.</p>
+     *
+     * @return whether this changed the order
+     */
+    public boolean returnsEndedWithoutRefund(UUID by, Instant at) {
+        if (status != OrderStatus.RETURNED) {
+            return false;
+        }
+        // A claim opened from the refund branch goes back there (BE-40): the order was refunded before and must not
+        // complete as if it never was. One whose refund was voided meanwhile (origin RETURNED, BE-52) waits for it.
+        if (statusBeforeReturn == OrderStatus.RETURNED) {
+            return false;
+        }
+        if (statusBeforeReturn == OrderStatus.REFUNDED || statusBeforeReturn == OrderStatus.PARTIALLY_REFUNDED
+                || statusBeforeReturn == OrderStatus.PARTIALLY_FULFILLED) {
+            leaveReturnPath(statusBeforeReturn, by, "RETURN_SETTLED_WITHOUT_REFUND", at);
+            return true;
+        }
+        OrderStatus target = completedAt != null ? OrderStatus.COMPLETED : deliveryPathStatus();
+        if (target == OrderStatus.RETURNED) {
+            return false;
+        }
+        leaveReturnPath(target, by, "RETURN_SETTLED_WITHOUT_REFUND", at);
+        return true;
+    }
+
+    /**
+     * Where an order whose claim ended without money goes when it was opened from the delivery path: DELIVERED as a
+     * rule; when one of its deliveries was corrected to a failure meanwhile (BE-46), what its shipments say.
+     */
+    private OrderStatus deliveryPathStatus() {
+        return shipments.isEmpty() ? OrderStatus.DELIVERED : shipmentsStatus();
+    }
+
+    /** Off the return path to {@code target}; the milestones of the delivery path follow its shipments again. */
+    private void leaveReturnPath(OrderStatus target, UUID by, String reason, Instant at) {
+        transitionTo(target, by, reason, at);
+        this.statusBeforeReturn = null;
+        if (target == OrderStatus.DELIVERY_FAILED) {
+            this.deliveryFailureReason = shipments.stream()
+                    .filter(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED && s.pending())
+                    .map(OrderShipment::failureReason).findFirst().orElse(DeliveryFailureReason.OTHER);
+        }
+        followDeliveredAt();
     }
 
     /**
@@ -1710,16 +2395,66 @@ public final class Order extends AggregateRoot {
     /**
      * Everything the order's settlements made refundable was refunded, and no return of it is open (team plan 4D-3; 17
      * §4.10 step 40, 15 §4.5 step 17: "hoàn đủ"): RETURNED → REFUNDED when what came back covers what the order is
-     * worth, PARTIALLY_REFUNDED otherwise. From here the order closes after {@code close-after-days}.
+     * worth, PARTIALLY_REFUNDED otherwise. From here the order closes after {@code close-after-days}, once nothing is
+     * owed on it either way ({@link #close}); a refund record voided meanwhile takes it back here
+     * ({@link #refundReopened}), and this moves it forward again.
      *
      * @return whether this changed the order
      */
     public boolean refunded(boolean full, UUID by, Instant at, String reason) {
+        if (status == OrderStatus.PARTIALLY_FULFILLED && partlyReturnedAndDone()) {
+            // RTM-RETURNED-PARTIAL (owner 19/11; 17 §5.1 edge added by docs PR #42): the part that came back is refunded.
+            transitionTo(OrderStatus.PARTIALLY_REFUNDED, by, reason, at);
+            this.refundedAt = at;
+            return true;
+        }
         if (status != OrderStatus.RETURNED) {
             return false;
         }
         transitionTo(full ? OrderStatus.REFUNDED : OrderStatus.PARTIALLY_REFUNDED, by, reason, at);
         this.refundedAt = at;
+        return true;
+    }
+
+    /**
+     * A refund record of a refunded order was voided (TT-4): the money the order counted as gone back has not, so it is
+     * waiting for its refund again. REFUNDED / PARTIALLY_REFUNDED → RETURNED; from there the return request's or the
+     * failed delivery's refund rule moves it forward again once the refund is recorded anew, as it did the first time.
+     * Without this the order would stay REFUNDED and be closed for good with the refund still owed.
+     *
+     * <p>Any other order is left as it is: a RETURNED one is waiting already, a CLOSED one is never reopened (BR-05 -
+     * the debt then shows only on the accountant's list of refunds still to make), and a CANCELLED one is final
+     * (17 §5.1) with its refund followed by payment alone.</p>
+     *
+     * <p>{@link #refundedAt} is kept: like {@code completedAt} after a late return, it says when the order last became
+     * refunded, RETURNED asks nothing of it ({@code ck_order_refunded_at} binds REFUNDED / PARTIALLY_REFUNDED only),
+     * and {@link #refunded} sets it anew when the refund is made again - so the closing delay counts from that.</p>
+     *
+     * <p>An order on the return path again - a further claim opened from REFUNDED / PARTIALLY_REFUNDED is open, or its
+     * goods are back (WF-05 BE-52) - does not move: the claim decides where it goes. What it goes back to when the claim
+     * ends without money changes instead ({@link #statusBeforeReturn}): waiting for the refund, not refunded. The caller
+     * records the void in the order's history, which no status change carries here.</p>
+     *
+     * @param reason the void's reason, recorded in the status history after {@code REFUND_VOIDED}; cut to fit
+     * @return whether this changed the order - its status, or where its claim goes back to
+     */
+    public boolean refundReopened(UUID by, Instant at, String reason) {
+        if ((status == OrderStatus.RETURN_REQUESTED || status == OrderStatus.RETURNED)
+                && (statusBeforeReturn == OrderStatus.REFUNDED || statusBeforeReturn == OrderStatus.PARTIALLY_REFUNDED)) {
+            this.statusBeforeReturn = statusBeforeReturn == OrderStatus.PARTIALLY_REFUNDED && partlyReturnedAndDone()
+                    ? OrderStatus.PARTIALLY_FULFILLED : OrderStatus.RETURNED;
+            return true;
+        }
+        if (status != OrderStatus.REFUNDED && status != OrderStatus.PARTIALLY_REFUNDED) {
+            return false;
+        }
+        String history = withNote("REFUND_VOIDED", trimmed(reason));
+        // Back to the status it was refunded from: PARTIALLY_FULFILLED for an order part of which came back while the
+        // rest was delivered (RTM-RETURNED-PARTIAL, owner 19/11), RETURNED otherwise.
+        OrderStatus waiting = status == OrderStatus.PARTIALLY_REFUNDED && partlyReturnedAndDone()
+                ? OrderStatus.PARTIALLY_FULFILLED : OrderStatus.RETURNED;
+        // The history column holds 500.
+        transitionTo(waiting, by, history.length() > 500 ? history.substring(0, 500) : history, at);
         return true;
     }
 
@@ -1754,6 +2489,12 @@ public final class Order extends AggregateRoot {
         this.closedAt = closed;
     }
 
+    /** Rehydration of the return path's origin (BE-40) and of the last closure of the rest (D23), from the row. */
+    public void restoreReturnPath(OrderStatus beforeReturn, Instant remainderClosed) {
+        this.statusBeforeReturn = beforeReturn;
+        this.remainderClosedAt = remainderClosed;
+    }
+
     /** Rehydration of the shipments, from their rows. */
     public void restoreShipments(List<OrderShipment> recorded) {
         shipments.clear();
@@ -1769,6 +2510,8 @@ public final class Order extends AggregateRoot {
     public Instant completedAt() { return completedAt; }
     public Instant refundedAt() { return refundedAt; }
     public Instant closedAt() { return closedAt; }
+    public OrderStatus statusBeforeReturn() { return statusBeforeReturn; }
+    public Instant remainderClosedAt() { return remainderClosedAt; }
     public List<OrderShipment> shipments() { return java.util.Collections.unmodifiableList(shipments); }
 
     /** Every live hold this order is carrying, across all of its lines. */
@@ -1795,6 +2538,10 @@ public final class Order extends AggregateRoot {
         }
         OrderStatus from = status;
         this.status = target;
+        if (target != OrderStatus.RETURN_REQUESTED && target != OrderStatus.RETURNED) {
+            // BE-40: the origin of a claim means something only on the return path (ck_order_status_before_return).
+            this.statusBeforeReturn = null;
+        }
         transitions.add(new OrderTransition(from, target, actor, reason, at));
     }
 

@@ -14,8 +14,6 @@ import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductVariantService;
 import org.springframework.stereotype.Component;
 
-import java.util.Map;
-import java.util.UUID;
 
 /**
  * Hand-written DTO mapping for the product module's secondary resources: variants, media, brands,
@@ -25,19 +23,20 @@ import java.util.UUID;
 @Component
 class ProductAdminWebMapper {
 
-    VariantResponse toResponse(ProductVariantService.VariantView v, UUID inventoryItemId) {
+    VariantResponse toResponse(ProductVariantService.VariantView v) {
         return new VariantResponse(v.id(), v.productId(), v.sku(), v.name(), v.status().name(), v.defaultVariant(),
                 v.attributeSignature(), v.position(), v.obsoletedAt(), v.version(),
                 v.options().stream().map(o -> new VariantOptionResponse(o.attributeId(), o.attributeCode(),
-                        o.valueId(), o.valueCode(), o.label())).toList(), inventoryItemId);
+                        o.valueId(), o.valueCode(), o.label())).toList(), v.rotatable());
+
     }
 
-    GeneratedVariantsResponse toResponse(ProductVariantService.Generated g, Map<String, UUID> inventoryItemIds) {
-        return new GeneratedVariantsResponse(
-                g.created().stream().map(v -> toResponse(v, inventoryItemIds.get(v.sku()))).toList(), g.skipped());
+    GeneratedVariantsResponse toResponse(ProductVariantService.Generated g) {
+        return new GeneratedVariantsResponse(g.created().stream().map(this::toResponse).toList(), g.skipped());
     }
 
-    MediaResponse toResponse(ProductMediaService.MediaView m) {
+    /** The people's names come from {@link ProductMediaResponses}, which asks identity once per list. */
+    MediaResponse toResponse(ProductMediaService.MediaView m, String uploadedByName, String publishedByName) {
         var file = m.original();
         return new MediaResponse(m.id(), m.variantId(), m.kind(), m.url(),
                 file == null ? null : file.originalName(), file == null ? null : file.contentType(),
@@ -45,7 +44,7 @@ class ProductAdminWebMapper {
                 m.renditions().stream().map(r -> new MediaResponse.Rendition(r.edge(), r.width(), r.height(),
                         r.file().contentType(), r.file().sizeBytes(), m.renditionUrls().get(r.edge()))).toList(),
                 m.altText(), m.sortOrder(), m.primary(), m.published(), m.publishedAt(), m.publishedBy(),
-                m.uploadedBy(), m.uploadedAt(), m.version());
+                m.uploadedBy(), m.uploadedAt(), m.version(), uploadedByName, publishedByName);
     }
 
     PublicGalleryResponse toResponse(ProductMediaService.PublicGallery g) {

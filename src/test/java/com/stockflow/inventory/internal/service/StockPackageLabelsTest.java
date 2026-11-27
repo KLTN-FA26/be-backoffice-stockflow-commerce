@@ -11,13 +11,20 @@ import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
+import com.stockflow.inventory.spi.PickedNotHandedOver;
+import com.stockflow.inventory.spi.ReceiptLineLots;
+import com.stockflow.inventory.spi.SkuNames;
 import com.stockflow.support.WithCurrentUser;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -38,18 +45,38 @@ class StockPackageLabelsTest {
 
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
     private final UomConversionRepository units = mock(UomConversionRepository.class);
-    private final StockPackageLabels labels = new StockPackageLabels(stockPackages, units);
+    private final PickedNotHandedOver picked = mock(PickedNotHandedOver.class);
+    private final SkuNames names = mock(SkuNames.class);
+    private final ReceiptLineLots receiptLots = mock(ReceiptLineLots.class);
+    private final StockPackageLabels labels = new StockPackageLabels(stockPackages, units, providerOf(picked),
+            providerOf(names), providerOf(receiptLots));
+
+    @SuppressWarnings("unchecked")
+    private static <T> ObjectProvider<T> providerOf(T answer) {
+        ObjectProvider<T> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(answer);
+        return provider;
+    }
 
     private static StockPackage carton(String lpn, String location, StockPackageStatus status) {
+        return carton(lpn, location, status, "L1");
+    }
+
+    /** A carton in {@code status}; once it has been in stock it is of a lot numbered {@code lotNumber}. */
+    private static StockPackage carton(String lpn, String location, StockPackageStatus status, String lotNumber) {
         Instant closedAt = status.isClosed() ? NOW : null;
-        Integer counted = status == StockPackageStatus.RECEIVING ? null : 24;
-        return new StockPackage(new StockPackageId(UUID.randomUUID()), lpn, UUID.randomUUID(), CARTON_UNIT, 24, counted,
-                new LocationId(location), status, RECEIPT_LINE, closedAt, 0L);
+        Instant counted = status == StockPackageStatus.RECEIVING ? null : NOW;
+        boolean stocked = status != StockPackageStatus.RECEIVING && status != StockPackageStatus.VOID;
+        return new StockPackage(new StockPackageId(UUID.randomUUID()), lpn, new com.stockflow.common.domain.Sku(
+                "CUP-12OZ"), UUID.randomUUID(), CARTON_UNIT, 24, counted, new LocationId(location), status,
+                status == StockPackageStatus.IN_STOCK ? com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
+                        : null, stocked ? UUID.randomUUID() : null, stocked ? lotNumber : null, stocked ? NOW : null,
+                RECEIPT_LINE, closedAt, List.of(), 0L);
     }
 
     private void unitOfCartons() {
         when(units.findAll(anyCollection())).thenReturn(List.of(new UomConversion(CARTON_UNIT, "CUP-12OZ", "CARTON", 24,
-                false, null, null, null, null, false, true, 0)));
+                null, null, null, null, true, 0)));
     }
 
     private static CurrentUser clerkOf(String prefix) {
@@ -76,11 +103,42 @@ class StockPackageLabelsTest {
         List<StockPackageLabel> sheet = labels.sheetFor(RECEIPT_LINE, null);
 
         assertThat(sheet).extracting(StockPackageLabel::lpn).containsExactly("LPN-0001", "LPN-0002");
-        assertThat(sheet.get(0).receivedQty()).isNull();
-        assertThat(sheet.get(1).receivedQty()).isEqualTo(24);
+        assertThat(sheet.get(0).counted()).isFalse();
+        assertThat(sheet.get(1).counted()).isTrue();
         assertThat(sheet.get(1).nominalQty()).isEqualTo(24);
         assertThat(sheet.get(1).unit()).isEqualTo("CARTON");
         assertThat(sheet.get(1).sku()).isEqualTo("CUP-12OZ");
+    }
+
+    @Test
+    @DisplayName("a label names the item, and takes the lot from the carton once it is in stock, else from its receipt line")
+    void nameAndLot() {
+        unitOfCartons();
+        StockPackage stored = carton("LPN-0001", "HCM-RCV01", StockPackageStatus.IN_STOCK, "RETURN-LOT");
+        StockPackage counting = carton("LPN-0002", "HCM-RCV01", StockPackageStatus.RECEIVING);
+        when(stockPackages.findByReceiptLines(List.of(RECEIPT_LINE))).thenReturn(List.of(stored, counting));
+        when(receiptLots.lotsOf(List.of(RECEIPT_LINE))).thenReturn(Map.of(RECEIPT_LINE, "PRD-20261111-0001"));
+        when(names.namesOf(List.of("CUP-12OZ"))).thenReturn(Map.of("CUP-12OZ", "Paper cup 12oz"));
+
+        List<StockPackageLabel> sheet = labels.sheetFor(RECEIPT_LINE, null);
+
+        assertThat(sheet).extracting(StockPackageLabel::name).containsOnly("Paper cup 12oz");
+        assertThat(sheet).extracting(StockPackageLabel::lot).containsExactly("RETURN-LOT", "PRD-20261111-0001");
+    }
+
+    @Test
+    @DisplayName("without the modules that answer name and lot, the label prints without them")
+    void nameAndLotUnanswered() {
+        unitOfCartons();
+        when(stockPackages.findByReceiptLines(List.of(RECEIPT_LINE))).thenReturn(List.of(
+                carton("LPN-0001", "HCM-RCV01", StockPackageStatus.RECEIVING)));
+        StockPackageLabels alone = new StockPackageLabels(stockPackages, units, providerOf(picked), providerOf(null),
+                providerOf(null));
+
+        List<StockPackageLabel> sheet = alone.sheetFor(RECEIPT_LINE, null);
+
+        assertThat(sheet.get(0).name()).isNull();
+        assertThat(sheet.get(0).lot()).isNull();
     }
 
     @Test
@@ -149,13 +207,54 @@ class StockPackageLabelsTest {
         assertThat(codeOf(() -> labels.sheetFor(null, List.of("LPN-0009")))).isEqualTo(ErrorCode.STOCK_PACKAGE_NOT_FOUND);
     }
 
-    @Test
-    @DisplayName("a consumed, lost or void carton has no label to print")
-    void closedCartonRefused() {
+    @ParameterizedTest
+    @EnumSource(value = StockPackageStatus.class, names = {"LOST", "VOID"})
+    @DisplayName("a lost or void carton has no label to print, and fulfillment is not asked about it")
+    void lostOrVoidCartonRefused(StockPackageStatus status) {
         when(stockPackages.findByLpns(List.of("LPN-0004"))).thenReturn(List.of(
-                carton("LPN-0004", "HCM-A01-1-A", StockPackageStatus.CONSUMED)));
+                carton("LPN-0004", "HCM-A01-1-A", status)));
 
         assertThat(codeOf(() -> labels.sheetFor(null, List.of("LPN-0004"))))
+                .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
+        verify(picked, never()).amongst(anyCollection());
+    }
+
+    @Test
+    @DisplayName("a consumed carton not picked for an order still at the warehouse (written off, handed over) has no label")
+    void consumedCartonNotAtDispatchRefused() {
+        when(stockPackages.findByLpns(List.of("LPN-0004"))).thenReturn(List.of(
+                carton("LPN-0004", "HCM-DISPATCH", StockPackageStatus.CONSUMED)));
+        when(picked.amongst(List.of("LPN-0004"))).thenReturn(Set.of());
+
+        assertThat(codeOf(() -> labels.sheetFor(null, List.of("LPN-0004"))))
+                .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
+    }
+
+    @Test
+    @DisplayName("03 §4.1 step 4: a carton picked for an order and not handed over yet is reprinted by its LPN")
+    void pickedCartonReprinted() {
+        unitOfCartons();
+        when(stockPackages.findByLpns(List.of("LPN-0004", "LPN-0008"))).thenReturn(List.of(
+                carton("LPN-0004", "HCM-DISPATCH", StockPackageStatus.CONSUMED),
+                carton("LPN-0008", "HCM-A01-1-A", StockPackageStatus.IN_STOCK)));
+        when(picked.amongst(List.of("LPN-0004"))).thenReturn(Set.of("LPN-0004"));
+
+        List<StockPackageLabel> sheet = labels.sheetFor(null, List.of("LPN-0004", "LPN-0008"));
+
+        assertThat(sheet).extracting(StockPackageLabel::lpn).containsExactly("LPN-0004", "LPN-0008");
+        assertThat(sheet.get(0).counted()).isTrue();
+        assertThat(sheet.get(0).nominalQty()).isEqualTo(24);
+    }
+
+    @Test
+    @DisplayName("without the station (a module test), a consumed carton is refused as before")
+    void consumedWithoutStationRefused() {
+        StockPackageLabels alone = new StockPackageLabels(stockPackages, units, providerOf(null), providerOf(names),
+                providerOf(receiptLots));
+        when(stockPackages.findByLpns(List.of("LPN-0004"))).thenReturn(List.of(
+                carton("LPN-0004", "HCM-DISPATCH", StockPackageStatus.CONSUMED)));
+
+        assertThat(codeOf(() -> alone.sheetFor(null, List.of("LPN-0004"))))
                 .isEqualTo(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION);
     }
 

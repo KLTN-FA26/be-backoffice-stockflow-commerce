@@ -33,8 +33,10 @@ class GoodsReceiptQueriesImpl implements GoodsReceiptQueries {
     static final Set<GoodsReceiptStatus> LEGACY = EnumSet.of(GoodsReceiptStatus.PENDING_APPROVAL);
 
     private final GoodsReceipts receipts;
+    private final com.stockflow.procurement.internal.repository.ReturnReceiptSearch returns;
 
-    GoodsReceiptQueriesImpl(GoodsReceipts receipts) {
+    GoodsReceiptQueriesImpl(GoodsReceipts receipts,
+                            com.stockflow.procurement.internal.repository.ReturnReceiptSearch returns) {
         // The api's vocabulary is a copy of the domain's, so another module can name a status without importing it. A
         // status added to one and not the other would be refused or shown wrongly; it stops the start instead. The
         // legacy constants are the domain's only, kept to name an old value read back, never to be asked for.
@@ -43,10 +45,12 @@ class GoodsReceiptQueriesImpl implements GoodsReceiptQueries {
             throw new IllegalStateException("GoodsReceiptQueries.STATUSES no longer matches GoodsReceiptStatus");
         }
         this.receipts = receipts;
+        this.returns = returns;
     }
 
     @Override
-    public PageResponse<GoodsReceiptSummary> receipts(List<String> statuses, String number, int limit) {
+    public PageResponse<GoodsReceiptSummary> receipts(List<String> statuses, String number,
+                                                      java.util.UUID warehouseId, int limit) {
         if (limit < 1 || limit > MAX_RECEIPTS) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "limit must be between 1 and " + MAX_RECEIPTS + ", not " + limit);
@@ -56,11 +60,20 @@ class GoodsReceiptQueriesImpl implements GoodsReceiptQueries {
         String text = number == null || number.isBlank() ? null : number.strip();
         // receiptType null: production receipts and the legacy purchase ones alike; return receipts are their own
         // aggregate and never on this list (GoodsReceiptJpaEntity excludes them).
-        return receipts.list(wanted, null, text, null, null, null, null, 0, limit, null)
+        return receipts.list(wanted, warehouseId, text, null, null, null, null, 0, limit, null)
                 .map(row -> new GoodsReceiptSummary(row.id(), row.number(),
                         row.receiptType() == null ? null : row.receiptType().name(), row.productionOrderCode(),
                         row.producerName(), row.warehouseCode(), row.status().name(), row.receivedAt(),
                         row.confirmedAt(), row.closedAt()));
+    }
+
+    @Override
+    public List<ReturnReceiptRef> openReturnReceiptsOf(java.util.UUID stockPackageId) {
+        if (stockPackageId == null) {
+            return List.of();
+        }
+        return returns.draftsListing(stockPackageId).stream().map(row -> new ReturnReceiptRef(row.id(), row.number(),
+                row.status().name(), row.warehouseId(), row.quarantineLocationId())).toList();
     }
 
     private static GoodsReceiptStatus status(String name) {

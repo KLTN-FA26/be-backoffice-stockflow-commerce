@@ -56,7 +56,7 @@ class OrderInstallmentsTest {
     @DisplayName("an order whose contract is not signed yet is never confirmed by installments")
     void unsignedOrderIsNotConfirmedByInstallments() {
         Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 8), UUID.randomUUID(), UUID.randomUUID(),
-                List.of(Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(1_000_000), null)), NOW);
+                List.of(Order.line(new Sku("LY-GIAY-DEMO-12OZ-XANH"), 1, Money.vnd(1_000_000), null)), NOW);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
         order.sendContract(SALES, NOW);
         assertThat(order.confirmByInstallments(NOW)).isFalse();
@@ -87,6 +87,28 @@ class OrderInstallmentsTest {
     }
 
     @Test
+    @DisplayName("09 BR-18: every reason the goods may not leave is listed - money owed and the window not open together")
+    void handoverBlockReasonsListsEveryReason() {
+        Order order = signedWaitingOnSigning();
+        order.confirmByInstallments(NOW);
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        UUID warehouse = UUID.randomUUID();
+        order.chooseShippingWarehouse(warehouse, true, SALES, NOW);
+        order.release(warehouse, "HCM", SALES, NOW);
+        order.startPicking(SALES, NOW);
+        LocalDate today = LocalDate.of(2026, 11, 9);
+        BatchInFlight early = new BatchInFlight(UUID.randomUUID(), 1, today.plusDays(14), 0);
+
+        assertThat(order.handoverBlockReasons(new BigDecimal("600000"), early, today))
+                .containsExactly("ORDER_BALANCE_NOT_PAID", "DELIVERY_BATCH_WINDOW_NOT_OPEN");
+        assertThat(order.handoverBlockReasons(BigDecimal.ZERO, early, today))
+                .containsExactly("DELIVERY_BATCH_WINDOW_NOT_OPEN");
+        assertThat(order.handoverBlockReasons(new BigDecimal("600000"), null, today))
+                .containsExactly("ORDER_BALANCE_NOT_PAID");
+        assertThat(order.handoverBlockReasons(BigDecimal.ZERO, early, today.plusDays(14))).isEmpty();
+    }
+
+    @Test
     @DisplayName("17 §4.6 step 21: delivered, it completes and closes only once its installments owe nothing")
     void completesAndClosesOnlyWhenNothingIsOwed() {
         Order order = signedWaitingOnSigning();
@@ -106,9 +128,9 @@ class OrderInstallmentsTest {
         assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
 
         Instant muchLater = later.plus(java.time.Duration.ofDays(31));
-        assertThat(order.close(muchLater, java.time.Duration.ofDays(30), true))
+        assertThat(order.close(muchLater, java.time.Duration.ofDays(30), true, false))
                 .as("a debt is never put out of the order's sight").isFalse();
-        assertThat(order.close(muchLater, java.time.Duration.ofDays(30), false)).isTrue();
+        assertThat(order.close(muchLater, java.time.Duration.ofDays(30), false, false)).isTrue();
         assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
     }
 

@@ -43,8 +43,8 @@ class DelayAlertNotificationListener {
     static final String SOURCE_TYPE = "DELAY_ALERT";
     /** Who follows production: the production schedule's readers (ProductionScheduleController). */
     static final String PRODUCTION_AUDIENCE = "production-schedule:READ";
-    /** Who delivers: the readers of an order's delay flags (DelayAlertController). */
-    static final String DELIVERY_AUDIENCE = "delay-alerts:READ";
+    /** Who delivers: those who also see DELIVERY_LATE in the alert list (DelayAlertController, V20261209000400). */
+    static final String DELIVERY_AUDIENCE = "delivery-delay-alerts:READ";
 
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 

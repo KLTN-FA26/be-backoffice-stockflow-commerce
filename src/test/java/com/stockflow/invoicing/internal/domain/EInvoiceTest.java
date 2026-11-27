@@ -49,15 +49,16 @@ class EInvoiceTest {
     class DrawingUp {
 
         @Test
-        @DisplayName("a draft: dated the day of delivery, due the next working day, totals added up from its lines")
+        @DisplayName("a draft: dated the day of delivery, due by the end of that day (Q-1), totals added up from its "
+                + "lines")
         void aDraftOfADelivery() {
             EInvoice.Snapshot s = EInvoiceFixtures.draft().snapshot();
 
             assertThat(s.type()).isEqualTo(EInvoiceType.ORIGINAL);
             assertThat(s.status()).isEqualTo(DRAFT);
             assertThat(s.issueDate()).isEqualTo(EInvoiceFixtures.DELIVERED_ON);
-            assertThat(s.issueDueAt()).as("Thursday 12/11 -> the end of Friday 13/11, Vietnam time")
-                    .isEqualTo(Instant.parse("2026-11-13T17:00:00Z"));
+            assertThat(s.issueDueAt()).as("Thursday 12/11 -> the end of Thursday 12/11, Vietnam time")
+                    .isEqualTo(Instant.parse("2026-11-12T17:00:00Z"));
             // 20 cartons x 100,000 at 10% + a plate fee of 500,000 at 8%
             assertThat(s.subtotal()).isEqualByComparingTo("2500000");
             assertThat(s.taxTotal()).isEqualByComparingTo("240000");
@@ -101,6 +102,21 @@ class EInvoiceTest {
         }
 
         @Test
+        @DisplayName("HĐ-7: a line at 0% - only EXEMPT has that rate here - is drawn up, flagged, and never sent; a "
+                + "note line at 0% is not a rate")
+        void aLineAtZeroPercentIsFlaggedAndNotSent() {
+            EInvoice exempt = EInvoiceFixtures.draftAtRate(BigDecimal.ZERO);
+            assertThat(exempt.warnings()).containsExactly(EInvoice.Warning.TAX_EXEMPT_NOT_SUPPORTED);
+            assertThatThrownBy(() -> exempt.submit(SERIES, null, NOW)).extracting(EInvoiceTest::code)
+                    .isEqualTo(ErrorCode.EINVOICE_TAX_EXEMPT_NOT_SUPPORTED);
+            assertThat(exempt.status()).isEqualTo(DRAFT);
+
+            assertThat(EInvoiceFixtures.draftAtRate(new BigDecimal("8")).warnings()).isEmpty();
+            assertThat(EInvoiceFixtures.draft().lines()).as("the fixture's lines are at 10% and 8%")
+                    .noneMatch(line -> line.taxRate().signum() == 0);
+        }
+
+        @Test
         @DisplayName("refused: no seller, no lines, two lines with one number, a line below zero, no shipment")
         void refusals() {
             var delivery = EInvoiceFixtures.delivery();
@@ -121,11 +137,13 @@ class EInvoiceTest {
                     delivery.customerId(), delivery.deliveredOn());
             assertThatThrownBy(() -> EInvoice.drawUpOriginal(id, "E-1", noShipment, EInvoiceFixtures.SELLER, BUYER,
                     EInvoiceFixtures.lines(), false, false)).as("goods are always a shipment's (integration item a)")
-                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("shipping fee only");
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("fees only");
             EInvoiceLine plate = EInvoiceLine.fee(UUID.randomUUID(), 1, EInvoiceLine.FeeKind.PLATE_FEE, "SKU", "Phi in",
                     "Lan", new BigDecimal("500000"), BigDecimal.TEN);
-            assertThatThrownBy(() -> EInvoice.drawUpOriginal(id, "E-1", noShipment, EInvoiceFixtures.SELLER, BUYER,
-                    List.of(plate), false, false)).isInstanceOf(IllegalArgumentException.class);
+            // WF-05 BE-62 (Q-19): a plate fee no delivery's invoice carried goes on the invoice of the order's fees.
+            assertThat(EInvoice.drawUpOriginal(id, "E-1", noShipment, EInvoiceFixtures.SELLER, BUYER,
+                    List.of(plate), false, false).lines()).singleElement()
+                    .satisfies(line -> assertThat(line.feeKind()).isEqualTo(EInvoiceLine.FeeKind.PLATE_FEE));
         }
 
         @Test
@@ -271,15 +289,29 @@ class EInvoiceTest {
         }
 
         @Test
-        @DisplayName("E0 L7: a buyer without an e-mail is issued - the e-mail is where it is mailed, not invoice content")
-        void aBuyerWithoutAnEmailIsIssued() {
+        @DisplayName("HĐ-8, 21 BR-06: a buyer without an e-mail to receive the invoice is flagged on its own, so it is "
+                + "not issued automatically - but an accountant may still issue it, on time")
+        void aBuyerWithoutAnEmailIsFlaggedButNotRefused() {
             EInvoice invoice = EInvoiceFixtures.draft(new InvoiceParty(BUYER.name(), BUYER.taxCode(), BUYER.address(),
                     null));
-            assertThat(invoice.warnings()).as("nothing holds back the automatic issuing").isEmpty();
+            assertThat(invoice.warnings()).as("not issued automatically")
+                    .containsExactly(EInvoice.Warning.BUYER_EMAIL_MISSING);
 
             invoice.submit(SERIES, null, NOW);
-
             assertThat(invoice.status()).isEqualTo(SUBMITTING);
+        }
+
+        @Test
+        @DisplayName("HĐ-8: only an invoice recorded as issued is flagged for its signature, never a draft")
+        void theSignatureFlagIsSetOnlyAsItIsIssued() {
+            EInvoice invoice = EInvoiceFixtures.draft();
+            assertThatThrownBy(invoice::signatureInvalid).isInstanceOf(IllegalStateException.class);
+            invoice.submit(SERIES, null, NOW);
+            invoice.issued(7, "CQT", "LOOK", NOW, "x.xml", "x.pdf", NOW);
+
+            invoice.signatureInvalid();
+
+            assertThat(invoice.warnings()).containsExactly(EInvoice.Warning.SIGNATURE_INVALID);
         }
 
         @Test
@@ -440,9 +472,9 @@ class EInvoiceTest {
     class Deadline {
 
         @Test
-        @DisplayName("overdue once the next working day has ended, while it is still to issue; never once issued or voided")
+        @DisplayName("overdue once its day has ended, while it is still to issue; never once issued or voided")
         void overdue() {
-            Instant due = Instant.parse("2026-11-13T17:00:00Z");
+            Instant due = Instant.parse("2026-11-12T17:00:00Z");
             EInvoice draft = EInvoiceFixtures.draft();
             assertThat(draft.overdue(due.minusSeconds(1))).isFalse();
             assertThat(draft.overdue(due)).isTrue();

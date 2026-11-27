@@ -9,7 +9,7 @@ public final class DesignWorkflow {
 
     public static void requireVersion(long actual, long expected) {
         if (actual != expected) {
-            throw new BusinessException(ErrorCode.CONFLICT, "The design changed; refresh before continuing");
+            throw new BusinessException(ErrorCode.CONFLICT, "The design changed; refresh before continuing").localized("refusal.design.changed");
         }
     }
 }

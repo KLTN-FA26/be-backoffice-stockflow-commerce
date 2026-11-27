@@ -13,14 +13,16 @@ import java.util.UUID;
 
 /**
  * What the back office reads about stock beyond one SKU (SCRUM-462): the holds — which order holds
- * what, where, until when — and every stock row of a warehouse in any status, page by page. A
+ * what and where — and every carton in stock of a warehouse in any status, page by page. A row is one carton
+ * (ADR-0011): {@code stockItemId} carries the carton's id and the quantities are the carton's count, in units, as the
+ * HTTP contract always answered. A
  * warehouse-bound caller sees only their own warehouses (BR-SEC-002).
  */
 public interface StockBrowsing {
 
     record Reservation(UUID reservationId, UUID orderId, UUID stockItemId, String sku, String locationCode,
-                       String lotNumber, int quantity, ReservationStatus status, Instant reservedAt,
-                       Instant expiresAt, ReleaseReason releaseReason, Instant closedAt) {
+                       String lotNumber, int quantity, int cartons, ReservationStatus status, Instant reservedAt,
+                       ReleaseReason releaseReason, Instant closedAt, String orderNumber) {
     }
 
     /** @param warehouse a warehouse prefix ({@code HCM}); null for every warehouse the caller may see */
@@ -29,15 +31,21 @@ public interface StockBrowsing {
     }
 
     /**
-     * {@code available} is what may still be promised: on hand less held, and zero unless sellable.
+     * {@code available} is what may still be promised: the carton's count while it is AVAILABLE and no order holds
+     * it, else zero.
      * The three quantities are null, and {@code hiddenDuringCount} true, for a row of a slot a cycle count holds when
      * the reader may not see the books (SCRUM-146).
      */
-    record StockRow(UUID stockItemId, String sku, String locationCode, String lotNumber, Integer onHand, Integer reserved, Integer available, StockStatus status, Instant receivedAt,
+    /**
+     * @param unitsPerCarton pieces in one carton of the SKU (kltn-docs 01 BR-09); null when it has no carton unit.
+     *                       Master data, so a row hidden from a blind counter keeps it
+     */
+    record StockRow(UUID stockItemId, String sku, String locationCode, String lotNumber, Integer unitsPerCarton,
+                    Integer onHand, Integer reserved, Integer available, StockStatus status, Instant receivedAt,
                     boolean hiddenDuringCount) {
 
         public StockRow hidden() {
-            return new StockRow(stockItemId, sku, locationCode, lotNumber, null, null, null, status,
+            return new StockRow(stockItemId, sku, locationCode, lotNumber, unitsPerCarton, null, null, null, status,
                     receivedAt, true);
         }
     }
@@ -61,8 +69,8 @@ public interface StockBrowsing {
     PageResponse<StockRow> warehouseStock(UUID warehouseId, StockQuery query, BookVisibility visibility);
 
     /**
-     * Which of these stock rows lie in a slot a cycle count holds (open, or its variance pending approval): the ones
+     * Which of these cartons a cycle count holds (open, or its variance pending approval): the ones
      * whose quantity a reader without {@code inventory-cycle-counts:APPROVE} must not see (SCRUM-146).
      */
-    Set<UUID> underCount(Collection<UUID> stockItemIds);
+    Set<UUID> underCount(Collection<UUID> stockPackageIds);
 }

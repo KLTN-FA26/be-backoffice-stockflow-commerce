@@ -12,6 +12,12 @@ Enum product.category_attributes_default_role {
   DESCRIPTIVE
 }
 
+Enum product.customer_skus_status {
+  ACTIVE
+  BLOCKED
+  OBSOLETE
+}
+
 Enum product.customization_templates_color_mode {
   RGB
   CMYK
@@ -73,6 +79,11 @@ Enum inventory.cycle_count_trigger_type {
   MANUAL
 }
 
+Enum inventory.stock_adjustment_direction {
+  WRITE_OFF
+  RESTOCK
+}
+
 Enum inventory.stock_adjustment_reason_code {
   DAMAGED
   LOST
@@ -94,18 +105,7 @@ Enum inventory.stock_adjustment_status {
   WITHDRAWN
 }
 
-Enum inventory.stock_item_status {
-  INBOUND
-  AVAILABLE
-  QUARANTINE
-  BLOCKED
-  DAMAGED
-  EXPIRED
-  IN_PRODUCTION
-}
-
 Enum inventory.stock_lot_origin_type {
-  GOODS_RECEIPT
   PRODUCTION_ORDER
   UNTRACED
 }
@@ -144,6 +144,15 @@ Enum inventory.stock_movement_reference_type {
   DAMAGE_REPORT
   STOCK_PACKAGE
   GOODS_RECEIPT
+  RETURN_REQUEST
+}
+
+Enum inventory.stock_package_return_ownership {
+  PENDING
+  COMPANY
+  CUSTOMER_HELD
+  CUSTOMER_SENT_BACK
+  CUSTOMER_DESTROYED
 }
 
 Enum inventory.stock_package_status {
@@ -152,6 +161,16 @@ Enum inventory.stock_package_status {
   CONSUMED
   LOST
   VOID
+}
+
+Enum inventory.stock_package_stock_status {
+  INBOUND
+  AVAILABLE
+  QUARANTINE
+  BLOCKED
+  DAMAGED
+  EXPIRED
+  IN_PRODUCTION
 }
 
 Enum inventory.stock_reservation_status {
@@ -188,33 +207,6 @@ Enum warehouse.bin_type {
 Enum warehouse.boundary_type {
   WALL
   DOOR
-}
-
-Enum warehouse.move_task_origin {
-  REPLENISHMENT
-  RESLOTTING
-  MANUAL
-}
-
-Enum warehouse.move_task_reason {
-  REPLENISHMENT
-  RESLOTTING
-  CONSOLIDATION
-  FIX
-  UNBLOCK
-  OTHER
-}
-
-Enum warehouse.move_task_status {
-  SUGGESTED
-  PENDING
-  ASSIGNED
-  IN_PROGRESS
-  ON_HOLD
-  DISCREPANCY
-  COMPLETED
-  CANCELLED
-  REJECTED
 }
 
 Enum warehouse.putaway_task_status {
@@ -263,17 +255,27 @@ Enum warehouse.warehouse_status {
 }
 
 Enum procurement.goods_receipts_receipt_type {
-  PURCHASE
   PRODUCTION
   RETURN
 }
 
 Enum procurement.goods_receipts_status {
   DRAFT
-  CONFIRMED
   IN_PUTAWAY
   CLOSED
   CANCELLED
+}
+
+Enum ordering.contract_credit_review_check_outcome {
+  OVERDUE
+  OVER_LIMIT
+}
+
+Enum ordering.contract_credit_review_outcome {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
 }
 
 Enum ordering.contract_payment_installment_milestone {
@@ -367,6 +369,11 @@ Enum ordering.order_cancellation_request_status {
   EXPIRED
 }
 
+Enum ordering.order_completion_hold_reason {
+  DELIVERY_DISPUTED
+  OTHER
+}
+
 Enum ordering.order_credit_check_outcome {
   WITHIN_LIMIT
   OVER_LIMIT
@@ -409,6 +416,11 @@ Enum ordering.producer_status {
   INACTIVE
 }
 
+Enum ordering.production_order_kind {
+  STANDARD
+  REPLACEMENT
+}
+
 Enum ordering.production_order_status {
   DRAFT
   PENDING_APPROVAL
@@ -433,6 +445,11 @@ Enum ordering.production_order_sample_round_result {
   REPRINT_REQUESTED
 }
 
+Enum ordering.quote_price_review {
+  NONE
+  PENDING
+}
+
 Enum ordering.quote_status {
   DRAFT
   SENT
@@ -448,6 +465,19 @@ Enum ordering.quote_fee_line_kind {
   SHIPPING_FEE
 }
 
+Enum ordering.quote_price_review_outcome {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
+}
+
+Enum ordering.return_custody_outcome_choice {
+  SEND_BACK
+  DESTROY_ON_BEHALF
+  TAKEN_BY_RETURN
+}
+
 Enum ordering.return_request_channel {
   PORTAL
   BACK_OFFICE
@@ -460,6 +490,13 @@ Enum ordering.return_request_reason_code {
   WRONG_ITEM
   SHORT_DELIVERY
   CHANGED_MIND
+  OTHER
+}
+
+Enum ordering.return_request_refusal_reason {
+  CUSTOMER_DAMAGE
+  NOT_DEFECTIVE
+  OUT_OF_POLICY
   OTHER
 }
 
@@ -485,6 +522,12 @@ Enum ordering.return_request_evidence_stage {
   CLAIM
   RECEIPT
   INSPECTION
+  CUSTODY
+}
+
+Enum ordering.sales_contract_credit_review {
+  NONE
+  PENDING
 }
 
 Enum ordering.sales_contract_status {
@@ -493,6 +536,7 @@ Enum ordering.sales_contract_status {
   SIGNED
   COMPLETED
   CANCELLED
+  LIQUIDATED
 }
 
 Enum ordering.tax_rate_tax_class {
@@ -543,6 +587,42 @@ Enum customer.default_payment_installment_milestone {
   AFTER_DELIVERY
 }
 
+Enum payment.bank_transaction_review_reason {
+  NO_INSTALLMENT_NAMED
+  SEVERAL_INSTALLMENTS
+  INSTALLMENT_NOT_FOUND
+  NOT_PAYABLE
+  OVERPAYMENT
+  OTHER_ACCOUNT
+  REFUSED
+  RECEIPT_VOIDED
+}
+
+Enum payment.bank_transaction_source {
+  WEBHOOK
+  CATCH_UP
+}
+
+Enum payment.bank_transaction_status {
+  RECEIVED
+  APPLIED
+  NEEDS_REVIEW
+  IGNORED
+}
+
+Enum payment.credit_request_source {
+  PORTAL
+  SALES
+}
+
+Enum payment.credit_request_status {
+  SUBMITTED
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  WITHDRAWN
+}
+
 Enum payment.installment_milestone {
   ON_SIGNING
   BEFORE_DELIVERY
@@ -563,6 +643,7 @@ Enum payment.order_settlement_kind {
   ORDER_CANCELLED
   REMAINDER_CLOSED
   GOODS_RETURNED
+  SHIPMENT_RETURNED
 }
 
 Enum payment.payment_receipt_status {
@@ -636,6 +717,7 @@ Enum invoicing.einvoice_provider_config_environment {
 Enum invoicing.einvoice_provider_config_provider {
   SANDBOX
   VIETTEL_SINVOICE
+  SEPAY_EINVOICE
 }
 
 Enum invoicing.sandbox_issuance_kind {
@@ -692,6 +774,11 @@ Enum design.design_project_event_event {
   BATCH_CLOSED
   PROJECT_QUOTE_REQUESTED
   PROJECT_ARCHIVED
+}
+
+Enum design.design_project_quote_request_status {
+  OPEN
+  CLOSED
 }
 
 Enum design.design_quote_request_status {
@@ -799,6 +886,9 @@ Enum fulfillment.dispatch_load_unload_reason_code {
 Enum fulfillment.load_estimate_mode {
   SINGLE_TYPE
   FEWEST_VEHICLES
+  KEEP_LINES
+  PRIORITY_FILL
+  OVER_CAPACITY
 }
 
 Enum fulfillment.load_estimate_status {
@@ -809,6 +899,9 @@ Enum fulfillment.load_estimate_status {
 Enum fulfillment.load_plan_selection_mode {
   SINGLE_TYPE
   FEWEST_VEHICLES
+  KEEP_LINES
+  PRIORITY_FILL
+  OVER_CAPACITY
 }
 
 Enum fulfillment.load_plan_status {
@@ -825,6 +918,7 @@ Enum fulfillment.load_plan_package_release_reason {
   PLAN_CANCELLED
   ORDER_CANCELLED
   VEHICLE_DROPPED
+  REMOVED_FROM_VEHICLE
 }
 
 Enum fulfillment.load_plan_package_unplaced_reason {
@@ -931,12 +1025,6 @@ Enum fulfillment.vehicle_type_kind {
 Enum fulfillment.vehicle_type_status {
   ACTIVE
   INACTIVE
-}
-
-Enum fulfillment.wave_status {
-  PLANNED
-  RELEASED
-  COMPLETED
 }
 
 Enum fulfillment.waybill_change_source {
@@ -1084,18 +1172,6 @@ Enum notification.delivery_log_status {
   SENT
   FAILED
   SKIPPED
-}
-
-Enum notification.preference_channel {
-  EMAIL
-  SMS
-  PUSH
-}
-
-Enum notification.template_channel {
-  EMAIL
-  SMS
-  PUSH
 }
 
 Enum notification.user_notification_severity {
@@ -1270,6 +1346,23 @@ Table product.category_attributes [headercolor: #2E86AB] {
   }
 }
 
+Table product.customer_skus [headercolor: #2E86AB] {
+  id                 uuid [pk]
+  product_id         uuid [not null]
+  variant_id         uuid [not null]
+  customer_id        uuid [not null]
+  design_snapshot_id uuid [not null, unique]
+  sku                varchar(64) [not null, unique]
+  name               varchar(255) [not null]
+  status             product.customer_skus_status [not null, default: 'ACTIVE']
+  obsoleted_at       timestamptz
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+}
+
 Table product.customization_templates [headercolor: #2E86AB] {
   id                     uuid [pk]
   variant_id             uuid [not null]
@@ -1295,6 +1388,7 @@ Table product.customization_templates [headercolor: #2E86AB] {
   model_file_name        varchar(255)
   model_file_checksum    varchar(64)
   model_surfaces_json    jsonb [not null, default: `'[]'::jsonb`]
+  print_version          bigint [not null, default: 0]
   indexes {
     (variant_id, code) [unique]
   }
@@ -1474,20 +1568,6 @@ Table product.variant_attribute_values [headercolor: #2E86AB] {
   }
 }
 
-Table product.variant_sales_units [headercolor: #2E86AB] {
-  id                uuid [pk]
-  variant_id        uuid [not null]
-  uom_conversion_id uuid [not null]
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  indexes {
-    (variant_id, uom_conversion_id) [unique]
-  }
-}
-
 Table product.variants [headercolor: #2E86AB] {
   id                  uuid [pk]
   product_id          uuid [not null]
@@ -1503,9 +1583,7 @@ Table product.variants [headercolor: #2E86AB] {
   created_by          varchar(100)
   last_modified_at    timestamptz
   last_modified_by    varchar(100)
-  owner_customer_id   uuid
-  design_snapshot_id  uuid
-  source_variant_id   uuid
+  rotatable           boolean [not null, default: true]
   indexes {
     (product_id, attribute_signature) [unique]
   }
@@ -1540,8 +1618,6 @@ Table inventory.cycle_count_line [headercolor: #3E7C4A] {
   location_code    varchar(64) [not null]
   sku              varchar(64) [not null]
   lot_number       varchar(64)
-  expected_qty     int [not null]
-  counted_qty      int
   counted_by       uuid
   counted_at       timestamptz
   recount_required boolean [not null, default: false]
@@ -1550,30 +1626,22 @@ Table inventory.cycle_count_line [headercolor: #3E7C4A] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
-  stock_package_id uuid
+  stock_package_id uuid [not null]
+  booked           boolean [not null]
+  found            boolean
 }
 
 Table inventory.inventory_items [headercolor: #3E7C4A] {
-  id                uuid [pk]
-  sku               varchar(64) [not null, unique]
-  unit_of_measure   varchar(16) [not null, default: 'EACH']
-  barcode           varchar(64)
-  weight_kg         decimal(10,3)
-  length_cm         decimal(10,2)
-  width_cm          decimal(10,2)
-  height_cm         decimal(10,2)
-  package_weight_kg decimal(10,3)
-  package_length_cm decimal(10,2)
-  package_width_cm  decimal(10,2)
-  package_height_cm decimal(10,2)
-  package_count     int [not null, default: 1]
-  pack_size         int [not null, default: 1]
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  rotatable         boolean [not null, default: true]
+  id               uuid [pk]
+  sku              varchar(64) [not null, unique]
+  unit_of_measure  varchar(16) [not null, default: 'EACH']
+  barcode          varchar(64)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  variant_id       uuid [not null]
 }
 
 Table inventory.stock_adjustment [headercolor: #3E7C4A] {
@@ -1582,7 +1650,6 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   location_code       varchar(64) [not null]
   sku                 varchar(64) [not null]
   lot_number          varchar(64)
-  quantity_delta      int [not null]
   reason_code         inventory.stock_adjustment_reason_code [not null]
   note                varchar(1000)
   status              inventory.stock_adjustment_status [not null, default: 'PENDING_APPROVAL']
@@ -1600,26 +1667,9 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   withdrawn_at        timestamptz
   received_at         timestamptz
   reservation_id      uuid
-  stock_package_id    uuid
+  stock_package_id    uuid [not null]
   counted_by          uuid
-}
-
-Table inventory.stock_item [headercolor: #3E7C4A] {
-  id               uuid [pk]
-  sku              varchar(64) [not null]
-  location_code    varchar(64) [not null]
-  lot_number       varchar(64) [not null]
-  on_hand          int [not null, default: 0]
-  reserved         int [not null, default: 0]
-  status           inventory.stock_item_status [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  received_at      timestamptz
-  stock_package_id uuid
-  lot_id           uuid [not null]
+  direction           inventory.stock_adjustment_direction [not null]
 }
 
 Table inventory.stock_lot [headercolor: #3E7C4A] {
@@ -1628,8 +1678,6 @@ Table inventory.stock_lot [headercolor: #3E7C4A] {
   lot_number            varchar(64)
   received_at           timestamptz
   origin_type           inventory.stock_lot_origin_type [not null]
-  goods_receipt_id      uuid
-  goods_receipt_number  varchar(30)
   warehouse_id          uuid
   version               bigint [not null, default: 0]
   created_at            timestamptz [not null, default: `now()`]
@@ -1641,32 +1689,30 @@ Table inventory.stock_lot [headercolor: #3E7C4A] {
 }
 
 Table inventory.stock_movement [headercolor: #3E7C4A] {
-  id                    uuid [pk]
-  movement_type         inventory.stock_movement_movement_type [not null]
-  sku                   varchar(64) [not null]
-  lot_number            varchar(64)
-  from_location_code    varchar(64)
-  to_location_code      varchar(64)
-  quantity              int [not null]
-  from_status           varchar(32)
-  to_status             varchar(32)
-  reference_type        inventory.stock_movement_reference_type [not null]
-  reference_id          uuid [not null]
-  reason                varchar(500)
-  actor_id              uuid
-  occurred_at           timestamptz [not null]
-  version               bigint [not null, default: 0]
-  created_at            timestamptz [not null, default: `now()`]
-  created_by            varchar(100)
-  last_modified_at      timestamptz
-  last_modified_by      varchar(100)
-  from_stock_package_id uuid
-  to_stock_package_id   uuid
-  lot_id                uuid
-  order_id              uuid
-  order_number          varchar(32)
-  requested_by          uuid
-  counted_by            uuid
+  id                 uuid [pk]
+  movement_type      inventory.stock_movement_movement_type [not null]
+  sku                varchar(64) [not null]
+  lot_number         varchar(64)
+  from_location_code varchar(64)
+  to_location_code   varchar(64)
+  from_status        varchar(32)
+  to_status          varchar(32)
+  reference_type     inventory.stock_movement_reference_type [not null]
+  reference_id       uuid [not null]
+  reason             varchar(500)
+  actor_id           uuid
+  occurred_at        timestamptz [not null]
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  lot_id             uuid
+  order_id           uuid
+  order_number       varchar(32)
+  requested_by       uuid
+  counted_by         uuid
+  stock_package_id   uuid [not null]
 }
 
 Table inventory.stock_package [headercolor: #3E7C4A] {
@@ -1675,7 +1721,6 @@ Table inventory.stock_package [headercolor: #3E7C4A] {
   inventory_item_id     uuid [not null]
   uom_conversion_id     uuid [not null]
   nominal_qty           int [not null]
-  received_qty          int
   location_code         varchar(64) [not null]
   status                inventory.stock_package_status [not null, default: 'RECEIVING']
   goods_receipt_line_id uuid
@@ -1685,17 +1730,26 @@ Table inventory.stock_package [headercolor: #3E7C4A] {
   created_by            varchar(100)
   last_modified_at      timestamptz
   last_modified_by      varchar(100)
+  return_opened_at      timestamptz
+  return_request_id     uuid
+  return_ownership      inventory.stock_package_return_ownership
+  custody_held_at       timestamptz
+  custody_choice        varchar(24)
+  custody_ended_at      timestamptz
+  custody_ended_by      uuid
+  custody_note          varchar(500)
+  counted_at            timestamptz
+  stock_status          inventory.stock_package_stock_status
+  lot_id                uuid
+  received_at           timestamptz
 }
 
 Table inventory.stock_reservation [headercolor: #3E7C4A] {
   id                uuid [pk]
-  stock_item_id     uuid
   order_id          uuid [not null]
   root_request_id   uuid [not null]
   request_id        uuid [not null, unique]
-  quantity          int [not null]
   reserved_at       timestamptz [not null]
-  expires_at        timestamptz
   status            inventory.stock_reservation_status [not null]
   release_reason    varchar(32)
   closed_at         timestamptz
@@ -1703,28 +1757,28 @@ Table inventory.stock_reservation [headercolor: #3E7C4A] {
   allocated_from_id uuid
   order_number      varchar(32)
   warehouse_code    varchar(64)
+  cartons           int [not null]
+  units_per_carton  int [not null]
+  stock_package_id  uuid
 }
 
 Table inventory.uom_conversions [headercolor: #3E7C4A] {
-  id                uuid [pk]
-  inventory_item_id uuid [not null]
-  unit_of_measure   varchar(16) [not null]
-  factor            int [not null]
-  is_base           boolean [not null, default: false]
-  weight_kg         decimal(10,3)
-  length_cm         decimal(10,2)
-  width_cm          decimal(10,2)
-  height_cm         decimal(10,2)
-  default_purchase  boolean [not null, default: false]
-  active            boolean [not null, default: true]
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  default_shipping  boolean [not null, default: false]
+  id               uuid [pk]
+  unit_of_measure  varchar(16) [not null]
+  factor           int [not null]
+  weight_kg        decimal(10,3)
+  length_cm        decimal(10,2)
+  width_cm         decimal(10,2)
+  height_cm        decimal(10,2)
+  active           boolean [not null, default: true]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  variant_id       uuid [not null]
   indexes {
-    (inventory_item_id, unit_of_measure) [unique]
+    (variant_id, unit_of_measure) [unique]
   }
 }
 
@@ -1793,33 +1847,6 @@ Table warehouse.boundary [headercolor: #8E6C3A] {
   created_by         varchar(100)
   last_modified_at   timestamptz
   last_modified_by   varchar(100)
-}
-
-Table warehouse.move_task [headercolor: #8E6C3A] {
-  id               uuid [pk]
-  task_number      varchar(30) [not null, unique]
-  warehouse_id     uuid [not null]
-  origin           warehouse.move_task_origin [not null]
-  reason           warehouse.move_task_reason
-  sku              varchar(64) [not null]
-  lot_number       varchar(64)
-  from_location_id uuid [not null]
-  to_location_id   uuid [not null]
-  requested_qty    int [not null]
-  picked_qty       int
-  placed_qty       int
-  status           warehouse.move_task_status [not null, default: 'PENDING']
-  priority         int [not null, default: 0]
-  assigned_user_id uuid
-  approved_by      uuid
-  started_at       timestamptz
-  completed_at     timestamptz
-  note             varchar(1000)
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
 }
 
 Table warehouse.putaway_task [headercolor: #8E6C3A] {
@@ -1952,20 +1979,21 @@ Table warehouse.storage_location [headercolor: #8E6C3A] {
 }
 
 Table warehouse.warehouse [headercolor: #8E6C3A] {
-  id               uuid [pk]
-  name             varchar(200) [not null]
-  status           warehouse.warehouse_status [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  prefix           varchar(10) [not null, unique]
-  address          varchar(500) [not null]
-  return_address   varchar(500)
-  map_unit         varchar(8) [not null]
-  map_width        decimal(10,3) [not null]
-  map_height       decimal(10,3) [not null]
+  id                 uuid [pk]
+  name               varchar(200) [not null]
+  status             warehouse.warehouse_status [not null]
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  prefix             varchar(10) [not null, unique]
+  address            varchar(500) [not null]
+  return_address     varchar(500)
+  map_unit           varchar(8) [not null]
+  map_width          decimal(10,3) [not null]
+  map_height         decimal(10,3) [not null]
+  utilization_factor decimal(5,4) [not null, default: 1]
 }
 
 Table warehouse.zone [headercolor: #8E6C3A] {
@@ -2001,7 +2029,7 @@ Table procurement.goods_receipt_lines [headercolor: #7D5BA6] {
   last_modified_at         timestamptz
   last_modified_by         varchar(100)
   uom_conversion_id        uuid [not null]
-  production_order_line_id uuid
+  production_order_line_id uuid [not null]
   indexes {
     (receipt_id, production_order_line_id) [unique]
   }
@@ -2040,9 +2068,27 @@ Table procurement.goods_receipt_return_cartons [headercolor: #7D5BA6] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  counted_qty      int [not null]
+  stock_entered    boolean [not null]
+  counted_by       uuid [not null]
   indexes {
     (receipt_id, stock_package_id) [unique]
   }
+}
+
+Table procurement.goods_receipt_return_loose_lines [headercolor: #7D5BA6] {
+  id               uuid [pk]
+  receipt_id       uuid [not null]
+  sku              varchar(64) [not null]
+  lot_number       varchar(64)
+  quantity         int [not null]
+  recorded_by      uuid [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  photo_id         uuid
 }
 
 Table procurement.goods_receipts [headercolor: #7D5BA6] {
@@ -2073,6 +2119,28 @@ Table procurement.goods_receipts [headercolor: #7D5BA6] {
 // =============================================================================
 // SCHEMA: ordering
 // =============================================================================
+
+Table ordering.contract_credit_review [headercolor: #C0392B] {
+  id               uuid [pk]
+  contract_id      uuid [not null]
+  contract_version bigint [not null]
+  outcome          ordering.contract_credit_review_outcome [not null]
+  check_outcome    ordering.contract_credit_review_check_outcome [not null]
+  credit_limit     decimal(19,4) [not null]
+  exposure         decimal(19,4) [not null]
+  after_delivery   decimal(19,4) [not null]
+  overdue_amount   decimal(19,4) [not null]
+  submitted_at     timestamptz [not null]
+  submitted_by     uuid [not null]
+  decided_at       timestamptz
+  decided_by       uuid
+  note             varchar(500)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
 
 Table ordering.contract_payment_installment [headercolor: #C0392B] {
   id                uuid [pk]
@@ -2157,6 +2225,8 @@ Table ordering.customer_order [headercolor: #C0392B] {
   shipping_warehouse_chosen_at timestamptz
   shipping_warehouse_chosen_by uuid
   first_labeled_at             timestamptz
+  status_before_return         varchar(32)
+  remainder_closed_at          timestamptz
 }
 
 Table ordering.delay_alert [headercolor: #C0392B] {
@@ -2275,6 +2345,39 @@ Table ordering.delivery_failure_case_hold [headercolor: #C0392B] {
   created_at     timestamptz [not null, default: `now()`]
 }
 
+Table ordering.order_address_change [headercolor: #C0392B] {
+  id                      uuid [pk]
+  order_id                uuid [not null]
+  order_status            varchar(32) [not null]
+  previous_recipient_name varchar(200)
+  previous_phone          varchar(32)
+  previous_line1          varchar(255)
+  previous_line2          varchar(255)
+  previous_ward_code      varchar(20)
+  previous_ward_name      varchar(120)
+  previous_province_code  varchar(20)
+  previous_province_name  varchar(120)
+  previous_country_code   varchar(2)
+  previous_postal_code    varchar(20)
+  new_recipient_name      varchar(200) [not null]
+  new_phone               varchar(32) [not null]
+  new_line1               varchar(255) [not null]
+  new_line2               varchar(255)
+  new_ward_code           varchar(20) [not null]
+  new_ward_name           varchar(120) [not null]
+  new_province_code       varchar(20) [not null]
+  new_province_name       varchar(120) [not null]
+  new_country_code        varchar(2) [not null]
+  new_postal_code         varchar(20)
+  changed_by              uuid [not null]
+  changed_at              timestamptz [not null]
+  version                 bigint [not null, default: 0]
+  created_at              timestamptz [not null, default: `now()`]
+  created_by              varchar(100)
+  last_modified_at        timestamptz
+  last_modified_by        varchar(100)
+}
+
 Table ordering.order_cancellation_request [headercolor: #C0392B] {
   id               uuid [pk]
   order_id         uuid [not null]
@@ -2294,22 +2397,40 @@ Table ordering.order_cancellation_request [headercolor: #C0392B] {
   last_modified_by varchar(100)
 }
 
-Table ordering.order_credit_check [headercolor: #C0392B] {
+Table ordering.order_completion_hold [headercolor: #C0392B] {
   id               uuid [pk]
   order_id         uuid [not null]
-  checked_at       timestamptz [not null]
-  credit_limit     decimal(19,4) [not null]
-  exposure         decimal(19,4) [not null]
-  order_amount     decimal(19,4) [not null]
-  outcome          ordering.order_credit_check_outcome [not null]
-  decided_by       uuid
-  decided_at       timestamptz
+  reason           ordering.order_completion_hold_reason [not null]
   note             varchar(1000)
+  held_at          timestamptz [not null]
+  held_by          uuid [not null]
+  released_at      timestamptz
+  released_by      uuid
+  release_note     varchar(1000)
   version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
+  created_at       timestamptz [not null]
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+Table ordering.order_credit_check [headercolor: #C0392B] {
+  id                 uuid [pk]
+  order_id           uuid [not null]
+  checked_at         timestamptz [not null]
+  credit_limit       decimal(19,4) [not null]
+  exposure           decimal(19,4) [not null]
+  order_amount       decimal(19,4) [not null]
+  outcome            ordering.order_credit_check_outcome [not null]
+  decided_by         uuid
+  decided_at         timestamptz
+  note               varchar(1000)
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  pre_send_review_id uuid
 }
 
 Table ordering.order_fee_line [headercolor: #C0392B] {
@@ -2386,26 +2507,55 @@ Table ordering.order_partial_shipment_decision [headercolor: #C0392B] {
   last_modified_by varchar(100)
 }
 
+Table ordering.order_refund_void [headercolor: #C0392B] {
+  id               uuid [pk]
+  order_id         uuid [not null]
+  refund_record_id uuid [not null, unique]
+  reason           varchar(500)
+  voided_by        uuid
+  voided_at        timestamptz [not null]
+  created_at       timestamptz [not null, default: `now()`]
+}
+
+Table ordering.order_remainder_closure [headercolor: #C0392B] {
+  id                  uuid [pk]
+  order_id            uuid [not null]
+  closure_id          uuid [not null, unique]
+  reason_code         varchar(32) [not null]
+  note                varchar(1000)
+  closed_by           uuid
+  closed_at           timestamptz [not null]
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null, default: `now()`]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  shipping_fee_waived decimal(19,4) [not null, default: 0]
+}
+
 Table ordering.order_shipment [headercolor: #C0392B] {
-  id                uuid [pk]
-  order_id          uuid [not null]
-  status            ordering.order_shipment_status [not null]
-  amount            decimal(19,4) [not null]
-  handed_over_at    timestamptz [not null]
-  handed_over_by    uuid
-  outcome_at        timestamptz
-  outcome_by        uuid
-  failure_reason    varchar(24)
-  failure_note      varchar(500)
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  shipment_code     varchar(48)
-  package_count     int
-  carrier_name      varchar(120)
-  delivery_batch_id uuid
+  id                  uuid [pk]
+  order_id            uuid [not null]
+  status              ordering.order_shipment_status [not null]
+  amount              decimal(19,4) [not null]
+  handed_over_at      timestamptz [not null]
+  handed_over_by      uuid
+  outcome_at          timestamptz
+  outcome_by          uuid
+  failure_reason      varchar(24)
+  failure_note        varchar(500)
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null, default: `now()`]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  shipment_code       varchar(48)
+  package_count       int
+  carrier_name        varchar(120)
+  delivery_batch_id   uuid
+  units_closed_at     timestamptz
+  closed_goods_value  decimal(19,4)
+  shipping_fee_waived decimal(19,4) [not null, default: 0]
 }
 
 Table ordering.order_shipment_line [headercolor: #C0392B] {
@@ -2415,6 +2565,18 @@ Table ordering.order_shipment_line [headercolor: #C0392B] {
   indexes {
     (shipment_id, order_line_id) [pk]
   }
+}
+
+Table ordering.order_shipment_loss_closure [headercolor: #C0392B] {
+  shipment_id   uuid [pk]
+  order_id      uuid [not null]
+  closure_id    uuid [not null, unique]
+  note          varchar(1000) [not null]
+  evidence_key  varchar(512) [not null]
+  evidence_name varchar(255)
+  closed_by     uuid [not null]
+  closed_at     timestamptz [not null]
+  created_at    timestamptz [not null, default: `now()`]
 }
 
 Table ordering.order_status_history [headercolor: #C0392B] {
@@ -2459,40 +2621,42 @@ Table ordering.producer [headercolor: #C0392B] {
 }
 
 Table ordering.production_order [headercolor: #C0392B] {
-  id                         uuid [pk]
-  code                       varchar(32) [not null, unique]
-  sales_order_id             uuid [not null]
-  delivery_batch_id          uuid [not null]
-  customer_id                uuid [not null]
-  producer_id                uuid [not null]
-  receiving_warehouse_id     uuid [not null]
-  need_by_date               date [not null]
-  status                     ordering.production_order_status [not null]
-  sample_approval_required   boolean [not null]
-  sample_required_by_default boolean [not null]
-  sample_waiver_reason       varchar(500)
-  unit_price                 decimal(19,4)
-  currency                   varchar(3) [not null, default: 'VND']
-  note                       varchar(500)
-  drawn_up_by                uuid [not null]
-  submitted_at               timestamptz
-  approved_by                uuid
-  approved_at                timestamptz
-  returned_reason            varchar(500)
-  sent_at                    timestamptz
-  production_started_at      timestamptz
-  cancelled_by               uuid
-  cancelled_at               timestamptz
-  cancellation_reason        varchar(500)
-  closed_by                  uuid
-  closed_at                  timestamptz
-  closing_reason             varchar(500)
-  version                    bigint [not null, default: 0]
-  created_at                 timestamptz [not null, default: `now()`]
-  created_by                 varchar(100)
-  last_modified_at           timestamptz
-  last_modified_by           varchar(100)
-  expected_completion_date   date
+  id                           uuid [pk]
+  code                         varchar(32) [not null, unique]
+  sales_order_id               uuid [not null]
+  delivery_batch_id            uuid [not null]
+  customer_id                  uuid [not null]
+  producer_id                  uuid [not null]
+  receiving_warehouse_id       uuid [not null]
+  need_by_date                 date [not null]
+  status                       ordering.production_order_status [not null]
+  sample_approval_required     boolean [not null]
+  sample_required_by_default   boolean [not null]
+  sample_waiver_reason         varchar(500)
+  note                         varchar(500)
+  drawn_up_by                  uuid [not null]
+  submitted_at                 timestamptz
+  approved_by                  uuid
+  approved_at                  timestamptz
+  returned_reason              varchar(500)
+  sent_at                      timestamptz
+  production_started_at        timestamptz
+  cancelled_by                 uuid
+  cancelled_at                 timestamptz
+  cancellation_reason          varchar(500)
+  closed_by                    uuid
+  closed_at                    timestamptz
+  closing_reason               varchar(500)
+  version                      bigint [not null, default: 0]
+  created_at                   timestamptz [not null, default: `now()`]
+  created_by                   varchar(100)
+  last_modified_at             timestamptz
+  last_modified_by             varchar(100)
+  expected_completion_date     date
+  sent_by                      uuid
+  acceptance_note              varchar(500)
+  kind                         ordering.production_order_kind [not null, default: 'STANDARD']
+  replaces_production_order_id uuid
 }
 
 Table ordering.production_order_line [headercolor: #C0392B] {
@@ -2579,6 +2743,17 @@ Table ordering.production_order_status_transition [headercolor: #C0392B] {
   }
 }
 
+Table ordering.production_order_write_off [headercolor: #C0392B] {
+  id                  uuid [pk]
+  production_order_id uuid [not null]
+  stock_adjustment_id uuid [not null]
+  sku                 varchar(64) [not null]
+  created_at          timestamptz [not null, default: `now()`]
+  indexes {
+    (production_order_id, stock_adjustment_id) [unique]
+  }
+}
+
 Table ordering.quote [headercolor: #C0392B] {
   id                      uuid [pk]
   quote_number            varchar(30) [not null, unique]
@@ -2602,6 +2777,7 @@ Table ordering.quote [headercolor: #C0392B] {
   last_modified_at        timestamptz
   last_modified_by        varchar(100)
   requested_delivery_date date
+  price_review            ordering.quote_price_review [not null, default: 'NONE']
 }
 
 Table ordering.quote_fee_line [headercolor: #C0392B] {
@@ -2636,6 +2812,25 @@ Table ordering.quote_line [headercolor: #C0392B] {
   }
 }
 
+Table ordering.quote_price_review [headercolor: #C0392B] {
+  id                uuid [pk]
+  quote_id          uuid [not null]
+  revision          int [not null]
+  outcome           ordering.quote_price_review_outcome [not null]
+  threshold_percent decimal(5,2) [not null]
+  lines             jsonb [not null]
+  submitted_at      timestamptz [not null]
+  submitted_by      uuid [not null]
+  decided_at        timestamptz
+  decided_by        uuid
+  reason            varchar(500)
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+}
+
 Table ordering.quote_price_tier [headercolor: #C0392B] {
   quote_line_id uuid [not null]
   min_quantity  int [not null]
@@ -2655,6 +2850,22 @@ Table ordering.quote_status_history [headercolor: #C0392B] {
   offer       jsonb
   changed_at  timestamptz [not null]
   changed_by  uuid
+}
+
+Table ordering.return_custody_outcome [headercolor: #C0392B] {
+  evidence_id        uuid [pk]
+  return_request_id  uuid [not null]
+  choice             ordering.return_custody_outcome_choice [not null]
+  choice_note        varchar(500)
+  taken_by_return_id uuid
+  chosen_by          uuid [not null]
+  chosen_at          timestamptz [not null]
+  ended_at           timestamptz
+  ended_by           uuid
+  ended_note         varchar(500)
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  last_modified_at   timestamptz
 }
 
 Table ordering.return_number_sequence [headercolor: #C0392B] {
@@ -2706,6 +2917,14 @@ Table ordering.return_request [headercolor: #C0392B] {
   cancellation_reason     varchar(500)
   closed_at               timestamptz
   goods_receipt_id        uuid
+  shipment_id             uuid
+  refusal_reason          ordering.return_request_refusal_reason
+  refusal_note            varchar(500)
+  open_draft_receipt_id   uuid
+  custody_choice          varchar(24)
+  custody_choice_note     varchar(500)
+  custody_choice_by       uuid
+  custody_choice_at       timestamptz
 }
 
 Table ordering.return_request_discrepancy [headercolor: #C0392B] {
@@ -2734,6 +2953,10 @@ Table ordering.return_request_evidence [headercolor: #C0392B] {
   uploaded_at       timestamptz [not null]
   created_at        timestamptz [not null, default: `now()`]
   created_by        varchar(100)
+  custody_sku       varchar(64)
+  custody_lpn       varchar(40)
+  custody_quantity  int
+  custody_note      varchar(1000)
 }
 
 Table ordering.return_request_line [headercolor: #C0392B] {
@@ -2758,6 +2981,21 @@ Table ordering.return_request_line [headercolor: #C0392B] {
   }
 }
 
+Table ordering.return_request_receipt [headercolor: #C0392B] {
+  goods_receipt_id        uuid [pk]
+  return_request_id       uuid [not null]
+  parcel                  int [not null]
+  receipt_number          varchar(30) [not null]
+  receiving_location_code varchar(64) [not null]
+  received_by             uuid [not null]
+  received_at             timestamptz [not null]
+  created_at              timestamptz [not null, default: `now()`]
+  created_by              varchar(100)
+  indexes {
+    (return_request_id, parcel) [unique]
+  }
+}
+
 Table ordering.return_request_status_history [headercolor: #C0392B] {
   id                uuid [pk]
   return_request_id uuid [not null]
@@ -2768,6 +3006,14 @@ Table ordering.return_request_status_history [headercolor: #C0392B] {
   occurred_at       timestamptz [not null]
   created_at        timestamptz [not null, default: `now()`]
   created_by        varchar(100)
+}
+
+Table ordering.return_request_status_transition [headercolor: #C0392B] {
+  from_status varchar(24) [not null]
+  to_status   varchar(24) [not null]
+  indexes {
+    (from_status, to_status) [pk]
+  }
 }
 
 Table ordering.sales_contract [headercolor: #C0392B] {
@@ -2803,6 +3049,9 @@ Table ordering.sales_contract [headercolor: #C0392B] {
   created_by                  varchar(100)
   last_modified_at            timestamptz
   last_modified_by            varchar(100)
+  return_window_days          int
+  liquidated_at               timestamptz
+  credit_review               ordering.sales_contract_credit_review [not null, default: 'NONE']
 }
 
 Table ordering.tax_rate [headercolor: #C0392B] {
@@ -2970,6 +3219,84 @@ Table customer.segment [headercolor: #D68910] {
 // SCHEMA: payment
 // =============================================================================
 
+Table payment.bank_transaction [headercolor: #B8860B] {
+  id                      uuid [pk]
+  provider                varchar(16) [not null]
+  provider_transaction_id varchar(64) [not null]
+  source                  payment.bank_transaction_source [not null]
+  dedupe_key              varchar(128) [not null]
+  account_number          varchar(32)
+  amount                  decimal(19,4) [not null]
+  content                 varchar(500)
+  bank_reference          varchar(100)
+  payment_code            varchar(64)
+  transaction_at          timestamptz [not null]
+  received_at             timestamptz [not null]
+  raw                     jsonb [not null]
+  status                  payment.bank_transaction_status [not null]
+  review_reason           payment.bank_transaction_review_reason
+  review_note             varchar(500)
+  customer_id             uuid
+  installment_id          uuid
+  receipt_id              uuid
+  decided_at              timestamptz
+  reviewed_by             uuid
+  reviewed_at             timestamptz
+  ignore_reason           varchar(500)
+  version                 bigint [not null, default: 0]
+  created_at              timestamptz [not null]
+  created_by              varchar(100)
+  last_modified_at        timestamptz
+  last_modified_by        varchar(100)
+  indexes {
+    (provider, provider_transaction_id) [unique]
+    (provider, dedupe_key) [unique]
+  }
+}
+
+Table payment.credit_request [headercolor: #B8860B] {
+  id                      uuid [pk]
+  customer_id             uuid [not null]
+  source                  payment.credit_request_source [not null]
+  status                  payment.credit_request_status [not null]
+  requested_limit         decimal(19,4) [not null]
+  requested_term_days     int [not null]
+  currency                varchar(3) [not null, default: 'VND']
+  reason                  varchar(1000)
+  submitted_by            uuid [not null]
+  submitted_at            timestamptz [not null]
+  sales_note              varchar(1000)
+  sales_recommended_limit decimal(19,4)
+  recommended_by          uuid
+  recommended_at          timestamptz
+  approved_limit          decimal(19,4)
+  approved_term_days      int
+  decided_by              uuid
+  decided_at              timestamptz
+  decision_note           varchar(1000)
+  version                 bigint [not null, default: 0]
+  created_at              timestamptz [not null, default: `now()`]
+  created_by              varchar(100)
+  last_modified_at        timestamptz
+  last_modified_by        varchar(100)
+}
+
+Table payment.credit_request_file [headercolor: #B8860B] {
+  id                uuid [pk]
+  credit_request_id uuid [not null]
+  storage_key       varchar(512) [not null, unique]
+  file_name         varchar(255) [not null]
+  content_type      varchar(100) [not null]
+  size_bytes        bigint [not null]
+  uploaded_by       uuid [not null]
+  uploaded_at       timestamptz [not null]
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null, default: `now()`]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+}
+
 Table payment.installment [headercolor: #B8860B] {
   id                      uuid [pk]
   contract_id             uuid [not null]
@@ -2998,6 +3325,7 @@ Table payment.installment [headercolor: #B8860B] {
   last_modified_at        timestamptz
   last_modified_by        varchar(100)
   reduced_amount          decimal(19,4) [not null, default: 0]
+  overdue_announced_for   date
   indexes {
     (contract_id, seq) [unique]
   }
@@ -3015,58 +3343,62 @@ Table payment.installment_reduction [headercolor: #B8860B] {
 }
 
 Table payment.order_settlement [headercolor: #B8860B] {
-  id                 uuid [pk]
-  order_id           uuid [not null]
-  contract_id        uuid [not null]
-  customer_id        uuid [not null]
-  order_number       varchar(32) [not null]
-  contract_number    varchar(40) [not null]
-  kind               payment.order_settlement_kind [not null]
-  source_id          uuid [not null]
-  currency           varchar(3) [not null]
-  collected_amount   decimal(19,4) [not null]
-  closed_amount      decimal(19,4) [not null, default: 0]
-  reduced_amount     decimal(19,4) [not null, default: 0]
-  surplus_amount     decimal(19,4) [not null]
-  fee_amount         decimal(19,4) [not null, default: 0]
-  fee_percent        decimal(5,2)
-  fee_reason         varchar(500)
-  fee_detail         varchar(2000)
-  fee_covered_amount decimal(19,4) [not null, default: 0]
-  refundable_amount  decimal(19,4) [not null, default: 0]
-  fee_owed_amount    decimal(19,4) [not null, default: 0]
-  fee_installment_id uuid [unique]
-  settled_by         uuid
-  settled_at         timestamptz [not null]
-  version            bigint [not null, default: 0]
-  created_at         timestamptz [not null, default: `now()`]
-  created_by         varchar(100)
-  last_modified_at   timestamptz
-  last_modified_by   varchar(100)
+  id                         uuid [pk]
+  order_id                   uuid [not null]
+  contract_id                uuid [not null]
+  customer_id                uuid [not null]
+  order_number               varchar(32) [not null]
+  contract_number            varchar(40) [not null]
+  kind                       payment.order_settlement_kind [not null]
+  source_id                  uuid [not null]
+  currency                   varchar(3) [not null]
+  collected_amount           decimal(19,4) [not null]
+  closed_amount              decimal(19,4) [not null, default: 0]
+  reduced_amount             decimal(19,4) [not null, default: 0]
+  surplus_amount             decimal(19,4) [not null]
+  fee_amount                 decimal(19,4) [not null, default: 0]
+  fee_percent                decimal(5,2)
+  fee_reason                 varchar(500)
+  fee_detail                 varchar(2000)
+  fee_covered_amount         decimal(19,4) [not null, default: 0]
+  refundable_amount          decimal(19,4) [not null, default: 0]
+  fee_owed_amount            decimal(19,4) [not null, default: 0]
+  fee_installment_id         uuid [unique]
+  settled_by                 uuid
+  settled_at                 timestamptz [not null]
+  version                    bigint [not null, default: 0]
+  created_at                 timestamptz [not null, default: `now()`]
+  created_by                 varchar(100)
+  last_modified_at           timestamptz
+  last_modified_by           varchar(100)
+  shipment_id                uuid
+  shipping_fee_waived_amount decimal(19,4) [not null, default: 0]
+  carried_to_fee_amount      decimal(19,4) [not null, default: 0]
   indexes {
     (kind, source_id) [unique]
   }
 }
 
 Table payment.payment_receipt [headercolor: #B8860B] {
-  id               uuid [pk]
-  customer_id      uuid [not null]
-  reference        varchar(100) [not null]
-  received_on      date [not null]
-  amount           decimal(19,4) [not null]
-  currency         varchar(3) [not null]
-  note             varchar(500)
-  status           payment.payment_receipt_status [not null]
-  recorded_by      uuid [not null]
-  recorded_at      timestamptz [not null]
-  voided_by        uuid
-  voided_at        timestamptz
-  void_reason      varchar(500)
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                   uuid [pk]
+  customer_id          uuid [not null]
+  reference            varchar(100) [not null]
+  received_on          date [not null]
+  amount               decimal(19,4) [not null]
+  currency             varchar(3) [not null]
+  note                 varchar(500)
+  status               payment.payment_receipt_status [not null]
+  recorded_by          uuid [not null]
+  recorded_at          timestamptz [not null]
+  voided_by            uuid
+  voided_at            timestamptz
+  void_reason          varchar(500)
+  version              bigint [not null, default: 0]
+  created_at           timestamptz [not null, default: `now()`]
+  created_by           varchar(100)
+  last_modified_at     timestamptz
+  last_modified_by     varchar(100)
+  reference_normalized varchar(100) [note: 'generated: upper(regexp_replace((reference)::text, \'\s\'::text, \'\'::text, \'g\'::text))']
 }
 
 Table payment.payment_receipt_line [headercolor: #B8860B] {
@@ -3081,26 +3413,29 @@ Table payment.payment_receipt_line [headercolor: #B8860B] {
 }
 
 Table payment.refund_record [headercolor: #B8860B] {
-  id               uuid [pk]
-  order_id         uuid [not null]
-  customer_id      uuid [not null]
-  order_number     varchar(32) [not null]
-  amount           decimal(19,4) [not null]
-  currency         varchar(3) [not null]
-  refunded_on      date [not null]
-  reference        varchar(100) [not null]
-  note             varchar(500)
-  status           payment.refund_record_status [not null]
-  recorded_by      uuid [not null]
-  recorded_at      timestamptz [not null]
-  voided_by        uuid
-  voided_at        timestamptz
-  void_reason      varchar(500)
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                   uuid [pk]
+  order_id             uuid [not null]
+  customer_id          uuid [not null]
+  order_number         varchar(32) [not null]
+  amount               decimal(19,4) [not null]
+  currency             varchar(3) [not null]
+  refunded_on          date [not null]
+  reference            varchar(100) [not null]
+  note                 varchar(500)
+  status               payment.refund_record_status [not null]
+  recorded_by          uuid [not null]
+  recorded_at          timestamptz [not null]
+  voided_by            uuid
+  voided_at            timestamptz
+  void_reason          varchar(500)
+  version              bigint [not null, default: 0]
+  created_at           timestamptz [not null, default: `now()`]
+  created_by           varchar(100)
+  last_modified_at     timestamptz
+  last_modified_by     varchar(100)
+  payee_account_number varchar(64)
+  payee_bank_name      varchar(255)
+  payee_account_holder varchar(255)
 }
 
 // =============================================================================
@@ -3168,6 +3503,14 @@ Table invoicing.einvoice [headercolor: #A0522D] {
   agreement_number     varchar(64)
   agreement_date       date
   return_request_id    uuid
+  overdue_warned_at    timestamptz
+  reversed_at          timestamptz
+  delivery_failed_at   timestamptz
+  issued_via           varchar(16)
+  portal_recorded_by   uuid
+  portal_recorded_at   timestamptz
+  void_reason_code     varchar(32)
+  delivered_on         date
 }
 
 Table invoicing.einvoice_adjustment_listing [headercolor: #A0522D] {
@@ -3199,6 +3542,15 @@ Table invoicing.einvoice_error_notice [headercolor: #A0522D] {
   recorded_by           uuid
 }
 
+Table invoicing.einvoice_held_notice [headercolor: #A0522D] {
+  einvoice_id uuid [not null]
+  reason      varchar(200) [not null]
+  notified_at timestamptz [not null]
+  indexes {
+    (einvoice_id, reason) [pk]
+  }
+}
+
 Table invoicing.einvoice_line [headercolor: #A0522D] {
   id               uuid [pk]
   einvoice_id      uuid [not null]
@@ -3220,19 +3572,41 @@ Table invoicing.einvoice_line [headercolor: #A0522D] {
   }
 }
 
+Table invoicing.einvoice_pending_return [headercolor: #A0522D] {
+  return_request_id uuid [not null]
+  shipment_id       uuid [not null]
+  order_line_id     uuid [not null]
+  order_id          uuid [not null]
+  rma_number        varchar(64) [not null]
+  order_number      varchar(64) [not null]
+  pieces            bigint [not null]
+  kept_at           timestamptz [not null]
+  settled_at        timestamptz
+  indexes {
+    (return_request_id, shipment_id, order_line_id) [pk]
+  }
+}
+
+Table invoicing.einvoice_portal_record [headercolor: #A0522D] {
+  voided_draft_id      uuid [pk]
+  recorded_einvoice_id uuid [not null, unique]
+  created_at           timestamptz [not null, default: `now()`]
+}
+
 Table invoicing.einvoice_provider_call [headercolor: #A0522D] {
-  id             uuid [pk]
-  einvoice_id    uuid [not null]
-  provider       varchar(32) [not null]
-  transaction_id varchar(64) [not null]
-  operation      invoicing.einvoice_provider_call_operation [not null]
-  outcome        invoicing.einvoice_provider_call_outcome [not null]
-  http_status    int
-  error_code     varchar(64)
-  request_hash   varchar(64)
-  response_hash  varchar(64)
-  called_at      timestamptz [not null]
-  duration_ms    bigint [not null]
+  id                 uuid [pk]
+  einvoice_id        uuid [not null]
+  provider           varchar(32) [not null]
+  transaction_id     varchar(64) [not null]
+  operation          invoicing.einvoice_provider_call_operation [not null]
+  outcome            invoicing.einvoice_provider_call_outcome [not null]
+  http_status        int
+  error_code         varchar(64)
+  request_hash       varchar(64)
+  response_hash      varchar(64)
+  called_at          timestamptz [not null]
+  duration_ms        bigint [not null]
+  provider_reference varchar(100)
 }
 
 Table invoicing.einvoice_provider_config [headercolor: #A0522D] {
@@ -3278,9 +3652,29 @@ Table invoicing.einvoice_series [headercolor: #A0522D] {
 }
 
 Table invoicing.einvoice_stuck_notice [headercolor: #A0522D] {
-  einvoice_id    uuid [not null]
-  transaction_id varchar(64) [not null]
-  notified_at    timestamptz [not null]
+  einvoice_id        uuid [not null]
+  transaction_id     varchar(64) [not null]
+  notified_at        timestamptz [not null]
+  result_overdue_at  timestamptz
+  series_mismatch_at timestamptz
+  indexes {
+    (einvoice_id, transaction_id) [pk]
+  }
+}
+
+Table invoicing.einvoice_transaction_watch [headercolor: #A0522D] {
+  einvoice_id              uuid [not null]
+  transaction_id           varchar(64) [not null]
+  provider                 varchar(32) [not null]
+  let_go_as                varchar(64) [not null]
+  watch_until              timestamptz [not null]
+  last_asked_at            timestamptz
+  found_at                 timestamptz
+  found_number             int
+  found_symbol             varchar(16)
+  found_template_code      varchar(16)
+  found_tax_authority_code varchar(64)
+  created_at               timestamptz [not null, default: `now()`]
   indexes {
     (einvoice_id, transaction_id) [pk]
   }
@@ -3473,6 +3867,10 @@ Table design.design_project_quote_request [headercolor: #AA4A9E] {
   created_by            varchar(100)
   last_modified_at      timestamptz
   last_modified_by      varchar(100)
+  status                design.design_project_quote_request_status [not null, default: 'OPEN']
+  closed_at             timestamptz
+  closed_by             uuid
+  close_reason          varchar(1000)
 }
 
 Table design.design_project_quote_request_line [headercolor: #AA4A9E] {
@@ -3695,20 +4093,21 @@ Table fulfillment.carrier_service_code [headercolor: #2C7873] {
 }
 
 Table fulfillment.delivery_outcome_correction [headercolor: #2C7873] {
-  id               uuid [pk]
-  shipment_id      uuid [not null]
-  from_status      varchar(24) [not null]
-  to_status        varchar(24) [not null]
-  failure_reason   varchar(32)
-  failure_note     varchar(1000)
-  reason           varchar(500) [not null]
-  corrected_by     uuid [not null]
-  corrected_at     timestamptz [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                  uuid [pk]
+  shipment_id         uuid [not null]
+  from_status         varchar(24) [not null]
+  to_status           varchar(24) [not null]
+  failure_reason      varchar(32)
+  failure_note        varchar(1000)
+  reason              varchar(500) [not null]
+  corrected_by        uuid [not null]
+  corrected_at        timestamptz [not null]
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null, default: `now()`]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  undone_delivered_at timestamptz
 }
 
 Table fulfillment.delivery_outcome_import [headercolor: #2C7873] {
@@ -3851,6 +4250,43 @@ Table fulfillment.dispatch_load_unload [headercolor: #2C7873] {
   }
 }
 
+Table fulfillment.failure_reason_correction [headercolor: #2C7873] {
+  id               uuid [pk]
+  shipment_id      uuid [not null]
+  from_reason      varchar(32) [not null]
+  from_note        varchar(500)
+  to_reason        varchar(32) [not null]
+  to_note          varchar(500)
+  reason           varchar(500) [not null]
+  corrected_by     uuid [not null]
+  corrected_at     timestamptz [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table fulfillment.load_booking_cancellation [headercolor: #2C7873] {
+  id               uuid [pk]
+  load_id          uuid [not null]
+  carrier_id       uuid [not null]
+  waybill_no       varchar(64)
+  vehicle_plate    varchar(20)
+  driver_name      varchar(120)
+  driver_phone     varchar(32)
+  booked_at        timestamptz
+  booked_by        uuid
+  cancelled_at     timestamptz [not null]
+  cancelled_by     uuid
+  reason           varchar(500) [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
 Table fulfillment.load_estimate [headercolor: #2C7873] {
   id               uuid [pk]
   source_type      varchar(16) [not null]
@@ -3942,6 +4378,7 @@ Table fulfillment.load_plan_package [headercolor: #2C7873] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  fill             boolean [not null, default: false]
   indexes {
     (load_plan_id, package_id) [unique]
   }
@@ -4060,7 +4497,7 @@ Table fulfillment.package [headercolor: #2C7873] {
   label_version        int [not null, default: 0]
   removed_at           timestamptz
   removed_by           uuid
-  removal_reason       varchar(16)
+  removal_reason       varchar(32)
   removal_note         varchar(500)
   indexes {
     (pack_id, package_no) [unique]
@@ -4069,7 +4506,6 @@ Table fulfillment.package [headercolor: #2C7873] {
 
 Table fulfillment.pick [headercolor: #2C7873] {
   id                    uuid [pk]
-  wave_id               uuid
   order_id              uuid [not null]
   status                fulfillment.pick_status [not null]
   version               bigint [not null, default: 0]
@@ -4091,6 +4527,8 @@ Table fulfillment.pick [headercolor: #2C7873] {
   moved_to_dispatch_by  uuid
   delivery_batch_id     uuid
   redelivery_case_id    uuid
+  cancelled_at          timestamptz
+  task_number           varchar(32) [not null, unique]
   indexes {
     (order_id, delivery_batch_id, redelivery_case_id) [unique]
   }
@@ -4128,6 +4566,7 @@ Table fulfillment.pick_line [headercolor: #2C7873] {
   short_reason           varchar(16)
   staged_at              timestamptz
   staged_location_code   varchar(64)
+  replaces_line_id       uuid
 }
 
 Table fulfillment.shipment [headercolor: #2C7873] {
@@ -4189,13 +4628,17 @@ Table fulfillment.shipment_pod_file [headercolor: #2C7873] {
   file_name        varchar(255) [not null]
   content_type     varchar(100) [not null]
   size_bytes       bigint [not null]
-  uploaded_by      uuid [not null]
+  uploaded_by      uuid
   uploaded_at      timestamptz [not null]
   version          bigint [not null, default: 0]
   created_at       timestamptz [not null, default: `now()`]
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  carrier_event_id uuid
+  indexes {
+    (carrier_event_id, shipment_id) [unique]
+  }
 }
 
 Table fulfillment.tracking_milestone [headercolor: #2C7873] {
@@ -4239,18 +4682,6 @@ Table fulfillment.vehicle_type [headercolor: #2C7873] {
   door_height_mm   int
 }
 
-Table fulfillment.wave [headercolor: #2C7873] {
-  id               uuid [pk]
-  code             varchar(64) [not null, unique]
-  status           fulfillment.wave_status [not null]
-  released_at      timestamptz
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
 Table fulfillment.waybill_change [headercolor: #2C7873] {
   id               uuid [pk]
   load_id          uuid [not null]
@@ -4281,6 +4712,7 @@ Table fulfillment.waybill_import [headercolor: #2C7873] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  warehouse_id     uuid
 }
 
 Table fulfillment.waybill_import_row [headercolor: #2C7873] {
@@ -4376,6 +4808,33 @@ Table catalog.product_listing [headercolor: #1B998B] {
   search_document           tsvector [note: 'generated: (setweight(to_tsvector(\'simple\'::regconfig, catalog.immutable_unaccent((COALESCE(published_title, \'\'::character varying))::text)), \'A\'::"char") || setweight(to_tsvector(\'simple\'::regconfig, catalog.immutable_unaccent(COALESCE(published_description, \'\'::text))), \'C\'::"char"))']
 }
 
+Table catalog.standard_price [headercolor: #1B998B] {
+  id               uuid [pk]
+  sku              varchar(64) [not null, unique]
+  currency         varchar(3) [not null, default: 'VND']
+  note             varchar(500)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table catalog.standard_price_tier [headercolor: #1B998B] {
+  id                uuid [pk]
+  standard_price_id uuid [not null]
+  min_quantity      int [not null]
+  unit_price        decimal(18,2) [not null]
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  indexes {
+    (standard_price_id, min_quantity) [unique]
+  }
+}
+
 // =============================================================================
 // SCHEMA: chat
 // =============================================================================
@@ -4438,7 +4897,7 @@ Table chat.conversation_context [headercolor: #4C93A8] {
   conversation_id     uuid [not null]
   kind                chat.conversation_context_kind [not null]
   product_id          uuid
-  variant_id          uuid
+  customer_sku_id     uuid
   design_id           uuid
   design_project_id   uuid
   quote_id            uuid
@@ -4505,9 +4964,9 @@ Table chat.message [headercolor: #4C93A8] {
   deleted_at        timestamptz
   deleted_by        uuid
   indexes {
-    (conversation_id, seq) [unique]
-    (id, kind) [unique]
     (id, conversation_id) [unique]
+    (id, kind) [unique]
+    (conversation_id, seq) [unique]
   }
 }
 
@@ -4586,39 +5045,6 @@ Table notification.delivery_log [headercolor: #A6763F] {
   next_attempt_at     timestamptz
   provider_status     notification.delivery_log_provider_status
   provider_status_at  timestamptz
-}
-
-Table notification.preference [headercolor: #A6763F] {
-  id               uuid [pk]
-  user_id          uuid [not null]
-  channel          notification.preference_channel [not null]
-  enabled          boolean [not null, default: true]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  indexes {
-    (user_id, channel) [unique]
-  }
-}
-
-Table notification.template [headercolor: #A6763F] {
-  id               uuid [pk]
-  code             varchar(64) [not null]
-  channel          notification.template_channel [not null]
-  subject          varchar(300)
-  body             varchar(4000) [not null]
-  locale           varchar(10) [not null, default: 'vi']
-  active           boolean [not null, default: true]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  indexes {
-    (code, locale) [unique]
-  }
 }
 
 Table notification.user_notification [headercolor: #A6763F] {
@@ -4936,6 +5362,10 @@ Ref: product.attribute_values.attribute_id > product.attributes.id [delete: rest
 Ref: product.categories.parent_id > product.categories.id [delete: restrict]
 Ref: product.category_attributes.attribute_id > product.attributes.id [delete: restrict]
 Ref: product.category_attributes.category_id > product.categories.id [delete: cascade]
+Ref: product.customer_skus.customer_id > customer.customer.id [delete: restrict]
+Ref: product.customer_skus.design_snapshot_id > design.design_snapshot.id [delete: restrict]
+Ref: product.customer_skus.product_id > product.products.id [delete: restrict]
+Ref: product.customer_skus.variant_id > product.variants.id [delete: restrict]
 Ref: product.customization_templates.variant_id > product.variants.id [delete: cascade]
 Ref: product.media.published_by > identity.app_user.id
 Ref: product.media.variant_id > product.variants.id [delete: cascade]
@@ -4955,12 +5385,7 @@ Ref: product.products.brand_id > product.brands.id [delete: set null]
 Ref: product.products.submitted_by > identity.app_user.id
 Ref: product.variant_attribute_values.product_attribute_option_id > product.product_attribute_options.id [delete: restrict]
 Ref: product.variant_attribute_values.variant_id > product.variants.id [delete: cascade]
-Ref: product.variant_sales_units.uom_conversion_id > inventory.uom_conversions.id [delete: cascade]
-Ref: product.variant_sales_units.variant_id > product.variants.id [delete: cascade]
-Ref: product.variants.design_snapshot_id > design.design_snapshot.id
-Ref: product.variants.owner_customer_id > customer.customer.id
 Ref: product.variants.product_id > product.products.id [delete: restrict]
-Ref: product.variants.source_variant_id > product.variants.id
 Ref: inventory.cycle_count.assigned_user_id > identity.app_user.id
 Ref: inventory.cycle_count.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: inventory.cycle_count_line.counted_by > identity.app_user.id
@@ -4968,7 +5393,8 @@ Ref: inventory.cycle_count_line.cycle_count_id > inventory.cycle_count.id [delet
 Ref: inventory.cycle_count_line.location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.cycle_count_line.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.cycle_count_line.stock_package_id > inventory.stock_package.id [delete: restrict]
-Ref: inventory.inventory_items.sku > product.variants.sku [delete: restrict]
+Ref: inventory.inventory_items.sku > product.customer_skus.sku [delete: restrict]
+Ref: inventory.inventory_items.variant_id > product.variants.id
 Ref: inventory.stock_adjustment.counted_by > identity.app_user.id
 Ref: inventory.stock_adjustment.cycle_count_line_id > inventory.cycle_count_line.id [delete: restrict]
 Ref: inventory.stock_adjustment.decided_by > identity.app_user.id
@@ -4977,45 +5403,36 @@ Ref: inventory.stock_adjustment.requested_by > identity.app_user.id
 Ref: inventory.stock_adjustment.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: inventory.stock_adjustment.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_adjustment.stock_package_id > inventory.stock_package.id [delete: restrict]
-Ref: inventory.stock_item.location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_item.lot_id > inventory.stock_lot.id [delete: restrict]
-Ref: inventory.stock_item.sku > inventory.inventory_items.sku [delete: restrict]
-Ref: inventory.stock_item.stock_package_id > inventory.stock_package.id [delete: restrict]
-Ref: inventory.stock_lot.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: inventory.stock_lot.production_order_id > ordering.production_order.id [delete: restrict]
 Ref: inventory.stock_lot.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_lot.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: inventory.stock_movement.actor_id > identity.app_user.id
 Ref: inventory.stock_movement.counted_by > identity.app_user.id
 Ref: inventory.stock_movement.from_location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_movement.from_stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_movement.lot_id > inventory.stock_lot.id [delete: restrict]
 Ref: inventory.stock_movement.order_id > ordering.customer_order.id [delete: restrict]
 Ref: inventory.stock_movement.requested_by > identity.app_user.id
 Ref: inventory.stock_movement.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: inventory.stock_movement.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_movement.to_location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_movement.to_stock_package_id > inventory.stock_package.id [delete: restrict]
+Ref: inventory.stock_package.custody_ended_by > identity.app_user.id
 Ref: inventory.stock_package.goods_receipt_line_id > procurement.goods_receipt_lines.id [delete: restrict]
 Ref: inventory.stock_package.inventory_item_id > inventory.inventory_items.id [delete: restrict]
 Ref: inventory.stock_package.location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: inventory.stock_package.lot_id > inventory.stock_lot.id [delete: restrict]
+Ref: inventory.stock_package.return_request_id > ordering.return_request.id [delete: restrict]
 Ref: inventory.stock_package.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
 Ref: inventory.stock_reservation.allocated_from_id > inventory.stock_reservation.id [delete: restrict]
 Ref: inventory.stock_reservation.order_id > ordering.customer_order.id [delete: restrict]
 Ref: inventory.stock_reservation.sku > inventory.inventory_items.sku [delete: restrict]
-Ref: inventory.stock_reservation.stock_item_id > inventory.stock_item.id [delete: cascade]
+Ref: inventory.stock_reservation.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_reservation.warehouse_code > warehouse.warehouse.prefix [delete: restrict]
-Ref: inventory.uom_conversions.inventory_item_id > inventory.inventory_items.id [delete: cascade]
+Ref: inventory.uom_conversions.variant_id > product.variants.id [delete: cascade]
 Ref: warehouse.area.location_id > warehouse.storage_location.id [delete: restrict]
 Ref: warehouse.area.warehouse_id > warehouse.warehouse.id
 Ref: warehouse.bin.level_id > warehouse.shelf_level.id
 Ref: warehouse.bin.location_id > warehouse.storage_location.id [delete: restrict]
 Ref: warehouse.boundary.warehouse_id > warehouse.warehouse.id
-Ref: warehouse.move_task.approved_by > identity.app_user.id
-Ref: warehouse.move_task.assigned_user_id > identity.app_user.id
-Ref: warehouse.move_task.from_location_id > warehouse.storage_location.id [delete: restrict]
-Ref: warehouse.move_task.sku > inventory.inventory_items.sku [delete: restrict]
-Ref: warehouse.move_task.to_location_id > warehouse.storage_location.id [delete: restrict]
-Ref: warehouse.move_task.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: warehouse.putaway_task.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: warehouse.putaway_task.goods_receipt_line_id > procurement.goods_receipt_lines.id [delete: restrict]
 Ref: warehouse.putaway_task.sku > inventory.inventory_items.sku [delete: restrict]
@@ -5042,9 +5459,14 @@ Ref: procurement.goods_receipt_lines.uom_conversion_id > inventory.uom_conversio
 Ref: procurement.goods_receipt_photos.receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: procurement.goods_receipt_photos.receipt_line_id > procurement.goods_receipt_lines.id [delete: set null]
 Ref: procurement.goods_receipt_photos.taken_by > identity.app_user.id
+Ref: procurement.goods_receipt_return_cartons.counted_by > identity.app_user.id
 Ref: procurement.goods_receipt_return_cartons.receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: procurement.goods_receipt_return_cartons.scanned_by > identity.app_user.id
 Ref: procurement.goods_receipt_return_cartons.stock_package_id > inventory.stock_package.id [delete: restrict]
+Ref: procurement.goods_receipt_return_loose_lines.photo_id > procurement.goods_receipt_photos.id [delete: restrict]
+Ref: procurement.goods_receipt_return_loose_lines.receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: procurement.goods_receipt_return_loose_lines.recorded_by > identity.app_user.id
+Ref: procurement.goods_receipt_return_loose_lines.sku > product.customer_skus.sku [delete: restrict]
 Ref: procurement.goods_receipts.confirmed_by > identity.app_user.id
 Ref: procurement.goods_receipts.customer_order_id > ordering.customer_order.id [delete: restrict]
 Ref: procurement.goods_receipts.production_order_id > ordering.production_order.id [delete: restrict]
@@ -5053,6 +5475,9 @@ Ref: procurement.goods_receipts.received_by > identity.app_user.id
 Ref: procurement.goods_receipts.return_request_id > ordering.return_request.id [delete: restrict]
 Ref: procurement.goods_receipts.return_shipment_id > fulfillment.shipment.id [delete: restrict]
 Ref: procurement.goods_receipts.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: ordering.contract_credit_review.contract_id > ordering.sales_contract.id [delete: cascade]
+Ref: ordering.contract_credit_review.decided_by > identity.app_user.id
+Ref: ordering.contract_credit_review.submitted_by > identity.app_user.id
 Ref: ordering.contract_payment_installment.contract_id > ordering.sales_contract.id [delete: cascade]
 Ref: ordering.contract_payment_installment.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
 Ref: ordering.customer_order.customer_id > customer.customer.id [delete: restrict]
@@ -5092,24 +5517,35 @@ Ref: ordering.delivery_failure_case_carton.case_id > ordering.delivery_failure_c
 Ref: ordering.delivery_failure_case_hold.case_id > ordering.delivery_failure_case.id [delete: cascade]
 Ref: ordering.delivery_failure_case_hold.order_line_id > ordering.order_line.id [delete: cascade]
 Ref: ordering.delivery_failure_case_hold.reservation_id > inventory.stock_reservation.id [delete: restrict]
+Ref: ordering.order_address_change.changed_by > identity.app_user.id
+Ref: ordering.order_address_change.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_cancellation_request.decided_by > identity.app_user.id
 Ref: ordering.order_cancellation_request.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_cancellation_request.requested_by > identity.app_user.id
+Ref: ordering.order_completion_hold.held_by > identity.app_user.id
+Ref: ordering.order_completion_hold.order_id > ordering.customer_order.id
+Ref: ordering.order_completion_hold.released_by > identity.app_user.id
 Ref: ordering.order_credit_check.decided_by > identity.app_user.id
 Ref: ordering.order_credit_check.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.order_credit_check.pre_send_review_id > ordering.contract_credit_review.id
 Ref: ordering.order_fee_line.order_id > ordering.customer_order.id [delete: cascade]
-Ref: ordering.order_fee_line.sku > product.variants.sku [delete: restrict]
+Ref: ordering.order_fee_line.sku > product.customer_skus.sku [delete: restrict]
 Ref: ordering.order_hold.order_id > ordering.customer_order.id
 Ref: ordering.order_hold.raised_by > identity.app_user.id
 Ref: ordering.order_hold.resolved_by > identity.app_user.id
 Ref: ordering.order_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: ordering.order_line.order_id > ordering.customer_order.id [delete: cascade]
-Ref: ordering.order_line.sku > product.variants.sku [delete: restrict]
+Ref: ordering.order_line.sku > product.customer_skus.sku [delete: restrict]
 Ref: ordering.order_line.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
 Ref: ordering.order_line_reservation.order_line_id > ordering.order_line.id [delete: cascade]
 Ref: ordering.order_line_reservation.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: ordering.order_partial_shipment_decision.decided_by > identity.app_user.id
 Ref: ordering.order_partial_shipment_decision.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.order_refund_void.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.order_refund_void.refund_record_id > payment.refund_record.id [delete: restrict]
+Ref: ordering.order_refund_void.voided_by > identity.app_user.id
+Ref: ordering.order_remainder_closure.closed_by > identity.app_user.id
+Ref: ordering.order_remainder_closure.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_shipment.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
 Ref: ordering.order_shipment.handed_over_by > identity.app_user.id
 Ref: ordering.order_shipment.id > fulfillment.shipment.id [delete: restrict]
@@ -5117,6 +5553,9 @@ Ref: ordering.order_shipment.order_id > ordering.customer_order.id [delete: rest
 Ref: ordering.order_shipment.outcome_by > identity.app_user.id
 Ref: ordering.order_shipment_line.order_line_id > ordering.order_line.id [delete: restrict]
 Ref: ordering.order_shipment_line.shipment_id > ordering.order_shipment.id [delete: cascade]
+Ref: ordering.order_shipment_loss_closure.closed_by > identity.app_user.id
+Ref: ordering.order_shipment_loss_closure.order_id > ordering.customer_order.id [delete: restrict]
+Ref: ordering.order_shipment_loss_closure.shipment_id > ordering.order_shipment.id [delete: restrict]
 Ref: ordering.order_status_history.actor_id > identity.app_user.id
 Ref: ordering.order_status_history.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.production_order.approved_by > identity.app_user.id
@@ -5127,7 +5566,9 @@ Ref: ordering.production_order.delivery_batch_id > ordering.delivery_batch.id
 Ref: ordering.production_order.drawn_up_by > identity.app_user.id
 Ref: ordering.production_order.producer_id > ordering.producer.id
 Ref: ordering.production_order.receiving_warehouse_id > warehouse.warehouse.id
+Ref: ordering.production_order.replaces_production_order_id > ordering.production_order.id
 Ref: ordering.production_order.sales_order_id > ordering.customer_order.id
+Ref: ordering.production_order.sent_by > identity.app_user.id
 Ref: ordering.production_order_line.design_snapshot_id > design.design_snapshot.id
 Ref: ordering.production_order_line.order_line_id > ordering.order_line.id
 Ref: ordering.production_order_line.production_order_id > ordering.production_order.id [delete: cascade]
@@ -5141,30 +5582,43 @@ Ref: ordering.production_order_sample_round.production_order_id > ordering.produ
 Ref: ordering.production_order_slip.production_order_id > ordering.production_order.id
 Ref: ordering.production_order_status_history.changed_by > identity.app_user.id
 Ref: ordering.production_order_status_history.production_order_id > ordering.production_order.id
+Ref: ordering.production_order_write_off.production_order_id > ordering.production_order.id
+Ref: ordering.production_order_write_off.stock_adjustment_id > inventory.stock_adjustment.id
 Ref: ordering.quote.converted_order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.quote.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.quote.responded_by > identity.app_user.id
 Ref: ordering.quote.sent_by > identity.app_user.id
 Ref: ordering.quote_fee_line.quote_id > ordering.quote.id [delete: cascade]
-Ref: ordering.quote_fee_line.sku > product.variants.sku [delete: restrict]
+Ref: ordering.quote_fee_line.sku > product.customer_skus.sku [delete: restrict]
 Ref: ordering.quote_line.blank_sku > product.variants.sku [delete: restrict]
 Ref: ordering.quote_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
 Ref: ordering.quote_line.quote_id > ordering.quote.id [delete: cascade]
-Ref: ordering.quote_line.sku > product.variants.sku [delete: restrict]
+Ref: ordering.quote_line.sku > product.customer_skus.sku [delete: restrict]
 Ref: ordering.quote_line.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
+Ref: ordering.quote_price_review.decided_by > identity.app_user.id
+Ref: ordering.quote_price_review.quote_id > ordering.quote.id [delete: cascade]
+Ref: ordering.quote_price_review.submitted_by > identity.app_user.id
 Ref: ordering.quote_price_tier.quote_line_id > ordering.quote_line.id [delete: cascade]
 Ref: ordering.quote_status_history.changed_by > identity.app_user.id
 Ref: ordering.quote_status_history.quote_id > ordering.quote.id [delete: cascade]
+Ref: ordering.return_custody_outcome.chosen_by > identity.app_user.id
+Ref: ordering.return_custody_outcome.ended_by > identity.app_user.id
+Ref: ordering.return_custody_outcome.evidence_id > ordering.return_request_evidence.id [delete: restrict]
+Ref: ordering.return_custody_outcome.return_request_id > ordering.return_request.id [delete: restrict]
+Ref: ordering.return_custody_outcome.taken_by_return_id > ordering.return_request.id [delete: restrict]
 Ref: ordering.return_request.cancelled_by > identity.app_user.id
+Ref: ordering.return_request.custody_choice_by > identity.app_user.id
 Ref: ordering.return_request.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.return_request.decided_by > identity.app_user.id
 Ref: ordering.return_request.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: ordering.return_request.open_draft_receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: ordering.return_request.order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.return_request.proposed_by > identity.app_user.id
 Ref: ordering.return_request.received_by > identity.app_user.id
 Ref: ordering.return_request.receiving_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: ordering.return_request.requested_by > identity.app_user.id
 Ref: ordering.return_request.settled_by > identity.app_user.id
+Ref: ordering.return_request.shipment_id > ordering.order_shipment.id [delete: restrict]
 Ref: ordering.return_request_discrepancy.recorded_by > identity.app_user.id
 Ref: ordering.return_request_discrepancy.return_request_id > ordering.return_request.id [delete: cascade]
 Ref: ordering.return_request_discrepancy.return_request_line_id > ordering.return_request_line.id [delete: cascade]
@@ -5172,7 +5626,11 @@ Ref: ordering.return_request_evidence.return_request_id > ordering.return_reques
 Ref: ordering.return_request_evidence.uploaded_by > identity.app_user.id
 Ref: ordering.return_request_line.order_line_id > ordering.order_line.id [delete: restrict]
 Ref: ordering.return_request_line.return_request_id > ordering.return_request.id [delete: cascade]
-Ref: ordering.return_request_line.sku > product.variants.sku [delete: restrict]
+Ref: ordering.return_request_line.sku > product.customer_skus.sku [delete: restrict]
+Ref: ordering.return_request_receipt.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: ordering.return_request_receipt.received_by > identity.app_user.id
+Ref: ordering.return_request_receipt.receiving_location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: ordering.return_request_receipt.return_request_id > ordering.return_request.id [delete: cascade]
 Ref: ordering.return_request_status_history.actor_id > identity.app_user.id
 Ref: ordering.return_request_status_history.return_request_id > ordering.return_request.id [delete: cascade]
 Ref: ordering.sales_contract.cancelled_by > identity.app_user.id
@@ -5194,6 +5652,16 @@ Ref: customer.default_payment_installment.schedule_id > customer.default_payment
 Ref: customer.default_payment_schedule.approved_by > identity.app_user.id
 Ref: customer.default_payment_schedule.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.default_payment_schedule.set_by > identity.app_user.id
+Ref: payment.bank_transaction.customer_id > customer.customer.id
+Ref: payment.bank_transaction.installment_id > payment.installment.id
+Ref: payment.bank_transaction.receipt_id > payment.payment_receipt.id
+Ref: payment.bank_transaction.reviewed_by > identity.app_user.id
+Ref: payment.credit_request.customer_id > customer.customer.id
+Ref: payment.credit_request.decided_by > identity.app_user.id
+Ref: payment.credit_request.recommended_by > identity.app_user.id
+Ref: payment.credit_request.submitted_by > identity.app_user.id
+Ref: payment.credit_request_file.credit_request_id > payment.credit_request.id [delete: cascade]
+Ref: payment.credit_request_file.uploaded_by > identity.app_user.id
 Ref: payment.installment.contract_id > ordering.sales_contract.id
 Ref: payment.installment.contract_installment_id > ordering.contract_payment_installment.id
 Ref: payment.installment.customer_id > customer.customer.id
@@ -5206,6 +5674,7 @@ Ref: payment.order_settlement.customer_id > customer.customer.id
 Ref: payment.order_settlement.fee_installment_id > payment.installment.id
 Ref: payment.order_settlement.order_id > ordering.customer_order.id
 Ref: payment.order_settlement.settled_by > identity.app_user.id
+Ref: payment.order_settlement.shipment_id > ordering.order_shipment.id
 Ref: payment.payment_receipt.customer_id > customer.customer.id
 Ref: payment.payment_receipt.recorded_by > identity.app_user.id
 Ref: payment.payment_receipt.voided_by > identity.app_user.id
@@ -5219,6 +5688,7 @@ Ref: invoicing.einvoice.customer_id > customer.customer.id
 Ref: invoicing.einvoice.delivery_batch_id > ordering.delivery_batch.id
 Ref: invoicing.einvoice.order_id > ordering.customer_order.id
 Ref: invoicing.einvoice.original_einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice.portal_recorded_by > identity.app_user.id
 Ref: invoicing.einvoice.return_request_id > ordering.return_request.id
 Ref: invoicing.einvoice.shipment_id > ordering.order_shipment.id
 Ref: invoicing.einvoice.submitted_by > identity.app_user.id
@@ -5227,12 +5697,20 @@ Ref: invoicing.einvoice_adjustment_listing.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_adjustment_listing.listed_einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_error_notice.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_error_notice.recorded_by > identity.app_user.id
+Ref: invoicing.einvoice_held_notice.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_line.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_line.order_line_id > ordering.order_line.id
+Ref: invoicing.einvoice_pending_return.order_id > ordering.customer_order.id
+Ref: invoicing.einvoice_pending_return.order_line_id > ordering.order_line.id
+Ref: invoicing.einvoice_pending_return.return_request_id > ordering.return_request.id
+Ref: invoicing.einvoice_pending_return.shipment_id > ordering.order_shipment.id
+Ref: invoicing.einvoice_portal_record.recorded_einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_portal_record.voided_draft_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_provider_call.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_sending.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_series.provider > invoicing.einvoice_provider_config.provider
 Ref: invoicing.einvoice_stuck_notice.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_transaction_watch.einvoice_id > invoicing.einvoice.id
 Ref: design.design_artifact.draft_id > design.design_draft.id
 Ref: design.design_asset.draft_id > design.design_draft.id
 Ref: design.design_decision.actor_id > identity.app_user.id
@@ -5253,6 +5731,7 @@ Ref: design.design_project.owner_user_id > identity.app_user.id
 Ref: design.design_project_asset.project_id > design.design_project.id
 Ref: design.design_project_event.actor_id > identity.app_user.id
 Ref: design.design_project_event.project_id > design.design_project.id
+Ref: design.design_project_quote_request.closed_by > identity.app_user.id
 Ref: design.design_project_quote_request.project_id > design.design_project.id
 Ref: design.design_project_quote_request.requested_by > identity.app_user.id
 Ref: design.design_project_quote_request_line.draft_id > design.design_draft.id
@@ -5310,6 +5789,12 @@ Ref: fulfillment.dispatch_load_unload.load_id > fulfillment.dispatch_load.id [de
 Ref: fulfillment.dispatch_load_unload.package_id > fulfillment.package.id [delete: restrict]
 Ref: fulfillment.dispatch_load_unload.shipment_id > fulfillment.shipment.id [delete: restrict]
 Ref: fulfillment.dispatch_load_unload.unloaded_by > identity.app_user.id
+Ref: fulfillment.failure_reason_correction.corrected_by > identity.app_user.id
+Ref: fulfillment.failure_reason_correction.shipment_id > fulfillment.shipment.id
+Ref: fulfillment.load_booking_cancellation.booked_by > identity.app_user.id
+Ref: fulfillment.load_booking_cancellation.cancelled_by > identity.app_user.id
+Ref: fulfillment.load_booking_cancellation.carrier_id > fulfillment.carrier.id
+Ref: fulfillment.load_booking_cancellation.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.load_estimate.source_id > ordering.customer_order.id [delete: cascade]
 Ref: fulfillment.load_estimate.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: fulfillment.load_placement.(load_plan_id, package_id) > fulfillment.load_plan_package.(load_plan_id, package_id) [delete: restrict]
@@ -5350,7 +5835,6 @@ Ref: fulfillment.pick.order_id > ordering.customer_order.id [delete: restrict]
 Ref: fulfillment.pick.redelivery_case_id > ordering.delivery_failure_case.id [delete: restrict]
 Ref: fulfillment.pick.staging_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.pick.warehouse_id > warehouse.warehouse.id
-Ref: fulfillment.pick.wave_id > fulfillment.wave.id
 Ref: fulfillment.pick_line.location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.pick_line.lpn > inventory.stock_package.lpn
 Ref: fulfillment.pick_line.order_line_id > ordering.order_line.id [delete: restrict]
@@ -5358,6 +5842,7 @@ Ref: fulfillment.pick_line.pick_id > fulfillment.pick.id [delete: cascade]
 Ref: fulfillment.pick_line.picked_by > identity.app_user.id
 Ref: fulfillment.pick_line.put_back_by > identity.app_user.id
 Ref: fulfillment.pick_line.put_back_location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: fulfillment.pick_line.replaces_line_id > fulfillment.pick_line.id
 Ref: fulfillment.pick_line.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: fulfillment.pick_line.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: fulfillment.pick_line.staged_location_code > warehouse.storage_location.location_code [delete: restrict]
@@ -5371,6 +5856,7 @@ Ref: fulfillment.shipment.ready_by > identity.app_user.id
 Ref: fulfillment.shipment.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.shipment_event.recorded_by > identity.app_user.id
 Ref: fulfillment.shipment_event.shipment_id > fulfillment.shipment.id [delete: cascade]
+Ref: fulfillment.shipment_pod_file.carrier_event_id > fulfillment.carrier_event.id
 Ref: fulfillment.shipment_pod_file.shipment_id > fulfillment.shipment.id
 Ref: fulfillment.shipment_pod_file.uploaded_by > identity.app_user.id
 Ref: fulfillment.tracking_milestone.carrier_event_id > fulfillment.carrier_event.id
@@ -5378,13 +5864,16 @@ Ref: fulfillment.tracking_milestone.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.waybill_change.changed_by > identity.app_user.id
 Ref: fulfillment.waybill_change.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.waybill_import.uploaded_by > identity.app_user.id
+Ref: fulfillment.waybill_import.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: fulfillment.waybill_import_row.import_id > fulfillment.waybill_import.id
 Ref: fulfillment.waybill_import_row.load_id > fulfillment.dispatch_load.id
 Ref: catalog.catalog_entry.sku > product.variants.sku [delete: restrict]
 Ref: catalog.customer_price.customer_id > customer.customer.id [delete: cascade]
-Ref: catalog.customer_price.sku > product.variants.sku [delete: restrict]
+Ref: catalog.customer_price.sku > product.customer_skus.sku [delete: restrict]
 Ref: catalog.customer_price_tier.customer_price_id > catalog.customer_price.id [delete: cascade]
 Ref: catalog.product_listing.product_id > product.products.id
+Ref: catalog.standard_price.sku > product.variants.sku [delete: cascade]
+Ref: catalog.standard_price_tier.standard_price_id > catalog.standard_price.id [delete: cascade]
 Ref: chat.canned_response.owner_id > identity.app_user.id
 Ref: chat.conversation.assigned_agent_id > identity.app_user.id
 Ref: chat.conversation.continued_from_id > chat.conversation.id [delete: restrict]
@@ -5397,6 +5886,7 @@ Ref: chat.conversation.resolved_by > identity.app_user.id
 Ref: chat.conversation_context.attached_by > identity.app_user.id
 Ref: chat.conversation_context.contract_id > ordering.sales_contract.id [delete: restrict]
 Ref: chat.conversation_context.conversation_id > chat.conversation.id [delete: restrict]
+Ref: chat.conversation_context.customer_sku_id > product.customer_skus.id [delete: restrict]
 Ref: chat.conversation_context.design_id > design.design_draft.id [delete: restrict]
 Ref: chat.conversation_context.design_project_id > design.design_project.id [delete: restrict]
 Ref: chat.conversation_context.einvoice_id > invoicing.einvoice.id [delete: restrict]
@@ -5404,7 +5894,6 @@ Ref: chat.conversation_context.order_id > ordering.customer_order.id [delete: re
 Ref: chat.conversation_context.product_id > product.products.id [delete: restrict]
 Ref: chat.conversation_context.production_order_id > ordering.production_order.id [delete: restrict]
 Ref: chat.conversation_context.quote_id > ordering.quote.id [delete: restrict]
-Ref: chat.conversation_context.variant_id > product.variants.id [delete: restrict]
 Ref: chat.conversation_event.actor_id > identity.app_user.id
 Ref: chat.conversation_event.(context_id, conversation_id) > chat.conversation_context.(id, conversation_id) [delete: restrict]
 Ref: chat.conversation_event.conversation_id > chat.conversation.id [delete: restrict]
@@ -5421,9 +5910,8 @@ Ref: chat.message_mention.user_id > identity.app_user.id
 Ref: chat.participant_read.conversation_id > chat.conversation.id [delete: restrict]
 Ref: chat.participant_read.(last_read_message_id, conversation_id) > chat.message.(id, conversation_id) [delete: restrict]
 Ref: chat.participant_read.user_id > identity.app_user.id
-Ref: notification.preference.user_id > identity.app_user.id [delete: cascade]
 Ref: notification.user_notification.recipient_id > identity.app_user.id [delete: cascade]
-Ref: reporting.product_sales_summary.sku > product.variants.sku [delete: restrict]
+Ref: reporting.product_sales_summary.sku > product.customer_skus.sku [delete: restrict]
 Ref: identity.portal_invitation.issued_by > identity.app_user.id
 Ref: identity.portal_invitation.user_id > identity.app_user.id [delete: cascade]
 Ref: identity.role_permission.permission_id > identity.permission.id [delete: cascade]
@@ -5442,6 +5930,7 @@ TableGroup product_group [color: #2E86AB] {
   product.brands
   product.categories
   product.category_attributes
+  product.customer_skus
   product.customization_templates
   product.media
   product.print_areas
@@ -5452,7 +5941,6 @@ TableGroup product_group [color: #2E86AB] {
   product.product_descriptive_values
   product.products
   product.variant_attribute_values
-  product.variant_sales_units
   product.variants
 }
 
@@ -5461,7 +5949,6 @@ TableGroup inventory_group [color: #3E7C4A] {
   inventory.cycle_count_line
   inventory.inventory_items
   inventory.stock_adjustment
-  inventory.stock_item
   inventory.stock_lot
   inventory.stock_movement
   inventory.stock_package
@@ -5473,7 +5960,6 @@ TableGroup warehouse_group [color: #8E6C3A] {
   warehouse.area
   warehouse.bin
   warehouse.boundary
-  warehouse.move_task
   warehouse.putaway_task
   warehouse.putaway_trip
   warehouse.putaway_trip_item
@@ -5489,10 +5975,12 @@ TableGroup procurement_group [color: #7D5BA6] {
   procurement.goods_receipt_lines
   procurement.goods_receipt_photos
   procurement.goods_receipt_return_cartons
+  procurement.goods_receipt_return_loose_lines
   procurement.goods_receipts
 }
 
 TableGroup ordering_group [color: #C0392B] {
+  ordering.contract_credit_review
   ordering.contract_payment_installment
   ordering.customer_order
   ordering.delay_alert
@@ -5504,7 +5992,9 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.delivery_failure_case
   ordering.delivery_failure_case_carton
   ordering.delivery_failure_case_hold
+  ordering.order_address_change
   ordering.order_cancellation_request
+  ordering.order_completion_hold
   ordering.order_credit_check
   ordering.order_fee_line
   ordering.order_hold
@@ -5512,8 +6002,11 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.order_line_reservation
   ordering.order_number_sequence
   ordering.order_partial_shipment_decision
+  ordering.order_refund_void
+  ordering.order_remainder_closure
   ordering.order_shipment
   ordering.order_shipment_line
+  ordering.order_shipment_loss_closure
   ordering.order_status_history
   ordering.order_status_transition
   ordering.producer
@@ -5525,17 +6018,22 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.production_order_slip
   ordering.production_order_status_history
   ordering.production_order_status_transition
+  ordering.production_order_write_off
   ordering.quote
   ordering.quote_fee_line
   ordering.quote_line
+  ordering.quote_price_review
   ordering.quote_price_tier
   ordering.quote_status_history
+  ordering.return_custody_outcome
   ordering.return_number_sequence
   ordering.return_request
   ordering.return_request_discrepancy
   ordering.return_request_evidence
   ordering.return_request_line
+  ordering.return_request_receipt
   ordering.return_request_status_history
+  ordering.return_request_status_transition
   ordering.sales_contract
   ordering.tax_rate
   ordering.tax_rate_period
@@ -5554,6 +6052,9 @@ TableGroup customer_group [color: #D68910] {
 }
 
 TableGroup payment_group [color: #B8860B] {
+  payment.bank_transaction
+  payment.credit_request
+  payment.credit_request_file
   payment.installment
   payment.installment_reduction
   payment.order_settlement
@@ -5566,12 +6067,16 @@ TableGroup invoicing_group [color: #A0522D] {
   invoicing.einvoice
   invoicing.einvoice_adjustment_listing
   invoicing.einvoice_error_notice
+  invoicing.einvoice_held_notice
   invoicing.einvoice_line
+  invoicing.einvoice_pending_return
+  invoicing.einvoice_portal_record
   invoicing.einvoice_provider_call
   invoicing.einvoice_provider_config
   invoicing.einvoice_sending
   invoicing.einvoice_series
   invoicing.einvoice_stuck_notice
+  invoicing.einvoice_transaction_watch
   invoicing.sandbox_issuance
   invoicing.sandbox_number
 }
@@ -5608,6 +6113,8 @@ TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.dispatch_load_package
   fulfillment.dispatch_load_shipment
   fulfillment.dispatch_load_unload
+  fulfillment.failure_reason_correction
+  fulfillment.load_booking_cancellation
   fulfillment.load_estimate
   fulfillment.load_placement
   fulfillment.load_plan
@@ -5624,7 +6131,6 @@ TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.shipment_pod_file
   fulfillment.tracking_milestone
   fulfillment.vehicle_type
-  fulfillment.wave
   fulfillment.waybill_change
   fulfillment.waybill_import
   fulfillment.waybill_import_row
@@ -5635,6 +6141,8 @@ TableGroup catalog_group [color: #1B998B] {
   catalog.customer_price
   catalog.customer_price_tier
   catalog.product_listing
+  catalog.standard_price
+  catalog.standard_price_tier
 }
 
 TableGroup chat_group [color: #4C93A8] {
@@ -5650,8 +6158,6 @@ TableGroup chat_group [color: #4C93A8] {
 
 TableGroup notification_group [color: #A6763F] {
   notification.delivery_log
-  notification.preference
-  notification.template
   notification.user_notification
 }
 

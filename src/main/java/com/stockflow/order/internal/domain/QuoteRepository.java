@@ -19,6 +19,9 @@ public interface QuoteRepository {
 
     Optional<Quote> findByRequestId(UUID requestId);
 
+    /** The quotes of {@code ids} with their lines and fee lines, in a fixed number of statements; unknown ids absent. */
+    List<Quote> findAllById(java.util.Collection<UUID> ids);
+
     /**
      * Serialises creators of the same request id for the rest of the transaction, so a retried
      * "create" finds the first one's quote instead of racing it into the unique index.

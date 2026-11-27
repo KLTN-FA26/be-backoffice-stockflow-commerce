@@ -14,6 +14,7 @@ import com.stockflow.warehouse.internal.domain.PutawayTrip;
 import com.stockflow.warehouse.internal.domain.PutawayTripItemStatus;
 import com.stockflow.warehouse.internal.domain.PutawayTripRepository;
 import com.stockflow.warehouse.internal.domain.PutawayTripStatus;
+import com.stockflow.warehouse.internal.domain.WalkingPath;
 import com.stockflow.warehouse.internal.repository.PutawayStopReader;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,6 +44,10 @@ import java.util.UUID;
  * <p>The stops still to visit are ordered from where the clerk is ({@link #origins}): the area the cart left from
  * until a carton is put away, the place of the last carton put away after that. Ordering them from the start area
  * every time would send a clerk standing at the first stop to whatever is nearest to the door they left behind.</p>
+ *
+ * <p>Each stop also carries the line to walk to it ({@link WalkingPath}, issue #410): round shelves, walls and closed
+ * doors, from the very point the order was measured from, so the first leg drawn is the one the order assumed. Only
+ * the drawn line follows the free space; the order is still {@link PutawayRoute#order}'s Manhattan distance.</p>
  *
  * <p>Package-private class, public interface: other modules inject it by the interface.</p>
  */
@@ -89,6 +94,14 @@ class PutawayTripsImpl implements PutawayTrips {
     @Override
     public PutawayTripView lockForUpdate(UUID tripId) {
         return toView(locked(tripId));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<UUID> assignedLocationOf(UUID putawayTaskId) {
+        return trips.findOpenTripCarrying(putawayTaskId).flatMap(trips::findById)
+                .flatMap(trip -> trip.items().stream().filter(item -> putawayTaskId.equals(item.taskId()))
+                        .map(PutawayTrip.Item::assignedLocationId).filter(java.util.Objects::nonNull).findFirst());
     }
 
     @Override
@@ -206,7 +219,7 @@ class PutawayTripsImpl implements PutawayTrips {
 
     /** The stop number of each task: nearest neighbour from the origin, cartons for one bin sharing a stop. */
     private Map<UUID, Integer> stopNumbers(Map<UUID, UUID> assignedLocationByTask, List<UUID> origins) {
-        List<PutawayRoute.Stop> route = route(new LinkedHashSet<>(assignedLocationByTask.values()), origins);
+        List<PutawayRoute.Stop> route = route(new LinkedHashSet<>(assignedLocationByTask.values()), origins).stops();
         Map<UUID, Integer> numberOfLocation = new HashMap<>();
         for (int i = 0; i < route.size(); i++) {
             numberOfLocation.put(route.get(i).locationId(), i + 1);
@@ -221,23 +234,50 @@ class PutawayTripsImpl implements PutawayTrips {
     }
 
     /**
+     * The stops in visiting order, and the point they were ordered from.
+     *
+     * @param origin the origin the map could place, or null: then the stops are ordered by code from the first
+     */
+    private record Route(PutawayRoute.Stop origin, List<PutawayRoute.Stop> stops) {
+    }
+
+    /**
      * @param origins where the route may start, best first (nulls allowed): the first one the map can place is used;
      *                with none, the route begins at the first stop by code
      */
-    private List<PutawayRoute.Stop> route(Set<UUID> locationIds, List<UUID> origins) {
+    private Route route(Set<UUID> locationIds, List<UUID> origins) {
         locationIds.remove(null);
         Set<UUID> wanted = new LinkedHashSet<>(locationIds);
         origins.stream().filter(Objects::nonNull).forEach(wanted::add);
         Map<UUID, PutawayRoute.Stop> known = stopReader.stopsOf(wanted);
-        PutawayRoute.Point start = origins.stream().filter(Objects::nonNull).map(known::get)
-                .filter(stop -> stop != null && stop.point() != null)
-                .map(PutawayRoute.Stop::point).findFirst().orElse(null);
+        PutawayRoute.Stop origin = origins.stream().filter(Objects::nonNull).map(known::get)
+                .filter(stop -> stop != null && stop.point() != null).findFirst().orElse(null);
         List<PutawayRoute.Stop> stops = new ArrayList<>();
         for (UUID location : locationIds) {
             // A location the map does not know still gets a stop: after every one it can place.
             stops.add(known.getOrDefault(location, new PutawayRoute.Stop(location, location.toString(), null, false)));
         }
-        return PutawayRoute.order(start, stops);
+        return new Route(origin, PutawayRoute.order(origin == null ? null : origin.point(), stops));
+    }
+
+    /** The line to walk to each stop, in the stops' order; null where none can be drawn. */
+    private List<List<PutawayTripView.MapPoint>> paths(PutawayTrip trip, Route route) {
+        List<List<PutawayTripView.MapPoint>> paths = new ArrayList<>();
+        if (route.stops().isEmpty()) {
+            return paths;
+        }
+        Optional<WalkingPath> map = stopReader.walkingMapOf(trip.warehouseId());
+        if (map.isEmpty()) {
+            route.stops().forEach(stop -> paths.add(null));
+            return paths;
+        }
+        List<PutawayRoute.Point> points = route.stops().stream().map(PutawayRoute.Stop::point).toList();
+        for (Optional<List<PutawayRoute.Point>> leg : map.get().legs(
+                route.origin() == null ? null : route.origin().point(), points)) {
+            paths.add(leg.map(line -> line.stream().map(p -> new PutawayTripView.MapPoint(p.x(), p.y())).toList())
+                    .orElse(null));
+        }
+        return paths;
     }
 
     private PutawayTripView toView(PutawayTrip trip) {
@@ -247,17 +287,21 @@ class PutawayTripsImpl implements PutawayTrips {
                         item.placedAt())).toList();
         List<PutawayTripView.Stop> stops = List.of();
         PutawayRoute.Point start = null;
+        PutawayRoute.Stop origin = null;
         if (trip.status() == PutawayTripStatus.IN_PROGRESS) {
             Set<UUID> remaining = new LinkedHashSet<>();
             trip.items().stream()
                     .filter(item -> item.status() == PutawayTripItemStatus.ON_CART && item.assignedLocationId() != null)
                     .forEach(item -> remaining.add(item.assignedLocationId()));
-            List<PutawayRoute.Stop> route = route(remaining, origins(trip));
+            Route route = route(remaining, origins(trip));
+            origin = route.origin();
+            List<List<PutawayTripView.MapPoint>> paths = paths(trip, route);
             List<PutawayTripView.Stop> numbered = new ArrayList<>();
-            for (int i = 0; i < route.size(); i++) {
-                PutawayRoute.Stop stop = route.get(i);
+            for (int i = 0; i < route.stops().size(); i++) {
+                PutawayRoute.Stop stop = route.stops().get(i);
                 numbered.add(new PutawayTripView.Stop(i + 1, stop.locationId(), stop.locationCode(),
-                        stop.point() == null ? null : stop.point().x(), stop.point() == null ? null : stop.point().y()));
+                        stop.point() == null ? null : stop.point().x(), stop.point() == null ? null : stop.point().y(),
+                        paths.get(i)));
             }
             stops = numbered;
             if (trip.startLocationId() != null) {
@@ -268,6 +312,8 @@ class PutawayTripsImpl implements PutawayTrips {
         }
         return new PutawayTripView(trip.id(), trip.warehouseId(), trip.operatorId(), trip.status().name(),
                 trip.startLocationId(), start == null ? null : start.x(), start == null ? null : start.y(),
-                trip.startedAt(), trip.lastActivityAt(), trip.closedAt(), trip.closedBy(), cartons, stops);
+                origin == null ? null : origin.locationId(), origin == null ? null : origin.point().x(),
+                origin == null ? null : origin.point().y(), trip.startedAt(), trip.lastActivityAt(), trip.closedAt(),
+                trip.closedBy(), cartons, stops);
     }
 }

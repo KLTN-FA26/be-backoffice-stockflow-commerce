@@ -48,15 +48,32 @@ class RefundController {
 
     private final RefundService refunds;
     private final CustomerService customers;
+    private final com.stockflow.identity.api.IdentityService identities;
 
-    RefundController(RefundService refunds, CustomerService customers) {
+    RefundController(RefundService refunds, CustomerService customers,
+                     com.stockflow.identity.api.IdentityService identities) {
         this.refunds = refunds;
         this.customers = customers;
+        this.identities = identities;
     }
 
-    /** The accountant's work list: orders with something to refund ({@code outstanding=true}: not refunded in full). */
+    /** An order's refund as the accountant reads it: each record with who made and voided it, and whose it is. */
+    private OrderRefundResponse staffView(RefundService.OrderRefundDetail detail) {
+        return PaymentWebMapper.toResponse(detail, false, PaymentWebMapper.namesOf(identities, detail.records()),
+                PaymentWebMapper.labelsOf(customers, detail.records()));
+    }
+
+    /**
+     * The accountant's work list: orders with something to refund ({@code outstanding=true}: not refunded in full), the
+     * oldest debt first (by the first settlement that made something refundable), each with what is still to refund
+     * ({@code remaining}). An order is not closed while it is on the outstanding list (TT-4); one closed before a
+     * refund of it was voided stays on it until the refund is recorded again.
+     */
     @GetMapping
-    @Operation(summary = "Orders with money to refund, most recently settled first")
+    @Operation(summary = "Orders with money to refund, oldest debt first",
+            description = "outstanding=true: only orders not refunded in full. Sorted by the first settlement that "
+                    + "made something refundable, oldest first; remaining = refundable - refunded (never below "
+                    + "zero) is what is still owed.")
     @RequiresPermission(resource = PaymentResources.REFUNDS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<PageResponse<OrderRefundResponse>> list(
             @RequestParam(required = false) UUID customerId,
@@ -74,7 +91,7 @@ class RefundController {
     @RequiresPermission(resource = PaymentResources.REFUNDS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<OrderRefundResponse> ofOrder(@PathVariable UUID orderId, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(PaymentWebMapper.toResponse(refunds.detail(orderId, null), false));
+        return ApiResponse.ok(staffView(refunds.detail(orderId, null)));
     }
 
     /** 15 §4.5 step 16: refunded outside the system, recorded here; at most what is still to refund (BR-14). */
@@ -86,8 +103,8 @@ class RefundController {
                                                    @Valid @RequestBody RecordRefundRequest request,
                                                    @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(PaymentWebMapper.toResponse(refunds.record(new RefundService.RecordRefundCommand(orderId,
-                request.amount(), request.refundedOn(), request.reference(), request.note(), user.userId())), false));
+        return ApiResponse.ok(staffView(refunds.record(new RefundService.RecordRefundCommand(orderId,
+                request.amount(), request.refundedOn(), request.reference(), request.note(), user.userId()))));
     }
 
     @GetMapping("/records")
@@ -101,8 +118,11 @@ class RefundController {
             @RequestParam(required = false) Integer size,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(refunds.records(customerId, orderId, status, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(PaymentWebMapper::toResponse));
+        PageResponse<RefundRecord> found = refunds.records(customerId, orderId, status, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size);
+        var names = PaymentWebMapper.namesOf(identities, found.items());
+        var labels = PaymentWebMapper.labelsOf(customers, found.items());
+        return ApiResponse.ok(found.map(r -> PaymentWebMapper.toResponse(r, names, labels)));
     }
 
     /** 15 §4.5 step 16: a record made wrong is voided with a reason and kept; its amount is to refund again. */
@@ -113,8 +133,7 @@ class RefundController {
                                                        @Valid @RequestBody VoidRefundRecordRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(PaymentWebMapper.toResponse(refunds.voidRecord(recordId, request.reason(),
-                user.userId()), false));
+        return ApiResponse.ok(staffView(refunds.voidRecord(recordId, request.reason(), user.userId())));
     }
 
     /** 17 §5.2: the customer follows their cancelled order's refund on the portal. */

@@ -23,6 +23,8 @@ import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.domain.PriceTier;
 import com.stockflow.order.internal.domain.Quote;
 import com.stockflow.order.internal.domain.QuoteLine;
+import com.stockflow.order.internal.domain.QuotePriceCheck;
+import com.stockflow.order.internal.domain.QuotePriceReviews;
 import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.repository.QuoteSearch;
@@ -77,9 +79,17 @@ import java.util.function.Consumer;
  * revising, sending, accepting and converting each ask again that every SKU on the quote is one of this customer's own
  * - another customer's answers as if it did not exist, a stock variant or blank is refused - and a line is written in
  * the SKU's one carton unit, its pieces per carton fixed on the line. A line starts from the customer's own price for
- * the SKU, read at the quote's cartons of it; Sales enters the tiers when there is none. A quote drafted before on
- * blanks and designs is kept to read (QD-16): it is not sent, accepted or converted, and an accepted one may be
- * cancelled for that alone.</p>
+ * the SKU, else from the standard price of the variant the SKU was drawn on (13 BR-04 as changed on 2026-11-26), read at
+ * the quote's cartons of it; Sales enters the tiers when there is neither. A quote drafted before on blanks and designs
+ * is kept to read (QD-16): it is not sent, accepted or converted, and an accepted one may be cancelled for that
+ * alone.</p>
+ *
+ * <p><b>Prices the Sales Manager approves</b> (14 BR-10 as changed on 2026-11-26, replacing decision D-1's alert after
+ * the send): sending measures every price break against its reference ({@link QuotePriceCheck}); a quote with a break
+ * more than {@code stockflow.order.quote.price-approval-percent} below it, or with no reference, stays a DRAFT waiting
+ * for the Sales Manager ({@code ordering.quote_price_review}), locked until approved - sent at once, as the Sales account
+ * that asked - rejected or withdrawn. Whoever asked does not decide. The customer, who never sees a draft, sees nothing
+ * of it.</p>
  *
  * <p><b>VAT and fee lines</b> (4B-3; kltn-docs 14 BR-09, BR-17, BR-20, BR-21): every line copies its product's tax
  * class and that class's rate with its price; a SKU produced for the first time gets a plate-fee line the system adds
@@ -112,13 +122,33 @@ class QuoteService implements Quotes {
     private final com.stockflow.product.api.CustomerSkus customerSkus;
     private final com.stockflow.order.internal.domain.TaxRates taxRates;
     private final com.stockflow.order.internal.domain.SkuProductionHistory production;
+    private final com.stockflow.design.api.SkuDesigns skuDesigns;
+    private final com.stockflow.identity.api.IdentityService identities;
+    private final LineNames lineNames;
+    private final QuotePriceReviews priceReviews;
+    /** 14 BR-10: how far below its reference, in percent, a price break may be before the quote waits for approval. */
+    private final BigDecimal priceApprovalPercent;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, CustomerService customers,
                  UomConversionService units, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json,
                  Clock clock, CatalogService catalog, ApplicationEventPublisher events, ProductService products,
                  com.stockflow.product.api.CustomerSkus customerSkus,
                  com.stockflow.order.internal.domain.TaxRates taxRates,
-                 com.stockflow.order.internal.domain.SkuProductionHistory production) {
+                 com.stockflow.order.internal.domain.SkuProductionHistory production,
+                 com.stockflow.design.api.SkuDesigns skuDesigns,
+                 com.stockflow.identity.api.IdentityService identities, LineNames lineNames,
+                 QuotePriceReviews priceReviews,
+                 @org.springframework.beans.factory.annotation.Value(
+                         "${stockflow.order.quote.price-approval-percent:10}") BigDecimal priceApprovalPercent) {
+        if (priceApprovalPercent == null || priceApprovalPercent.signum() < 0
+                || priceApprovalPercent.compareTo(BigDecimal.valueOf(100)) >= 0) {
+            throw new IllegalArgumentException("stockflow.order.quote.price-approval-percent must be in [0, 100)");
+        }
+        this.priceReviews = priceReviews;
+        this.priceApprovalPercent = priceApprovalPercent;
+        this.lineNames = lineNames;
+        this.skuDesigns = skuDesigns;
+        this.identities = identities;
         this.customerSkus = customerSkus;
         this.taxRates = taxRates;
         this.production = production;
@@ -164,13 +194,103 @@ class QuoteService implements Quotes {
     public PageResponse<Row> list(CurrentUser user, Criteria criteria) {
         Optional<UUID> own = portalCustomer(user);
         Instant now = clock.instant();
-        var page = search.search(new QuoteSearch.Criteria(own.orElse(criteria.customerId()), criteria.statuses(),
-                criteria.search(), own.isPresent(), now), Pages.of(criteria.page(), criteria.size(),
+        // The customer meets a revision being written as the quote they asked to change (Quote#revisingSentQuote):
+        // listed under CHANGES_REQUESTED, at the revision they were last sent. Only sent quotes reach them, so a first
+        // draft is not added by asking for CHANGES_REQUESTED.
+        List<QuoteStatus> statuses = criteria.statuses();
+        if (own.isPresent() && statuses != null && statuses.contains(QuoteStatus.CHANGES_REQUESTED)
+                && !statuses.contains(QuoteStatus.DRAFT)) {
+            statuses = new ArrayList<>(statuses);
+            statuses.add(QuoteStatus.DRAFT);
+        }
+        var page = search.search(new QuoteSearch.Criteria(own.orElse(criteria.customerId()), statuses,
+                criteria.search(), own.isPresent(), now, own.isEmpty() && criteria.priceReviewPendingOnly()),
+                Pages.of(criteria.page(), criteria.size(),
                 SORT.parse(criteria.sort())));
-        return Pages.toResponse(page.map(r -> new Row(r.id(), r.quoteNumber(), r.customerId(),
-                r.status() == QuoteStatus.SENT && !now.isBefore(r.validUntil()) ? QuoteStatus.EXPIRED : r.status(),
-                r.revision(), r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(),
-                r.version())));
+        // The validity each revising row was last sent with, for the whole page in one statement: read row by row it
+        // was a history query and a quote load per revising quote listed.
+        Map<UUID, Instant> lastSentValidUntil = own.isEmpty() ? Map.of() : search.lastSentValidUntil(
+                page.getContent().stream().filter(r -> r.status() == QuoteStatus.DRAFT && r.sentAt() != null)
+                        .map(QuoteSearch.Row::id).toList());
+        Map<UUID, RowSummary> summaries = summaries(page.getContent(), own.isPresent());
+        // Whose each row is and the order it became, for the whole page in two statements: the list named neither, and
+        // a screen looked each customer up per row.
+        Map<UUID, com.stockflow.customer.api.CustomerLabel> labels = page.getContent().isEmpty() ? Map.of()
+                : customers.labels(page.getContent().stream().map(QuoteSearch.Row::customerId)
+                        .filter(Objects::nonNull).distinct().toList());
+        List<UUID> orderIds = page.getContent().stream().map(QuoteSearch.Row::convertedOrderId)
+                .filter(Objects::nonNull).distinct().toList();
+        Map<UUID, QuoteSearch.ConvertedOrderRef> converted = orderIds.isEmpty() ? Map.of()
+                : search.convertedOrders(orderIds);
+        return Pages.toResponse(page.map(r -> {
+            boolean revising = own.isPresent() && r.status() == QuoteStatus.DRAFT && r.sentAt() != null;
+            QuoteStatus status = revising ? QuoteStatus.CHANGES_REQUESTED
+                    : r.status() == QuoteStatus.SENT && !now.isBefore(r.validUntil()) ? QuoteStatus.EXPIRED : r.status();
+            RowSummary summary = summaries.get(r.id());
+            com.stockflow.customer.api.CustomerLabel label = r.customerId() == null ? null : labels.get(r.customerId());
+            QuoteSearch.ConvertedOrderRef order = r.convertedOrderId() == null ? null
+                    : converted.get(r.convertedOrderId());
+            // 17 §5.2: the customer meets the order once its contract is sent, not while it is drafted - as view().
+            String orderNumber = order == null
+                    || own.isPresent() && com.stockflow.order.api.OrderStatus.DRAFT.name().equals(order.status())
+                    ? null : order.orderNumber();
+            return new Row(r.id(), r.quoteNumber(), r.customerId(), status, revising ? r.revision() - 1 : r.revision(),
+                    revising ? lastSentValidUntil.getOrDefault(r.id(), r.validUntil()) : r.validUntil(), r.sentAt(),
+                    r.convertedOrderId(), r.createdAt(), r.version(), summary == null ? null : summary.total(),
+                    summary == null ? null : summary.lineCount(), summary == null ? null : summary.firstItemName(),
+                    label == null ? null : label.name(), label == null ? null : label.code(), orderNumber,
+                    own.isEmpty() && r.priceReviewPending());
+        }));
+    }
+
+    /** What a list row shows of its offer (R5-2). */
+    private record RowSummary(BigDecimal total, int lineCount, String firstItemName) {
+    }
+
+    /**
+     * The total, line count and first item of each row's offer - the offer {@link #view} shows the same reader, added up
+     * by the same {@link #totals}, so a row never disagrees with the quote it opens. A fixed number of statements for
+     * the page, as {@code lastSentValidUntil}: the quotes with their lines, the histories of the customer's rows that
+     * may show an offer as sent rather than the stored one, and the designs of the first lines. Read row by row it was
+     * a quote load and a history query per row (BE-10).
+     */
+    private Map<UUID, RowSummary> summaries(List<QuoteSearch.Row> rows, boolean forCustomer) {
+        if (rows.isEmpty()) {
+            return Map.of();
+        }
+        List<Quote> loaded = quotes.findAllById(rows.stream().map(QuoteSearch.Row::id).toList());
+        // Only a revision being written or a quote cancelled after it was sent may show the customer the offer as sent.
+        List<UUID> maySendOffer = !forCustomer ? List.of() : loaded.stream()
+                .filter(q -> q.sentAt() != null
+                        && (q.status() == QuoteStatus.DRAFT || q.status() == QuoteStatus.CANCELLED))
+                .map(Quote::id).toList();
+        Map<UUID, List<QuoteSearch.Transition>> histories = maySendOffer.isEmpty() ? Map.of()
+                : search.histories(maySendOffer);
+        Map<UUID, Quote.Offer> offers = new LinkedHashMap<>();
+        Map<UUID, QuoteLine> firstLines = new LinkedHashMap<>();
+        for (Quote quote : loaded) {
+            Quote.Offer offer = shown(quote, histories.getOrDefault(quote.id(), List.of()), forCustomer).offer();
+            offers.put(quote.id(), offer);
+            offer.lines().stream().min(java.util.Comparator.comparingInt(QuoteLine::lineNo))
+                    .ifPresent(line -> firstLines.put(quote.id(), line));
+        }
+        List<String> firstSkus = firstLines.values().stream().filter(line -> !line.legacy())
+                .map(line -> line.sku().code()).distinct().toList();
+        Map<String, com.stockflow.design.api.SkuDesign> designs = firstSkus.isEmpty() ? Map.of()
+                : skuDesigns.ofSkus(firstSkus);
+        Map<UUID, RowSummary> summaries = new java.util.HashMap<>();
+        for (Quote quote : loaded) {
+            Quote.Offer offer = offers.get(quote.id());
+            OfferTotals totals = totals(quote, offer);
+            QuoteLine first = firstLines.get(quote.id());
+            com.stockflow.design.api.SkuDesign design = first == null || first.legacy() ? null
+                    : designs.get(first.sku().code());
+            summaries.put(quote.id(), new RowSummary(
+                    totals.accepted() != null ? totals.accepted().total() : totals.proposed().total(),
+                    offer.lines().size(),
+                    first == null ? null : design != null && design.name() != null ? design.name() : first.sku().code()));
+        }
+        return summaries;
     }
 
     @Override
@@ -200,6 +320,20 @@ class QuoteService implements Quotes {
         requireNewWorkFor(quote.customerId());
         requireActiveSkus(quote.quoteNumber(), quote.offer());
         requirePlateFees(quote);
+        // 14 BR-10: priced too far below its reference, or with none, the quote waits for the Sales Manager instead.
+        QuotePriceCheck.Result check = priceCheck(quote.customerId(), quote.offer());
+        if (check.needsApproval()) {
+            Instant now = clock.instant();
+            quote.submitForPriceReview(user.userId(), now);
+            quotes.save(quote);
+            QuotePriceReviews.Review review = priceReviews.open(quote.id(), quote.revision(), check.thresholdPercent(),
+                    linesJson(check), user.userId(), now);
+            events.publishEvent(new QuotePriceReviewRequested(quote.id(), quote.quoteNumber(), quote.revision(),
+                    review.id(), user.userId(), (int) check.lines().stream().filter(QuotePriceCheck.LineCheck::needsApproval)
+                    .count()));
+            log.info("Quote {} revision {} waits for its prices to be approved", quote.quoteNumber(), quote.revision());
+            return view(quote);
+        }
         QuoteStatus from = quote.status();
         quote.send(user.userId(), clock.instant());
         quotes.save(quote);
@@ -207,6 +341,101 @@ class QuoteService implements Quotes {
                 quote.sentAt(), user.userId());
         log.info("Quote {} revision {} sent", quote.quoteNumber(), quote.revision());
         return view(quote);
+    }
+
+    /**
+     * 14 BR-10: checked again as a send is - the customer still active, every SKU still the customer's and quotable, the
+     * plate fees right, the validity still ahead - since any of it may have changed while the quote waited; then sent,
+     * as the Sales account that asked.
+     */
+    @Override
+    @Auditable(action = AuditAction.APPROVE, resourceType = "quote-price", resourceId = "#quoteId")
+    public QuoteView approvePrice(CurrentUser user, UUID quoteId, long version, String note) {
+        ScopeGuards.requireBackOffice(user);
+        Quote quote = lock(user, quoteId, version);
+        QuotePriceReviews.Review review = waitingReview(quote);
+        requireOtherThanSubmitter(quote, review, user);
+        String text = note == null || note.isBlank() ? null : note.strip();
+        if (text != null && text.length() > Quote.MAX_CANCELLATION_REASON) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A note is at most "
+                    + Quote.MAX_CANCELLATION_REASON + " characters")
+                    .localized("refusal.quote.priceReviewNoteTooLong", Quote.MAX_CANCELLATION_REASON);
+        }
+        requireCustomerSkus(quote, "sent");
+        requireNewWorkFor(quote.customerId());
+        requireActiveSkus(quote.quoteNumber(), quote.offer());
+        requirePlateFees(quote);
+        Instant now = clock.instant();
+        quote.approvePrice(review.submittedBy(), now);
+        quotes.save(quote);
+        priceReviews.close(review.id(), QuotePriceReviews.Outcome.APPROVED, user.userId(), now, text);
+        // The history row names the approver; the move is told as the Sales account's, who sent it for approval and
+        // follows it with the customer - the chat card goes out in their name (sentBy), not the approver's.
+        quotes.recordTransition(quote.id(), quote.revision(), QuoteStatus.DRAFT, QuoteStatus.SENT, null,
+                offerJson(quote), now, user.userId());
+        events.publishEvent(new com.stockflow.contracts.QuoteStatusChanged(quote.id(), quote.quoteNumber(),
+                quote.customerId(), quote.revision(), QuoteStatus.DRAFT.name(), QuoteStatus.SENT.name(),
+                review.submittedBy(), now));
+        events.publishEvent(new QuotePriceReviewDecided(quote.id(), quote.quoteNumber(), quote.revision(), review.id(),
+                QuotePriceReviews.Outcome.APPROVED.name(), review.submittedBy(), user.userId(), text));
+        log.info("Quote {} revision {}: prices approved, sent", quote.quoteNumber(), quote.revision());
+        return view(quote);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.REJECT, resourceType = "quote-price", resourceId = "#quoteId")
+    public QuoteView rejectPrice(CurrentUser user, UUID quoteId, long version, String reason) {
+        ScopeGuards.requireBackOffice(user);
+        String text = reason == null ? "" : reason.strip();
+        if (text.isEmpty() || text.length() > Quote.MAX_CANCELLATION_REASON) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Rejecting the prices must say why, in at most "
+                    + Quote.MAX_CANCELLATION_REASON + " characters")
+                    .localized("refusal.quote.priceRejectionReasonRequired", Quote.MAX_CANCELLATION_REASON);
+        }
+        Quote quote = lock(user, quoteId, version);
+        QuotePriceReviews.Review review = waitingReview(quote);
+        requireOtherThanSubmitter(quote, review, user);
+        Instant now = clock.instant();
+        quote.rejectPrice();
+        quotes.save(quote);
+        priceReviews.close(review.id(), QuotePriceReviews.Outcome.REJECTED, user.userId(), now, text);
+        events.publishEvent(new QuotePriceReviewDecided(quote.id(), quote.quoteNumber(), quote.revision(), review.id(),
+                QuotePriceReviews.Outcome.REJECTED.name(), review.submittedBy(), user.userId(), text));
+        log.info("Quote {} revision {}: prices rejected", quote.quoteNumber(), quote.revision());
+        return view(quote);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "quote-price", resourceId = "#quoteId")
+    public QuoteView withdrawPriceReview(CurrentUser user, UUID quoteId, long version) {
+        ScopeGuards.requireBackOffice(user);
+        Quote quote = lock(user, quoteId, version);
+        QuotePriceReviews.Review review = waitingReview(quote);
+        quote.withdrawPriceReview();
+        quotes.save(quote);
+        priceReviews.close(review.id(), QuotePriceReviews.Outcome.WITHDRAWN, user.userId(), clock.instant(), null);
+        log.info("Quote {} revision {}: price approval withdrawn", quote.quoteNumber(), quote.revision());
+        return view(quote);
+    }
+
+    /** The quote's review still waiting; refused when it waits for nothing (14 BR-10). */
+    private QuotePriceReviews.Review waitingReview(Quote quote) {
+        if (!quote.priceReviewPending()) {
+            throw new BusinessException(ErrorCode.QUOTE_PRICE_REVIEW_NOT_PENDING,
+                    "Quote %s is not waiting for its prices to be approved".formatted(quote.quoteNumber()))
+                    .localized("refusal.quote.priceReviewNotPending", quote.quoteNumber());
+        }
+        return priceReviews.pending(quote.id()).orElseThrow(() -> new IllegalStateException(
+                "Quote " + quote.quoteNumber() + " waits for approval with no review open"));
+    }
+
+    /** 14 BR-10, as a product approval (01 §2): whoever asked does not decide. */
+    private static void requireOtherThanSubmitter(Quote quote, QuotePriceReviews.Review review, CurrentUser user) {
+        if (review.submittedBy().equals(user.userId())) {
+            throw new BusinessException(ErrorCode.QUOTE_PRICE_REVIEW_SELF, ("Quote %s was sent for approval by you: "
+                    + "someone else approves or rejects its prices").formatted(quote.quoteNumber()))
+                    .localized("refusal.quote.priceReviewSelf", quote.quoteNumber());
+        }
     }
 
     @Override
@@ -217,10 +446,14 @@ class QuoteService implements Quotes {
         Instant now = clock.instant();
         requireNewWorkFor(quote.customerId());
         if (quote.statusAt(now) == QuoteStatus.EXPIRED) {
-            throw new BusinessException(ErrorCode.QUOTE_EXPIRED, "Quote " + quote.quoteNumber() + " has expired");
+            throw new BusinessException(ErrorCode.QUOTE_EXPIRED, "Quote " + quote.quoteNumber() + " has expired")
+                    .localized("refusal.quote.expired", quote.quoteNumber(),
+                            Quote.VALID_UNTIL.format(quote.offer().validUntil()));
         }
         requireCustomerSkus(quote, "accepted");
-        requireActiveSkus(quote.quoteNumber(), quote.offer());
+        // NEW-FE-2: the customer reads this one - they ask Sales to revise the quote, they do not revise it.
+        requireActiveSkus(quote.quoteNumber(), quote.offer(), "ask Sales to revise the quote",
+                "refusal.quote.skuInactive.accept");
         QuoteStatus from = quote.status();
         quote.accept(acceptance.cartons(), user.userId(), now);
         quotes.save(quote);
@@ -228,7 +461,7 @@ class QuoteService implements Quotes {
                 user.userId());
         notifySales(quote, CustomerActedOnQuote.Action.ACCEPTED, quote.sentBy(), now);
         log.info("Quote {} accepted", quote.quoteNumber());
-        return view(quote);
+        return view(quote, true);   // answered by the customer: what they see of it, as GET shows them
     }
 
     @Override
@@ -244,7 +477,7 @@ class QuoteService implements Quotes {
         // The feedback stays on the quote: the event carries facts, not what the customer typed (B-4).
         notifySales(quote, CustomerActedOnQuote.Action.CHANGES_REQUESTED, quote.sentBy(),
                 quote.respondedAt());
-        return view(quote);
+        return view(quote, true);   // answered by the customer: what they see of it, as GET shows them
     }
 
     @Override
@@ -258,11 +491,25 @@ class QuoteService implements Quotes {
     public QuoteView cancel(CurrentUser user, UUID quoteId, long version, String reason) {
         return backOffice(user, quoteId, version, quote -> {
             // A legacy quote is never converted (QD-16): accepted, it is cancelled for that alone.
-            if (quote.status() == QuoteStatus.ACCEPTED && !quote.offer().legacy()) {
+            if (quote.status() == QuoteStatus.ACCEPTED && !quote.offer().legacy() && customerActive(quote)) {
                 requireAStoppedSku(quote);
             }
+            Optional<QuotePriceReviews.Review> waiting = quote.priceReviewPending()
+                    ? priceReviews.pending(quote.id()) : Optional.empty();
             quote.cancel(reason);
+            // 14 BR-10: cancelled while it waited, its review is withdrawn with the cancellation's reason.
+            waiting.ifPresent(review -> priceReviews.close(review.id(), QuotePriceReviews.Outcome.WITHDRAWN,
+                    user.userId(), clock.instant(), quote.cancellationReason()));
         }, reason);
+    }
+
+    /**
+     * LC-2 (QD10): a customer no longer ACTIVE gets no new order, so an accepted quote of theirs can never be converted:
+     * Sales cancels it, with its reason, whatever its SKUs.
+     */
+    private boolean customerActive(Quote quote) {
+        return customers.findById(quote.customerId()).map(customer -> "ACTIVE".equals(customer.status()))
+                .orElse(false);
     }
 
     /**
@@ -279,7 +526,7 @@ class QuoteService implements Quotes {
         if (!stopped) {
             throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION,
                     "Quote %s is accepted and every SKU on it is active: convert it into its order".formatted(
-                            quote.quoteNumber()));
+                            quote.quoteNumber())).localized("refusal.quote.acceptedAllActive", quote.quoteNumber());
         }
     }
 
@@ -296,11 +543,12 @@ class QuoteService implements Quotes {
         if (quote.status() != QuoteStatus.ACCEPTED) {
             throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION,
                     "Quote %s is %s; only an accepted quote becomes an order".formatted(quote.quoteNumber(),
-                            quote.status()));
+                            quote.status())).localized("refusal.quote.convertNotAccepted", quote.quoteNumber(),
+                            quote.status());
         }
         requireCustomerSkus(quote, "converted");
         requireActiveSkus(quote.quoteNumber(), quote.offer(), "cancel the quote with its reason and send a new one with "
-                + "an active SKU");
+                + "an active SKU", "refusal.quote.skuInactive.cancel");
         // The order lines are what was accepted: the pieces, the price of one, and the cartons they were ordered in
         // (14 §4.2 step 7, BR-08). The SKU is the design (12 §4.5), so no design snapshot travels with the line.
         List<PlaceOrderCommand.Line> lines = quote.offer().lines().stream()
@@ -371,7 +619,14 @@ class QuoteService implements Quotes {
         Quote quote = lockVisible(user, quoteId);
         if (quote.status() == QuoteStatus.CANCELLED) {
             throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION, "Quote %s was withdrawn: %s".formatted(
-                    quote.quoteNumber(), quote.cancellationReason()));
+                    quote.quoteNumber(), quote.cancellationReason()))
+                    .localized("refusal.quote.withdrawn", quote.quoteNumber(), quote.cancellationReason());
+        }
+        // Shown to the customer as the offer they asked to change (Quote#revisingSentQuote): nothing to answer until
+        // the new revision is sent - said as such, before any check reads the draft's lines.
+        if (quote.revisingSentQuote()) {
+            throw new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION, "Quote %s is being revised".formatted(
+                    quote.quoteNumber())).localized("refusal.quote.beingRevised", quote.quoteNumber());
         }
         requireVersion(quote, version);
         return quote;
@@ -388,7 +643,8 @@ class QuoteService implements Quotes {
         long current = search.findRow(quote.id()).orElseThrow().version();
         if (current != expected) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
-                    "Quote %s changed since version %d (now %d)".formatted(quote.quoteNumber(), expected, current));
+                    "Quote %s changed since version %d (now %d)".formatted(quote.quoteNumber(), expected, current))
+                    .localized("refusal.quote.changed", quote.quoteNumber());
         }
     }
 
@@ -406,7 +662,8 @@ class QuoteService implements Quotes {
     /** The answer is the customer's own (03 §18 "Customer (portal)"); staff do not answer for them. */
     private void requireCustomerAnswer(CurrentUser user) {
         if (portalCustomer(user).isEmpty()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the customer answers their quote");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the customer answers their quote")
+                    .localized("refusal.quote.customerAnswers");
         }
     }
 
@@ -426,7 +683,8 @@ class QuoteService implements Quotes {
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND)).status();
         if (!"ACTIVE".equals(status)) {
             throw new BusinessException(ErrorCode.CUSTOMER_NOT_ACTIVE,
-                    "Customer " + customerId + " is " + status + "; quotes are for ACTIVE customers (BR-ORD-007)");
+                    "Customer " + customerId + " is " + status + "; quotes are for ACTIVE customers (BR-ORD-007)")
+                    .localized("refusal.quote.customerNotActive", new com.stockflow.common.i18n.Label("CustomerStatus", status));
         }
     }
 
@@ -436,39 +694,107 @@ class QuoteService implements Quotes {
      * fault with why, on {@code lines[i].sku}, so the form can put it next to the SKU.
      */
     private void requireActiveSkus(String quoteNumber, Quote.Offer offer) {
-        requireActiveSkus(quoteNumber, offer, "change it to an active SKU and send the quote again");
+        requireActiveSkus(quoteNumber, offer, "change it to an active SKU and send the quote again",
+                "refusal.quote.skuInactive.revise");
     }
 
-    /** {@code next}: what Sales does about it - revise and send again, or, for an accepted quote, cancel it. */
-    private void requireActiveSkus(String quoteNumber, Quote.Offer offer, String next) {
+    /**
+     * {@code next}: what the one refused does about it - Sales revises and sends again, or cancels an accepted quote;
+     * the customer accepting asks Sales to revise it. {@code key} words the same for the reader.
+     */
+    private void requireActiveSkus(String quoteNumber, Quote.Offer offer, String next, String key) {
         List<QuoteLine> lines = offer.lines();
         Map<String, Purchasability> verdicts = products.lockedPurchasability(
                 lines.stream().map(line -> line.sku().code()).toList());
         List<FieldError> errors = new ArrayList<>();
         List<String> named = new ArrayList<>();
+        List<String> stopped = new ArrayList<>();
         for (int i = 0; i < lines.size(); i++) {
             QuoteLine line = lines.get(i);
             String sku = line.sku().code();
             Purchasability verdict = verdicts.get(sku.toUpperCase(java.util.Locale.ROOT));
             if (verdict != null && !verdict.isPurchasable()) {
-                errors.add(new FieldError("lines[" + i + "].sku",
-                        "SKU %s on line %d is no longer active".formatted(sku, line.lineNo()), verdict.name()));
+                errors.add(FieldError.localized("lines[" + i + "].sku",
+                        "SKU %s on line %d is no longer active".formatted(sku, line.lineNo()), verdict.name(),
+                        "refusal.quote.skuInactiveLine", sku, line.lineNo()));
                 named.add("line %d (%s, %s)".formatted(line.lineNo(), sku, verdict));
+                stopped.add(sku);
             }
         }
         if (!errors.isEmpty()) {
             throw new BusinessException(ErrorCode.SKU_NOT_SELLABLE, "%s holds a SKU that is no longer active: %s; "
                     .formatted(quoteNumber == null ? "The quote" : "Quote " + quoteNumber, String.join(", ", named))
-                    + next, errors);
+                    + next, errors, Map.of(), key, quoteNumber == null ? "" : " " + quoteNumber,
+                    String.join(", ", stopped));
         }
     }
 
     /**
-     * The customer's own price for one of its SKUs (13 BR-05: tiers by cartons, a price per piece), if it has one - the
-     * only price there is (13 BR-04: no base or group price).
+     * The customer's own price for one of its SKUs (13 BR-05: tiers by cartons, a price per piece), if it has one: what
+     * a line starts from and is measured against first.
      */
     private Optional<PriceSchedule> ownPrice(UUID customerId, String sku) {
         return catalog.customerPrice(customerId, sku);
+    }
+
+    /**
+     * The standard price behind one of the customer's SKUs - its variant's (13 BR-04 as changed on 2026-11-26) - if it
+     * has one: what a line starts from and is measured against when the customer has no price of its own there.
+     */
+    private Optional<PriceSchedule> standardPrice(String sku) {
+        return Optional.ofNullable(customerSkus.sourceSkusOf(List.of(sku)).get(sku)).flatMap(catalog::standardPrice);
+    }
+
+    /**
+     * 14 BR-10: every price break of the offer against its reference - the customer's own price, else the standard
+     * price behind the SKU - at the configured threshold. One read of the customer's SKUs for the whole offer.
+     */
+    private QuotePriceCheck.Result priceCheck(UUID customerId, Quote.Offer offer) {
+        List<String> skus = offer.lines().stream().filter(line -> !line.legacy()).map(line -> line.sku().code())
+                .distinct().toList();
+        Map<String, String> sources = skus.isEmpty() ? Map.of() : customerSkus.sourceSkusOf(skus);
+        Map<String, QuotePriceCheck.Reference> own = new java.util.HashMap<>();
+        Map<String, QuotePriceCheck.Reference> standard = new java.util.HashMap<>();
+        for (String sku : skus) {
+            ownPrice(customerId, sku).ifPresent(schedule ->
+                    own.put(sku, reference(QuotePriceCheck.Source.CUSTOMER_PRICE, schedule)));
+            String source = sources.get(sku);
+            if (source != null) {
+                catalog.standardPrice(source).ifPresent(schedule ->
+                        standard.put(sku, reference(QuotePriceCheck.Source.STANDARD_PRICE, schedule)));
+            }
+        }
+        return QuotePriceCheck.of(offer.lines(), own, standard, priceApprovalPercent);
+    }
+
+    private static QuotePriceCheck.Reference reference(QuotePriceCheck.Source source, PriceSchedule schedule) {
+        return new QuotePriceCheck.Reference(source, schedule.tiers().stream()
+                .map(tier -> new QuotePriceCheck.Break(tier.minQuantity(), tier.unitPrice().amount())).toList());
+    }
+
+    private static List<PriceCheckLine> checkLines(QuotePriceCheck.Result check) {
+        return check.lines().stream().map(line -> new PriceCheckLine(line.lineNo(), line.sku(), line.cartons(),
+                line.needsApproval(), line.tiers().stream().map(tier -> new PriceCheckTier(tier.minQuantity(),
+                        tier.unitPrice(), tier.referencePrice(), tier.source() == null ? null : tier.source().name(),
+                        tier.discountPercent(), tier.needsApproval())).toList())).toList();
+    }
+
+    /** The breaks measured, kept on the review as decided on. */
+    private String linesJson(QuotePriceCheck.Result check) {
+        try {
+            return json.writeValueAsString(checkLines(check));
+        } catch (JsonProcessingException impossible) {
+            throw new IllegalStateException("Could not record the price check", impossible);
+        }
+    }
+
+    private List<PriceCheckLine> readLines(String document) {
+        try {
+            return json.readValue(document, new com.fasterxml.jackson.core.type.TypeReference<List<PriceCheckLine>>() {
+            });
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Unreadable price review lines", e);
+        }
     }
 
     /**
@@ -479,10 +805,12 @@ class QuoteService implements Quotes {
     private Quote.Offer offer(UUID customerId, Draft draft) {
         Objects.requireNonNull(draft, "draft");
         if (draft.lines() == null || draft.lines().isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line")
+                    .localized("refusal.quote.noLine");
         }
         if (draft.validUntil() == null || !draft.validUntil().isAfter(clock.instant())) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote is valid until a moment still ahead");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote is valid until a moment still ahead")
+                    .localized("refusal.quote.validUntilPast");
         }
         List<String> skus = draft.lines().stream().map(line -> new Sku(line.sku()).code()).toList();
         requireOwnSkus(customerId, skus);
@@ -490,9 +818,13 @@ class QuoteService implements Quotes {
         Map<String, Integer> cartonsBySku = new java.util.HashMap<>();
         draft.lines().forEach(line -> cartonsBySku.merge(new Sku(line.sku()).code(), line.cartons(), Integer::sum));
         // 14 BR-21: each line's VAT follows its product's tax class, copied with the price; a product without one
-        // leaves the line without a rate, and the quote is not sent until it has one.
+        // leaves the line without a rate, and the quote is not sent until it has one. The rate is the one in force on
+        // the day the offer is drawn up (HĐ-7: a VAT reduction such as NĐ 174/2025's 8% through 2026), not the class's
+        // own: a contract of 2026 then says 8%, and its 2026 invoices - which take the rate of the day of delivery -
+        // agree with it. Goods of that contract delivered after the reduction ends are invoiced at the rate of their
+        // day and flagged (TAX_RATE_DIFFERS_FROM_CONTRACT) for the accountant: the law's rate wins over the contract's.
         Map<String, com.stockflow.product.api.TaxClass> classes = products.taxClassesOf(skus);
-        Map<String, BigDecimal> rates = taxRates.all();
+        Map<String, BigDecimal> rates = taxRates.onDay(today());
         List<QuoteLine> lines = new ArrayList<>();
         int lineNo = 1;
         for (Line line : draft.lines()) {
@@ -509,7 +841,7 @@ class QuoteService implements Quotes {
         List<com.stockflow.order.internal.domain.QuoteFee> fees = fees(draft.fees(), lines, classes, rates);
         if (draft.requestedDeliveryDate() != null && draft.requestedDeliveryDate().isBefore(today())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "The requested delivery date cannot be in the past");
+                    "The requested delivery date cannot be in the past").localized("refusal.quote.requestedDatePast");
         }
         return new Quote.Offer(draft.validUntil().truncatedTo(java.time.temporal.ChronoUnit.MICROS), draft.terms(),
                 draft.requestedDeliveryDate(), lines, fees);
@@ -518,7 +850,9 @@ class QuoteService implements Quotes {
     /**
      * A SKU still produced for the first time when the quote is sent has its plate fee (14 BR-17): the draft got one when
      * it was last edited, but an order of the SKU may have been cancelled since, or the draft may predate fee lines.
-     * Sales edits the draft, which adds it, and prices or waives it.
+     * Sales edits the draft, which adds it, and prices or waives it. The other way round, the plate is charged once
+     * (QD4): a SKU produced since the draft was edited - confirmed on an order, or in production - is refused with its
+     * plate fee still on; Sales edits the draft and takes the fee off (an edit that keeps it is refused as well).
      */
     private void requirePlateFees(Quote quote) {
         if (quote.offer().legacy()) {
@@ -533,7 +867,14 @@ class QuoteService implements Quotes {
                 .toList();
         if (!missing.isEmpty()) {
             throw new BusinessException(ErrorCode.QUOTE_PLATE_FEE_MISSING, ("Quote %s: %s produced for the first time "
-                    + "without a plate fee; edit the quote to add it").formatted(quote.quoteNumber(), missing));
+                    + "without a plate fee; edit the quote to add it").formatted(quote.quoteNumber(), missing))
+                    .localized("refusal.quote.plateFeeMissing", quote.quoteNumber(), String.join(", ", missing));
+        }
+        List<String> charged = withFee.stream().filter(produced::contains).sorted().toList();
+        if (!charged.isEmpty()) {
+            throw new BusinessException(ErrorCode.QUOTE_PLATE_FEE_REORDER, ("Quote %s: %s produced before still "
+                    + "carries a plate fee; edit the quote to drop it").formatted(quote.quoteNumber(), charged))
+                    .localized("refusal.quote.plateFeeProduced", quote.quoteNumber(), String.join(", ", charged));
         }
     }
 
@@ -554,12 +895,14 @@ class QuoteService implements Quotes {
             Fee fee = given.get(i);
             String field = "fees[" + i + "]";
             if (fee == null || fee.kind() == null) {
-                errors.add(new FieldError(field + ".kind", "PLATE_FEE or SHIPPING_FEE", "NotNull"));
+                errors.add(FieldError.localized(field + ".kind", "PLATE_FEE or SHIPPING_FEE", "NotNull",
+                        "refusal.quote.feeKind"));
                 continue;
             }
             if (fee.kind() == com.stockflow.order.api.FeeKind.SHIPPING_FEE) {
                 if (shipping != null || fee.amount() == null) {
-                    errors.add(new FieldError(field, "one shipping fee at most, with its amount", "SHIPPING_FEE"));
+                    errors.add(FieldError.localized(field, "one shipping fee at most, with its amount",
+                            "SHIPPING_FEE", "refusal.quote.shippingFeeOneWithAmount"));
                     continue;
                 }
                 shipping = feeAmount(field, fee.amount(), errors);
@@ -567,18 +910,21 @@ class QuoteService implements Quotes {
             }
             String sku = fee.sku() == null ? null : new Sku(fee.sku()).code();
             if (sku == null || !skus.contains(sku)) {
-                errors.add(new FieldError(field + ".sku", "a plate fee is for a SKU on the quote", "PLATE_FEE"));
+                errors.add(FieldError.localized(field + ".sku", "a plate fee is for a SKU on the quote", "PLATE_FEE",
+                        "refusal.quote.plateFeeSku"));
             } else if (produced.contains(sku)) {
-                errors.add(new FieldError(field + ".sku", "%s was produced before: a reorder has no plate fee (14 BR-17)"
-                        .formatted(sku), "PLATE_FEE"));
+                errors.add(FieldError.localized(field + ".sku", "%s was produced before: a reorder has no plate fee "
+                        .formatted(sku) + "(14 BR-17)", "PLATE_FEE", "refusal.quote.plateFeeReorder", sku));
             } else if (plates.containsKey(sku)) {
-                errors.add(new FieldError(field + ".sku", "one plate fee per SKU", "PLATE_FEE"));
+                errors.add(FieldError.localized(field + ".sku", "one plate fee per SKU", "PLATE_FEE",
+                        "refusal.quote.onePlateFee", sku));
             } else {
                 plates.put(sku, fee.amount() == null ? null : feeAmount(field, fee.amount(), errors));
             }
         }
         if (!errors.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid fee lines", errors);
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid fee lines", errors, Map.of(),
+                    "refusal.quote.feeLinesInvalid");
         }
         List<com.stockflow.order.internal.domain.QuoteFee> fees = new ArrayList<>();
         for (String sku : skus) {
@@ -600,7 +946,8 @@ class QuoteService implements Quotes {
     /** A fee as entered: whole VND, checked before {@code Money} would round 100.5 to 101 without a word. */
     private static com.stockflow.common.domain.Money feeAmount(String field, BigDecimal amount, List<FieldError> errors) {
         if (amount.signum() < 0 || amount.stripTrailingZeros().scale() > 0) {
-            errors.add(new FieldError(field + ".amount", "a whole VND amount, 0 or more", "Digits"));
+            errors.add(FieldError.localized(field + ".amount", "a whole VND amount, 0 or more", "Digits",
+                    "refusal.quote.feeAmount"));
             return null;
         }
         return new com.stockflow.common.domain.Money(amount, com.stockflow.common.domain.Money.VND);
@@ -615,15 +962,18 @@ class QuoteService implements Quotes {
         customerSkus.requireVisibleTo(skus, customerId);
         Map<String, UUID> owners = customerSkus.ownersOf(skus);
         List<FieldError> errors = new ArrayList<>();
+        List<String> foreign = new ArrayList<>();
         for (int i = 0; i < skus.size(); i++) {
             if (!customerId.equals(owners.get(skus.get(i)))) {
-                errors.add(new FieldError("lines[" + i + "].sku", "%s is not a SKU of this customer"
-                        .formatted(skus.get(i)), "CUSTOMER_SKU_REQUIRED"));
+                errors.add(FieldError.localized("lines[" + i + "].sku", "%s is not a SKU of this customer"
+                        .formatted(skus.get(i)), "CUSTOMER_SKU_REQUIRED", "refusal.quote.notCustomerSku", skus.get(i)));
+                foreign.add(skus.get(i));
             }
         }
         if (!errors.isEmpty()) {
             throw new BusinessException(ErrorCode.CUSTOMER_SKU_REQUIRED, "A quote line is one of the customer's own "
-                    + "SKUs: " + String.join(", ", errors.stream().map(FieldError::message).toList()), errors);
+                    + "SKUs: " + String.join(", ", errors.stream().map(FieldError::message).toList()), errors,
+                    Map.of(), "refusal.quote.customerSkuRequired", String.join(", ", foreign));
         }
     }
 
@@ -635,15 +985,15 @@ class QuoteService implements Quotes {
         if (quote.offer().legacy()) {
             throw new BusinessException(ErrorCode.QUOTE_LINES_LEGACY, ("Quote %s was drafted on blanks and designs, "
                     + "before the customer's own SKUs: it is not %s. Revise a draft onto the customer's SKUs, or draft "
-                    + "a new quote").formatted(quote.quoteNumber(), verb));
+                    + "a new quote").formatted(quote.quoteNumber(), verb))
+                    .localized("refusal.quote.legacy", quote.quoteNumber());
         }
         requireOwnSkus(quote.customerId(), quote.offer().lines().stream().map(line -> line.sku().code()).toList());
     }
 
     /**
-     * The carton unit of each SKU (kltn-docs 01 BR-03, BR-11): its one active packing unit of more than one piece - the
-     * default shipping one should an older SKU have several. None, or several none of which is the default shipping
-     * unit, is refused: the SKU is sold by the carton and nothing is guessed.
+     * The carton unit of each SKU (kltn-docs 01 BR-03, BR-11): its one active packing unit of more than one piece
+     * ({@link UomConversion#cartonOf}). None is refused: the SKU is sold by the carton and nothing is guessed.
      */
     private Map<String, UomConversion> cartonUnits(List<String> skus) {
         Map<String, List<UomConversion>> declared = units.conversionsOf(skus.stream().distinct().map(Sku::new).toList());
@@ -655,39 +1005,54 @@ class QuoteService implements Quotes {
         }
         if (!missing.isEmpty()) {
             throw new BusinessException(ErrorCode.CARTON_SPEC_MISSING, ("%s has no single carton unit (01 BR-03): set "
-                    + "its carton specification").formatted(String.join(", ", missing)));
+                    + "its carton specification").formatted(String.join(", ", missing)))
+                    .localized("refusal.quote.cartonSpecMissing", String.join(", ", missing));
         }
         return cartons;
     }
 
     /**
-     * kltn-docs 14 step 2: a line's price starts from the customer's own price for the SKU (13 BR-05), read at the
-     * draft's cartons of it. Copied into the quote, so a later price change does not move a quote while it is valid
-     * (14 BR-06). Sales may enter any valid tiers instead: no discount limit and no internal approval (user decision
-     * 2026-10-12, overriding 14 BR-10); the customer accepts.
+     * kltn-docs 14 step 2: a line's price starts from the customer's own price for the SKU (13 BR-05), else from the
+     * standard price of its variant (13 BR-04 as changed on 2026-11-26), read at the draft's cartons of it. Copied into
+     * the quote, so a later price change does not move a quote while it is valid (14 BR-06). Sales may enter any valid
+     * tiers instead; a quote priced too far below its reference waits for the Sales Manager when it is sent (14 BR-10).
      *
-     * <p>No price of the customer's own, or the cartons below its first tier: Sales negotiates and enters the line's
-     * tiers - the first tier's price is never applied to fewer cartons, and the refusal says so instead of reading as a
-     * quote MOQ the customer never saw (user decision P4).</p>
+     * <p>The customer's own price when it has one, whatever the cartons - the standard price only for a SKU without one.
+     * Neither price, or the cartons below where the one that applies starts: Sales negotiates and enters the line's tiers
+     * - a first tier's price is never applied to fewer cartons, and the refusal says so instead of reading as a quote MOQ
+     * the customer never saw (user decision P4).</p>
      */
-    /** The customer's own tiers when they apply at {@code cartons}; none - a line for Sales to price - otherwise. */
+    private Optional<PriceSchedule> startingPrice(UUID customerId, Sku sku, int cartons) {
+        // The customer's own price when it has one - never the standard price behind it, which would offer the customer
+        // another list than the one negotiated; the standard price only for a SKU without one (13 BR-05).
+        Optional<PriceSchedule> own = ownPrice(customerId, sku.code());
+        return (own.isPresent() ? own : standardPrice(sku.code())).filter(schedule -> cartons >= schedule.moq());
+    }
+
+    /** The tiers a line starts from when they apply at {@code cartons}; none - a line for Sales to price - otherwise. */
     private List<PriceTier> ownTiersOrNone(UUID customerId, Sku sku, int cartons) {
-        return ownPrice(customerId, sku.code()).filter(schedule -> cartons >= schedule.moq())
+        return startingPrice(customerId, sku, cartons)
                 .map(schedule -> schedule.tiers().stream()
                         .map(t -> PriceTier.of(t.minQuantity(), t.unitPrice().amount())).toList())
                 .orElse(List.of());
     }
 
     private List<PriceTier> defaultTiers(UUID customerId, Sku sku, int cartons) {
-        PriceSchedule schedule = ownPrice(customerId, sku.code()).orElseThrow(() -> new BusinessException(
-                ErrorCode.VALIDATION_FAILED, "The customer has no price of its own for " + sku.code()
-                        + "; enter the line's price tiers"));
-        if (cartons < schedule.moq()) {
+        Optional<PriceSchedule> starting = startingPrice(customerId, sku, cartons);
+        if (starting.isEmpty()) {
+            Optional<PriceSchedule> any = ownPrice(customerId, sku.code()).or(() -> standardPrice(sku.code()));
+            // Below where that price starts: Sales enters the agreed tiers.
+            if (any.isEmpty()) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Neither the customer's own price nor a "
+                        + "standard price is set for " + sku.code() + "; enter the line's price tiers")
+                        .localized("refusal.quote.noOwnPrice", sku.code());
+            }
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "%d cartons of %s is below the customer's price minimum of %d cartons; enter the negotiated price "
-                            .formatted(cartons, sku.code(), schedule.moq()) + "tiers");
+                    "%d cartons of %s is below the price minimum of %d cartons; enter the negotiated price "
+                            .formatted(cartons, sku.code(), any.get().moq()) + "tiers")
+                    .localized("refusal.quote.belowOwnPriceMinimum", cartons, sku.code(), any.get().moq());
         }
-        return schedule.tiers().stream()
+        return starting.get().tiers().stream()
                 .map(t -> PriceTier.of(t.minQuantity(), t.unitPrice().amount())).toList();
     }
 
@@ -771,80 +1136,204 @@ class QuoteService implements Quotes {
     /**
      * @param forCustomer read by the customer (portal): a revision Sales reopened and then dropped before sending it
      *                    was never offered - the customer sees the quote end with the offer
-     *                    they were last sent, as its SENT history row kept it, not the draft's working terms
+     *                    they were last sent, as its SENT history row kept it, not the draft's working terms. Its
+     *                    history is the customer's too: no DRAFT row (drawn up, a revision reopened - Sales' working
+     *                    steps), no account behind a step, and a reason only where it is the customer's own words
+     *                    (CHANGES_REQUESTED); Sales' other reasons - a cancellation's, the order number on CONVERTED -
+     *                    are internal
      */
     private QuoteView view(Quote quote, boolean forCustomer) {
         Instant now = clock.instant();
         QuoteSearch.Row row = search.findRow(quote.id()).orElseThrow();
+        // The full history stays in `rows`: what the customer is shown of a revising quote is read from it below.
         List<QuoteSearch.Transition> rows = search.history(quote.id());
+        // R5-8: who made each step - and who sent the quote and who answered it - by name, for the back office; the
+        // customer's copy names no account. One read for every name the view shows.
+        // 14 BR-10: the latest submission of the prices to the Sales Manager - staff only.
+        Optional<QuotePriceReviews.Review> review = forCustomer ? Optional.empty() : priceReviews.latest(quote.id());
+        List<UUID> actors = forCustomer ? List.of() : java.util.stream.Stream.concat(
+                        rows.stream().map(QuoteSearch.Transition::changedBy),
+                        java.util.stream.Stream.of(quote.sentBy(), quote.respondedBy(),
+                                review.map(QuotePriceReviews.Review::submittedBy).orElse(null),
+                                review.map(QuotePriceReviews.Review::decidedBy).orElse(null)))
+                .filter(Objects::nonNull).distinct().toList();
+        Map<UUID, String> names = actors.isEmpty() ? Map.of() : identities.displayNames(actors);
         List<Transition> history = rows.stream()
-                .map(t -> new Transition(t.revision(), t.fromStatus(), t.toStatus(), t.reason(), t.changedAt(),
-                        t.changedBy()))
+                .filter(t -> !forCustomer || t.toStatus() != QuoteStatus.DRAFT)
+                .map(t -> forCustomer
+                        ? new Transition(t.revision(), t.fromStatus(), t.toStatus(),
+                                t.toStatus() == QuoteStatus.CHANGES_REQUESTED ? t.reason() : null, t.changedAt(), null)
+                        : new Transition(t.revision(), t.fromStatus(), t.toStatus(), t.reason(), t.changedAt(),
+                                t.changedBy(), t.changedBy() == null ? null : names.get(t.changedBy())))
                 .toList();
-        Quote.Offer offer = quote.offer();
-        int revision = quote.revision();
-        boolean neverOffered = forCustomer && quote.status() == QuoteStatus.CANCELLED && rows.stream()
-                .filter(t -> t.toStatus() == QuoteStatus.CANCELLED).reduce((first, last) -> last)
-                .map(t -> t.fromStatus() == QuoteStatus.DRAFT).orElse(false);
-        Optional<QuoteSearch.Transition> lastSent = rows.stream()
-                .filter(t -> t.toStatus() == QuoteStatus.SENT && t.offer() != null).reduce((first, last) -> last);
-        if (neverOffered && lastSent.isPresent()) {
-            offer = sentOffer(quote, lastSent.get().offer());
-            revision = lastSent.get().revision();
+        Shown shown = shown(quote, rows, forCustomer);
+        Quote.Offer offer = shown.offer();
+        int revision = shown.revision();
+        QuoteStatus shownStatus = quote.statusAt(now);
+        String shownFeedback = quote.customerFeedback();
+        Instant shownRespondedAt = quote.respondedAt();
+        UUID shownRespondedBy = quote.respondedBy();
+        if (shown.revising()) {
+            Optional<QuoteSearch.Transition> asked = rows.stream()
+                    .filter(t -> t.toStatus() == QuoteStatus.CHANGES_REQUESTED).reduce((first, last) -> last);
+            shownStatus = QuoteStatus.CHANGES_REQUESTED;
+            shownFeedback = asked.map(QuoteSearch.Transition::reason).orElse(null);
+            shownRespondedAt = asked.map(QuoteSearch.Transition::changedAt).orElse(null);
+            shownRespondedBy = asked.map(QuoteSearch.Transition::changedBy).orElse(null);
         }
         boolean priced = offer.priced();
-        boolean accepted = !offer.lines().isEmpty() && offer.lines().stream().allMatch(l -> l.acceptedQuantity() != null);
-        // 4B-3: a legacy quote predates VAT: its lines' tax is 0 by definition, not unknown. So is an offer sent before
-        // 4B-3: a quote is never sent with a line missing its rate since, so a line without one on a quote past DRAFT
-        // was offered, accepted and placed without VAT. Only a draft's missing rate is unknown.
-        boolean untaxed = offer.legacy() || quote.status() != QuoteStatus.DRAFT
-                && offer.lines().stream().anyMatch(line -> line.taxRate() == null);
-        TotalsBuilder proposedTotals = new TotalsBuilder();
-        TotalsBuilder acceptedTotals = new TotalsBuilder();
+        boolean untaxed = untaxed(quote, offer);
+        // Whether each SKU may still be quoted (01 BR-04): an accepted quote is cancelled only when one may not. One
+        // statement for the whole quote; a legacy line's blank is not asked.
+        List<String> skus = offer.lines().stream().filter(line -> !line.legacy()).map(line -> line.sku().code())
+                .toList();
+        Map<String, Purchasability> verdicts = skus.isEmpty() ? Map.of() : products.purchasability(skus);
+        // R5-3: the design each customer SKU was made to, for the whole quote at once.
+        Map<String, com.stockflow.design.api.SkuDesign> designs = skus.isEmpty() ? Map.of()
+                : skuDesigns.ofSkus(skus.stream().distinct().toList());
+        // What each SKU is called - its product and itself - for the whole quote at once; a legacy line's blank too.
+        Map<String, LineNames.Names> skuNames = lineNames.of(offer.lines().stream().map(line -> line.sku().code())
+                .toList());
         List<LineView> lines = new ArrayList<>();
         for (QuoteLine line : offer.lines()) {
-            com.stockflow.common.domain.Money acceptedNet = line.acceptedQuantity() == null ? null
-                    : line.total(line.acceptedQuantity(), line.acceptedUnitPrice());
-            com.stockflow.common.domain.Money acceptedTax = acceptedNet == null ? null
-                    : untaxed ? com.stockflow.common.domain.Money.vnd(0) : line.taxOf(acceptedNet);
-            com.stockflow.common.domain.Money proposed = !line.priced() ? null
-                    : line.priceFor(offer.proposedQuantity(line.sku().code()));
-            com.stockflow.common.domain.Money proposedNet = proposed == null ? null : line.total(line.quantity(), proposed);
-            com.stockflow.common.domain.Money proposedTax = proposedNet == null ? null
-                    : untaxed ? com.stockflow.common.domain.Money.vnd(0) : line.taxOf(proposedNet);
-            proposedTotals.goods(proposedNet, proposedTax);
-            acceptedTotals.goods(acceptedNet, acceptedTax);
+            LineMoney money = money(offer, line, untaxed);
+            com.stockflow.design.api.SkuDesign design = line.legacy() ? null : designs.get(line.sku().code());
+            LineNames.Names named = LineNames.of(skuNames, line.sku().code());
             lines.add(new LineView(line.id(), line.lineNo(), line.measure().name(), line.sku().code(),
                     line.legacy() ? null : line.quantity(), line.legacy() ? null : line.unitsPerCarton(), line.units(),
                     line.designSnapshotId(), line.printSpec(), line.priced(), line.priced() ? line.moq() : null,
                     line.tiers().stream().map(t -> new Tier(t.minQuantity(), t.unitPrice().amount())).toList(),
-                    proposed == null ? null : proposed.amount(), amount(proposedNet),
+                    amount(money.proposedUnitPrice()), amount(money.proposedNet()),
                     line.legacy() ? null : line.acceptedQuantity(), line.acceptedUnits(),
-                    line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount(), amount(acceptedNet),
-                    line.taxClass(), line.taxRate(), amount(proposedTax), amount(acceptedTax)));
+                    line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount(),
+                    amount(money.acceptedNet()), line.taxClass(), line.taxRate(), amount(money.proposedTax()),
+                    amount(money.acceptedTax()),
+                    line.legacy() ? null : verdicts.get(line.sku().code().strip().toUpperCase(java.util.Locale.ROOT)),
+                    design == null ? null : design.name(), design == null ? null : design.previewUrl(),
+                    named.productName(), named.variantName()));
         }
         List<FeeView> fees = new ArrayList<>();
         for (com.stockflow.order.internal.domain.QuoteFee fee : offer.fees()) {
-            proposedTotals.fee(fee.amount(), fee.tax());
-            acceptedTotals.fee(fee.amount(), fee.tax());
             fees.add(new FeeView(fee.id(), fee.kind(), fee.sku() == null ? null : fee.sku().code(), amount(fee.amount()),
                     fee.taxClass(), fee.taxRate(), amount(fee.tax())));
         }
-        Totals proposedView = proposedTotals.build();
-        Totals acceptedView = accepted ? acceptedTotals.build() : null;
+        OfferTotals totals = totals(quote, offer);
+        com.stockflow.customer.api.CustomerLabel label = quote.customerId() == null ? null
+                : customers.labels(List.of(quote.customerId())).get(quote.customerId());
+        Totals proposedView = totals.proposed();
+        Totals acceptedView = totals.accepted();
         ConvertedOrder converted = quote.convertedOrderId() == null ? null : orders.findById(quote.convertedOrderId())
                 // 17 §5.2: the customer meets the order once its contract is sent, not while it is drafted.
                 .filter(o -> !forCustomer || o.status() != com.stockflow.order.api.OrderStatus.DRAFT)
                 .map(o -> new ConvertedOrder(o.orderId(), o.orderNumber(), o.status(), o.total().amount()))
                 .orElse(null);
-        return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), revision,
+        PriceReviewView priceReview = review.map(r -> new PriceReviewView(r.id(), r.revision(), r.outcome().name(),
+                r.thresholdPercent(), r.submittedAt(), r.submittedBy(), names.get(r.submittedBy()), r.decidedAt(),
+                r.decidedBy(), r.decidedBy() == null ? null : names.get(r.decidedBy()), r.reason(),
+                readLines(r.lines()))).orElse(null);
+        // 14 BR-10: what sending the draft would decide, as its prices stand now - for Sales editing it.
+        PriceCheckView priceCheck = null;
+        if (!forCustomer && quote.status() == QuoteStatus.DRAFT && !offer.legacy()) {
+            QuotePriceCheck.Result check = priceCheck(quote.customerId(), offer);
+            priceCheck = new PriceCheckView(check.thresholdPercent(), check.needsApproval(), checkLines(check));
+        }
+        return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), shownStatus, revision,
                 offer.validUntil(), offer.terms(),
                 offer.requestedDeliveryDate(), offer.legacy(), lines, fees, priced, proposedView, acceptedView,
                 proposedView.total(),
                 acceptedView == null ? null : acceptedView.total(),
-                quote.sentAt(), quote.sentBy(), quote.respondedAt(), quote.respondedBy(), quote.customerFeedback(),
+                quote.sentAt(), quote.sentBy(), shownRespondedAt, shownRespondedBy, shownFeedback,
                 quote.cancellationReason(), converted, quote.convertedAt(), history, row.createdAt(), row.createdBy(),
-                row.version());
+                row.version(), label == null ? null : label.name(), label == null ? null : label.code(),
+                forCustomer || quote.sentBy() == null ? null : names.get(quote.sentBy()),
+                forCustomer || shownRespondedBy == null ? null : names.get(shownRespondedBy),
+                !forCustomer && quote.priceReviewPending(), priceReview, priceCheck);
+    }
+
+    /** The offer a reader is shown of a quote, at which revision, and whether it is a revision being written. */
+    private record Shown(Quote.Offer offer, int revision, boolean revising) {
+    }
+
+    /**
+     * What {@link #view} - and a list row - shows of the quote's offer: the stored one, except to the customer reading a
+     * revision Sales reopened (being written, or dropped before it was sent), who keeps the offer last sent, as its SENT
+     * history row kept it. {@code rows} is the quote's history, oldest first; not read for the back office.
+     */
+    private Shown shown(Quote quote, List<QuoteSearch.Transition> rows, boolean forCustomer) {
+        if (!forCustomer) {
+            return new Shown(quote.offer(), quote.revision(), false);
+        }
+        Quote.Offer offer = quote.offer();
+        int revision = quote.revision();
+        boolean neverOffered = quote.status() == QuoteStatus.CANCELLED && rows.stream()
+                .filter(t -> t.toStatus() == QuoteStatus.CANCELLED).reduce((first, last) -> last)
+                .map(t -> t.fromStatus() == QuoteStatus.DRAFT).orElse(false);
+        Optional<QuoteSearch.Transition> lastSent = rows.stream()
+                .filter(t -> t.toStatus() == QuoteStatus.SENT && t.offer() != null).reduce((first, last) -> last);
+        // A revision being written is not shown either: the customer keeps the offer they asked to change, as asked.
+        boolean revising = quote.revisingSentQuote();
+        if ((neverOffered || revising) && lastSent.isPresent()) {
+            offer = sentOffer(quote, lastSent.get().offer());
+            revision = lastSent.get().revision();
+        }
+        return new Shown(offer, revision, revising);
+    }
+
+    /**
+     * 4B-3: a legacy quote predates VAT: its lines' tax is 0 by definition, not unknown. So is an offer sent before
+     * 4B-3: a quote is never sent with a line missing its rate since, so a line without one on a quote past DRAFT was
+     * offered, accepted and placed without VAT. Only a draft's missing rate is unknown.
+     */
+    private static boolean untaxed(Quote quote, Quote.Offer offer) {
+        return offer.legacy() || quote.status() != QuoteStatus.DRAFT
+                && offer.lines().stream().anyMatch(line -> line.taxRate() == null);
+    }
+
+    /** One line's money at the proposed and at the accepted cartons; a part not known is null. */
+    private record LineMoney(com.stockflow.common.domain.Money proposedUnitPrice,
+                             com.stockflow.common.domain.Money proposedNet,
+                             com.stockflow.common.domain.Money proposedTax,
+                             com.stockflow.common.domain.Money acceptedNet,
+                             com.stockflow.common.domain.Money acceptedTax) {
+    }
+
+    private static LineMoney money(Quote.Offer offer, QuoteLine line, boolean untaxed) {
+        com.stockflow.common.domain.Money acceptedNet = line.acceptedQuantity() == null ? null
+                : line.total(line.acceptedQuantity(), line.acceptedUnitPrice());
+        com.stockflow.common.domain.Money acceptedTax = acceptedNet == null ? null
+                : untaxed ? com.stockflow.common.domain.Money.vnd(0) : line.taxOf(acceptedNet);
+        com.stockflow.common.domain.Money proposed = !line.priced() ? null
+                : line.shownPriceFor(offer.proposedQuantity(line.sku().code()));
+        com.stockflow.common.domain.Money proposedNet = proposed == null ? null : line.total(line.quantity(), proposed);
+        com.stockflow.common.domain.Money proposedTax = proposedNet == null ? null
+                : untaxed ? com.stockflow.common.domain.Money.vnd(0) : line.taxOf(proposedNet);
+        return new LineMoney(proposed, proposedNet, proposedTax, acceptedNet, acceptedTax);
+    }
+
+    /** @param accepted null until every line has its accepted cartons */
+    private record OfferTotals(Totals proposed, Totals accepted) {
+    }
+
+    /**
+     * The offer added up line by line (14 BR-09), at the proposed and at the accepted cartons: what the quote's view and
+     * its list row both show, from one place, so the two cannot drift apart.
+     */
+    private static OfferTotals totals(Quote quote, Quote.Offer offer) {
+        boolean untaxed = untaxed(quote, offer);
+        TotalsBuilder proposed = new TotalsBuilder();
+        TotalsBuilder accepted = new TotalsBuilder();
+        for (QuoteLine line : offer.lines()) {
+            LineMoney money = money(offer, line, untaxed);
+            proposed.goods(money.proposedNet(), money.proposedTax());
+            accepted.goods(money.acceptedNet(), money.acceptedTax());
+        }
+        for (com.stockflow.order.internal.domain.QuoteFee fee : offer.fees()) {
+            proposed.fee(fee.amount(), fee.tax());
+            accepted.fee(fee.amount(), fee.tax());
+        }
+        boolean allAccepted = !offer.lines().isEmpty()
+                && offer.lines().stream().allMatch(line -> line.acceptedQuantity() != null);
+        return new OfferTotals(proposed.build(), allAccepted ? accepted.build() : null);
     }
 
     /** The offer as {@link #offerJson} kept it when it was sent; its lines keep their ids where the quote still has them. */

@@ -5,8 +5,10 @@ import java.util.UUID;
 
 /**
  * Where received goods came from, as the receiving documents read at the moment of receipt (SCRUM-142): the lot
- * the receipt opens keeps this snapshot, so the lot trace (SCRUM-153) can name the receipt and the production order
- * without reading another module's tables.
+ * the receipt opens keeps the production order of this snapshot (not the receipt: the lot outlives it and gathers the
+ * next receipts of the production order), so the lot trace (SCRUM-153) can name it without reading another module's
+ * tables. {@code goodsReceiptId} and {@code goodsReceiptNumber} are no longer kept on the lot (V20261214000200); they remain
+ * on the snapshot the caller hands in.
  *
  * <p>4A-5: goods received against a production order name it ({@code productionOrderId}, {@code productionOrderCode}).
  * Their lot is the production order's - one per production order and SKU, whatever the number of receipts (kltn-docs
@@ -18,16 +20,15 @@ public record ReceiptOrigin(UUID goodsReceiptId, String goodsReceiptNumber, UUID
 
     public ReceiptOrigin {
         Objects.requireNonNull(goodsReceiptId, "goodsReceiptId");
-        if ((productionOrderId == null) != (productionOrderCode == null)) {
-            throw new IllegalArgumentException("A production order is named by its id and its code");
-        }
+        // Goods are received against production orders only: the lot is the production order's (03 BR-03).
+        Objects.requireNonNull(productionOrderId, "productionOrderId");
+        Objects.requireNonNull(productionOrderCode, "productionOrderCode");
     }
 
     /** Goods received against a production order (4A-5). */
     public static ReceiptOrigin ofProductionOrder(UUID goodsReceiptId, String goodsReceiptNumber, UUID warehouseId,
                                                   UUID productionOrderId, String productionOrderCode) {
-        return new ReceiptOrigin(goodsReceiptId, goodsReceiptNumber, warehouseId,
-                Objects.requireNonNull(productionOrderId, "productionOrderId"),
-                Objects.requireNonNull(productionOrderCode, "productionOrderCode"));
+        return new ReceiptOrigin(goodsReceiptId, goodsReceiptNumber, warehouseId, productionOrderId,
+                productionOrderCode);
     }
 }

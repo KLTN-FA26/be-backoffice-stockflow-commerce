@@ -107,7 +107,7 @@ class InventoryToolsTest {
         when(inventory.availabilityOf(new Sku(TABLE))).thenReturn(List.of(counted, countedEmpty, free));
         com.stockflow.inventory.api.BlindCountQueries blind = mock(com.stockflow.inventory.api.BlindCountQueries.class);
         when(blind.hiddenFromCaller(anyCollection()))
-                .thenReturn(Set.of(counted.stockItemId(), countedEmpty.stockItemId()));
+                .thenReturn(Set.of(counted.stockPackageId(), countedEmpty.stockPackageId()));
 
         GetStockLotsTool.Answer answer = new GetStockLotsTool(inventory, blind)
                 .run(args("{\"sku\":\"" + TABLE + "\"}"));
@@ -119,8 +119,8 @@ class InventoryToolsTest {
                 .containsExactly(tuple("LOT-A", null, null, null, true), tuple("LOT-B", null, null, null, true),
                         tuple("LOT-C", 12, 0, 12, null));
         assertThat(answer.locations().getFirst().onHandPacked()).isNull();
-        verify(blind).hiddenFromCaller(List.of(counted.stockItemId(), countedEmpty.stockItemId(),
-                free.stockItemId()));
+        verify(blind).hiddenFromCaller(List.of(counted.stockPackageId(), countedEmpty.stockPackageId(),
+                free.stockPackageId()));
     }
 
     @Test
@@ -153,8 +153,8 @@ class InventoryToolsTest {
         Sku sku = new Sku("EVAL-CUP-16OZ");
         // HCM: 500 in available status, 60 allocated to a pick, 100 held by a contract's order there -> 340 to promise.
         when(inventory.levelsOf(sku)).thenReturn(List.of(
-                new com.stockflow.inventory.api.StockLevel(sku.code(), "HCM", 520, 500, 0, 60, 340),
-                new com.stockflow.inventory.api.StockLevel(sku.code(), "HN", 80, 80, 5, 0, 75)));
+                new com.stockflow.inventory.api.StockLevel(sku.code(), "HCM", 520, 500, 0, 60, 340, 26, 25, 0, 3, 17),
+                new com.stockflow.inventory.api.StockLevel(sku.code(), "HN", 80, 80, 5, 0, 75, 16, 16, 1, 0, 15)));
         when(inventory.orderHoldsByWarehouse(sku)).thenReturn(java.util.Map.of("HCM", 100));
         when(inventory.availableToPromise(sku)).thenReturn(415);
 
@@ -297,7 +297,7 @@ class InventoryToolsTest {
     void traceLotKeepsTheBlindCountsSecret() {
         LotTraceQueries lots = mock(LotTraceQueries.class);
         LotTraceView view = new LotTraceView(TABLE, "LOT-A", Instant.parse("2026-08-30T03:04:05Z"), "GOODS_RECEIPT",
-                "GR-HCM-20260830-0001", "LSX-0001", 100, 60, 60, 0,
+                "LSX-0001", 100, 60, 60, 0,
                 List.of(new LotTraceView.Balance("HCM-B01-1-A", "AVAILABLE", 60, 0, false),
                         new LotTraceView.Balance("HCM-B02-1-A", "AVAILABLE", null, null, true)),
                 List.of(), List.of());
@@ -342,7 +342,7 @@ class InventoryToolsTest {
             where.add(new LotTraceView.Balance("HCM-B%02d-1-A".formatted(i + 1), "AVAILABLE", 120, 12, false));
         }
         return new LotTraceView(sku, lotNumber, Instant.parse("2026-08-30T03:04:05.123456Z"), "GOODS_RECEIPT",
-                "GR-HCM-20260830-0001", "LSX-HCM-20260815-0001", 100_000, 54_321, 40_000, 14_321, where, holds,
+                "LSX-HCM-20260815-0001", 100_000, 54_321, 40_000, 14_321, where, holds,
                 orders);
     }
 }

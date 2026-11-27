@@ -23,6 +23,16 @@ public record OrderResponse(
 
         UUID customerId,
 
+        @Schema(description = "The customer's registered name, so back-office staff who read the order (the "
+                + "accountant has no customer permission) see whose it is, not an id. Set on the back-office order "
+                + "list, the order detail and the credit-hold list; null elsewhere, and when the customer record is "
+                + "gone")
+        String customerName,
+
+        @Schema(description = "The code the customer is known by (tax code, or KH + 8 characters of the id); set "
+                + "where customerName is", example = "0312345678")
+        String customerCode,
+
         @Schema(example = "PENDING_PAYMENT")
         String status,
 
@@ -54,8 +64,9 @@ public record OrderResponse(
         Cancellation cancellation,
 
         @Schema(example = "ADDRESS", description = "Staff only. Set while ON_HOLD: CREDIT, PAYMENT, ADDRESS, "
-                + "INVENTORY, CUSTOMER, FRAUD, OTHER (G3-2) or DELIVERY_FAILED - a shipment came back and Sales decide its "
-                + "delivery failure case; null for a customer, who gets holdReasonPublic")
+                + "INVENTORY, CUSTOMER, FRAUD, OTHER (G3-2), or DELIVERY_FAILED on an order held before RTM-RETURNED "
+                + "(a shipment coming back no longer holds the order: it is settled when its return receipt is "
+                + "confirmed); null for a customer, who gets holdReasonPublic")
         String holdReason,
 
         @Schema(example = "PICKING", description = "Staff only. Where resolving the hold goes back to; null for a "
@@ -120,8 +131,160 @@ public record OrderResponse(
         BigDecimal taxAmount,
 
         @Schema(description = "4B-3: the fee lines - a plate fee per SKU produced for the first time, the shipping fee")
-        List<Fee> fees
+        List<Fee> fees,
+
+        @Schema(description = "R5-7: the quote the order was converted from; set on GET /orders/{orderId}, null "
+                + "elsewhere and for an order no quote became")
+        UUID sourceQuoteId,
+
+        @Schema(example = "QT-20261109-0007", description = "R5-7: that quote's number; set where sourceQuoteId is")
+        String sourceQuoteNumber,
+
+        @Schema(description = "WF-05 F-1: when the order last became REFUNDED / PARTIALLY_REFUNDED; set on GET "
+                + "/orders/{orderId} for staff, null elsewhere")
+        Instant refundedAt,
+
+        @Schema(description = "WF-05 F-1 (BE-34): what the order still waits for before it completes or closes - the "
+                + "conditions the nightly settlement decides by, read from the same source. Set on GET /orders/{orderId} "
+                + "for staff; null before anything of the order was delivered, and elsewhere")
+        SettlementReadiness settlementReadiness,
+
+        @Schema(description = "WF-05 Q-12: the order's optimistic-lock version, which POST "
+                + "/orders/{orderId}/shipments/{shipmentId}/lost-closure takes back as `version` (409 when the order "
+                + "changed meanwhile). Set on the back-office list, the detail and every write's answer; null where "
+                + "it was not read")
+        Long version,
+
+        @Schema(description = "The code (prefix) of the warehouse the order was released from, beside warehouseId, so "
+                + "the order names it without the warehouse list or warehouse-warehouses:READ. Set on the back-office "
+                + "list, GET /orders/{orderId} for staff and the release's answer; null until released, and elsewhere",
+                example = "HCM")
+        String warehouseCode,
+
+        @Schema(description = "That warehouse's name; set where warehouseCode is")
+        String warehouseName
 ) {
+
+    /** Without the version: what was answered before WF-05 Q-12. */
+    public OrderResponse(UUID orderId, String orderNumber, UUID customerId, String customerName, String customerCode,
+                         String status, BigDecimal totalAmount, String currency, List<Line> lines, Instant placedAt,
+                         String createdBy, Instant lastModifiedAt, String lastModifiedBy, String contactName,
+                         String contactEmail, String contactPhone, Address shippingAddress, Address billingAddress,
+                         UUID warehouseId, Instant releasedAt, Cancellation cancellation, String holdReason,
+                         String statusBeforeHold, String holdReasonPublic, String holdNote, Instant packedAt,
+                         Instant firstLabeledAt, Instant shippedAt, Instant deliveredAt, String deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<Shipment> shipments, Boolean allowPartialShipment,
+                         Boolean printLinesReady, BigDecimal netAmount, BigDecimal taxAmount, List<Fee> fees,
+                         UUID sourceQuoteId, String sourceQuoteNumber, Instant refundedAt,
+                         SettlementReadiness settlementReadiness) {
+        this(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount, currency, lines,
+                placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail, contactPhone,
+                shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason, statusBeforeHold,
+                holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt, deliveryFailureReason,
+                completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments, allowPartialShipment,
+                printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber, refundedAt,
+                settlementReadiness, null, null, null);
+    }
+
+    /** This response with the order's version. */
+    public OrderResponse withVersion(Long version) {
+        return new OrderResponse(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount,
+                currency, lines, placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail,
+                contactPhone, shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason,
+                statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
+                deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
+                allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
+                refundedAt, settlementReadiness, version, warehouseCode, warehouseName);
+    }
+
+    /** This response naming its warehouse: {@code code} and {@code name} of {@code warehouseId}, or nulls. */
+    public OrderResponse withWarehouse(String code, String name) {
+        return new OrderResponse(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount,
+                currency, lines, placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail,
+                contactPhone, shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason,
+                statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
+                deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
+                allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
+                refundedAt, settlementReadiness, version, code, name);
+    }
+
+    /**
+     * F-1. {@code branch}: COMPLETION (DELIVERED, or a claim open on it), REFUND_CLOSE (REFUNDED / PARTIALLY_REFUNDED,
+     * closing from the refund branch, and - WF-05 BE-45 - RETURNED / PARTIALLY_FULFILLED ended by the carrier, closing
+     * without a refund) or NONE. {@code blockers}: NOT_DELIVERED, RETURN_WINDOW_OPEN, OWING, OPEN_RETURN,
+     * SHIPMENT_UNINVOICED, SHIPPING_FEE_UNINVOICED, REFUND_OUTSTANDING, COMPLETION_HELD - parse tolerantly; a COMPLETED
+     * order lists what keeps it from closing (OWING, OPEN_RETURN, REFUND_OUTSTANDING, COMPLETION_HELD) with branch NONE,
+     * so render them whatever the branch. {@code shippingFeeUninvoiced} / SHIPPING_FEE_UNINVOICED: the rest of the
+     * order's fees - shipping fee and plate fee (BE-62) - is not on an issued invoice. {@code returnAdjustmentUnissued}
+     * is information only (Q-16): a return's decrease adjustment not issued yet never keeps the order open.
+     * {@code deliveryReductionUnissued} (audit r3 EINV-7) is information only too: a reduction for a delivery that did
+     * not happen - a shipment's invoice reduced to nothing, or the waived shipping fee taken off the rest invoice - is
+     * drawn up and the accountant has not issued it yet.
+     * {@code failedDeliveryUnreducedShipmentIds} (BE #423) is information only too: shipments not delivered now -
+     * corrected to a failure, or brought back - whose issued invoice still stands and that no reduction was drawn up
+     * for; the accountant reduces it ("Lập bản giảm do giao thất bại", or on the provider's portal).
+     * {@code completionHoldable}: Sales may pause the completion ("Giữ hoàn tất") now - the rule the hold endpoint
+     * applies, false while a pause is on.
+     */
+    public record SettlementReadiness(String branch, Integer returnWindowDays, Instant returnWindowEndsAt,
+                                      boolean owing, boolean openReturn, List<UUID> uninvoicedShipmentIds,
+                                      boolean shippingFeeUninvoiced, boolean refundOutstanding, boolean completionHeld,
+                                      boolean returnAdjustmentUnissued, Instant completesAt, Instant closesAt,
+                                      List<String> blockers, boolean completionHoldable,
+                                      boolean deliveryReductionUnissued,
+                                      List<UUID> failedDeliveryUnreducedShipmentIds) {
+    }
+
+    /** This response with F-1's facts, as the order's detail shows them to staff. */
+    public OrderResponse withSettlement(Instant refunded, SettlementReadiness readiness) {
+        return new OrderResponse(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount,
+                currency, lines, placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail,
+                contactPhone, shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason,
+                statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
+                deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
+                allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
+                refunded, readiness, version, warehouseCode, warehouseName);
+    }
+
+    /** With the quote it came from, without F-1's facts. */
+    public OrderResponse(UUID orderId, String orderNumber, UUID customerId, String customerName, String customerCode,
+                         String status, BigDecimal totalAmount, String currency, List<Line> lines, Instant placedAt,
+                         String createdBy, Instant lastModifiedAt, String lastModifiedBy, String contactName,
+                         String contactEmail, String contactPhone, Address shippingAddress, Address billingAddress,
+                         UUID warehouseId, Instant releasedAt, Cancellation cancellation, String holdReason,
+                         String statusBeforeHold, String holdReasonPublic, String holdNote, Instant packedAt,
+                         Instant firstLabeledAt, Instant shippedAt, Instant deliveredAt, String deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<Shipment> shipments, Boolean allowPartialShipment,
+                         Boolean printLinesReady, BigDecimal netAmount, BigDecimal taxAmount, List<Fee> fees,
+                         UUID sourceQuoteId, String sourceQuoteNumber) {
+        this(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount, currency, lines,
+                placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail, contactPhone,
+                shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason, statusBeforeHold,
+                holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt, deliveryFailureReason,
+                completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments, allowPartialShipment,
+                printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber, null, null);
+    }
+
+    /** Without the quote it came from: every list and every write answers so. */
+    public OrderResponse(UUID orderId, String orderNumber, UUID customerId, String customerName, String customerCode,
+                         String status, BigDecimal totalAmount, String currency, List<Line> lines, Instant placedAt,
+                         String createdBy, Instant lastModifiedAt, String lastModifiedBy, String contactName,
+                         String contactEmail, String contactPhone, Address shippingAddress, Address billingAddress,
+                         UUID warehouseId, Instant releasedAt, Cancellation cancellation, String holdReason,
+                         String statusBeforeHold, String holdReasonPublic, String holdNote, Instant packedAt,
+                         Instant firstLabeledAt, Instant shippedAt, Instant deliveredAt, String deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<Shipment> shipments, Boolean allowPartialShipment,
+                         Boolean printLinesReady, BigDecimal netAmount, BigDecimal taxAmount, List<Fee> fees) {
+        this(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount, currency, lines,
+                placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail, contactPhone,
+                shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason, statusBeforeHold,
+                holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt, deliveryFailureReason,
+                completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments, allowPartialShipment,
+                printLinesReady, netAmount, taxAmount, fees, null, null);
+    }
 
     /** A fee line with its VAT (14 BR-17, BR-20, BR-21). */
     public record Fee(String kind, String sku, BigDecimal amount, BigDecimal taxRate, BigDecimal taxAmount) {
@@ -136,7 +299,10 @@ public record OrderResponse(
             Instant handedOverAt,
             Instant outcomeAt,
             String failureReason,
-            List<ShipmentLine> lines) {
+            List<ShipmentLine> lines,
+            @Schema(description = "WF-05 F-5: Sales may close it as lost now (it failed as LOST, or came back from the "
+                    + "carrier with no return receipt, and its units are still on it); false once closed")
+            boolean lostClosable) {
     }
 
     @Schema(name = "OrderShipmentLine")
@@ -196,8 +362,25 @@ public record OrderResponse(
             BigDecimal taxRate,
 
             @Schema(description = "4B-3: the line's VAT, rounded to the dong; null for a line without VAT")
-            BigDecimal taxAmount
+            BigDecimal taxAmount,
+
+            @Schema(description = "R5-3: the name of the design the customer's SKU was made to; set on GET "
+                    + "/orders/{orderId}, null elsewhere and for a SKU with no design")
+            String designName,
+
+            @Schema(description = "R5-3: a short-lived link showing that design's preview image; null when there is "
+                    + "none")
+            String previewUrl
     ) {
+
+        public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
+                    List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
+                    Integer deliveredQuantity, Integer cancelledQuantity, java.time.LocalDate requestedDeliveryDate,
+                    Integer cartons, Integer unitsPerCarton, BigDecimal taxRate, BigDecimal taxAmount) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, requestedDeliveryDate, cartons,
+                    unitsPerCarton, taxRate, taxAmount, null, null);
+        }
 
         public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
                     List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,

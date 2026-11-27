@@ -7,7 +7,7 @@ package com.stockflow.chat.internal.domain;
 public enum ContextKind {
     /** A product of the catalogue - anyone's to ask about. */
     PRODUCT,
-    /** The customer's own SKU (a variant made to their approved design). */
+    /** The customer's own SKU, made to their approved design ({@code product.customer_skus}). */
     CUSTOMER_SKU,
     /** A design of the customer. */
     DESIGN,

@@ -69,6 +69,12 @@
     <pdfbox.version>3.0.6</pdfbox.version>
     <!-- The back-office assistant's model provider (ADR-0011): Anthropic's official Java SDK. -->
     <anthropic-java.version>2.34.0</anthropic-java.version>
+    <!--
+      Report exports (2026-11-14 plan, BE2): Apache POI writes XLSX, streamed with SXSSF. 5.4.0 carries the fix of
+      CVE-2025-31672 (duplicate zip entries in OOXML), which every earlier 5.x lacks. Its commons-io, commons-compress
+      and xmlbeans are the only ones on the classpath (nothing else here brings them at compile scope).
+    -->
+    <poi.version>5.4.0</poi.version>
 
     <!--
       Recorded in build-info.properties and served at /actuator/info. CI overrides them with
@@ -136,6 +142,11 @@
       <groupId>org.apache.pdfbox</groupId>
       <artifactId>pdfbox</artifactId>
       <version>${pdfbox.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.poi</groupId>
+      <artifactId>poi-ooxml</artifactId>
+      <version>${poi.version}</version>
     </dependency>
 
     <!-- ==================== web, validation, persistence ==================== -->

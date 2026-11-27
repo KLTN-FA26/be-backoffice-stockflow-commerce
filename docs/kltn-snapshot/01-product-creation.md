@@ -12,9 +12,9 @@ Module gồm:
 
 - **Danh mục dùng chung (master lists)** — cây danh mục (category), thương hiệu (brand), từ điển thuộc tính (attribute dictionary) kèm mẫu thuộc tính gợi ý theo danh mục.
 - **Sản phẩm & quy cách (Product / Variant)** — loại ly / bao bì nhận in: định danh, danh mục, thương hiệu, nhóm thuế, thuộc tính, các **quy cách** (biến thể theo trục), hình ảnh.
-- **SKU thành phẩm theo mẫu của khách (customer-exclusive SKU)** — SKU riêng của một khách, do hệ thống sinh khi Quản lý kinh doanh duyệt bản thiết kế khách tự làm ở [12](../../ecommerce/12-product-design/README.md) (§4.8).
+- **SKU thành phẩm theo mẫu của khách (customer-exclusive SKU)** — SKU riêng của một khách, do hệ thống sinh khi Điều phối sản xuất duyệt bản thiết kế khách tự làm (*✅ Chốt lại 2026-11-20*) ở [12](../../ecommerce/12-product-design/README.md) (§4.8).
 - **Cấu hình in của quy cách** — khuôn 2D, vùng in, lề an toàn, lề tràn, model 3D, ràng buộc file để khách tự thiết kế ở [12](../../ecommerce/12-product-design/README.md) (§4.10).
-- **Hàng tồn kho (Inventory Item)** — hồ sơ hàng vật lý của từng SKU: đơn vị tính, quy đổi, **quy cách thùng**, thông số logistics, chính sách tồn.
+- **Hàng tồn kho (Inventory Item)** — hồ sơ hàng vật lý của từng SKU: đơn vị tính, quy đổi, **quy cách thùng**, mã vạch, cờ cho phép xoay, chính sách tồn.
 - **Duyệt và vòng đời** — gửi duyệt, duyệt bốn mắt, tạm ngưng, ngừng kinh doanh, lịch sử thay đổi.
 
 ### Sản phẩm, quy cách và SKU riêng
@@ -22,7 +22,7 @@ Module gồm:
 | Đối tượng | Ý nghĩa | Có tồn, có giá, được báo giá / đặt | Ai thấy trên cổng khách hàng |
 |-----------|---------|-------------------------------------|------------------------------|
 | **Sản phẩm (`Product.type = CUSTOMIZABLE`)** | Loại ly / bao bì nhận in logo, nhận diện thương hiệu của khách | Không | Mọi khách (khi sản phẩm `Published`) |
-| **Quy cách** — biến thể sinh theo trục (§4.2) | Ví dụ ly PP 500 ml trong. **Chỉ là khuôn để in**: mang **cấu hình in** (§4.10) để khách tự thiết kế ở [12](../../ecommerce/12-product-design/README.md) và làm khuôn dữ liệu (kể cả quy cách thùng) cho SKU riêng | **Không** — không tồn, không giá, không báo giá / đặt trực tiếp | Mọi khách (để xem và bấm **"Thiết kế"** khi quy cách đã có khuôn in — [13](../../ecommerce/13-catalog/README.md), [12](../../ecommerce/12-product-design/README.md)) |
+| **Quy cách** — biến thể sinh theo trục (§4.2) | Ví dụ ly PP 500 ml trong. **Chỉ là khuôn để in**: mang **cấu hình in** (§4.10) để khách tự thiết kế ở [12](../../ecommerce/12-product-design/README.md) và làm khuôn dữ liệu (kể cả quy cách thùng) cho SKU riêng | **Không** — không tồn, không báo giá / đặt trực tiếp; chỉ có **giá chuẩn nội bộ** — giá tham chiếu cho SKU riêng thiết kế trên quy cách, khai báo ở [13](../../ecommerce/13-catalog/README.md) §4.2, không hiện trên sàn *(✅ Chốt lại 2026-11-26)* | Mọi khách (để xem và bấm **"Thiết kế"** khi quy cách đã có khuôn in — [13](../../ecommerce/13-catalog/README.md), [12](../../ecommerce/12-product-design/README.md)) |
 | **SKU thành phẩm theo mẫu của khách** (SKU riêng) | SKU gắn **một khách** và **một design snapshot** (§4.8) | **Có** — thứ duy nhất có tồn, có giá (trên báo giá / đơn / hợp đồng), được báo giá / đặt / nhập / xuất | **Chỉ khách sở hữu** (không hiện giá) |
 
 > ⚠️ Giả định: mỗi bản thiết kế gắn với **một sản phẩm `CUSTOMIZABLE` + một quy cách**. Xem [open-questions](../../open-questions/README.md).
@@ -32,7 +32,7 @@ Hai lớp dữ liệu liên kết **1:1** theo từng SKU (quy cách và SKU ri�
 | Lớp dữ liệu | Nội dung | Ai cập nhật | Phục vụ chủ yếu |
 |-------------|----------|-------------|-----------------|
 | **Sản phẩm & Biến thể (Product / Variant)** | Định danh, danh mục, thương hiệu, nhóm thuế, thuộc tính, mã SKU, hình ảnh, đơn vị bán; với quy cách: **cấu hình in** (§4.10); với SKU riêng: khách sở hữu, design snapshot, quy cách gốc | Quản lý kinh doanh, Sale, System Admin; Hệ thống (sinh SKU riêng) | 12 Product Design, 13 Catalog, 14 Quote/Order, 17 Order Management |
-| **Hàng tồn kho (Inventory Item)** | Đơn vị cơ sở, đơn vị quy đổi, **quy cách thùng**, mã vạch, thông số logistics, cờ cho phép xoay, chính sách tồn (luôn theo lô) | Quản lý kho (quy cách thùng, logistics); người sửa sản phẩm (quy đổi) | 03 → 11, 20 (mảng kho vận) |
+| **Hàng tồn kho (Inventory Item)** | Đơn vị cơ sở, đơn vị quy đổi, **quy cách thùng**, mã vạch, cờ cho phép xoay, chính sách tồn (luôn theo lô) | Quản lý kho (quy cách thùng, mã vạch, cờ xoay); người sửa sản phẩm (quy đổi) | 03 → 11, 20 (mảng kho vận) |
 
 ---
 
@@ -40,10 +40,10 @@ Hai lớp dữ liệu liên kết **1:1** theo từng SKU (quy cách và SKU ri�
 
 | Actor | Vai trò trong module |
 |-------|----------------------|
-| **Quản lý kinh doanh (Sales Manager)** | Toàn quyền trên sản phẩm, quy cách và từ điển thuộc tính: tạo, sửa, gửi duyệt; **duyệt / từ chối** sản phẩm của người khác; kích hoạt / ngừng dùng biến thể; **đăng ảnh** do người khác tải lên; **xuất bản / ẩn** sản phẩm trên catalog; xoá sản phẩm nháp. Quản lý danh mục, thương hiệu, thuộc tính. **Khai báo cấu hình in** của quy cách (khuôn 2D, vùng in, lề, model 3D, ràng buộc file — §4.10). Khoá / ngừng dùng SKU riêng. |
+| **Quản lý kinh doanh (Sales Manager)** | Toàn quyền trên sản phẩm, quy cách và từ điển thuộc tính: tạo, sửa, gửi duyệt; **duyệt / từ chối** sản phẩm của người khác; kích hoạt / ngừng dùng biến thể; **đăng ảnh** do người khác tải lên; **xuất bản / ẩn** sản phẩm trên catalog; xoá sản phẩm nháp. Quản lý danh mục, thương hiệu, thuộc tính. **Khai báo cấu hình in** của quy cách (khuôn 2D, vùng in, lề, model 3D, ràng buộc file — §4.10). Khoá / ngừng dùng SKU riêng. Khai báo **giá chuẩn** của quy cách ở [13](../../ecommerce/13-catalog/README.md) §4.2 — module này không lưu giá (BR-06, *✅ Đã chốt 2026-11-26*). |
 | **Nhân viên Sale (Sales Staff)** | Tạo, sửa và **gửi duyệt** sản phẩm; thêm, sửa, khoá quy cách; tải ảnh; xem từ điển thuộc tính; xem SKU riêng của khách mình phụ trách. Không duyệt, không xuất bản. |
 | **Quản trị hệ thống (System Admin)** | Mọi quyền trên. Thêm: **tạm ngưng / tiếp tục / ngừng kinh doanh** sản phẩm (chỉ System Admin). |
-| **Quản lý kho (Warehouse Manager)** | Cập nhật **quy cách thùng** (kích thước → thể tích thùng), **thông số logistics** trên Inventory Item ([20](../20-inventory-control/README.md)). Chính sách tồn cố định — luôn theo lô (§4.7), không cấu hình |
+| **Quản lý kho (Warehouse Manager)** | Cập nhật **quy cách thùng** (kích thước → thể tích thùng), **mã vạch** và **cờ cho phép xoay** trên Inventory Item ([20](../20-inventory-control/README.md)). Chính sách tồn cố định — luôn theo lô (§4.7), không cấu hình |
 | **Khách hàng sỉ (B2B Customer)** | Không thao tác trong module này. Trên cổng khách hàng thấy các quy cách của sản phẩm đang bán (quy cách có khuôn in thì tự thiết kế được — [12](../../ecommerce/12-product-design/README.md)) và **SKU riêng của chính mình** (số cái / thùng), **không hiện giá** — giá chỉ có trên báo giá / đơn / hợp đồng ([13](../../ecommerce/13-catalog/README.md), [14](../../ecommerce/14-cart-and-order/README.md)). |
 | **Hệ thống** | Tự tạo Inventory Item khi sinh biến thể; sinh mã quy cách theo tổ hợp thuộc tính; **sinh SKU riêng** khi bản thiết kế được duyệt ở [12](../../ecommerce/12-product-design/README.md); cảnh báo sản phẩm có thể trùng; quét virus ảnh, file khuôn và model 3D tải lên; ghi lịch sử thay đổi; chặn báo giá / đơn / Đơn sản xuất mới cho sản phẩm tạm ngưng, ngừng kinh doanh. |
 
@@ -64,12 +64,12 @@ Hai lớp dữ liệu liên kết **1:1** theo từng SKU (quy cách và SKU ri�
 | **Thuộc tính mô tả (descriptive)** | Product | Giá trị các thuộc tính khác (đường kính miệng, độ dày…) theo kiểu dữ liệu của thuộc tính | Không |
 | **Hình ảnh** | Variant | Ảnh JPEG / PNG / WebP ≤ 10 MB, ≤ 25 megapixel; tối đa 20 ảnh mỗi biến thể; một **ảnh bìa** | Có ít nhất một ảnh đã đăng trước khi xuất bản |
 | **Cấu hình in (print config)** | Variant (quy cách) | **Khuôn 2D** (bản trải phẳng theo kích thước thật), **vùng in**, **lề an toàn**, **lề tràn**, **model 3D**, **ràng buộc file** (độ phân giải tối thiểu, định dạng, dung lượng) — §4.10 | Khuôn 2D + vùng in: có thì khách mới thiết kế được; model 3D không bắt buộc |
-| **Thiết kế đã duyệt** | Variant (SKU riêng) | Sự kiện bản thiết kế được Quản lý kinh doanh duyệt ở [12](../../ecommerce/12-product-design/README.md): khách sở hữu, quy cách, design snapshot | Có (để sinh SKU riêng) |
+| **Thiết kế đã duyệt** | Variant (SKU riêng) | Sự kiện bản thiết kế được Điều phối sản xuất duyệt ở [12](../../ecommerce/12-product-design/README.md): khách sở hữu, quy cách, design snapshot | Có (để sinh SKU riêng) |
 | **Đơn vị cơ sở (base UoM)** | Inventory Item | Đơn vị ghi tồn, mặc định `EACH` (cái) | Có (mặc định) |
-| **Đơn vị quy đổi (UoM conversion)** | Inventory Item | Đơn vị đóng gói kèm **hệ số nguyên ≥ 1** quy về đơn vị cơ sở (ví dụ *thùng* = 1.000 cái); một **đơn vị giao mặc định** | Có đơn vị *thùng* (cho quy cách thùng) |
+| **Đơn vị quy đổi (UoM conversion)** | Inventory Item | Đơn vị đóng gói kèm **hệ số nguyên ≥ 1** quy về đơn vị cơ sở (ví dụ *thùng* = 1.000 cái). Mỗi SKU có **đúng một đơn vị đang dùng** — chính là đơn vị thùng (BR-03); hàng được nhập, bán và giao theo đơn vị đó, nên không còn chọn "đơn vị giao mặc định" (*✅ Chốt lại 2026-11-25*) | Có đơn vị *thùng* (cho quy cách thùng) |
 | **Quy cách thùng (carton spec)** | Inventory Item | **Đơn vị thùng** (một đơn vị quy đổi; hệ số = **số cái chuẩn / thùng**, cố định cho SKU), **kích thước thùng** (D×R×C — hệ thống tính **thể tích thùng** m³), **khối lượng thùng đầy** | **Có** với SKU riêng (kế thừa từ quy cách — §4.8, BR-03) |
 | **Đơn vị bán (sales unit)** | Variant | Với SKU riêng, đơn vị bán **luôn là đơn vị thùng** của quy cách thùng: khách đặt theo **số thùng**, giá ghi **theo cái** (BR-11) | Có với SKU riêng (hệ thống gán theo quy cách thùng) |
-| **Thông số logistics khác** | Inventory Item | **Mã vạch** (≤ 64, duy nhất), khối lượng và kích thước một đơn vị cơ sở | Không (nếu nhập: số dương) |
+| **Mã vạch** | Inventory Item | ≤ 64 ký tự, duy nhất. *(✅ Chốt lại 2026-11-22: Inventory Item **không có** khối lượng, kích thước một đơn vị cơ sở — mọi số đo là của **thùng** trong quy cách thùng, BR-03)* | Không |
 | **Cho phép xoay (rotatable)** | Inventory Item | Thùng được xoay hay không; dùng khi lập kế hoạch xếp xe ([09](../09-shipping/README.md)) và khi kiểm **thùng vừa bin** lúc cất hàng — thùng cho phép xoay được xoay ngang (đổi D và R) ([06](../06-warehouse-map-slotting/README.md) §4.4) | Không (mặc định cho phép) |
 | **Chính sách tồn (inventory policy)** | Inventory Item | **Luôn theo dõi theo lô** (`LOT`) cho mọi SKU riêng — cố định, không cấu hình; không có chế độ không ghi lô, không theo dõi serial *(✅ Đã chốt 2026-11-05)*. **Lô** là **lô sản xuất** = **mã Đơn sản xuất**, hệ thống tự gán khi nhập kho ([03](../03-receipt/README.md)), dùng để truy vết. Không theo dõi hạn dùng; cách xuất **cố định FIFO** theo ngày nhập, không cấu hình (BR-17) | Không nhập (hệ thống gán) |
 
@@ -145,7 +145,7 @@ Hai lớp dữ liệu liên kết **1:1** theo từng SKU (quy cách và SKU ri�
    - có **ít nhất một quy cách `Active`**;
    - có **ít nhất một ảnh đã đăng** (bốn mắt).
 
-   Không kiểm giá: quy cách không có giá; giá chỉ có ở SKU riêng (§4.8).
+   Không kiểm giá: giá chuẩn của quy cách không bắt buộc, chỉ dùng nội bộ và không hiện trên sàn ([13](../../ecommerce/13-catalog/README.md) §4.2); giá bán chỉ có ở SKU riêng, trên báo giá / đơn / hợp đồng (§4.8).
 2. **Slug** (đường dẫn trên cổng khách hàng) mặc định là mã sản phẩm viết thường; **khoá sau lần xuất bản đầu tiên**. SEO và slug (trước lần đầu) sửa được ở mọi trạng thái trừ `Discontinued`.
 3. **Ẩn khỏi catalog** — `Published` → `Approved`. Chi tiết hiển thị: [13 · Catalog](../../ecommerce/13-catalog/README.md).
 4. Sản phẩm `Published` hiển thị các quy cách cho mọi khách (không giá). SKU riêng **không hiện cho khách khác**; chỉ khách sở hữu thấy SKU của mình (BR-20). Sàn **không hiển thị giá**, kể cả với SKU riêng (BR-06).
@@ -166,23 +166,23 @@ Hai lớp dữ liệu liên kết **1:1** theo từng SKU (quy cách và SKU ri�
    - **kích thước thùng** (D×R×C) và **khối lượng thùng đầy**. Hệ thống tính **thể tích thùng** = D × R × C (m³) *(Đã chốt 2026-11-05)*.
 
    Quy cách thùng là căn cứ để kiểm đếm theo thùng khi nhập ([03](../03-receipt/README.md)), cất ([05](../05-putaway/README.md)), in nhãn giao ([08](../08-packing/README.md)) và lập kế hoạch xếp xe 3D ([09](../09-shipping/README.md)). **Thể tích và khối lượng thùng** là căn cứ kiểm **còn chỗ** khi cất (theo thể tích + tải trọng của bin — [05](../05-putaway/README.md)) và tính **Bảng sức chứa kho** (Đang chiếm, Sắp về — [06](../06-warehouse-map-slotting/README.md)). *(Đã chốt 2026-11-05)* **Mọi thùng đúng số cái chuẩn**: đơn vị sản xuất đóng thùng đúng số chuẩn; thùng có số lượng khác số chuẩn **không được nhận** ([03](../03-receipt/README.md)). Không có thùng ít hơn số chuẩn; mọi thùng của một SKU cùng kích thước và khối lượng.
-2. **Logistics khác** — mã vạch, khối lượng và kích thước một đơn vị, cờ xoay. **Đơn vị cơ sở không đổi được khi SKU còn tồn.**
+2. **Mã vạch và cờ xoay.** *(✅ Chốt lại 2026-11-22: không khai khối lượng, kích thước một đơn vị — chỉ thùng có số đo, BR-03.)* **Đơn vị cơ sở không đổi được khi SKU còn tồn.**
 3. **Chính sách tồn** — *(✅ Đã chốt 2026-11-05)* **mọi SKU riêng bắt buộc theo dõi theo lô**; chính sách cố định, không cấu hình. Không có chế độ không ghi lô, không theo dõi serial.
    - **Lô** là **lô sản xuất** = **mã Đơn sản xuất** của phiếu nhập; hệ thống **tự gán** khi nhập kho theo Đơn sản xuất ([03](../03-receipt/README.md) BR-03), người dùng không nhập / sửa. Thùng hàng hoàn **giữ lô gốc**. Lô dùng để truy vết ([20](../20-inventory-control/README.md)).
    - *(Đã chốt 2026-11-05)* Ly / bao bì **không có hạn dùng**: không theo dõi hạn dùng, không có cách xuất để chọn — phân bổ thùng luôn theo **FIFO** (ngày nhập).
-4. **Đơn vị quy đổi** — hệ số nguyên ≥ 1. Thôi dùng bằng cách ngưng; đơn vị cơ sở không ngưng được. Khi đã có chứng từ dùng đơn vị đó, **hệ số và tên của đơn vị bị khoá**.
+4. **Đơn vị quy đổi** — hệ số nguyên ≥ 1. Thôi dùng bằng cách ngưng. Đơn vị cơ sở (cái) là thuộc tính của Inventory Item, không phải một đơn vị quy đổi, nên không có gì để ngưng (*✅ Chốt lại 2026-11-25*). Khi đã có chứng từ dùng đơn vị đó, **hệ số và tên của đơn vị bị khoá**.
 
 ### 4.8. Sinh SKU thành phẩm theo mẫu của khách
 
-1. **Kích hoạt** — khi **Quản lý kinh doanh duyệt** một bản thiết kế khách tự làm ở [12](../../ecommerce/12-product-design/README.md) (thiết kế → `Approved`), hệ thống xuất bộ file, sinh **design snapshot** và **một SKU riêng** trong **cùng một bước**, trong sản phẩm `CUSTOMIZABLE` của thiết kế.
+1. **Kích hoạt** — khi **Điều phối sản xuất duyệt** (*✅ Chốt lại 2026-11-20*) một bản thiết kế khách tự làm ở [12](../../ecommerce/12-product-design/README.md) (thiết kế → `Approved`), hệ thống xuất bộ file, sinh **design snapshot** và **một SKU riêng** trong **cùng một bước**, trong sản phẩm `CUSTOMIZABLE` của thiết kế.
 2. **Dữ liệu của SKU:**
    - **khách sở hữu** (owner) — khách chủ sở hữu bản thiết kế;
    - **design snapshot** — tham chiếu bất biến tới bản thiết kế chốt;
    - **quy cách** — giá trị trục biến thể sao chép từ quy cách của thiết kế;
    - **mã SKU** tự sinh = **mã sản phẩm – mã khách – số thứ tự** (ví dụ `LYPPIN-KH0012-01`), duy nhất toàn hệ thống, ≤ 64 ký tự.
-3. **Inventory Item** được tạo tự động (1:1). Đơn vị cơ sở, đơn vị quy đổi, **quy cách thùng**, thông số logistics và cờ cho phép xoay **sao chép từ Inventory Item của quy cách**; sau đó sửa riêng được (§4.7). Chính sách tồn luôn theo lô (§4.7).
-4. SKU sinh ra ở **`Active`** ngay (thiết kế đã qua preflight và Quản lý kinh doanh duyệt ở 12), không qua duyệt sản phẩm lần nữa.
-5. **Giá** — SKU riêng **chưa có giá** khi sinh; giá có trên **báo giá / đơn / hợp đồng** do Sale lập sau khi thương lượng với khách ([14](../../ecommerce/14-cart-and-order/README.md)). Quản lý kinh doanh có thể khai báo **bảng giá riêng nội bộ** ([13](../../ecommerce/13-catalog/README.md)) — chỉ nhân viên xem, làm giá gợi ý cho Sale. Module này không lưu giá.
+3. **Inventory Item** được tạo tự động (1:1). Đơn vị cơ sở, đơn vị quy đổi, **quy cách thùng** và cờ cho phép xoay **sao chép từ Inventory Item của quy cách**; sau đó sửa riêng được (§4.7). Chính sách tồn luôn theo lô (§4.7).
+4. SKU sinh ra ở **`Active`** ngay (thiết kế đã qua preflight và Điều phối sản xuất duyệt ở 12), không qua duyệt sản phẩm lần nữa.
+5. **Giá** — SKU riêng **chưa có giá** khi sinh; giá có trên **báo giá / đơn / hợp đồng** do Sale lập sau khi thương lượng với khách ([14](../../ecommerce/14-cart-and-order/README.md)). Quản lý kinh doanh có thể khai báo **bảng giá riêng nội bộ** ([13](../../ecommerce/13-catalog/README.md)) — chỉ nhân viên xem, làm giá gợi ý cho Sale. SKU chưa có bảng giá riêng thì Sale được gợi ý từ **giá chuẩn của quy cách** mà SKU được thiết kế trên đó ([13](../../ecommerce/13-catalog/README.md) §4.2); báo giá giảm quá ngưỡng so với giá tham chiếu cần Quản lý kinh doanh duyệt ([14](../../ecommerce/14-cart-and-order/README.md) BR-10) *(✅ Chốt lại 2026-11-26)*. Module này không lưu giá.
 6. **Phạm vi sử dụng** — chỉ khách sở hữu thấy SKU trên cổng khách hàng; chỉ báo giá / đơn / Đơn sản xuất **của khách sở hữu** được dùng SKU này. Tồn, nhập kho, lấy hàng, xuất kho đều theo SKU này, **nguyên thùng**.
 7. **Sửa thiết kế** — **bản sửa** thiết kế được duyệt ([12](../../ecommerce/12-product-design/README.md)) → sinh **SKU riêng mới**. SKU cũ **vẫn `Active`** (tồn cũ vẫn bán được cho khách đó); Quản lý kinh doanh ngừng dùng (`Obsolete`) SKU cũ khi không còn cần.
 
@@ -216,6 +216,36 @@ Hai lớp dữ liệu liên kết **1:1** theo từng SKU (quy cách và SKU ri�
    | **Ràng buộc file** | **Độ phân giải tối thiểu** ở kích thước in thật, **định dạng** ảnh tải lên, **dung lượng tối đa** mỗi file | Có (hệ thống điền mặc định, Quản lý kinh doanh chỉnh được) |
 
    > ⚠️ Giả định: mặc định **300 DPI** ở kích thước in thật; định dạng tải lên **PNG / JPG / SVG / PDF**; dung lượng tối đa **50 MB mỗi file**. Xem [open-questions B34](../../open-questions/README.md).
+
+   **Túi giấy** — khách vẫn thiết kế **từng mặt** (4 vùng in rời: trước, hông phải, sau, hông trái), nhưng file in là **một tấm trải phẳng** (bế, gấp ống, dán mép, gấp đáy) do hệ thống ghép 4 mặt khi xuất ([12 §3](../../ecommerce/12-product-design/README.md)). Vì vậy cấu hình in của quy cách túi giấy có thêm các thông số tạo hình (mm):
+
+   | Thông số | Ký hiệu | Mô tả | Ràng buộc |
+   |----------|---------|-------|-----------|
+   | Rộng mặt túi | `W` | Chiều rộng mặt trước / sau | — |
+   | Hông túi | `g` | Chiều rộng mặt hông | — |
+   | Cao túi | `H` | Chiều cao túi, **đã gồm** phần gấp miệng | — |
+   | Gấp miệng | `T` | Phần gấp vào ở miệng túi | — |
+   | **Mép dán** | `G` | Mép dán dọc để dán ống túi | `0 ≤ G ≤ 100`; sửa được |
+   | **Phần gấp đáy** | `B` | Độ sâu phần gấp đáy | `0 ≤ B ≤ g`; sửa được |
+
+   Mép dán và phần gấp đáy **không phụ thuộc model 3D**: sửa hai số này không cần tải lại model.
+
+   > ✅ Đã chốt 2026-11-18: túi giấy in **một tấm liền** (bế, gấp ống, dán mép, gấp đáy) như ngoài xưởng; vùng in vẫn là 4 mặt rời.
+
+   > ⚠️ Giả định: khi Quản lý kinh doanh chưa khai báo (kể cả quy cách túi đã có từ trước), hệ thống điền mặc định **mép dán 20 mm** và **phần gấp đáy = 0,6 × hông túi** (làm tròn 0,01 mm); chờ xưởng xác nhận. Xem [open-questions B48](../../open-questions/README.md).
+
+   **Kích thước tấm trải phẳng của túi** — `P = H − T` (chiều cao in được của một mặt), `b` = lề tràn lớn nhất của 4 vùng in; toạ độ tính từ góc trên-trái của tấm theo đường cắt, trục y hướng xuống:
+
+   | Đại lượng | Giá trị |
+   |-----------|---------|
+   | Tấm theo đường cắt (trim) | Rộng `Wt = G + 2W + 2g`; cao `Ht = T + P + B` |
+   | Tấm kèm lề tràn (bleed box) | `(Wt + 2b) × (Ht + 2b)`; đường cắt lùi vào `b` ở mỗi cạnh |
+   | Vị trí từng mặt (góc trên-trái) | Trước `(G, T)`; hông phải `(G + W, T)`; sau `(G + W + g, T)`; hông trái `(G + 2W + g, T)` — kích thước như vùng in (`W × P` hoặc `g × P`) |
+   | Đường bế | Chữ nhật theo đường cắt `(0, 0, Wt, Ht)` |
+   | Nếp gấp dọc | `G`; `G + W`; `G + W + g/2`; `G + W + g`; `G + 2W + g`; `G + 2W + 1,5g` |
+   | Nếp gấp ngang | `T` (gấp miệng); `T + P` (gấp đáy) |
+
+   Ví dụ: `W 260`, `g 120`, `H 320`, `T 40`, `G 20`, `B 72`, `b 3` → `P 280`; tấm **780 × 392 mm**, kèm lề tràn **786 × 398 mm**.
 2. File khuôn và model 3D tải lên phải qua **quét virus** như ảnh sản phẩm (BR-18).
 3. Quy cách **chưa có khuôn** (khuôn 2D + vùng in) thì khách **không bắt đầu thiết kế được** trên quy cách đó (không có nút "Thiết kế" — [13](../../ecommerce/13-catalog/README.md)). Quy cách vẫn hiện trên catalog; xuất bản sản phẩm **không kiểm** cấu hình in (§4.5).
 
@@ -292,10 +322,10 @@ stateDiagram-v2
 
 - **BR-01:** **Mã sản phẩm không bao giờ đổi.** **Mã biến thể (SKU) và giá trị trục bị khoá khi biến thể rời `Draft`**; chỉ được đổi thuộc tính mô tả. SKU duy nhất toàn hệ thống, tối đa 64 ký tự (chữ in hoa, số, `.`, `_`, `-`).
 - **BR-02:** Chỉ xoá được sản phẩm `Draft` mà chưa biến thể nào được chứng từ tham chiếu. Sản phẩm khác chỉ được tạm ngưng / ngừng kinh doanh; thuộc tính đang dùng chỉ được ngưng.
-- **BR-03:** **Quy cách thùng** *(Đã chốt 2026-11-04)*: SKU riêng phải có quy cách thùng — đơn vị thùng (**số cái chuẩn / thùng, cố định cho SKU** — BR-10, BR-11), kích thước thùng (→ thể tích thùng), khối lượng thùng đầy — kế thừa từ quy cách khi sinh (✅ đã chốt 2026-11-05, §4.8). Các thông số logistics khác (khối lượng, kích thước một đơn vị) không bắt buộc; nếu nhập thì phải dương. Xem [open-questions C21](../../open-questions/README.md). **Mỗi SKU riêng chỉ có một quy cách thùng** *(✅ Đã chốt 2026-11-06)*: không hỗ trợ nhiều quy cách thùng / nhiều cấp đóng gói (ví dụ cái → cây → thùng, hoặc thùng 500 và thùng 1.000) trên cùng một SKU — đây là giới hạn có chủ đích, khớp với việc đơn vị sản xuất đóng thùng theo một chuẩn cố định cho mỗi loại ly / bao bì và kho không mở thùng. Khách cần kiểu thùng khác thì đó là **SKU riêng khác** (bản thiết kế / bản sửa được duyệt với quy cách thùng khác). Xem [open-questions A11](../../open-questions/README.md).
+- **BR-03:** **Quy cách thùng** *(Đã chốt 2026-11-04)*: SKU riêng phải có quy cách thùng — đơn vị thùng (**số cái chuẩn / thùng, cố định cho SKU** — BR-10, BR-11), kích thước thùng (→ thể tích thùng), khối lượng thùng đầy — kế thừa từ quy cách khi sinh (✅ đã chốt 2026-11-05, §4.8). *(✅ Chốt lại 2026-11-22)* Inventory Item **không có** khối lượng, kích thước một đơn vị cơ sở (trước đây là trường không bắt buộc): mọi số đo hệ thống dùng — cất hàng, bảng sức chứa kho, nhãn giao, xếp xe — là của **thùng**; vì vậy thùng chưa có kích thước, khối lượng thùng đầy thì **không nhập kho** theo Đơn sản xuất được ([03](../03-receipt/README.md) BR-13). Xem [open-questions C21](../../open-questions/README.md). **Mỗi SKU riêng chỉ có một quy cách thùng** *(✅ Đã chốt 2026-11-06)*: không hỗ trợ nhiều quy cách thùng / nhiều cấp đóng gói (ví dụ cái → cây → thùng, hoặc thùng 500 và thùng 1.000) trên cùng một SKU — đây là giới hạn có chủ đích, khớp với việc đơn vị sản xuất đóng thùng theo một chuẩn cố định cho mỗi loại ly / bao bì và kho không mở thùng. Khách cần kiểu thùng khác thì đó là **SKU riêng khác** (bản thiết kế / bản sửa được duyệt với quy cách thùng khác). Xem [open-questions A11](../../open-questions/README.md).
 - **BR-04:** Chỉ sản phẩm `Published` hiển thị trên catalog. Chỉ **SKU riêng** `Active` của sản phẩm `Approved` / `Published` được đưa vào báo giá, đơn, Đơn sản xuất mới; quy cách không bao giờ.
 - **BR-05:** Xuất bản đòi: nội dung catalog, danh mục, ít nhất một quy cách `Active`, ít nhất một ảnh đã đăng. Slug khoá sau lần xuất bản đầu.
-- **BR-06:** Module này **không lưu giá**. Quy cách không có giá; SKU riêng có giá trên báo giá / đơn / hợp đồng ([14](../../ecommerce/14-cart-and-order/README.md)); bảng giá riêng nội bộ ([13](../../ecommerce/13-catalog/README.md)) chỉ là giá gợi ý cho Sale. Sàn không hiển thị giá *(Đã chốt 2026-11-05)*.
+- **BR-06:** Module này **không lưu giá**. Quy cách không có giá bán; SKU riêng có giá trên báo giá / đơn / hợp đồng ([14](../../ecommerce/14-cart-and-order/README.md)); **giá chuẩn nội bộ** của quy cách và bảng giá riêng nội bộ của SKU riêng khai báo ở [13](../../ecommerce/13-catalog/README.md) §4.2, chỉ là giá gợi ý / giá tham chiếu cho Sale *(✅ Chốt lại 2026-11-26: trước đây quy cách không có giá nào)*. Sàn không hiển thị giá *(Đã chốt 2026-11-05)*.
 - **BR-07:** Mỗi biến thể có **đúng một** Inventory Item (1:1), tạo tự động khi sinh biến thể. Không bán combo / bundle ([G7](../../open-questions/README.md)).
 - **BR-08:** Inventory Item chỉ chứa dữ liệu hàng vật lý và kiểm soát tồn; **không** chứa nội dung bán hàng.
 - **BR-09:** Tồn kho có thể ghi nội bộ theo **đơn vị cơ sở** (cái) để truy vết; mọi màn hình nghiệp vụ, chứng từ và tồn khả dụng của SKU riêng hiển thị theo **số thùng** kèm số cái *(Đã chốt 2026-11-05)*. Hệ số quy đổi là số nguyên ≥ 1. Không sinh SKU mới cho từng quy cách đóng gói.
@@ -308,7 +338,7 @@ stateDiagram-v2
 - **BR-16:** Cảnh báo trùng sản phẩm chỉ **cảnh báo**, không chặn.
 - **BR-17:** Đơn vị cơ sở không đổi khi SKU còn tồn. **Lô bắt buộc** *(✅ Đã chốt 2026-11-05)*: mọi SKU riêng theo dõi theo lô, không cấu hình, không có chế độ không ghi lô, không serial; lô là lô sản xuất = **mã Đơn sản xuất**, hệ thống tự gán khi nhập ([03](../03-receipt/README.md) BR-03); hàng hoàn giữ lô gốc. **Không theo dõi hạn dùng** *(Đã chốt 2026-11-05)*: cách xuất cố định FIFO theo ngày nhập.
 - **BR-18:** Ảnh phải qua quét virus; máy quét không chạy được thì ảnh không được nhận là sạch.
-- **BR-19:** **Một loại sản phẩm** *(Đã chốt 2026-11-04)*: mọi sản phẩm là `CUSTOMIZABLE`. **Quy cách chỉ là khuôn để in**: không tồn, không giá, không báo giá / đặt trực tiếp. Tồn, nhập, xuất, báo giá và đặt **chỉ qua SKU riêng**.
+- **BR-19:** **Một loại sản phẩm** *(Đã chốt 2026-11-04)*: mọi sản phẩm là `CUSTOMIZABLE`. **Quy cách chỉ là khuôn để in**: không tồn, không giá bán (chỉ có giá chuẩn nội bộ làm giá tham chiếu — BR-06, *✅ Chốt lại 2026-11-26*), không báo giá / đặt trực tiếp. Tồn, nhập, xuất, báo giá và đặt **chỉ qua SKU riêng**.
 - **BR-20:** **SKU riêng** *(Đã chốt 2026-11-04; cập nhật 2026-11-05)*: sinh tự động khi bản thiết kế được duyệt ở [12](../../ecommerce/12-product-design/README.md); gắn **đúng một khách** và **đúng một design snapshot**, không đổi được. Chỉ khách sở hữu thấy; chỉ báo giá / đơn / Đơn sản xuất của khách sở hữu được dùng SKU này. Mỗi lần một bản thiết kế được duyệt (kể cả bản sửa) sinh một SKU mới; nhiều SKU riêng được phép có cùng giá trị trục trong một sản phẩm.
 - **BR-21:** **Cấu hình in** *(✅ Đã chốt 2026-11-05)*: do **Quản lý kinh doanh** khai báo theo từng quy cách (khuôn 2D, vùng in, lề an toàn, lề tràn, model 3D, ràng buộc file — §4.10). Quy cách chưa có khuôn 2D + vùng in thì khách không thiết kế được; sửa cấu hình in không làm đổi snapshot / SKU riêng đã sinh. Kỹ thuật in là phạm vi sau.
 
@@ -331,6 +361,7 @@ stateDiagram-v2
 | Quy cách chưa có khuôn in (khuôn 2D + vùng in) | Khách không bắt đầu thiết kế được trên quy cách đó; Quản lý kinh doanh khai báo cấu hình in (§4.10, BR-21) |
 | Quy cách có khuôn nhưng chưa có model 3D | Khách chỉ xem trước 2D, vẫn thiết kế được (⚠️ giả định §4.10) |
 | Đổi khuôn / vùng in / ràng buộc file khi quy cách đã có bản thiết kế | Bản `Approved` và SKU riêng không ảnh hưởng (snapshot bất biến); bản chưa duyệt theo cấu hình mới (⚠️ giả định §4.10) |
+| Quy cách túi giấy chưa khai báo mép dán / phần gấp đáy (kể cả quy cách có từ trước) | Hệ thống dùng mặc định mép dán 20 mm, gấp đáy = 0,6 × hông túi; Quản lý kinh doanh sửa được. Mép dán > 100 mm hoặc gấp đáy > hông túi → từ chối lưu cấu hình in (⚠️ giả định §4.10) |
 | Ảnh nhiễm virus / máy quét không chạy | Ảnh bị từ chối, tải lại sau |
 | Người tải ảnh tự đăng ảnh của mình | Từ chối; người khác đăng |
 | Tạm ngưng rồi tiếp tục sản phẩm đang hiển thị | Về `Approved`, phải xuất bản lại mới hiện trên catalog |
@@ -351,8 +382,8 @@ stateDiagram-v2
 | [08 · Outbound Check & Labeling](../08-packing/README.md) | Kích thước / khối lượng thùng từ quy cách thùng in trên nhãn giao hàng |
 | [09 · Shipping](../09-shipping/README.md) | Kế hoạch xếp xe 3D dùng kích thước / khối lượng thùng và cờ xoay |
 | [11 · Intra-warehouse Transfer](../11-intra-warehouse-transfer/README.md) | Di chuyển nguyên thùng trong kho tham chiếu SKU riêng |
-| [12 · Design Management](../../ecommerce/12-product-design/README.md) | Khách tự thiết kế trên **cấu hình in** của quy cách (khuôn 2D, vùng in, lề, model 3D, ràng buộc file — §4.10); quy cách thùng là điều kiện gửi duyệt; Quản lý kinh doanh duyệt thiết kế → sinh SKU riêng gắn design snapshot (§4.8) |
-| [13 · Catalog](../../ecommerce/13-catalog/README.md) | Nội dung catalog, slug, trạng thái `Published`; hiển thị quy cách cho mọi khách, nút "Thiết kế" trên quy cách có khuôn in; sàn không hiển thị giá; bảng giá riêng nội bộ (giá gợi ý cho Sale) cho SKU riêng; chỉ khách sở hữu thấy SKU riêng; ATP tính trên Inventory Item |
+| [12 · Design Management](../../ecommerce/12-product-design/README.md) | Khách tự thiết kế trên **cấu hình in** của quy cách (khuôn 2D, vùng in, lề, model 3D, ràng buộc file — §4.10); quy cách thùng là điều kiện gửi duyệt; Điều phối sản xuất duyệt thiết kế → sinh SKU riêng gắn design snapshot (§4.8) |
+| [13 · Catalog](../../ecommerce/13-catalog/README.md) | Nội dung catalog, slug, trạng thái `Published`; hiển thị quy cách cho mọi khách, nút "Thiết kế" trên quy cách có khuôn in; sàn không hiển thị giá; bảng giá riêng nội bộ cho SKU riêng và **giá chuẩn của quy cách** (giá gợi ý / giá tham chiếu cho Sale); chỉ khách sở hữu thấy SKU riêng; ATP tính trên Inventory Item |
 | [14 · Quote, Order & Contract](../../ecommerce/14-cart-and-order/README.md) | Báo giá / đơn chỉ nhận SKU riêng bán được, của đúng khách sở hữu; số lượng theo **số thùng**, đơn giá theo cái (BR-11) |
 | [16 · Sales Chat](../../ecommerce/16-sales-chat/README.md) | Khách gửi yêu cầu báo giá từ bản thiết kế đã duyệt (SKU riêng) qua chat với Sale ([12](../../ecommerce/12-product-design/README.md) §4.8) |
 | [17 · Order Management](../../ecommerce/17-order-management/README.md) | Đơn sản xuất chỉ nhận SKU riêng bán được và có quy cách thùng; thể tích thùng × số thùng là thể tích Đơn sản xuất dùng so với Bảng sức chứa kho |

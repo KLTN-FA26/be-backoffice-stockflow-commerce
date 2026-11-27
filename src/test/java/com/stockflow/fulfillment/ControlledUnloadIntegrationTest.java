@@ -2,7 +2,6 @@ package com.stockflow.fulfillment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.order.api.OrderService;
@@ -71,7 +70,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.upload-inspection.enabled=false"})
 class ControlledUnloadIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String ORDERS = "/api/v1/orders";
@@ -103,7 +101,6 @@ class ControlledUnloadIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
         coordinator = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
@@ -128,7 +125,7 @@ class ControlledUnloadIntegrationTest {
                 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
                                                  version, created_at)
                 VALUES (?, 'Elsewhere', 'ACTIVE', ?, 'Somewhere', 'M', 50, 50, 0, NOW())""", id,
-                "E" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(java.util.Locale.ROOT));
+                ReferenceRows.warehousePrefix("E"));
         return id;
     }
 
@@ -188,20 +185,20 @@ class ControlledUnloadIntegrationTest {
     }
 
     /**
-     * A paid order of {@code sofas} sofas for the customer, released at HCM (every order is a full truckload): a
-     * contract's order, one carton of two pieces per sofa (14 BR-08), its sealed cartons held at HCM and picked one by
+     * A paid order of {@code cartons} cartons for the customer, released at HCM (every order is a full truckload): a
+     * contract's order, one carton of two pieces each (14 BR-08), its sealed cartons held at HCM and picked one by
      * one by their LPN (4C).
      */
-    private OrderSummary ftlOrder(int sofas, UUID customer) throws Exception {
-        return ftlOrder(sofas, customer, ConfirmedOrders.paidOnSigning());
+    private OrderSummary ftlOrder(int cartons, UUID customer) throws Exception {
+        return ftlOrder(cartons, customer, ConfirmedOrders.paidOnSigning());
     }
 
     /** The same, its contract paying as {@code plan} says; the installments on signing are paid. */
-    private OrderSummary ftlOrder(int sofas, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
-        CustomerSkuRows.Issued issued = sofaOf(customer);
-        CustomerSkuRows.stock(jdbc, tx, issued.sku(), 2 * sofas);
+    private OrderSummary ftlOrder(int cartons, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
+        CustomerSkuRows.Issued issued = cupOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, issued.sku(), 2 * cartons);
         ConfirmedOrders.Signed signed = confirmedOrders().signed(customer, plan,
-                ConfirmedOrders.Line.cartons(issued, sofas, 6_000_000));
+                ConfirmedOrders.Line.cartons(issued, cartons, 6_000_000));
         return confirmedOrders().release(confirmedOrders().pay(signed).orderId(), HCM, coordinator);
     }
 
@@ -214,16 +211,23 @@ class ControlledUnloadIntegrationTest {
         return confirmedOrders;
     }
 
-    private final java.util.Map<UUID, CustomerSkuRows.Issued> sofas = new java.util.HashMap<>();
+    private final java.util.Map<UUID, CustomerSkuRows.Issued> cupSkus = new java.util.HashMap<>();
 
-    /** The customer's own sofa, handling like the catalogue's, sold in cartons of two (a contract's lines are only ever the customer's, 14 BR-04). */
-    private CustomerSkuRows.Issued sofaOf(UUID customer) {
-        return sofas.computeIfAbsent(customer,
-                c -> CustomerSkuRows.like(jdbc, tx, entityManager, c, SOFA.code(), 2));
+    /**
+     * The customer's own SKU, handling like the demo cup, sold in cartons of two (a contract's lines are only ever the
+     * customer's, 14 BR-04), its carton the big one the truck maths below were measured with (215 x 95 x 90 cm,
+     * 52.5 kg).
+     */
+    private CustomerSkuRows.Issued cupOf(UUID customer) {
+        return cupSkus.computeIfAbsent(customer, c -> {
+            CustomerSkuRows.Issued issued = CustomerSkuRows.like(jdbc, tx, entityManager, c, DemoData.SKU_STOCKED, 2);
+            CartonStationSupport.giveCartonsASize(tx, jdbc, issued.sku());
+            return issued;
+        });
     }
 
-    private OrderSummary ftlOrder(int sofas) throws Exception {
-        return ftlOrder(sofas, DemoData.CUSTOMER_ID);
+    private OrderSummary ftlOrder(int cartons) throws Exception {
+        return ftlOrder(cartons, DemoData.CUSTOMER_ID);
     }
     /** The order picked and packed at the check station, one shipment of all its cartons. Returns the shipment and task. */
     private UUID[] packed(OrderSummary order) throws Exception {
@@ -396,7 +400,7 @@ class ControlledUnloadIntegrationTest {
             + "by the manager without a scan (overridden, who, when, note); then the replacement is loaded and both "
             + "sign - the plan is DISPATCHED. Never a reopening")
     void oneVehicleBackToPlannedWithTheSameLayout() throws Exception {
-        CartonStationSupport.giveSofaCartonsAWeight(tx, jdbc, "1200");   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
+        CartonStationSupport.giveHeavyCartons(tx, jdbc, cupOf(DemoData.CUSTOMER_ID).sku(), new BigDecimal("1200"));   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
         OrderSummary order = ftlOrder(4);
         UUID shipment = packed(order)[0];
         JsonNode plan = confirmed(List.of(shipment), truck2t5);
@@ -575,6 +579,89 @@ class ControlledUnloadIntegrationTest {
 
     // ---- review of #228, B1 ---------------------------------------------------------------------
 
+    private static String takingOff(UUID... shipments) {
+        return "{\"reasonCode\":\"KHAC\",\"note\":\"the order owes its installment before delivery\","
+                + "\"removedShipmentIds\":" + ids(List.of(shipments)) + "}";
+    }
+
+    private List<String> releaseReasons(JsonNode plan, UUID shipment) {
+        return jdbc.queryForList("SELECT coalesce(release_reason, 'ACTIVE') FROM fulfillment.load_plan_package WHERE "
+                + "load_plan_id = ?::uuid AND shipment_id = ?", String.class, plan.path("loadPlanId").asText(), shipment);
+    }
+
+    @Test
+    @DisplayName("09 §4.2 step 9, BR-14 (09B G5, 09A-159): a truck being loaded carries an order that may not leave yet "
+            + "- the manager calls it off under control and takes that order's shipment off: its parcels leave the plan "
+            + "(REMOVED_FROM_VEHICLE), still locked until scanned off, then free for another plan; the new load carries "
+            + "the other order alone on a layout recalculated for this vehicle. A shipment not on the vehicle is 400")
+    void aShipmentTakenOffTheVehicleLeavesThePlan() throws Exception {
+        UUID kept = packed(ftlOrder(2))[0];
+        UUID unpaid = packed(ftlOrder(1))[0];
+        JsonNode plan = confirmed(List.of(kept, unpaid), truck5t);
+        assertThat(plan.path("vehicles")).hasSize(1);
+        String planId = plan.path("loadPlanId").asText();
+        String v1 = loadOf(plan, 1);
+        loadAll(v1, ghn);
+        List<String> everything = labels(load(v1));
+        assertThat(everything).hasSize(3);
+
+        cancelVehicle(v1, takingOff(UUID.randomUUID())).andExpect(status().isBadRequest());
+        assertThat(load(v1).path("status").asText()).isEqualTo("LOADING");
+
+        JsonNode result = data(cancelVehicle(v1, takingOff(unpaid)).andExpect(status().isOk()));
+        JsonNode cancelled = result.path("cancelled");
+        JsonNode replacement = result.path("replacement");
+        assertThat(cancelled.path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(pendingLabels(cancelled)).as("every parcel on the truck is scanned off, the unpaid ones too")
+                .containsExactlyInAnyOrderElementsOf(everything);
+        assertThat(replacement.path("status").asText()).isEqualTo("PLANNED");
+        assertThat(replacement.path("vehicleSeq").asInt()).isEqualTo(1);
+        assertThat(replacement.path("shipments")).singleElement()
+                .satisfies(s -> assertThat(s.path("shipmentId").asText()).isEqualTo(kept.toString()));
+        assertThat(labels(replacement)).hasSize(2);
+
+        assertThat(releaseReasons(plan, unpaid)).containsOnly("REMOVED_FROM_VEHICLE");
+        assertThat(releaseReasons(plan, kept)).containsOnly("ACTIVE");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.load_placement p JOIN "
+                + "fulfillment.load_plan_vehicle v ON v.id = p.load_plan_vehicle_id WHERE v.load_plan_id = ?::uuid "
+                + "AND v.seq = 1", Integer.class, planId)).isEqualTo(2);
+        assertThat(planOf(plan).path("status").asText()).isEqualTo("CONFIRMED");
+
+        // Locked until scanned off - then waiting for another plan.
+        List<String> offTheTruck = everything.stream().filter(l -> !labels(replacement).contains(l)).toList();
+        assertThat(offTheTruck).hasSize(1);
+        dispatch(body(post(PLANS), "{\"requestId\":\"" + UUID.randomUUID() + "\",\"warehouseId\":\"" + HCM
+                + "\",\"shipmentIds\":" + ids(List.of(unpaid)) + ",\"vehicleTypeIds\":[\"" + truck5t
+                + "\"],\"selectionMode\":\"SINGLE_TYPE\"}")).andExpect(status().isConflict());
+        for (String label : everything) {
+            scanOff(v1, label).andExpect(status().isOk());
+        }
+        assertThat(plan(List.of(unpaid), truck5t).path("loadPlanId").asText()).isNotBlank();
+        assertThat(shipmentStatus(unpaid)).isEqualTo("READY_TO_DISPATCH");
+    }
+
+    @Test
+    @DisplayName("09 §4.2 step 9, BR-14 (09B G5): every shipment of a vehicle taken off - the vehicle leaves the plan, no "
+            + "new load is made, and the plan, its other vehicle gone, is DISPATCHED")
+    void everyShipmentTakenOffLeavesNoReplacement() throws Exception {
+        UUID shipmentA = packed(ftlOrder(1))[0];
+        UUID shipmentB = packed(ftlOrder(1))[0];
+        JsonNode plan = confirmed(List.of(shipmentA, shipmentB), truck1t25);
+        assertThat(plan.path("vehicles")).hasSize(2);
+        String vA = loadCarrying(plan, shipmentA);
+        String vB = loadCarrying(plan, shipmentB);
+        loadAll(vA, ghn);
+        loadAll(vB, ghtk);
+        handOver(vB).andExpect(status().isOk());
+
+        JsonNode result = data(cancelVehicle(vA, takingOff(shipmentA)).andExpect(status().isOk()));
+        assertThat(result.hasNonNull("replacement")).isFalse();
+        assertThat(releaseReasons(plan, shipmentA)).containsOnly("REMOVED_FROM_VEHICLE");
+        assertThat(jdbc.queryForObject("SELECT active FROM fulfillment.load_plan_vehicle WHERE id = (SELECT "
+                + "load_plan_vehicle_id FROM fulfillment.dispatch_load WHERE id = ?::uuid)", Boolean.class, vA)).isFalse();
+        assertThat(planStatus(plan)).isEqualTo("DISPATCHED");
+    }
+
     @Test
     @DisplayName("B1: a vehicle whose only order was cancelled while it loads (its parcels still to scan off) is called off "
             + "under control after the other vehicle left: no empty replacement is opened, the plan no longer waits for "
@@ -641,7 +728,7 @@ class ControlledUnloadIntegrationTest {
             + "parcels still to scan off; the shipment is no candidate and no new plan takes it (PACKAGE_UNLOAD_PENDING) "
             + "until every parcel is off, then it can be planned again; calling it off again changes nothing")
     void wholePlanCancelledAtOnce() throws Exception {
-        CartonStationSupport.giveSofaCartonsAWeight(tx, jdbc, "1200");   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
+        CartonStationSupport.giveHeavyCartons(tx, jdbc, cupOf(DemoData.CUSTOMER_ID).sku(), new BigDecimal("1200"));   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
         UUID shipment = packed(ftlOrder(4))[0];
         JsonNode plan = confirmed(List.of(shipment), truck2t5);
         String v1 = loadOf(plan, 1);

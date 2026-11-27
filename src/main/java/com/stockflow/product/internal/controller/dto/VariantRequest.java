@@ -33,6 +33,12 @@ public record VariantRequest(
         List<@NotNull UUID> optionValueIds,
 
         @PositiveOrZero(message = "position must not be negative")
-        Integer position
+        Integer position,
+
+        @Schema(description = "Whether a carton of this variant may be turned 6 ways when a truck is loaded and on the "
+                + "horizontal to fit a bin (docs 01, 06 BR-01). Every SKU of the variant, its customers' own SKUs "
+                + "included, follows it. Absent: unchanged (true for a new variant).")
+        Boolean rotatable
 ) {
+
 }

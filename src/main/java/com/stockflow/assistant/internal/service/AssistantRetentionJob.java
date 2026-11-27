@@ -1,5 +1,6 @@
 package com.stockflow.assistant.internal.service;
 
+import com.stockflow.assistant.internal.domain.BusinessDate;
 import com.stockflow.assistant.internal.domain.McpTokenRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
@@ -12,13 +13,15 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 
 /**
  * Deletes conversations idle for longer than {@code stockflow.assistant.retention-days} (design §5.5): what was asked,
  * what the tools returned and the verdicts people gave the answers do not stay forever. The verdicts need no delete of
  * their own: each cascades from the message it rates, which cascades from its conversation, so none outlives it.
  * Tool runs that belong to no conversation — an MCP client's, the "today" card's — go by age, after the same period,
- * and so do MCP tokens that expired or were revoked that long ago.
+ * and so do MCP tokens that expired or were revoked that long ago. The feature-use counts, which name nobody, are kept
+ * longer: {@value FeatureUse#RETENTION_DAYS} days, a year to compare against ({@link FeatureUse}).
  *
  * <p>Runs as the system, so it uses the store's unscoped delete, in batches with one transaction each, and never
  * touches a conversation being answered right now.</p>
@@ -36,10 +39,12 @@ class AssistantRetentionJob {
     private final AssistantWatch watch;
     private final McpTokenRepository mcpTokens;
     private final TransactionTemplate tx;
+    private final FeatureUse featureUse;
 
     AssistantRetentionJob(ConversationService conversations, ToolRunRecorder runs, AssistantProperties properties,
                           Clock clock, AssistantWatch watch, McpTokenRepository mcpTokens,
-                          PlatformTransactionManager transactions) {
+                          PlatformTransactionManager transactions, FeatureUse featureUse) {
+        this.featureUse = featureUse;
         this.watch = watch;
         this.mcpTokens = mcpTokens;
         this.tx = new TransactionTemplate(transactions);
@@ -101,6 +106,15 @@ class AssistantRetentionJob {
         } while (batch == BATCH);
         if (tokens > 0) {
             log.info("Assistant retention: deleted {} MCP token(s) expired or revoked before {}", tokens, cutoff);
+        }
+        LocalDate firstKept = BusinessDate.of(clock.instant()).minusDays(FeatureUse.RETENTION_DAYS);
+        int counts = 0;
+        do {
+            batch = featureUse.deleteBefore(firstKept, BATCH);
+            counts += batch;
+        } while (batch == BATCH);
+        if (counts > 0) {
+            log.info("Assistant retention: deleted {} feature-use count(s) of days before {}", counts, firstKept);
         }
     }
 

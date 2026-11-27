@@ -36,7 +36,7 @@ class ArchitectureTest {
      *
      * <p>A domain model that imports Spring or JPA cannot be unit-tested without a container, and
      * within a year the business rules have quietly migrated into services because "the entity is
-     * awkward to construct". Keeping the domain plain makes {@code StockItemTest} run in
+     * awkward to construct". Keeping the domain plain makes {@code StockPackageTest} run in
      * milliseconds, which is what keeps people writing those tests.</p>
      */
     @Test
@@ -307,10 +307,17 @@ class ArchitectureTest {
      *
      * <p>Both are mutable and zone-ambiguous, and mixing them with {@code java.time} in one
      * codebase produces off-by-one-day bugs that only appear near midnight in one timezone.
+     *
+     * <p>One exception, by name: {@code CertificateValidity}, because the JDK's X.509 API
+     * ({@code X509Certificate.getNotBefore/getNotAfter}) answers only with {@code Date} and has no
+     * {@code java.time} form. That class turns them into {@code Instant}s where it reads them and
+     * hands nothing else a {@code Date}; checking an e-invoice's signing certificate needs it.
      */
     @Test
     void onlyJavaTimeIsUsed() {
         ArchRule rule = noClasses()
+                .that().doNotHaveFullyQualifiedName(
+                        "com.stockflow.invoicing.internal.service.CertificateValidity")
                 .should().dependOnClassesThat()
                 .haveFullyQualifiedName("java.util.Date")
                 .because("java.time is the only date API used here");
@@ -377,7 +384,7 @@ class ArchitectureTest {
      * entity inside a record — every caller now depends on that internal type too. The module
      * boundary still <i>looks</i> intact: {@code ModularityTest} sees {@code order} importing only
      * {@code inventory.api}, which is allowed, and says nothing. But {@code order} can now reach a
-     * {@code StockItem} through the returned object and call behaviour on it outside a transaction
+     * {@code StockPackage} through the returned object and call behaviour on it outside a transaction
      * and outside the invariants.</p>
      *
      * <p>That is the exact leak the whole api/internal split exists to prevent, and it is the one
@@ -411,12 +418,17 @@ class ArchitectureTest {
 
     /**
      * {@code RunAs} builds an authorization that no request carried (ADR-0013). Every caller is one more way to act for
-     * someone without them, so each is added here on purpose, reviewed as such; today only the assistant's watch.
+     * someone without them, so each is added here on purpose, reviewed as such: the assistant's watch, and the work
+     * queue's morning digest ({@code WorkQueueDigestJob}), which reads each user's queue as that user - so a warehouse
+     * manager is told about their warehouses only - posts one inbox message of section titles and counts, and asks no
+     * model.
      */
     @Test
     void onlyTheAssistantsWatchActsForAUser() {
         ArchRule rule = noClasses()
                 .that().haveNameNotMatching("com\\.stockflow\\.assistant\\.internal\\.service\\.AssistantWatch(\\$.*)?")
+                .and().haveNameNotMatching(
+                        "com\\.stockflow\\.assistant\\.internal\\.service\\.WorkQueueDigestJob(\\$.*)?")
                 .and().haveNameNotMatching("com\\.stockflow\\.common\\.security\\.RunAs(\\$.*)?")
                 // A personal token's request is authenticated with the same authorization (ADR-0014); the chain
                 // that builds the provider only hands RunAs over.

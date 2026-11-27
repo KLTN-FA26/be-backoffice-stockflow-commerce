@@ -3,6 +3,9 @@ package com.stockflow.inventory;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.security.CurrentUser;
+import com.stockflow.common.security.DataScope;
+import com.stockflow.common.security.Role;
 import com.stockflow.inventory.internal.domain.PutawayRanker;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.PutawayTripService;
@@ -13,8 +16,10 @@ import com.stockflow.support.Await;
 import com.stockflow.support.ProductionReceiptTest;
 import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.WithCurrentUser;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
+import com.stockflow.warehouse.api.PutawayTripView;
 import com.stockflow.warehouse.api.PutawayTrips;
 import com.stockflow.warehouse.internal.domain.PutawayTripRepository;
 import jakarta.persistence.EntityManager;
@@ -26,10 +31,12 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,6 +56,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class PutawayTripIntegrationTest {
 
     @Autowired PutawayTripService trips;
+    @Autowired com.stockflow.inventory.api.WarehouseOccupancy occupancy;
     @Autowired PutawayService putaway;
     @Autowired PutawayTasks putawayTasks;
     @Autowired PutawayTrips tripApi;
@@ -207,6 +215,11 @@ class PutawayTripIntegrationTest {
         return released == null ? 0 : released;
     }
 
+    private static void assertPoint(PutawayTripView.MapPoint point, String x, String y) {
+        assertThat(point.x()).isEqualByComparingTo(x);
+        assertThat(point.y()).isEqualByComparingTo(y);
+    }
+
     private ErrorCode refused(Runnable action) {
         return assertThrows(BusinessException.class, action::run).errorCode();
     }
@@ -248,6 +261,16 @@ class PutawayTripIntegrationTest {
         assertThat(trip.stops().get(0).x()).isEqualByComparingTo("5.2");
         assertThat(trip.stops().get(0).y()).isEqualByComparingTo("31.2");
         assertThat(trip.stops().get(2).x()).isEqualByComparingTo("9.5");
+        // Issue #410: the straight leg from RECEIVING (3.5, 3.5) to A01's face (5.2, 31.2) would cross A01 itself,
+        // which stands at x 5..15, y 30..31.2: the path drawn goes round its west end, from the ordering origin.
+        assertThat(trip.originLocationCode()).isEqualTo(receiving);
+        assertThat(trip.stops().get(0).path()).hasSizeGreaterThan(2).satisfies(path -> {
+            assertPoint(path.get(0), "3.5", "3.5");
+            assertPoint(path.get(path.size() - 1), "5.2", "31.2");
+            assertThat(path).anySatisfy(corner -> assertThat(corner.x()).isLessThan(new BigDecimal("5")));
+        });
+        assertThat(trip.stops()).allSatisfy(stop -> assertThat(stop.path()).isNotNull());
+        assertPoint(trip.stops().get(1).path().get(0), "5.2", "31.2");
         String first = lpnAssigned(trip, a01);
         String second = lpnAssigned(trip, a02);
         String last = lpnAssigned(trip, overflow);
@@ -259,6 +282,10 @@ class PutawayTripIntegrationTest {
         assertThat(carton(afterFirst, first).status()).isEqualTo("PLACED");
         assertThat(carton(afterFirst, first).holding()).isFalse();
         assertThat(afterFirst.stops()).extracting(StopView::locationCode).containsExactly(a02, overflow);
+        assertThat(afterFirst.originLocationCode()).as("ordered from where the clerk now stands").isEqualTo(a01);
+        assertPoint(afterFirst.stops().get(0).path().get(0), "5.2", "31.2");
+        assertThat(afterFirst.originX()).isEqualByComparingTo("5.2");
+        assertThat(afterFirst.originY()).isEqualByComparingTo("31.2");
         assertThat(taskStatus(first)).isEqualTo("DONE");
 
         trips.place(trip.id(), a02, second, clerk);
@@ -272,8 +299,7 @@ class PutawayTripIntegrationTest {
         assertThat(tripApi.holds(warehouse, null)).isEmpty();
         assertThat(trips.current(clerk)).isEmpty();
         assertThat(jdbc.queryForList("""
-                SELECT p.lpn, s.status, s.location_code FROM inventory.stock_item s
-                  JOIN inventory.stock_package p ON p.id = s.stock_package_id
+                SELECT p.lpn, p.stock_status AS status, p.location_code FROM inventory.stock_package p
                  WHERE p.lpn IN (?, ?, ?)""", lpn1, lpn2, lpn3)).hasSize(3).allSatisfy(row ->
                 assertThat(row.get("status")).isEqualTo("AVAILABLE"));
         assertThat(jdbc.queryForObject("select location_code from inventory.stock_package where lpn = ?",
@@ -315,6 +341,9 @@ class PutawayTripIntegrationTest {
         TripView afterA = trips.place(trip.id(), a, lpnAssigned(trip, a), clerk);
 
         assertThat(afterA.stops()).extracting(StopView::locationCode).containsExactly(b, c);
+        // Issue #410: the first leg drawn starts where the order was measured from - A's face, not the start area.
+        assertPoint(afterA.stops().get(0).path().get(0), "5.2", "11.2");
+        assertPoint(afterA.stops().get(0).path().get(afterA.stops().get(0).path().size() - 1), "5.2", "21.2");
         assertThat(carton(afterA, lpnAssigned(trip, b)).stopSequence()).isEqualTo(1);
         assertThat(carton(afterA, lpnAssigned(trip, c)).stopSequence()).isEqualTo(2);
         assertThat(afterA.startLocationCode()).as("where the trip set off from does not move").isEqualTo(receiving);
@@ -527,5 +556,105 @@ class PutawayTripIntegrationTest {
             assertThat(jdbc.update("update warehouse.putaway_trip_item set status = 'RETURNED', hold_released_at ="
                     + " now() where trip_id = ?", onItsWay)).isEqualTo(1);
         });
+    }
+
+    @Test
+    @DisplayName("issue #410: the path is read from the warehouse's own map - through an open door in a wall, none "
+            + "once the door is closed, none past a shelf standing in the doorway even when the shelf is INACTIVE")
+    void thePathFollowsTheMap() {
+        // A wall right across the warehouse at y = 12 with a door at x 30..34; the bin's face is at (20.2, 21.2).
+        String a01 = binAt("A01", "0.4", "0.5", 20, 20);
+        UUID door = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("INSERT INTO warehouse.boundary (id, warehouse_id, type, start_x, start_y, end_x, end_y,"
+                    + " is_passable, operational_status) VALUES (?, ?, 'WALL', 0, 12, 50, 12, FALSE, NULL)",
+                    Identifiers.newId(), warehouse);
+            jdbc.update("INSERT INTO warehouse.boundary (id, warehouse_id, type, start_x, start_y, end_x, end_y,"
+                    + " is_passable, operational_status) VALUES (?, ?, 'DOOR', 30, 12, 34, 12, TRUE, 'OPEN')",
+                    door, warehouse);
+        });
+
+        TripView trip = onItsWay(clerk, lpn1);
+
+        StopView stop = trip.stops().stream().filter(s -> a01.equals(s.locationCode())).findFirst().orElseThrow();
+        assertThat(stop.path()).hasSizeGreaterThan(2);
+        assertPoint(stop.path().get(0), "3.5", "3.5");
+        assertPoint(stop.path().get(stop.path().size() - 1), "20.2", "21.2");
+        assertThat(crossingOfY(stop.path(), 12)).as("where the path crosses the wall").isStrictlyBetween(30.0, 34.0);
+
+        UUID shelf = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO warehouse.shelf (id, warehouse_id, code, name, x, y, width, length, rotation, is_obstacle,
+                                             pick_north, pick_east, pick_south, pick_west, status)
+                VALUES (?, ?, 'X99', 'Old shelf', 29, 11, 6, 2, 0, TRUE, FALSE, FALSE, FALSE, FALSE, 'INACTIVE')""",
+                shelf, warehouse));
+        assertThat(pathTo(trip.id(), a01)).as("an INACTIVE shelf still stands in the doorway").isNull();
+
+        tx.executeWithoutResult(s -> {
+            jdbc.update("DELETE FROM warehouse.shelf WHERE id = ?", shelf);
+            jdbc.update("UPDATE warehouse.boundary SET operational_status = 'CLOSED' WHERE id = ?", door);
+        });
+        assertThat(pathTo(trip.id(), a01)).as("the door is closed").isNull();
+        assertThat(trips.get(trip.id()).stops()).extracting(StopView::locationCode)
+                .as("the order does not depend on the path").contains(a01);
+    }
+
+    private List<PutawayTripView.MapPoint> pathTo(UUID tripId, String locationCode) {
+        return trips.get(tripId).stops().stream().filter(s -> locationCode.equals(s.locationCode())).findFirst()
+                .orElseThrow().path();
+    }
+
+    /** The x where the path first crosses the horizontal line y = {@code y}. */
+    private static double crossingOfY(List<PutawayTripView.MapPoint> path, double y) {
+        for (int k = 0; k + 1 < path.size(); k++) {
+            double ax = path.get(k).x().doubleValue();
+            double ay = path.get(k).y().doubleValue();
+            double bx = path.get(k + 1).x().doubleValue();
+            double by = path.get(k + 1).y().doubleValue();
+            if ((ay - y) * (by - y) <= 0 && ay != by) {
+                return ax + (y - ay) / (by - ay) * (bx - ax);
+            }
+        }
+        throw new AssertionError("the path never crosses y = " + y);
+    }
+
+    @Test
+    @DisplayName("BR-SEC-002: a clerk of another warehouse scanning this warehouse's carton onto their cart is told it "
+            + "does not exist - not that it waits for putaway in another warehouse")
+    void aCartonOfAnotherWarehouseIsUnknownToALimitedClerk() {
+        String elsewherePrefix = "U" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT);
+        UUID elsewhere = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("INSERT INTO warehouse.warehouse (id, name, status, prefix, address,"
+                + " map_unit, map_width, map_height, version, created_at) VALUES (?, 'Elsewhere', 'ACTIVE', ?,"
+                + " 'Test address', 'M', 50, 50, 0, NOW())", elsewhere, elsewherePrefix));
+        CurrentUser limited = new CurrentUser(otherClerk, "clerk", Set.of(Role.WAREHOUSE_STAFF), Set.of(),
+                DataScope.WAREHOUSE, Set.of(elsewherePrefix), Set.of(elsewhere));
+
+        TripView trip = WithCurrentUser.call(limited, DataScope.WAREHOUSE, () -> trips.open(elsewhere, otherClerk));
+        assertThat(WithCurrentUser.call(limited, DataScope.WAREHOUSE,
+                () -> refused(() -> trips.load(trip.id(), lpn1, otherClerk))))
+                .isEqualTo(ErrorCode.STOCK_PACKAGE_NOT_FOUND);
+
+        // Not limited, the same scan is refused for what it is: a carton standing in another warehouse than the trip.
+        assertThat(refused(() -> trips.load(trip.id(), lpn1, otherClerk))).isEqualTo(ErrorCode.MOVE_ACROSS_WAREHOUSES);
+    }
+
+    @Test
+    @DisplayName("#456: the bin a trip on its way holds shows it in its load, apart from what stands there")
+    void aTripHoldShowsInTheBinsLoad() {
+        String bin = oneCartonBin("A01");
+        String empty = oneCartonBin("A02");
+        TripView trip = onItsWay(clerk, lpn1);
+        assertThat(carton(trip, lpn1).assignedLocationCode()).isEqualTo(bin);
+
+        var loads = occupancy.loadsIn(warehouse, prefix);
+
+        assertThat(loads.get(bin)).satisfies(load -> {
+            assertThat(load.heldByTripsM3()).as("50 x 40 x 30 cm").isEqualByComparingTo("0.06");
+            assertThat(load.cartons()).as("nothing stands there yet").isZero();
+            assertThat(load.occupiedM3()).isEqualByComparingTo("0");
+        });
+        assertThat(loads).doesNotContainKey(empty);
+        assertThat(loads.get(receiving).cartons()).as("the cartons still on the dock").isEqualTo(3);
     }
 }

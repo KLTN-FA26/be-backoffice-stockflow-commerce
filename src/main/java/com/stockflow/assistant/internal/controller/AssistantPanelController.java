@@ -2,6 +2,8 @@ package com.stockflow.assistant.internal.controller;
 
 import com.stockflow.assistant.internal.controller.dto.CapabilitiesResponse;
 import com.stockflow.assistant.internal.controller.dto.TodayResponse;
+import com.stockflow.assistant.internal.service.AssistantTelemetry;
+import com.stockflow.assistant.internal.service.FeatureUse;
 import com.stockflow.assistant.internal.service.ScopeLimit;
 import com.stockflow.assistant.internal.service.TodayCard;
 import com.stockflow.assistant.internal.service.ToolAvailability;
@@ -54,10 +56,12 @@ class AssistantPanelController {
 
     private final ToolAvailability availability;
     private final TodayCard card;
+    private final AssistantTelemetry telemetry;
 
-    AssistantPanelController(ToolAvailability availability, TodayCard card) {
+    AssistantPanelController(ToolAvailability availability, TodayCard card, AssistantTelemetry telemetry) {
         this.availability = availability;
         this.card = card;
+        this.telemetry = telemetry;
     }
 
     @GetMapping("/capabilities")
@@ -85,7 +89,9 @@ class AssistantPanelController {
     @RateLimit(limit = CARDS_PER_MINUTE, perSeconds = 60, key = RateLimit.Key.USER, bucket = TODAY)
     public ApiResponse<TodayResponse> today(@AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(toResponse(card.of(user)));
+        TodayResponse response = toResponse(card.of(user));
+        telemetry.featureUsed(FeatureUse.TODAY, user);
+        return ApiResponse.ok(response);
     }
 
     private static CapabilitiesResponse toResponse(ToolAvailability.Capabilities capabilities) {

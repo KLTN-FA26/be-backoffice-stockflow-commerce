@@ -19,7 +19,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-/** Canonical PIM access; no legacy product/variant/sku tables and no cross-schema joins. */
+/**
+ * Canonical PIM access; no legacy product/variant/sku tables and no cross-schema joins. {@code product.variants} is
+ * the catalogue alone since V20270105000100 - a customer's own SKU is a row of {@code product.customer_skus} - so the
+ * storefront's reads of variants need no filter to keep a customer's SKU out of sight (13 BR-02).
+ */
 @Repository
 public class ProductCommerceRepository {
     private final JdbcTemplate jdbc;
@@ -55,11 +59,11 @@ order by pc.is_primary desc, pc.id limit 1
                         id);
         var skus =
                 jdbc.query(
-                        "select id,sku from product.variants where product_id=? and status='ACTIVE'"
-                                + " and owner_customer_id is null order by id",
+                        "select id,sku,name from product.variants where product_id=? and status='ACTIVE'"
+                                + " order by id",
                         (r, n) ->
                                 new PublicationProduct.PublicationSku(
-                                        r.getObject(1, UUID.class), r.getString(2)),
+                                        r.getObject(1, UUID.class), r.getString(2), r.getString(3)),
                         id);
         return new PublicationProduct(
                 id,
@@ -82,8 +86,10 @@ order by pc.is_primary desc, pc.id limit 1
 
     /**
      * Whether each SKU may go on a new quote or order line, in one query (kltn-docs 01 BR-04).
-     * Every SKU asked for is a key; one no variant carries is {@code VARIANT_NOT_ACTIVE}. The product's
-     * status decides first, then the variant's.
+     * Every SKU asked for is a key; one neither a variant nor a customer's SKU carries is
+     * {@code VARIANT_NOT_ACTIVE}. The product's status decides first, then the SKU's own. A quote or order line
+     * names a customer's SKU ({@code product.customer_skus} since V20270105000100), so both tables are read: a code
+     * is in one of them only ({@code tg_customer_skus_code_free}, {@code tg_variants_code_free}).
      *
      * <p>{@code hold}: the products asked about are read {@code FOR SHARE}, in id order, and stay so until the
      * caller's transaction ends. Every status move of a product or of one of its variants locks the product row
@@ -95,13 +101,15 @@ order by pc.is_primary desc, pc.id limit 1
         if (skus.isEmpty()) return result;
         String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
         jdbc.query(
-                "select v.sku, v.status, p.status from product.variants v join product.products p"
-                        + " on p.id = v.product_id where v.sku in (" + placeholders + ")"
+                "select s.sku, s.status, p.status from (select sku, status, product_id from product.variants"
+                        + " where sku in (" + placeholders + ") union all select sku, status, product_id"
+                        + " from product.customer_skus where sku in (" + placeholders + ")) s"
+                        + " join product.products p on p.id = s.product_id"
                         + (hold ? " order by p.id for share of p" : ""),
                 r -> {
                     result.put(r.getString(1), purchasabilityOf(status(r.getString(3)), r.getString(2)));
                 },
-                skus.toArray());
+                java.util.stream.Stream.concat(skus.stream(), skus.stream()).toArray());
         return result;
     }
 
@@ -153,9 +161,11 @@ order by pc.is_primary desc, pc.id limit 1
     }
 
     /**
-     * One variant of a product, whatever its status, for the screens that read and edit its inventory item's
-     * purchasing information and units (#121). An OBSOLETE variant is included: its stock is still shipped or
-     * adjusted away (kltn-docs 01 §5.2), so it stays readable; refusing to edit it is the caller's decision.
+     * One catalogue variant of a product, whatever its status, for the screens that read and edit its cartons (#121).
+     * An OBSOLETE variant is included: cartons received in its cartons are still shipped or adjusted away (kltn-docs
+     * 01 §5.2), so it stays readable; refusing to edit it is the caller's decision. A customer's own SKU is not a
+     * variant (V20270105000100): its id is answered {@code NOT_FOUND} here like any unknown id, so its cartons -
+     * its variant's (owner decision Q1) - are read and edited on the variant only.
      *
      * @throws BusinessException {@code NOT_FOUND} when the product has no such variant
      */
@@ -169,7 +179,7 @@ order by pc.is_primary desc, pc.id limit 1
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
 
-    /** A variant's id and SKU, and whether it is OBSOLETE. */
+    /** A catalogue variant's id and SKU, and whether it is OBSOLETE. */
     public record VariantSku(UUID variantId, String sku, boolean obsolete) {}
 
     public ProductEcommerce ecommerce(UUID id) {
@@ -235,7 +245,7 @@ select v.product_id,m.id,m.variant_id,v.sku,m.url,
                      order by (rendition->>'edge')::integer desc limit 1),
                     m.alt_text,m.sort_order,m.is_primary,m.created_by,m.published_by
 from product.media m join product.variants v on v.id=m.variant_id
-where v.product_id in (%s) and v.status='ACTIVE' and v.owner_customer_id is null and m.kind='IMAGE' and m.is_published
+where v.product_id in (%s) and v.status='ACTIVE' and m.kind='IMAGE' and m.is_published
 and m.published_by is not null and m.published_at is not null
 and m.created_by is not null
                 and (m.storage_key is null or jsonb_array_length(m.renditions)>0)
@@ -266,8 +276,7 @@ order by v.product_id,v.position,v.id,m.sort_order,m.id
         String placeholders = String.join(",", Collections.nCopies(productIds.size(), "?"));
         return jdbc.query(
                 "select product_id,sku,name from product.variants where status='ACTIVE'"
-                        + " and owner_customer_id is null and product_id in ("
-                        + placeholders + ") order by product_id,position,id",
+                        + " and product_id in (" + placeholders + ") order by product_id,position,id",
                 (r, n) -> new ActiveVariant(r.getObject(1, UUID.class), r.getString(2), r.getString(3)),
                 productIds.toArray());
     }

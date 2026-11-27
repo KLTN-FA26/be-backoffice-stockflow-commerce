@@ -46,10 +46,12 @@ public final class ResultTable {
     private static final Map<String, List<Shape>> SHAPES = Map.ofEntries(
             Map.entry("getStockLevels", List.of(
                     Shape.of("getStockLevels.warehouses", "warehouses", null, null,
-                            List.of("sku", "unit", "packingUnit", "unitsPerPacking"),
-                            "sku", "warehouseCode", "onHand", "inAvailableStatus", "heldOnStock",
-                            "allocatedToPicks", "heldForOrders", "availableToPromise", "unit", "packingUnit", "unitsPerPacking",
-                            "availableToPromisePacked.packingCount", "availableToPromisePacked.looseUnits"))),
+                            List.of("sku", "packingUnit", "unitsPerPacking"),
+                            // Cartons as inventory counted them (ADR-0011 step 3e), never units divided.
+                            "sku", "warehouseCode", "onHand", "onHandCartons", "inAvailableStatus",
+                            "availableCartons", "heldOnStock", "heldOnStockCartons", "allocatedToPicks",
+                            "allocatedCartons", "heldForOrders", "availableToPromise", "availableToPromiseCartons",
+                            "packingUnit", "unitsPerPacking"))),
             Map.entry("getStockLots", List.of(
                     Shape.of("getStockLots.locations", "locations", "total", "truncated",
                             List.of("sku", "unit", "packingUnit", "unitsPerPacking"),
@@ -86,7 +88,7 @@ public final class ResultTable {
                             "rejectionCode"))),
             Map.entry("findPendingAdjustments", List.of(
                     Shape.of("findPendingAdjustments.adjustments", "adjustments", "total", "truncated", List.of(),
-                            "adjustmentNumber", "warehouseCode", "locationCode", "sku", "lotNumber", "quantityDelta",
+                            "adjustmentNumber", "warehouseCode", "locationCode", "sku", "lotNumber", "direction",
                             "reason", "requestedAt", "daysWaiting", "requestedByMe", "carton", "note"))),
             Map.entry("findShipments", List.of(
                     Shape.of("findShipments.shipments", "shipments", "total", "truncated", List.of(),

@@ -121,6 +121,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     private final DispatchLoadStore loadStore;
     private final LoadNumbers loadNumbers;
     private final WarehouseService warehouses;
+    private final com.stockflow.identity.api.IdentityService identities;
     private final LoadPlanEstimateComparison estimates;
     private final com.stockflow.fulfillment.internal.repository.PickJpaRepository picks;
     /** What a parcel holds: a carton's pick line or a repack parcel's lines (4C-6). */
@@ -146,7 +147,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     ShipmentJpaRepository shipments, ShipmentLocks shipmentLocks,
                     VehicleTypeJpaRepository vehicleTypes, DispatchLoadJpaRepository loads,
                     DispatchLoadStore loadStore, LoadNumbers loadNumbers, WarehouseService warehouses,
-                    LoadPlanEstimateComparison estimates,
+                    com.stockflow.identity.api.IdentityService identities, LoadPlanEstimateComparison estimates,
                     com.stockflow.fulfillment.internal.repository.PickJpaRepository picks,
                     com.stockflow.fulfillment.internal.repository.ParcelContents packageLines,
                     com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
@@ -171,6 +172,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         this.loadStore = loadStore;
         this.loadNumbers = loadNumbers;
         this.warehouses = warehouses;
+        this.identities = identities;
         this.estimates = estimates;
         this.picks = picks;
         this.packageLines = packageLines;
@@ -309,7 +311,12 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 || request.vehicleTypeIds() != null && !request.vehicleTypeIds().isEmpty();
         if (withInputs) {
             lockPicksOf(request.shipmentIds());
-            applyInputs(plan, request.shipmentIds(), request.vehicleTypeIds(), null, actor.userId(), now);
+            applyInputs(plan, request.shipmentIds(), request.vehicleTypeIds(), null, request.fillOrderLineIds(),
+                    actor.userId(), now);
+        } else if (request.fillOrderLineIds() != null && !request.fillOrderLineIds().isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Filler cargo is chosen among the plan's shipments",
+                    List.of(new FieldError("fillOrderLineIds", "needs the shipments they belong to",
+                            "LOAD_PLAN_FILL_LINE_UNKNOWN")));
         }
         LoadPlanJpaEntity header = claim(() -> store.insert(plan, now));
         log.info("Load plan {} created at warehouse {}: {} package(s)", plan.code(), plan.warehouseId(),
@@ -336,7 +343,10 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         }
         var found = plans.findAll(Specification.allOf(filters),
                 Pages.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id")));
+        Map<UUID, com.stockflow.warehouse.api.WarehouseView> warehouseById = warehouses.findWarehouses(
+                found.getContent().stream().map(LoadPlanJpaEntity::getWarehouseId).collect(Collectors.toSet()));
         return Pages.toResponse(found, header -> {
+            var warehouse = warehouseById.get(header.getWarehouseId());
             List<LoadPlanPackageJpaEntity> held = members.findByLoadPlanIdOrderByAddedAtAscIdAsc(header.getId())
                     .stream().filter(LoadPlanPackageJpaEntity::isActive).toList();
             long shipmentCount = held.stream().map(LoadPlanPackageJpaEntity::getShipmentId).distinct().count();
@@ -346,7 +356,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             return new PlanRow(header.getId(), header.getCode(), header.getWarehouseId(), header.getStatus().name(),
                     header.getSelectionMode().name(), (int) shipmentCount, held.size(), (int) vehicleCount,
                     (int) unplaced, header.getCreatedAt(), header.getCalculatedAt(), header.getConfirmedAt(),
-                    header.getVersion(), header.getSourceType());
+                    header.getVersion(), header.getSourceType(), warehouse == null ? null : warehouse.prefix(),
+                    warehouse == null ? null : warehouse.name());
         });
     }
 
@@ -363,7 +374,21 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         LoadPlanJpaEntity header = lock(loadPlanId, inputs.expectedVersion());
         LoadPlan plan = store.load(header);
         Instant now = clock.instant();
-        applyInputs(plan, inputs.shipmentIds(), inputs.vehicleTypeIds(), inputs.selectionMode(), actor.userId(), now);
+        applyInputs(plan, inputs.shipmentIds(), inputs.vehicleTypeIds(), inputs.selectionMode(),
+                inputs.fillOrderLineIds(), actor.userId(), now);
+        return saved(plan, header, now);
+    }
+
+    @Override
+    public PlanDetail removeShipment(UUID loadPlanId, UUID shipmentId, Long expectedVersion, CurrentUser actor) {
+        LoadPlanJpaEntity header = lock(loadPlanId, expectedVersion);
+        LoadPlan plan = store.load(header);
+        Instant now = clock.instant();
+        Set<UUID> released = plan.removeShipment(shipmentId, now);
+        plan.refreshUsage(cartons(parcels.of(plan.placedPackageIds())));
+        log.info("Load plan {}: shipment {} taken out ({} package(s)); vehicle(s) {} to recalculate", plan.code(),
+                shipmentId, released.size(), plan.activeVehicles().stream().filter(LoadPlan.Vehicle::needsRecalculation)
+                        .map(LoadPlan.Vehicle::seq).toList());
         return saved(plan, header, now);
     }
 
@@ -381,9 +406,12 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 .forEach(orderId -> picks.lockAllByOrderId(orderId));
     }
 
-    /** Whole shipments (LP-5) of this warehouse's full truckloads waiting for dispatch, with their free parcels. */
+    /**
+     * Whole shipments (LP-5) of this warehouse's full truckloads waiting for dispatch, with their free parcels; the
+     * filler cargo, ticked by order line (RTM-LPGROUP; null keeps the plan's), is every parcel of those lines.
+     */
     private void applyInputs(LoadPlan plan, List<UUID> shipmentIds, List<UUID> typeIds, String selectionMode,
-                             UUID by, Instant at) {
+                             List<UUID> fillOrderLineIds, UUID by, Instant at) {
         Set<UUID> wanted = new LinkedHashSet<>(shipmentIds == null ? List.of() : shipmentIds);
         Map<UUID, ShipmentJpaEntity> rows = shipmentLocks.lock(wanted).stream()
                 .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
@@ -391,7 +419,10 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         List<PackageJpaEntity> taken = new ArrayList<>();
         for (UUID id : wanted) {
             ShipmentJpaEntity s = rows.get(id);
-            if (s == null) {
+            // BR-SEC-002: a shipment of a warehouse the caller is not assigned to is answered as unknown, before its
+            // code or status is named by a refusal below.
+            if (s == null || !WarehouseScope.restriction()
+                    .map(allowed -> allowed.ids().contains(s.getWarehouseId())).orElse(true)) {
                 throw new BusinessException(ErrorCode.SHIPMENT_NOT_FOUND, "No shipment " + id);
             }
             if (s.getStatus() != ShipmentStatus.READY_TO_DISPATCH) {
@@ -428,10 +459,39 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         // 08 edge case: a carton spec corrected after the check applies when the vehicle is planned. Under the tasks'
         // and shipments' locks, before the plan holds the cartons (from then tg_package_in_load_plan freezes them).
         cartonMeasures.refreshForPlanning(taken);
-        LoadPlanParcels.requireMeasured(parcels.describe(taken).values());
+        Map<UUID, LoadPlanParcels.Parcel> described = parcels.describe(taken);
+        LoadPlanParcels.requireMeasured(described.values());
         List<UUID> types = typeIds == null ? plan.vehicleTypeIds() : typeIds;
         requireUsableTypes(types);
-        plan.setInputs(chosen, types, selectionMode == null ? null : mode(selectionMode), by, at);
+        plan.setInputs(chosen, types, selectionMode == null ? null : mode(selectionMode),
+                fillPackages(fillOrderLineIds, described.values()), by, at);
+    }
+
+    /**
+     * The parcels of the order lines ticked as filler (null: none ticked now, the plan keeps its own). A line no parcel
+     * of the plan holds is refused: the dispatcher ticks among the plan's own cargo.
+     */
+    private static Set<UUID> fillPackages(List<UUID> fillOrderLineIds, Collection<LoadPlanParcels.Parcel> parcels) {
+        if (fillOrderLineIds == null) {
+            return null;
+        }
+        Set<UUID> wanted = new LinkedHashSet<>(fillOrderLineIds);
+        Set<UUID> out = new LinkedHashSet<>();
+        Set<UUID> seen = new HashSet<>();
+        for (LoadPlanParcels.Parcel p : parcels) {
+            if (p.orderLineId() != null && wanted.contains(p.orderLineId())) {
+                out.add(p.packageId());
+                seen.add(p.orderLineId());
+            }
+        }
+        List<FieldError> problems = wanted.stream().filter(id -> !seen.contains(id))
+                .map(id -> new FieldError(id.toString(), "no package of the plan holds this order line",
+                        "LOAD_PLAN_FILL_LINE_UNKNOWN")).toList();
+        if (!problems.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Filler cargo is ticked among the plan's order "
+                    + "lines", problems);
+        }
+        return out;
     }
 
     private List<VehicleTypeJpaEntity> requireUsableTypes(Collection<UUID> typeIds) {
@@ -503,7 +563,11 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             specs.put(t.getId(), spec(t));
         }
         Map<UUID, CargoPackage> cartons = cartons(held);
-        LoadPlanRequest request = new LoadPlanRequest(List.copyOf(cartons.values()), List.copyOf(specs.values()),
+        // 09 §3: the main / filler split is read by PRIORITY_FILL only (the plan has no filler under another mode).
+        Set<UUID> fill = plan.fillPackageIds();
+        List<CargoPackage> offered = cartons.values().stream()
+                .map(c -> fill.contains(UUID.fromString(c.ref())) ? c.asFill() : c).toList();
+        LoadPlanRequest request = new LoadPlanRequest(offered, List.copyOf(specs.values()),
                 plan.mode(), List.of(), KitDistribution.AUTO, false, null, 0L, budget, wallLimit);
         return new Calculation(request, specs, cartons);
     }
@@ -823,8 +887,10 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     && m.releaseReason() == LoadPlanReleaseReason.PLAN_CANCELLED) {
                 counted.put(m.packageId(), false);
             } else if (m.releaseReason() == LoadPlanReleaseReason.LEFT_BEHIND
-                    || m.releaseReason() == LoadPlanReleaseReason.VEHICLE_DROPPED) {
-                // Left in the warehouse: at the confirmation, or with a vehicle dropped from the plan (SCRUM-474).
+                    || m.releaseReason() == LoadPlanReleaseReason.VEHICLE_DROPPED
+                    || m.releaseReason() == LoadPlanReleaseReason.REMOVED_FROM_VEHICLE) {
+                // Left in the warehouse: at the confirmation, with a vehicle dropped from the plan (SCRUM-474), or taken
+                // off a vehicle under its controlled cancel (09 §4.2 step 9).
                 counted.put(m.packageId(), true);
             }
         }
@@ -1102,6 +1168,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         return out;
     }
 
+    /** Any mode of 09 §4.2 (WF4-LP-MODES); none named: SINGLE_TYPE, the docs' default "Một loại". */
     private static SelectionMode mode(String raw) {
         if (raw == null || raw.isBlank()) {
             return SelectionMode.SINGLE_TYPE;
@@ -1110,7 +1177,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             return SelectionMode.valueOf(raw.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid selection mode",
-                    List.of(new FieldError("selectionMode", "SINGLE_TYPE or FEWEST_VEHICLES", "LOAD_PLAN_MODE_INVALID")));
+                    List.of(new FieldError("selectionMode",
+                            "SINGLE_TYPE, FEWEST_VEHICLES, KEEP_LINES, PRIORITY_FILL or OVER_CAPACITY",
+                            "LOAD_PLAN_MODE_INVALID")));
         }
     }
 
@@ -1125,11 +1194,15 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     }
 
     private static ParcelView parcelView(LoadPlanParcels.Parcel p, Integer seq, String unplacedReason) {
+        return parcelView(p, seq, unplacedReason, false);
+    }
+
+    private static ParcelView parcelView(LoadPlanParcels.Parcel p, Integer seq, String unplacedReason, boolean fill) {
         CargoPackage c = p.carton();
         return new ParcelView(p.packageId(), p.row().getLabelCode(), p.row().getShipmentId(),
                 p.shipment() == null ? null : p.shipment().getCode(), p.partName(), c == null ? 0 : c.lengthMm(),
                 c == null ? 0 : c.widthMm(), c == null ? 0 : c.heightMm(), p.row().getWeightKg(), p.row().isRotatable(),
-                seq, unplacedReason);
+                seq, unplacedReason, p.orderLineId(), fill);
     }
 
     private PlanDetail detail(LoadPlanJpaEntity header, LoadPlan plan) {
@@ -1152,7 +1225,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 continue;
             }
             parcelViews.add(parcelView(p, seqOf.get(m.packageId()),
-                    m.unplacedReason() == null ? null : m.unplacedReason().name()));
+                    m.unplacedReason() == null ? null : m.unplacedReason().name(), m.fill()));
             perShipment.computeIfAbsent(m.shipmentId(), k -> new int[1])[0]++;
         }
         Map<UUID, ShipmentJpaEntity> shipmentRows = shipments.findAllById(perShipment.keySet()).stream()
@@ -1185,14 +1258,18 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         }).toList();
         LoadPlan.Snapshot s = plan.snapshot();
         Acknowledgement ack = s.acknowledgedAt() == null ? null
-                : new Acknowledgement(s.acknowledgedAt(), s.acknowledgedBy(), s.acknowledgeNote());
+                : new Acknowledgement(s.acknowledgedAt(), s.acknowledgedBy(), s.acknowledgeNote(),
+                        s.acknowledgedBy() == null ? null
+                                : identities.displayNames(List.of(s.acknowledgedBy())).get(s.acknowledgedBy()));
+        var warehouse = warehouses.findWarehouses(List.of(plan.warehouseId())).get(plan.warehouseId());
         return new PlanDetail(plan.id(), plan.code(), plan.warehouseId(), s.sourceType(), plan.mode().name(),
                 plan.status().name(), s.note(), typeViews, shipmentViews, vehicleViews, parcelViews,
                 plan.activePackageIds().size(), plan.placedPackageIds().size(), plan.unplacedPackageIds().size(), ack,
                 s.calculatedAt(), header.getSolverMeta(), s.confirmedAt(), s.reopenedAt(), s.reopenReason(),
                 s.dispatchedAt(), s.cancelledAt(), s.cancelReason(), header.getCreatedAt(), header.getVersion(),
                 plan.cancelReasonCode() == null ? null : plan.cancelReasonCode().name(),
-                pendingUnloads(plan), plan.cancelReasonCode() != null || controlledCancelled(allLoads));
+                pendingUnloads(plan), plan.cancelReasonCode() != null || controlledCancelled(allLoads),
+                warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
     }
 
     /**

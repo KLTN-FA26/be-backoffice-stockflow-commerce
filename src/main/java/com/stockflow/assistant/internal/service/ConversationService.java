@@ -208,9 +208,21 @@ public class ConversationService {
     public void rateAnswer(UUID conversationId, UUID messageId, CurrentUser user, AnswerFeedback feedback) {
         conversations.findInScope(conversationId)
                 .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
-        if (!verdicts.record(conversationId, messageId, user.userId(), feedback)) {
+        if (!verdicts.record(conversationId, messageId, user.userId(), feedback, raterOf(user))) {
             throw new NotFoundException("Answer", messageId);
         }
+    }
+
+    /**
+     * Who rates, by role and warehouses and never by name: the persona of the golden-set case the System Admin may turn
+     * the verdict into (contract §5.1). Warehouses only for a user limited to them (scope WAREHOUSE): a golden persona
+     * with warehouses is limited to them, and a manager who sees every warehouse is not.
+     */
+    static com.stockflow.assistant.internal.domain.MarkedAnswer.Rater raterOf(CurrentUser user) {
+        boolean limited = user.scope() == com.stockflow.common.security.DataScope.WAREHOUSE
+                && user.warehouseCodes() != null;
+        return new com.stockflow.assistant.internal.domain.MarkedAnswer.Rater(FeatureUse.roleOf(user),
+                limited ? user.warehouseCodes().stream().sorted().toList() : List.of());
     }
 
     /**

@@ -121,6 +121,16 @@ public class ResourceServerSecurityConfig {
     }
 
     /**
+     * The live-session check, one instance: the decoder runs it on every bearer token, and the STOMP socket runs it
+     * again when a socket ticket is redeemed ({@code common.websocket.SocketTickets}), because a ticket outlives the
+     * request that asked for it by up to 30 seconds and a logout in between must still end it.
+     */
+    @Bean
+    public SessionValidator sessionValidator(ActiveSessionCheck sessions) {
+        return new SessionValidator(sessions);
+    }
+
+    /**
      * The decoder is declared here, rather than left to Boot's auto-configuration, so a token is
      * also refused once its session has ended ({@link SessionValidator}). Signature, {@code exp}
      * and {@code nbf} are still checked first by the default validators.
@@ -129,10 +139,10 @@ public class ResourceServerSecurityConfig {
     public JwtDecoder jwtDecoder(
             @org.springframework.beans.factory.annotation.Value(
                     "${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}") String jwkSetUri,
-            ActiveSessionCheck sessions) {
+            SessionValidator sessions) {
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
         decoder.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(
-                JwtValidators.createDefault(), new SessionValidator(sessions)));
+                JwtValidators.createDefault(), sessions));
         return decoder;
     }
 
@@ -200,8 +210,9 @@ public class ResourceServerSecurityConfig {
                         .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks",
                                 "/api/v1/public/products/**").permitAll()
                         // The STOMP handshake (sales chat): a browser cannot put a bearer token on a WebSocket
-                        // upgrade, so the token comes in the STOMP CONNECT frame and StompAuthenticationInterceptor
-                        // checks it there; nothing is served before it. GET only: the upgrade is a GET.
+                        // upgrade, so the token - or a single-use socket ticket (POST /api/v1/chat/socket-tickets) -
+                        // comes in the STOMP CONNECT frame and StompAuthenticationInterceptor checks it there; nothing
+                        // is served before it. GET only: the upgrade is a GET.
                         .requestMatchers(HttpMethod.GET, "/ws", "/ws/**").permitAll()
                         // A Sales-invited contact has no password yet; the invitation token in the
                         // body is the credential (SCRUM-450). POST only: nothing else lives there.
@@ -213,14 +224,20 @@ public class ResourceServerSecurityConfig {
                         // or the HMAC signature it was configured with is the credential, checked by the service. POST
                         // only.
                         .requestMatchers(HttpMethod.POST, "/api/v1/fulfillment/carrier-webhooks/*").permitAll()
+                        // The bank feed's webhook (credit plan 2026-11-26 part C): SePay holds no token; the HMAC
+                        // signature or the API key the webhook was configured with is the credential, checked by the
+                        // service. POST only.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/bank-transactions/webhooks/*").permitAll()
                         // A producer's links to its production order's slip and print files (4A-3, kltn-docs 17 §4.3
                         // step 7): a producer holds no account; the HMAC-signed, time-limited link is the credential,
                         // checked by the service with everything else on each use. GET, and HEAD, which mail link
                         // checkers send first (Spring MVC answers it from the GET handler, with the same checks).
                         .requestMatchers(HttpMethod.GET, "/api/v1/production-order-files/*/slip",
-                                "/api/v1/production-order-files/*/print-files/*").permitAll()
+                                "/api/v1/production-order-files/*/print-files/*",
+                                "/api/v1/production-order-files/*/print-files/*/originals/*").permitAll()
                         .requestMatchers(HttpMethod.HEAD, "/api/v1/production-order-files/*/slip",
-                                "/api/v1/production-order-files/*/print-files/*").permitAll()
+                                "/api/v1/production-order-files/*/print-files/*",
+                                "/api/v1/production-order-files/*/print-files/*/originals/*").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
                         .bearerTokenResolver(carrierWebhooksCarryNoToken())

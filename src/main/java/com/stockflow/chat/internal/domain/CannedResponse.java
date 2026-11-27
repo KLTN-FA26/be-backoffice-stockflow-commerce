@@ -42,12 +42,12 @@ public record CannedResponse(UUID id, UUID ownerId, String title, String body, S
         shortcut = shortcut == null || shortcut.isBlank() ? null : shortcut.strip().toLowerCase(java.util.Locale.ROOT);
         if (shortcut != null && !SHORTCUT.matcher(shortcut).matches()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "A shortcut is 1 to 32 lower-case letters, digits, '-' or '_', starting with a letter or digit");
+                    "A shortcut is 1 to 32 lower-case letters, digits, '-' or '_', starting with a letter or digit").localized("refusal.chat.shortcut");
         }
         category = category == null || category.isBlank() ? null : category.strip();
         if (category != null && category.length() > MAX_CATEGORY) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A category is at most " + MAX_CATEGORY
-                    + " characters");
+                    + " characters").localized("refusal.chat.categoryTooLong", MAX_CATEGORY);
         }
     }
 
@@ -72,7 +72,7 @@ public record CannedResponse(UUID id, UUID ownerId, String title, String body, S
             throw new BusinessException(ErrorCode.CHAT_CANNED_RESPONSE_NOT_FOUND);
         }
         if (ownerId == null && !agent.supervisor()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "A shared reply is the chat supervisor's to change");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "A shared reply is the chat supervisor's to change").localized("refusal.chat.sharedReplySupervisor");
         }
     }
 
@@ -100,11 +100,11 @@ public record CannedResponse(UUID id, UUID ownerId, String title, String body, S
     private static String required(String value, int max, String field) {
         String text = value == null ? "" : value.strip();
         if (text.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A saved reply has a " + field);
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A saved reply has a " + field).localized("refusal.chat.savedReplyField", field);
         }
         if (text.length() > max) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A saved reply's " + field + " is at most " + max
-                    + " characters");
+                    + " characters").localized("refusal.chat.savedReplyFieldTooLong", field, max);
         }
         return text;
     }

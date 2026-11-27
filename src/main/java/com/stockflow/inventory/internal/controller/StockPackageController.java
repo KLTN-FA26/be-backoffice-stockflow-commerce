@@ -10,14 +10,21 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.inventory.internal.controller.dto.CustomerCustodyResponse;
+import com.stockflow.inventory.internal.controller.dto.EndCustodyRequest;
+import com.stockflow.inventory.internal.controller.dto.MoveSuggestionResponse;
 import com.stockflow.inventory.internal.controller.dto.PutawayTaskResponse;
 import com.stockflow.inventory.internal.controller.dto.QuarantineStockPackageRequest;
 import com.stockflow.inventory.internal.controller.dto.StockPackageDetailResponse;
 import com.stockflow.inventory.internal.controller.dto.StockPackageLabelRequest;
 import com.stockflow.inventory.internal.controller.dto.StockPackageLocationLineResponse;
 import com.stockflow.inventory.internal.controller.dto.StockPackageResponse;
+import com.stockflow.inventory.internal.domain.ReturnedCartonOwnership;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.service.CartonQuarantineService;
+import com.stockflow.inventory.internal.service.CustomerGoodsCustody;
+import com.stockflow.inventory.internal.service.MoveSuggestionService;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.StockPackageLabel;
 import com.stockflow.inventory.internal.service.StockPackageLabelPdfRenderer;
@@ -43,7 +50,9 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.Clock;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * Cartons (SCRUM-473): looking one up by its LPN, what a location holds by carton, a list of cartons, and printing
@@ -52,6 +61,9 @@ import java.util.UUID;
  * {@code CREATE}, which only warehouse staff and managers hold. Quarantining a carton and releasing it are
  * {@code UPDATE}, which only the warehouse manager holds (kltn-docs 20 BR-21; team plan 4D-1; seeded by
  * V20261020000700 for the manager's corrections).
+ *
+ * <p>Goods held for a customer whose return refunded nothing (WF-05 Q-4, TH-6) are listed to whoever reads cartons, and
+ * handed back or destroyed - as the customer chose - by the warehouse manager ({@code UPDATE}).</p>
  *
  * <p>Like location labels, the print answers a binary on success and the JSON envelope on error.</p>
  */
@@ -76,10 +88,17 @@ class StockPackageController {
     private final CartonQuarantineService quarantine;
     private final PutawayService putaway;
     private final Clock clock;
+    private final CustomerGoodsCustody custody;
+    private final ResponseLabels responseLabels;
+    private final MoveSuggestionService moveSuggestions;
 
     StockPackageController(StockPackageLabels labels, StockPackageLabelPdfRenderer renderer, StockPackageLookup lookup,
                            StockPackageWebMapper mapper, CartonQuarantineService quarantine, PutawayService putaway,
-                           Clock clock) {
+                           Clock clock, CustomerGoodsCustody custody, ResponseLabels responseLabels,
+                           MoveSuggestionService moveSuggestions) {
+        this.responseLabels = responseLabels;
+        this.custody = custody;
+        this.moveSuggestions = moveSuggestions;
         this.quarantine = quarantine;
         this.putaway = putaway;
         this.labels = labels;
@@ -91,19 +110,30 @@ class StockPackageController {
 
     @GetMapping
     @Operation(summary = "Cartons, page by page",
-            description = "location is one exact location code; status is repeatable and defaults to the live "
-                    + "cartons (RECEIVING, IN_STOCK). Only cartons in the caller's warehouses are listed; naming a "
-                    + "location in another warehouse is 403. Sort: lpn (default), locationCode, sku.")
+            description = "Filters, all optional and combined: location is one exact location code; warehouseId one "
+                    + "warehouse; lotNumber one exact lot; q part of the LPN, any case, at least 3 characters; "
+                    + "status (repeatable) the carton status, default the live cartons (RECEIVING, IN_STOCK); "
+                    + "stockStatus (repeatable) cartons holding stock in that status (AVAILABLE, QUARANTINE, BLOCKED, "
+                    + "DAMAGED, EXPIRED, INBOUND). Only cartons in the caller's warehouses are listed. Sort: lpn "
+                    + "(default), locationCode, sku, receivedAt (FIFO). Each row names its warehouse, product and "
+                    + "variant, stock statuses, oldest receipt, goods receipt, source, the orders holding it and the "
+                    + "open work it is in. 400 VALIDATION_FAILED for q shorter than 3; 403 OUT_OF_DATA_SCOPE for a "
+                    + "location or warehouseId in another warehouse; 404 WAREHOUSE_NOT_FOUND.")
     @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.READ)
     public ApiResponse<PageResponse<StockPackageResponse>> cartons(
             @RequestParam(required = false) String location,
             @RequestParam(required = false) String sku,
             @RequestParam(name = "status", required = false) List<StockPackageStatus> statuses,
+            @RequestParam(required = false) UUID warehouseId,
+            @RequestParam(required = false) String lotNumber,
+            @RequestParam(required = false) String q,
+            @RequestParam(name = "stockStatus", required = false) List<StockStatus> stockStatuses,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort) {
         return ApiResponse.ok(lookup.cartons(new StockPackageLookup.CartonQuery(location, sku, statuses, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)).map(mapper::toResponse));
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort, warehouseId, lotNumber, q, stockStatuses))
+                .map(mapper::toResponse));
     }
 
     @GetMapping("/location-summary")
@@ -114,6 +144,25 @@ class StockPackageController {
     @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.READ)
     public ApiResponse<List<StockPackageLocationLineResponse>> locationSummary(@RequestParam String location) {
         return ApiResponse.ok(lookup.atLocation(location).stream().map(mapper::toResponse).toList());
+    }
+
+    /**
+     * Issue #412 (kltn-docs 11 §4.1, docs#46): advice before a move, under the move's own permission - whoever may move
+     * the cartons may ask where to. A literal path, so it is not read as the LPN {@code bin-suggestions}.
+     */
+    @GetMapping("/bin-suggestions")
+    @Operation(summary = "Bins a group of cartons may be moved into (advice only)",
+            description = "1..500 LPNs, the lpn parameter repeated; an LPN in either case, named twice, is one carton. "
+                    + "Every suggested bin fits each carton and its free room (volume and load, less what stands there "
+                    + "and what putaway trips hold) takes them all; up to 10, in putaway's order. The bins the cartons "
+                    + "stand in are never suggested. overflowAreas names the warehouse's OVERFLOW areas only when no "
+                    + "bin takes the group. Nothing is held: the move (POST /api/v1/inventory/movements) checks only "
+                    + "what it checks today - size, not room (11 BR-10, C24) - and refuses held cartons itself. "
+                    + "400 VALIDATION_FAILED; 404 STOCK_PACKAGE_NOT_FOUND; 403 OUT_OF_DATA_SCOPE for a carton in "
+                    + "another warehouse; 409 MOVE_ACROSS_WAREHOUSES for cartons of two warehouses.")
+    @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.UPDATE)
+    public ApiResponse<MoveSuggestionResponse> binSuggestions(@RequestParam(name = "lpn") List<String> lpns) {
+        return ApiResponse.ok(mapper.toResponse(moveSuggestions.suggest(lpns)));
     }
 
     @GetMapping("/{lpn}")
@@ -156,7 +205,50 @@ class StockPackageController {
     public ApiResponse<PutawayTaskResponse> releaseFromQuarantine(@PathVariable String lpn,
                                                                   @AuthenticatedUser CurrentUser actor) {
         UUID task = quarantine.release(lpn, actor.userId());
-        return ApiResponse.ok(PutawayController.toResponse(putaway.get(task)));
+        return ApiResponse.ok(PutawayController.toResponse(putaway.get(task), responseLabels));
+    }
+
+    @GetMapping("/customer-custody")
+    @Operation(summary = "Cartons held for customers (WF-05 Q-4, TH-6)",
+            description = "Cartons whose return refunded nothing: out of stock (the receipt's stock-in reversed), held "
+                    + "for the customer where they stand, oldest first, in the caller's warehouses. ended=true lists "
+                    + "those handed back or destroyed instead; returnRequestId narrows to one return. choice is what the "
+                    + "customer chose as Sales recorded it on the return; null means wait for it.")
+    @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.READ,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<PageResponse<CustomerCustodyResponse>> customerCustody(
+            @RequestParam(required = false) UUID returnRequestId,
+            @RequestParam(defaultValue = "false") boolean ended,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(required = false) Integer size) {
+        PageResponse<ReturnedCartonOwnership.Custody> held = custody.held(returnRequestId, ended, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size);
+        Map<UUID, String> names = responseLabels.names(held.items().stream()
+                .map(ReturnedCartonOwnership.Custody::endedBy));
+        return ApiResponse.ok(held.map(carton -> toResponse(carton, names)));
+    }
+
+    @PostMapping("/{lpn}/customer-custody/end")
+    @Operation(summary = "Hand back or destroy a carton held for the customer, as they chose (warehouse manager)",
+            description = "WF-05 Q-4: the customer's choice recorded by Sales on the return (SEND_BACK or "
+                    + "DESTROY_ON_BEHALF) is carried out, with the record of it in note. No stock moves: the carton "
+                    + "is out of the books already. 404 STOCK_PACKAGE_NOT_FOUND (also for a carton not held for a "
+                    + "customer), 409 STOCK_PACKAGE_DECISION_PENDING while no choice is recorded, "
+                    + "INVALID_STOCK_PACKAGE_TRANSITION once it was carried out.")
+    @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.UPDATE,
+            scope = DataScope.WAREHOUSE)
+    public ApiResponse<CustomerCustodyResponse> endCustomerCustody(@PathVariable String lpn,
+                                                                   @Valid @RequestBody EndCustodyRequest request,
+                                                                   @AuthenticatedUser CurrentUser actor) {
+        ReturnedCartonOwnership.Custody ended = custody.end(lpn, request.note(), actor.userId());
+        return ApiResponse.ok(toResponse(ended, responseLabels.names(Stream.of(ended.endedBy()))));
+    }
+
+    private static CustomerCustodyResponse toResponse(ReturnedCartonOwnership.Custody held,
+                                                      Map<UUID, String> names) {
+        return new CustomerCustodyResponse(held.lpn(), held.sku(), held.lotNumber(), held.quantity(),
+                held.locationCode(), held.returnRequestId(), held.ownership().name(), held.heldAt(), held.choice(),
+                held.endedAt(), held.endedBy(), held.note(), ResponseLabels.name(names, held.endedBy()));
     }
 
     /**
@@ -165,10 +257,11 @@ class StockPackageController {
      */
     @PostMapping(value = "/labels", produces = MediaType.APPLICATION_PDF_VALUE)
     @Operation(summary = "Print carton labels as a PDF",
-            description = "Each label carries the LPN as text, as a QR code and as a Code 128 barcode, with the SKU "
-                    + "and received / nominal unit. Send Accept: application/pdf, application/json - "
+            description = "Each label carries the LPN as text, as a QR code and as a Code 128 barcode, with the count "
+                    + "(received / nominal unit), the SKU, the item name (up to two lines) and the lot. Send Accept: application/pdf, application/json - "
                     + "errors are the usual JSON envelope: 404 STOCK_PACKAGE_NOT_FOUND, 409 "
-                    + "INVALID_STOCK_PACKAGE_TRANSITION for a VOID, CONSUMED or LOST carton, 422 "
+                    + "INVALID_STOCK_PACKAGE_TRANSITION for a VOID or LOST carton, or a CONSUMED one unless it is "
+                    + "picked for an order and not handed over yet (kltn-docs 03 §4.1 step 4), 422 "
                     + "STOCK_PACKAGE_LABELS_EMPTY and STOCK_PACKAGE_LABELS_TOO_MANY (over 500 labels).")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "The labels",
             content = @Content(mediaType = MediaType.APPLICATION_PDF_VALUE,

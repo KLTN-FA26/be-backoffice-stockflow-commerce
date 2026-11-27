@@ -12,6 +12,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.text.Normalizer;
 import java.util.BitSet;
 import java.util.HashSet;
 import java.util.List;
@@ -69,10 +70,14 @@ public class LabelFonts {
      * name, and PDFBox throws on any character the font has no glyph for - which would make every print of
      * that name fail. Control characters become spaces, anything else undrawable a {@code ?}, so the label
      * still prints and still says what it is for.
+     *
+     * <p>Composed first (NFC): Vietnamese typed with a combining-mark input setting arrives as a letter followed by
+     * its diacritics, and a font with no {@code GPOS} cannot place a mark over its letter, while {@link
+     * LabelDrawing#cut} could cut between the two. Composed, each such letter is one code point with its own glyph.</p>
      */
     public String drawable(String text) {
         var out = new StringBuilder(text.length());
-        text.codePoints().forEach(codePoint -> {
+        Normalizer.normalize(text, Normalizer.Form.NFC).codePoints().forEach(codePoint -> {
             if (Character.isISOControl(codePoint)) {
                 out.append(' ');
             } else if (canDraw(codePoint)) {
@@ -84,7 +89,12 @@ public class LabelFonts {
         return out.toString();
     }
 
-    private static byte[] withoutGsub(String path, BitSet coverage) {
+    /**
+     * The font at {@code path} rebuilt without {@code GSUB}, and every code point it draws set in {@code coverage}.
+     * Public because the fonts of business documents ({@code common.document}) are embedded the same way, for the same
+     * reason: one rebuild, so the two sets cannot come to differ in what they keep.
+     */
+    public static byte[] withoutGsub(String path, BitSet coverage) {
         try (InputStream in = new ClassPathResource(path).getInputStream();
              TrueTypeFont font = new TTFParser().parse(new RandomAccessReadBuffer(in.readAllBytes()))) {
             CmapLookup cmap = font.getUnicodeCmapLookup();

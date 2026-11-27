@@ -40,7 +40,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @org.springframework.test.context.TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class OrderReleaseIntegrationTest {
 
-    private static final String CUP = "SOFA-3S-GREY";   // any demo SKU with an inventory item
+    /**
+     * A print line carries the customer's design snapshot: the legacy shape of a print line (QD-16). It once named the
+     * cup's blank; since V20270105000100 an order line names a customer's SKU only (fk_order_line_customer_sku).
+     */
+    private static final String CUP = DemoData.SKU_STOCKED;
 
     @Autowired OrderReleases releases;
     @Autowired JdbcTemplate jdbc;
@@ -66,7 +70,7 @@ class OrderReleaseIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, DemoData.PRODUCT_SOFA);
+                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, DemoData.CUSTOMER_ID, DemoData.PRODUCT_CUP);
             jdbc.update("""
                     INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
                                                         artifact_manifest)
@@ -93,7 +97,7 @@ class OrderReleaseIntegrationTest {
                     printLine, order, CUP, design, "a".repeat(64));
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                    VALUES (?, ?, 'TABLE-OAK-160', 1, 10000, 'VND')""", Identifiers.newId(), order);
+                    VALUES (?, ?, ?, 1, 10000, 'VND')""", Identifiers.newId(), order, DemoData.SKU_QUARANTINED);
         });
         return new UUID[] {order, printLine};
     }
@@ -140,8 +144,9 @@ class OrderReleaseIntegrationTest {
 
         assertThat(releases.release(order, hcm, coordinator).status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(recorded.matching(OrderReleased.class, e -> e.orderId().equals(order))).hasSize(1);
-        // 4B-8: a contract's order is released batch by batch; with its one batch released, none is left to release.
+        // 4B-8: a contract's order is released batch by batch; with its one batch released, none is left to release
+        // (DELIVERY_BATCH_ALL_RELEASED, not NOT_NEXT: there is no next one).
         assertThatThrownBy(() -> releases.release(order, hcm, coordinator))
-                .extracting(OrderReleaseIntegrationTest::code).isEqualTo(ErrorCode.DELIVERY_BATCH_NOT_NEXT);
+                .extracting(OrderReleaseIntegrationTest::code).isEqualTo(ErrorCode.DELIVERY_BATCH_ALL_RELEASED);
     }
 }

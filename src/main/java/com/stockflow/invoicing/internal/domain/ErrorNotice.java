@@ -21,8 +21,9 @@ import java.util.UUID;
  *   └────────────answer at once────────────▶
  * </pre>
  *
- * <p>A notice stays DRAFT while the provider could not be reached, or has no call for notices, and is sent again; one
- * that was answered is final. One notice of an invoice is open at a time. The same rules are the constraints and
+ * <p>A notice stays DRAFT while the provider could not be reached, and is sent again; one that was answered is final.
+ * A notice is recorded only for an invoice whose provider can send it (HĐ-6, {@code ErrorNoticeSteps.requireSendable}),
+ * so a draft is never one that nothing can send. One notice of an invoice is open at a time. The same rules are the constraints and
  * triggers of {@code invoicing.einvoice_error_notice}.</p>
  */
 public final class ErrorNotice {

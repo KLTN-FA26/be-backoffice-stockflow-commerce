@@ -116,6 +116,33 @@ class ProductVariantSecurityIntegrationTest {
                 .andExpect(status().isForbidden());
     }
 
+    /**
+     * A customer's SKU moves through its own endpoints since V20270105000100, with the permissions the variant moves
+     * take: UPDATE blocks (a random id gets past security and answers 404), APPROVE puts back on sale and retires, READ
+     * does neither.
+     */
+    @Test
+    void customerSkuMovesTakeTheVariantPermissions() throws Exception {
+        String editor = token("product-variants:UPDATE");
+        mvc.perform(post("/api/v1/customer-skus/{id}/blocking", UUID.randomUUID()).header("Authorization", editor))
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/customer-skus/{id}/activation", UUID.randomUUID()).header("Authorization", editor))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/customer-skus/{id}/obsoletion", UUID.randomUUID()).header("Authorization", editor))
+                .andExpect(status().isForbidden());
+
+        String approver = token("product-variants:APPROVE");
+        mvc.perform(post("/api/v1/customer-skus/{id}/activation", UUID.randomUUID()).header("Authorization", approver))
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/customer-skus/{id}/obsoletion", UUID.randomUUID()).header("Authorization", approver))
+                .andExpect(status().isNotFound());
+
+        String reader = token("product-variants:READ");
+        mvc.perform(post("/api/v1/customer-skus/{id}/blocking", UUID.randomUUID()).header("Authorization", reader))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/customer-skus/{id}/blocking", UUID.randomUUID())).andExpect(status().isUnauthorized());
+    }
+
     @Test
     void variantsUpdateWithoutApproveCannotActivate() throws Exception {
         String editor = token("product-variants:UPDATE");

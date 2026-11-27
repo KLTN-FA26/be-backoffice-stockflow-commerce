@@ -54,6 +54,13 @@ public final class OrderResources {
     public static final String QUOTE_CONVERSIONS = "sales-quote-conversions";
 
     /**
+     * Approving or rejecting the prices of a quote held for approval (kltn-docs 14 BR-10 as changed on 2026-11-26): the
+     * Sales Manager's. Its own resource: neither editing quotes ({@code sales-quotes:UPDATE}, Sales') nor the customer's
+     * answer ({@code sales-quotes:APPROVE}, the portal's) stands for it. Seeded by V20261230000200.
+     */
+    public static final String QUOTE_PRICE_APPROVALS = "sales-quote-price-approvals";
+
+    /**
      * 4B-4 (kltn-docs 14 §4.3): the sales contract of an order - Sales draws it up, edits, sends and records it signed
      * (APPROVE); accounting and the Sales Manager read it. Seeded by V20261108002200.
      */
@@ -65,6 +72,14 @@ public final class OrderResources {
      * for SALES_STAFF (and SYSTEM_ADMIN, who holds everything).
      */
     public static final String PARTIAL_SHIPMENTS = "sales-order-partial-shipments";
+
+    /**
+     * WF04 G2 (kltn-docs 17 §4.7 steps 23-24, BR-16; 08 BR-04): Sales change the delivery address of an order until its
+     * first carton is labelled. Its own resource, not {@code sales-orders:UPDATE}, which the portal customer holds for
+     * their own orders: the customer asks, Sales changes it. Seeded by V20261204006100 for SALES_STAFF (and
+     * SYSTEM_ADMIN, who holds everything).
+     */
+    public static final String ADDRESSES = "sales-order-addresses";
 
     /**
      * 4B-7 (kltn-docs 17 §4.2 steps 2-3): the warehouse an order of a contract ships from, and how much of its stock is
@@ -81,10 +96,18 @@ public final class OrderResources {
     public static final String PRODUCERS = "sales-producers";
 
     /**
-     * 4A-2 (kltn-docs 17 §4.3, BR-23): production orders - the Production Coordinator draws up, edits, submits, cancels
-     * and closes (CREATE, UPDATE); the Sales Manager approves and returns (APPROVE); Sales and the warehouse manager read.
+     * 4A-2 (kltn-docs 17 §4.3): production orders - the Production Coordinator draws up, edits, sends, cancels and
+     * closes (CREATE, UPDATE); nobody approves one since V20261213000200, which retired APPROVE; Sales, the Sales
+     * Manager and the warehouse manager read.
      */
     public static final String PRODUCTION_ORDERS = "production-orders";
+
+    /**
+     * Those told when a production order is sent (V20261213000200; kltn-docs 17 §2): the Sales Manager and the
+     * administrator, oversight after the fact now that nobody approves one. An audience only, guarding no endpoint;
+     * split from {@link #PRODUCTION_ORDERS} because its READ is held too widely to be who is told.
+     */
+    public static final String PRODUCTION_ORDER_SENDS = "production-order-sends";
 
     /**
      * 4A-4 (kltn-docs 13 §4.3 step 5, BR-13): the storefront's print samples to approve - the customer reads and
@@ -101,11 +124,18 @@ public final class OrderResources {
     public static final String PRODUCTION_SCHEDULE = "production-schedule";
 
     /**
-     * 4A-7 (17 §4.12 step 49): the delay flags of an order, for the order page - Sales, the Sales Manager and the
-     * warehouse manager; its holders who can see the order's shipping warehouse are the ones told of DELIVERY_LATE
-     * (BR-30: not the Production Coordinator).
+     * 4A-7 (17 §4.12 step 49): the delay flags of an order, for the order page - Sales, the Sales Manager, the
+     * warehouse manager and (V20261209000400) the Production Coordinator. DELIVERY_LATE is listed only to holders of
+     * {@link #DELIVERY_DELAY_ALERTS} too.
      */
     public static final String DELAY_ALERTS = "delay-alerts";
+
+    /**
+     * Those who follow delivery (V20261209000400; 17 §3, BR-30): they see DELIVERY_LATE in the alert list, and its
+     * holders who can see the order's shipping warehouse are the ones told of it. Split from {@link #DELAY_ALERTS} so
+     * the Production Coordinator can read the production alerts without being told of late deliveries.
+     */
+    public static final String DELIVERY_DELAY_ALERTS = "delivery-delay-alerts";
 
     /**
      * Return requests (SCRUM-243, seeded by V20260903000100, UPDATE added by V20261101020000): CREATE opens one and adds
@@ -115,12 +145,34 @@ public final class OrderResources {
     public static final String RMAS = "sales-rmas";
 
     /**
+     * WF-05 Q-11 (audit round 2, M4): recording goods kept in custody for the customer on a return - the one write the
+     * warehouse makes on a return request ("kho ghi biên nhận giữ hộ trên yêu cầu trả", docs 03 §4.2 step 10). CREATE
+     * only; WAREHOUSE_STAFF, WAREHOUSE_MANAGER and SALES_STAFF (V20261223000330).
+     */
+    public static final String RMA_CUSTODY = "sales-rma-custody";
+
+    /**
      * The refund of goods that came back: UPDATE proposes (Sales), APPROVE approves it - four eyes, the
      * Accountant (V20261101020000). Counting a returned parcel in ({@code sales-rma-receipts}) and QC's verdict
      * ({@code sales-rma-inspections}) went with team plan 4D-3: goods come back on a return receipt
      * ({@code procurement-goods-receipts}) and nobody inspects them (V20261114000200).
      */
     public static final String RMA_RESOLUTIONS = "sales-rma-resolutions";
+
+    /**
+     * BE1 (kltn-docs 06 §2, §4.6): the warehouse capacity board - the warehouse manager (their warehouses), Sales, the
+     * Production Coordinator and the Sales Manager (V20261125000100). Owned here because the board is worked out here;
+     * named for what it shows.
+     */
+    public static final String WAREHOUSE_CAPACITY = "warehouse-capacity";
+
+    /**
+     * WF-05 decision Q-12 (BE-17): closing the part of an order a shipment the carrier lost was to deliver - its units
+     * closed and their money settled as a carrier's return is (Q-2), on the carrier's written confirmation of the loss.
+     * APPROVE, an approval-level grant of its own (as recording a shipment brought back takes
+     * {@code fulfillment-delivery-outcomes:APPROVE}, Q-7): Sales (V20261216000050).
+     */
+    public static final String LOST_SHIPMENT_CLOSURES = "sales-lost-shipment-closures";
 
     private OrderResources() {
     }

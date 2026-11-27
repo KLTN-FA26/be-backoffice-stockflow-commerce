@@ -122,7 +122,7 @@ class ProductServiceImplTest {
     private static ProductSummary summary(Product product, ProductStatus status) {
         return new ProductSummary(product.id().value(), product.code(), product.name(), null, "cup-12oz", BRAND, "Brand",
                 CATEGORY, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, status, NOW, "u", NOW, "u", null, null,
-                null, null, null, null, null, product.version() + 1, null, null, null);
+                null, null, null, null, null, product.version() + 1, null, null, null, "Category");
     }
 
     private static SkuReference po(int n) {
@@ -383,7 +383,7 @@ class ProductServiceImplTest {
     @DisplayName("delete: a foreign key still holding an inventory item is PRODUCT_IN_USE, and the rows stay")
     void deleteRefusedByInventoryForeignKey() {
         Product product = locked(ProductStatus.DRAFT, 3, ProductStatus.DRAFT);
-        var held = new DataIntegrityViolationException("fk_stock_item_inventory_item");
+        var held = new DataIntegrityViolationException("fk_stock_package_item");
         org.mockito.Mockito.doThrow(held).when(inventory).deleteUnusedItems(anyCollection());
 
         BusinessException refused = refusal(catchThrowable(() -> service.deleteDraft(product.id().value(), 3)));
@@ -571,9 +571,9 @@ class ProductServiceImplTest {
         UUID known = UUID.randomUUID();
         UUID gone = UUID.randomUUID();
         var entries = List.of(
-                new ProductChangeLogRepository.Entry(ProductChangeType.SUSPENDED, null, "APPROVED", "INACTIVE", "recall", List.of(), known, NOW),
-                new ProductChangeLogRepository.Entry(ProductChangeType.LOGISTICS, UUID.randomUUID(), null, null, null, List.of("weightKg"), null, NOW),
-                new ProductChangeLogRepository.Entry(ProductChangeType.UPDATED, null, null, null, null, List.of("name"), gone, NOW));
+                new ProductChangeLogRepository.Entry(ProductChangeType.SUSPENDED, null, "APPROVED", "INACTIVE", "recall", List.of(), known, NOW, null, null),
+                new ProductChangeLogRepository.Entry(ProductChangeType.LOGISTICS, UUID.randomUUID(), null, null, null, List.of("weightKg"), null, NOW, "CUP-12OZ", "Cốc 12oz"),
+                new ProductChangeLogRepository.Entry(ProductChangeType.UPDATED, null, null, null, null, List.of("name"), gone, NOW, null, null));
         when(history.page(eq(product.id().value()), any())).thenReturn(new PageImpl<>(entries, PageRequest.of(0, 20), 3));
         when(identity.displayNames(anyCollection())).thenReturn(Map.of(known, "Nguyễn Văn A"));
 
@@ -588,6 +588,9 @@ class ProductServiceImplTest {
         assertThat(page.items().get(0).fromStatus()).isEqualTo("APPROVED");
         assertThat(page.items().get(0).reason()).isEqualTo("recall");
         assertThat(page.items().get(1).changedFields()).containsExactly("weightKg");
+        assertThat(page.items().get(1).subjectSku()).isEqualTo("CUP-12OZ");
+        assertThat(page.items().get(1).subjectLabel()).isEqualTo("Cốc 12oz");
+        assertThat(page.items().get(0).subjectSku()).isNull();
         UUID unknown = UUID.randomUUID();
         when(products.findById(new ProductId(unknown))).thenReturn(Optional.empty());
         assertThat(refusal(catchThrowable(() -> service.history(unknown, 0, 20))).errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_FOUND);

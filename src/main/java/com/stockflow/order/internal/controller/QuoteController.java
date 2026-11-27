@@ -12,11 +12,17 @@ import com.stockflow.order.internal.controller.dto.QuoteRequests;
 import com.stockflow.order.internal.controller.dto.QuoteResponse;
 import com.stockflow.order.internal.controller.dto.QuoteRowResponse;
 import com.stockflow.order.internal.domain.QuoteStatus;
+import com.stockflow.order.internal.service.QuoteDocumentService;
 import com.stockflow.order.internal.service.Quotes;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -55,9 +61,11 @@ import java.util.UUID;
 class QuoteController {
 
     private final Quotes quotes;
+    private final QuoteDocumentService documents;
 
-    QuoteController(Quotes quotes) {
+    QuoteController(Quotes quotes, QuoteDocumentService documents) {
         this.quotes = quotes;
+        this.documents = documents;
     }
 
     @PostMapping
@@ -81,9 +89,13 @@ class QuoteController {
             @RequestParam(required = false) String sort,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
+            @Parameter(description = "PENDING: only drafts waiting for the Sales Manager to approve their prices "
+                    + "(14 BR-10); ignored for a portal customer")
+            @RequestParam(name = "priceReview", required = false) String priceReview,
             @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(quotes.list(user, new Quotes.Criteria(customerId, statuses, search, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)).map(QuoteWebMapper::toResponse));
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort, "PENDING".equalsIgnoreCase(priceReview)))
+                .map(QuoteWebMapper::toResponse));
     }
 
     @GetMapping("/{quoteId}")
@@ -91,6 +103,20 @@ class QuoteController {
     @RequiresPermission(resource = OrderResources.QUOTES, action = Action.READ)
     public ApiResponse<QuoteResponse> get(@PathVariable UUID quoteId, @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.get(user, quoteId)));
+    }
+
+    @GetMapping(value = "/{quoteId}/document", produces = MediaType.APPLICATION_PDF_VALUE)
+    @Operation(summary = "The quote drawn as a PDF (14 §4.1): the offer as sent, or as accepted once it is; a draft, a "
+            + "cancelled and an expired quote say so on the page. A portal customer prints only their own, once sent "
+            + "(404 otherwise, as reading it); 503 SELLER_PROFILE_UNAVAILABLE without the seller configured")
+    @RequiresPermission(resource = OrderResources.QUOTES, action = Action.READ)
+    public ResponseEntity<byte[]> document(@PathVariable UUID quoteId, @AuthenticatedUser CurrentUser user) {
+        QuoteDocumentService.Pdf pdf = documents.document(user, quoteId);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.inline().filename(pdf.fileName()).build()
+                        .toString())
+                .contentType(MediaType.APPLICATION_PDF)
+                .body(pdf.content());
     }
 
     @PutMapping("/{quoteId}")
@@ -104,11 +130,43 @@ class QuoteController {
     }
 
     @PostMapping("/{quoteId}/sending")
-    @Operation(summary = "DRAFT -> SENT: the customer sees it on the portal")
+    @Operation(summary = "DRAFT -> SENT: the customer sees it on the portal. A quote with a price break more than the "
+            + "threshold below its reference (the customer's own price, else the variant's standard price), or with none, "
+            + "stays a DRAFT waiting for the Sales Manager instead: priceReviewPending says which (14 BR-10)")
     @RequiresPermission(resource = OrderResources.QUOTES, action = Action.UPDATE)
     public ApiResponse<QuoteResponse> send(@PathVariable UUID quoteId, @Valid @RequestBody QuoteRequests.Version request,
                                            @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.send(user, quoteId, request.version())));
+    }
+
+    @PostMapping("/{quoteId}/price-approval")
+    @Operation(summary = "14 BR-10: the Sales Manager approves the prices of a quote waiting for approval; it is sent at "
+            + "once. Not by whoever sent it for approval (403 QUOTE_PRICE_REVIEW_SELF)")
+    @RequiresPermission(resource = OrderResources.QUOTE_PRICE_APPROVALS, action = Action.APPROVE)
+    public ApiResponse<QuoteResponse> approvePrice(@PathVariable UUID quoteId,
+                                                   @Valid @RequestBody QuoteRequests.PriceApproval request,
+                                                   @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.approvePrice(user, quoteId, request.version(),
+                request.note())));
+    }
+
+    @PostMapping("/{quoteId}/price-rejection")
+    @Operation(summary = "14 BR-10: the Sales Manager rejects the prices, saying why; the draft goes back to Sales")
+    @RequiresPermission(resource = OrderResources.QUOTE_PRICE_APPROVALS, action = Action.APPROVE)
+    public ApiResponse<QuoteResponse> rejectPrice(@PathVariable UUID quoteId,
+                                                  @Valid @RequestBody QuoteRequests.PriceRejection request,
+                                                  @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.rejectPrice(user, quoteId, request.version(),
+                request.reason())));
+    }
+
+    @PostMapping("/{quoteId}/price-review-withdrawal")
+    @Operation(summary = "14 BR-10: Sales takes back a quote waiting for its prices to be approved, to change it")
+    @RequiresPermission(resource = OrderResources.QUOTES, action = Action.UPDATE)
+    public ApiResponse<QuoteResponse> withdrawPriceReview(@PathVariable UUID quoteId,
+                                                          @Valid @RequestBody QuoteRequests.Version request,
+                                                          @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.withdrawPriceReview(user, quoteId, request.version())));
     }
 
     @PostMapping("/{quoteId}/acceptance")

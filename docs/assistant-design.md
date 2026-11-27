@@ -111,8 +111,9 @@ dữ liệu nào. Các biến thể này nằm trong bộ câu hỏi chuẩn (§
 Ai được dùng tool nào phụ thuộc vào quyền seed hiện có, không phải vào trợ lý. Danh sách đúng lúc chạy không
 được viết tay ở đâu cả: `GET /api/v1/assistant/capabilities` (§7) đọc nó từ chính khai báo của các tool, và
 ngữ cảnh của mỗi câu hỏi đưa đúng danh sách đó cho model (§3.3, §5.7). Bảng dưới là ảnh chụp ngày 16/11/2026, tính từ
-quyền trong `V20261111000000__baseline.sql` cộng các migration sau nó (không migration nào sau baseline đổi quyền mà
-các tool này mang), cùng `V20261125000200` và `V20261125000500` cho chính trợ lý.
+quyền trong `V20261111000000__baseline.sql` cộng các migration sau nó, cùng `V20270106000200` và `V20270106000500`
+cho chính trợ lý; hai dòng SALES_MANAGER và ACCOUNTANT cập nhật 27/11 theo các quyền đọc `develop` cấp thêm
+(`V20261209000200`, `V20261222000100`, `V20261227000400` = QĐ14, QĐ15).
 
 | Vai trò (data scope) | Tool dùng được | Ghi chú |
 |---|---|---|
@@ -120,9 +121,9 @@ các tool này mang), cùng `V20261125000200` và `V20261125000500` cho chính t
 | WAREHOUSE_MANAGER (WAREHOUSE) | getStockLevels, getStockLots, traceLot, lookupScan, findPendingAdjustments, findOrder, findOrders, getOrderPicking, findFulfillmentTasks, findShipments, findGoodsReceipts, getSalesSummary, searchCatalog, searchKnowledge (14) | giờ có `sales-orders:READ`, nên tra được đơn và `findOrder` kèm khối `picking`; duyệt được điều chỉnh (`callerMayApprove`); `findFulfillmentTasks` thấy mọi task của kho mình; không có `customer-customers:READ` nên lọc đơn theo khách phải gõ đúng tên; không xem được giá khách |
 | WAREHOUSE_STAFF (WAREHOUSE) | getStockLevels, getStockLots, traceLot, lookupScan, findPendingAdjustments, getOrderPicking, findFulfillmentTasks, findShipments, findGoodsReceipts, searchCatalog, searchKnowledge (11) | `findFulfillmentTasks` chỉ có task giao cho chính mình (`OWN_TASKS`); `getOrderPicking` theo `TaskAccess`; không tra được đơn, nên không thấy trạng thái đơn (§5.8); xem được hàng đợi điều chỉnh nhưng không duyệt |
 | SALES_STAFF (ALL) | findOrder, findOrders, getCustomerPrice, searchCatalog, searchKnowledge (5) | không xem được tồn kho (AQ-13); có `customer-customers:READ` nên gõ một phần tên khách cũng tìm được, và dòng đơn có tên khách |
-| SALES_MANAGER (ALL) | getCustomerPrice, getSalesSummary, searchCatalog, searchKnowledge (4) | **seed không cấp `sales-orders:READ`**, nên không tra được đơn qua trợ lý (AQ-19) |
+| SALES_MANAGER (ALL) | findOrder, findOrders, findProductionOrders, findEInvoices, getCustomerPrice, getSalesSummary, searchCatalog, searchKnowledge (8) | đọc báo giá và đơn từ QĐ14 (`V20261227000400`, 27/11), nên tra được đơn qua trợ lý (AQ-19 đã quyết); có `customer-customers:READ` |
 | PRODUCTION_COORDINATOR (ALL) | findOrder, findOrders, searchCatalog, searchKnowledge (4) | lọc đơn theo khách phải gõ đúng tên hoặc mã số thuế; `findProductionOrders` khi có sẽ là tool chính của vai trò này |
-| ACCOUNTANT (ALL) | findOrder, findOrders, getSalesSummary, searchCatalog, searchKnowledge (5) | đợt thanh toán của một đơn đọc qua `findOrder`; không xem được giá khách; `findEInvoices` khi có |
+| ACCOUNTANT (ALL) | findOrder, findOrders, findGoodsReceipts, findPendingAdjustments, findEInvoices, getSalesSummary, searchCatalog, searchKnowledge (8) | đợt thanh toán của một đơn đọc qua `findOrder`; không xem được giá khách; đọc điều chỉnh tồn (`V20261209000200`) và phiếu nhập (`V20261222000100`) nhưng không duyệt; có `customer-customers:READ` từ QĐ15 (`V20261227000400`), nên gõ một phần tên khách cũng tìm được |
 
 Tool đang làm, theo quyền seed **nếu** chúng mang quyền của màn tương ứng (chưa kiểm được, code chưa có):
 `findProductionOrders` với `production-orders:READ` (PRODUCTION_COORDINATOR, SALES_MANAGER, SALES_STAFF,
@@ -236,12 +237,12 @@ Bảng `assistant.action` (đề xuất PO và phiếu nhập nháp chờ xác n
 dựa trên mua hàng.
 
 Migration của trợ lý, đã đổi số ngày 16/11 lên trên baseline của `develop` (`V20261111000000`) và trên migration mới
-nhất của `develop` lúc gộp: `V20261125000100__assistant_schema.sql`, `V20261125000200__assistant_grants.sql`,
-`V20261125000300__assistant_knowledge.sql`, `V20261125000400__assistant_answer_feedback.sql`,
-`V20261125000500__assistant_floor_grants.sql`, `V20261125000600__assistant_knowledge_embedding.sql`,
-`V20261125000700__assistant_tool_call_channel.sql`, `V20261125000800__assistant_knowledge_flow.sql`,
-`V20261125001000__assistant_watch.sql`, `V20261125001100__assistant_mcp_tokens.sql`,
-`V20261125001200__assistant_customer_alias.sql`. Hai migration cấp quyền giờ dùng vai trò của đợt dọn và tăng
+nhất của `develop` lúc gộp: `V20270106000100__assistant_schema.sql`, `V20270106000200__assistant_grants.sql`,
+`V20270106000300__assistant_knowledge.sql`, `V20270106000400__assistant_answer_feedback.sql`,
+`V20270106000500__assistant_floor_grants.sql`, `V20270106000600__assistant_knowledge_embedding.sql`,
+`V20270106000700__assistant_tool_call_channel.sql`, `V20270106000800__assistant_knowledge_flow.sql`,
+`V20270106001000__assistant_watch.sql`, `V20270106001100__assistant_mcp_tokens.sql`,
+`V20270106001200__assistant_customer_alias.sql`. Hai migration cấp quyền giờ dùng vai trò của đợt dọn và tăng
 `identity.app_role.version` của đúng các vai trò đó trong cùng file. Chủ repo cho phép viết migration của trợ lý cùng
 module (quyết định 2026-10-24); từ 13/11 CLAUDE.md cho mọi người viết migration cùng tính năng, chủ schema review.
 Trước khi mở PR, số phiên bản vẫn phải lớn hơn migration mới nhất của mọi nhánh đã merge, vì Flyway không chạy
@@ -251,8 +252,8 @@ migration cũ hơn bản đã áp; sau khi merge, sinh lại `schema.dbml` bằn
 
 | Resource | Action | Cấp cho |
 |---|---|---|
-| `assistant-conversations` | `VIEW_PAGE`, `READ`, `CREATE` | WAREHOUSE_MANAGER, SALES_STAFF, SALES_MANAGER, PRODUCTION_COORDINATOR, ACCOUNTANT, SYSTEM_ADMIN (`V20261125000200`); WAREHOUSE_STAFF (`V20261125000500`). **Không bao giờ** cấp cho CUSTOMER. |
-| `assistant-mcp` | `CREATE` | chỉ SYSTEM_ADMIN (`V20261125001100`); doanh nghiệp chọn vai trò nào giữ nó (AQ-17) |
+| `assistant-conversations` | `VIEW_PAGE`, `READ`, `CREATE` | WAREHOUSE_MANAGER, SALES_STAFF, SALES_MANAGER, PRODUCTION_COORDINATOR, ACCOUNTANT, SYSTEM_ADMIN (`V20270106000200`); WAREHOUSE_STAFF (`V20270106000500`). **Không bao giờ** cấp cho CUSTOMER. |
+| `assistant-mcp` | `CREATE` | chỉ SYSTEM_ADMIN (`V20270106001100`); doanh nghiệp chọn vai trò nào giữ nó (AQ-17) |
 
 Trước đợt dọn, quyền được cấp cho INVENTORY_PLANNER, PROCUREMENT_STAFF, ORDER_COORDINATOR, QC_STAFF và
 PRODUCTION_STAFF; năm vai trò này không còn (baseline `V20261111000000`), nên hai migration cấp quyền được viết lại theo
@@ -667,7 +668,7 @@ class; bảng chỉ tóm tắt.
 | `findGoodsReceipts` | `GoodsReceiptQueries.receipts` | `GET /api/v1/goods-receipts` | `procurement-goods-receipts` READ | `PARTIAL`; **phiếu nhập hàng in từ nhà sản xuất, theo lệnh sản xuất** (kltn-docs 03): số phiếu, `receiptType` (PRODUCTION; PURCHASE chỉ ở phiếu cũ), mã lệnh sản xuất, nhà sản xuất (cắt cho vừa), kho, trạng thái (DRAFT, IN_PUTAWAY, CLOSED, CANCELLED; PENDING_APPROVAL chỉ ở phiếu mua hàng cũ), các mốc; `OPEN` = DRAFT, PENDING_APPROVAL, IN_PUTAWAY. Không có bước QC, không chờ duyệt. Dòng không có line nên không nói còn bao nhiêu thùng chờ cất; không trả người nhận, người xác nhận, số phiếu giao; tối đa 50 dòng, có `total`, `truncated` |
 | `findShipments` | `ShipmentQueries.shipments` + `WarehouseService.findWarehouse` (mỗi kho một lần) | `GET /api/v1/fulfillment/shipments` | `fulfillment-shipments` READ | `PARTIAL`. Mã chuyến giao (số đơn + `-S` + số), số đơn, kho, trạng thái, `packageCount` (số thùng), hãng (cắt ở 40 ký tự), chuyến xe (`load`), `partial`, các mốc sẵn sàng, bàn giao, kết quả, `failureReason`. **Mọi đơn giao nguyên chuyến xe, không thu hộ** (`V20261108000400`), nên không còn cách giao và `codAmount`. Lọc READY_TO_DISPATCH, HANDED_OVER hay DELIVERY_FAILED thì chờ lâu nhất trước. Không có lọc ngày; không có mã vận đơn (hãng có API như Ahamove giữ mã của nó trên chuyến xe), mô tả tool cấm bịa. Tối đa 30 dòng, có `total`, `truncated` |
 | `findPendingAdjustments` | `KnownSkus` khi lọc theo SKU, rồi `StockAdjustmentQueries.adjustments`, PENDING_APPROVAL, cũ nhất trước | `GET /api/v1/inventory/adjustments` | `inventory-stock-adjustments` READ | `PARTIAL`. Hàng đợi của người duyệt: số phiếu, kho, bin, SKU, lô, `quantityDelta`, lý do (gồm COUNT_VARIANCE của kiểm kê theo thùng), lúc yêu cầu, `daysWaiting`, `carton`. `requestedByMe` vì người yêu cầu không được tự duyệt; `callerMayApprove` đọc `inventory-stock-adjustments:APPROVE` chỉ để nói ai phải duyệt. Phiếu chờ duyệt chưa đổi tồn. Ghi chú được che và cắt; tối đa 30 dòng, có `total`, `truncated` |
-| `getCustomerPrice` | `CustomerMatch` + `CatalogService.customerPrice` | `GET /api/v1/catalog/customer-prices/{customerId}/{sku}` | `catalog-customer-prices` READ | `requireBackOffice`; **chỉ có giá riêng của khách** (kltn-docs 13 BR-04): không có giá niêm yết hay giá nhóm phía sau, khách chưa có giá thì là ghi chú, không bao giờ là một giá. Với SKU riêng của khách, bậc giá đếm **thùng** (13 BR-05), đơn giá tính **mỗi cái**; dòng giá trên biến thể có sẵn thì đếm cái. MOQ là bậc đầu; bậc của một số lượng tính trong tool (bậc cuối cùng có `minQuantity` ≤ số lượng; dưới bậc đầu là `belowMoq`); số lượng là tổng của SKU đó trong một báo giá. SKU được cắt khoảng trắng và viết hoa như màn hình. Khách chỉ trả tên (bí danh khi gửi model) và trạng thái tài khoản; không ACTIVE thì không báo giá được. Giá không có ngày hiệu lực |
+| `getCustomerPrice` | `CustomerMatch` + `CatalogService.customerPrice`, rồi `CustomerSkus.find` + `CatalogService.standardPrice` | `GET /api/v1/catalog/customer-prices/{customerId}/{sku}` | `catalog-customer-prices` READ | `requireBackOffice`; **giá riêng của khách, không có thì giá chuẩn của quy cách** mà SKU được thiết kế trên đó (kltn-docs 13 BR-04 sửa ngày 26/11, cùng thứ tự với báo giá), `priceKind` nói là giá nào (`CUSTOMER_PRICE` / `STANDARD_PRICE`, `standardPriceOf` là quy cách); SKU riêng của khách khác thì không có giá; không có giá niêm yết hay giá nhóm, không có giá nào thì là ghi chú, không bao giờ là một giá. Mọi bậc giá đếm **thùng** (13 BR-05), đơn giá tính **mỗi cái**. MOQ là bậc đầu; bậc của một số lượng tính trong tool (bậc cuối cùng có `minQuantity` ≤ số lượng; dưới bậc đầu là `belowMoq`); số lượng là tổng của SKU đó trong một báo giá. SKU được cắt khoảng trắng và viết hoa như màn hình. Khách chỉ trả tên (bí danh khi gửi model) và trạng thái tài khoản; không ACTIVE thì không báo giá được. Giá không có ngày hiệu lực |
 | `getSalesSummary` | `ReportingService.summary` + `topProducts` | `GET /api/v1/reports/summary` | `reporting-reports` READ | kỳ là `from`–`to` theo lịch Việt Nam (from ≤ to ≤ hôm nay, tối đa 366 ngày), hoặc `days` ngày tính tới hôm nay; `lastDayInProgress` khi kỳ kết thúc hôm nay; `companyWide` luôn đúng; kỳ trước là kỳ dài bằng nó ngay trước đó; kỳ đang chạy được so với cùng những ngày đó của kỳ được nêu tên |
 | `searchCatalog` | `CatalogSearch.search`, lấy thừa một dòng để báo `truncated` | — (endpoint storefront không có quyền) | `assistant-conversations` READ | không giá, không tồn; catalog chỉ có sản phẩm đăng trên storefront, nên không thấy thì hỏi SKU, không kết luận mã không tồn tại |
 | `searchKnowledge` | `KnowledgeService.find` | — | `assistant-conversations` READ | kho tri thức là bản chụp kltn-docs (§6.1): quy định, trạng thái, tình huống biên, luồng (khi `flows` bật), bảng thuật ngữ; tối đa 5 đoạn, mỗi đoạn có anchor kèm chương (`15 BR-08`, `17 §5.1`) và `foundBy` |
@@ -715,11 +716,29 @@ thể chờ ở khâu xuất mà không bị giữ gì: đợt khi ký hay đợ
 BR-08), và cả trạng thái lẫn lịch sử của đơn đều không nói điều đó. Vì vậy `findOrder` trả `dueBeforeHandover` cùng đơn,
 và mô tả tool bảo nói rõ khi số đó lớn hơn 0, kể cả khi đơn PACKED và không bị giữ, rằng kế toán ghi nhận thanh toán.
 
-**Đơn vị và quy cách (C8).** "Còn 1.276" không nói là cái hay thùng. `getStockLevels` và `getStockLots` trả `unit`,
-`packingUnit`, `unitsPerPacking` và cạnh mỗi số chính một trường `...Packed` (`packingCount`, `looseUnits`). Phép chia
-do `Packing` làm, đọc `UomConversionService.conversionsOf` một lần cho cả danh sách; đọc lỗi thì câu trả lời vẫn có số,
-chỉ thiếu quy cách. Đây là quy đổi, không phải số thùng có thật trên kệ: số đó là của `lookupScan`, và prompt cấm model
-tự chia hay gọi số quy đổi là số thùng trên kệ.
+**Đơn vị và quy cách (C8).** "Còn 1.276" không nói là cái hay thùng. `getStockLevels` (từ 27/11, ADR-0011 bước 3e)
+trả mỗi số của từng kho hai lần: số cái và số thùng do inventory đếm từng thùng (`onHandCartons`, `availableCartons`,
+`heldOnStockCartons`, `allocatedCartons`, `availableToPromiseCartons`), không chia số cái cho quy cách nữa - một kho có
+thùng 50 và thùng 20 của cùng SKU thì phép chia ra "thùng lẻ" không có thật. `Packing` chỉ còn để gọi tên thùng
+(`packingUnit`, `unitsPerPacking`) và cho số của cả công ty, hỏi inventory bằng thùng đúng quy cách chuẩn
+(`companyCartonsToPromise`, `cartonsToPromise`). `heldForOrders` vẫn là số cái. `getStockLots` vẫn trả `...Packed`
+(`packingCount`, `looseUnits`) do `Packing` chia; đó là quy đổi, không phải số thùng có thật trên kệ (của `lookupScan`),
+và prompt cấm model tự chia.
+
+**Mã quy cách của catalogue không có tồn (từ 27/11).** Từ V20270105000100 hàng nằm dưới SKU riêng của khách, vẽ trên
+một quy cách; `searchCatalog` trả mã quy cách. `getStockLevels` nhận mã quy cách thì trả `catalogueVariant: true` và
+`customerSkus`: tồn của các SKU khách vẽ trên quy cách đó mà inventory có (tối đa 10, kèm tổng), mỗi SKU như một SKU
+thường, tên khách qua bí danh và chỉ cho người có `customer-customers:READ` (`CustomerSkus.drawnOn`, product :: api).
+Mã không phải SKU có hàng, cũng không phải quy cách, vẫn là `NOT_FOUND`.
+
+**Việc trong màn hình kho và sản xuất (hợp đồng FE 3.1-3.3, 27/11).** `GET /work-queue` (`WorkQueue`,
+`WorkQueueReads`: mỗi mục là danh sách của một màn hình, đếm bằng truy vấn đếm, đọc dưới guard của màn hình đó; có
+`warehouse` thì chỉ giữ mục thuộc kho, thu hẹp về kho đó) và bản tin sáng (`WorkQueueDigestJob`, tắt mặc định, chạy
+qua `RunAs` như watch - `ArchitectureTest` ghi tên nó). `GET /cartons/{lpn}/investigation` và tool `investigateCarton`
+(`CartonInvestigation` trên `CartonHistoryQueries` của inventory): lịch sử sổ kho, việc đang mở, nơi cần tìm theo luật
+cố định; kiểm kê mù giữ như màn hình. `GET /production-follow-ups` và bản nháp tin nhắn gửi nhà sản xuất
+(`ProductionFollowUps`): danh sách theo luật của cảnh báo trễ trên ngày hôm nay; bản nháp chỉ có mã lệnh, SKU, số thùng,
+ngày - không khách, không số đơn, không giá - và qua kiểm tra mã/số như câu trả lời.
 
 **Mã quét (C9).** Nhân viên kho làm việc theo nhãn. `lookupScan` cũng là nền cho giọng nói: mã lấy từ máy quét, không
 đọc bằng miệng, vì một chữ số nghe nhầm là một thùng khác có thật (§8.3).
@@ -739,6 +758,9 @@ Những gì trợ lý thêm vào `api` của module khác và **còn lại sau �
 | `procurement` (29/10) | `GoodsReceiptQueries` + `GoodsReceiptSummary` | bọc `GoodsReceipts.list`, chính list của màn phiếu nhập; từ đợt dọn có `receiptType`, mã lệnh sản xuất và nhà sản xuất; ứng dụng không khởi động nếu danh sách trạng thái của api lệch với enum của domain |
 | `catalog` | `CatalogSearch` + `CatalogMatch` | bọc `CatalogSearchService`, trang đầu, xếp theo độ liên quan |
 | `reporting` | `ReportingService.salesBySku` + `SkuSales` | thêm cho `proposeReorder`; tool đó đã bỏ, method vẫn còn trong `api` và không tool nào gọi (gỡ hay giữ là việc của người phụ trách reporting) |
+| `chat` (27/11) | `ChatTranscripts` + `ChatTranscript` | tin nhắn gần nhất và ngữ cảnh của một hội thoại, cho bản nháp trả lời và tóm tắt (hợp đồng FE §1.2, §1.3); kiểm quyền như màn chat của nhân viên (`chat-conversations:READ`, từ chối tài khoản cổng khách), phía khách thì lọc ghi chú nội bộ ngay trong câu truy vấn |
+| `order` (27/11) | `DeliverySchedules` | lịch giao của đơn đúng như khách thấy trên cổng (khung giao, trạng thái đợt), cho bản nháp trả lời khách |
+| `order` (27/11) | `CustomerSalesHistory` | giá bán gần nhất của từng SKU cho một khách (dòng đơn của hợp đồng đã ký, đơn không huỷ), cho bảng soát giá báo giá (§1.4); một câu SQL |
 
 `findOrder` đọc tiền qua `PaymentService.installmentStanding` + `InstallmentStanding`, có sẵn trong `payment :: api` của
 `develop` (4B-6), không phải do trợ lý thêm. `getCustomerPrice` dùng `CatalogService.customerPrice`, `findOrders` dùng
@@ -1009,7 +1031,7 @@ Một tool được dùng khi người dùng có mọi quyền nó cần và, v�
   trên 15 tool lúc đó: cả 15 định nghĩa khoảng 24.800 ký tự, gần gấp đôi system prompt lúc đó (13.800 byte); bảy vai
   trò seed không phải quản trị dùng 33–63% số đó, nên phần tiền tố cố định (tool + system prompt) giảm 24–44%, khoảng
   2.300–4.100 token mỗi lần gọi. SYSTEM_ADMIN vẫn nhận mọi tool. Chưa đo lại sau đợt dọn 16/11 (15 tool, vai trò mới:
-  từ 4 tool của SALES_MANAGER tới 14 của WAREHOUSE_MANAGER, §1). Danh sách sắp theo tên và chỉ phụ thuộc tập quyền và
+  từ 5 tool của PRODUCTION_COORDINATOR tới 15 của WAREHOUSE_MANAGER, §1). Danh sách sắp theo tên và chỉ phụ thuộc tập quyền và
   việc có bị giới hạn kho không (không phụ thuộc kho nào), nên được cache theo tập quyền: một mục cho mỗi tập quyền,
   tối đa bảy với bảy vai trò seed mở được trợ lý. Nó được tính một
   lần cho mỗi câu hỏi, nên mọi lần gọi của câu trả lời, kể cả lần gọi cuối, đọc lại cùng một mục cache.
@@ -1052,15 +1074,17 @@ nó thì trợ lý sẽ trích luật cũ (chính sách đổi trả cũ, FEFO, 
 `tools/sync_kltn_docs.py` chép các chương trợ lý cần từ một ref của bản clone kltn-docs (mặc định `origin/develop`,
 đọc bằng `git show`, không đụng working tree của clone) vào `docs/kltn-snapshot/`, ghi commit nguồn vào `README.md` của
 thư mục đó và danh sách tài liệu vào `index.txt`; `--check` báo khác biệt mà không ghi. Bản chụp chứ không phải git
-submodule: build, test và image Docker chỉ cần repo này. Hiện là commit `18357acb` (14/11).
+submodule: build, test và image Docker chỉ cần repo này. Hiện là commit `5c249463` (26/11).
 
-Chọn 15 tài liệu, theo câu hỏi của người dùng back-office: `glossary`; kho 01 (sản phẩm, SKU, quy cách thùng, duyệt
+Chọn 16 tài liệu, theo câu hỏi của người dùng back-office: `glossary`; kho 01 (sản phẩm, SKU, quy cách thùng, duyệt
 bốn mắt), 03 (nhập kho thành phẩm, hàng hoàn), 05 (cất hàng), 06 (bản đồ kho, bin, sức chứa), 07 (lấy hàng), 08 (kiểm
 thùng, dán nhãn), 09 (giao hàng, kế hoạch xếp xe, hãng vận chuyển), 11 (di chuyển trong kho), 20 (kiểm soát tồn, kiểm
-kê, điều chỉnh, cách ly); bán hàng 14 (báo giá, đơn, hợp đồng), 15 (thanh toán theo đợt, công nợ), 17 (quản lý đơn,
-Đơn sản xuất, treo, huỷ, trả hàng), 18 (khách sỉ), 21 (hoá đơn điện tử). Bỏ: 00 (tổng quan; vai trò đã có ở glossary
-§7), 12 (công cụ khách tự thiết kế trên cổng), 13 (trang catalog của cổng), 16 (chat khách – Sale), `open-questions`
-(nhật ký quyết định: câu đã chốt lặp lại chương, câu còn mở không phải luật), `diagrams` (Mermaid).
+kê, điều chỉnh, cách ly); bán hàng 13 (giá nội bộ: bảng giá riêng của khách và giá chuẩn của quy cách, bậc theo số
+thùng, MOQ, giá theo cái, giá tham chiếu khi duyệt giá báo giá; thêm ngày 27/11, vì Sale và Quản lý kinh doanh hỏi
+đúng những luật này khi lập và duyệt báo giá), 14 (báo giá, đơn, hợp đồng), 15 (thanh toán theo đợt, công nợ), 17
+(quản lý đơn, Đơn sản xuất, treo, huỷ, trả hàng), 18 (khách sỉ), 21 (hoá đơn điện tử). Bỏ: 00 (tổng quan; vai trò đã
+có ở glossary §7), 12 (công cụ khách tự thiết kế trên cổng), 16 (chat khách – Sale), `open-questions` (nhật ký quyết
+định: câu đã chốt lặp lại chương, câu còn mở không phải luật), `diagrams` (Mermaid).
 
 | Phần (mẫu chương của kltn-docs) | Chunk | Anchor | Kind |
 |---|---|---|---|
@@ -1186,7 +1210,7 @@ transit" (trùng chữ "in") và vài đoạn máy trạng thái, không có BR-
   mức ngày là `ASSISTANT_QUOTA_EXHAUSTED`; 400–404 hoặc vector sai độ dài là `ASSISTANT_MISCONFIGURED`; 5xx, 429 theo
   phút, timeout là `ASSISTANT_UNAVAILABLE`.
 - **Lưu.** `assistant.knowledge_chunk` có thêm `embedding real[]`, `embedding_model`, `embedding_hash` (content hash của
-  đoạn văn khi tạo vector; `V20261125000600`). Chỉ vector đúng model, đúng số chiều, làm từ đúng nội dung hiện tại mới
+  đoạn văn khi tạo vector; `V20270106000600`). Chỉ vector đúng model, đúng số chiều, làm từ đúng nội dung hiện tại mới
   được so; đoạn đổi nội dung hay đổi model thì được embed lại. Lệnh UPDATE có điều kiện trên `content_hash`, nên vector
   của chữ cũ không bao giờ ghi lên chữ mới.
 - **Đánh chỉ mục.** Sau chỉ mục từ khóa, trên thread riêng (Spring chỉ báo sẵn sàng nhận traffic khi mọi listener khởi
@@ -1365,8 +1389,19 @@ thử đầu, mà model thứ hai không thấy, vẫn là nguồn của phép k
 đang trả lời đã thấy.
 
 **Đánh giá (`feedback`).** Mỗi câu trả lời một dòng `answer_feedback`; đánh giá lại thì ghi đè (dòng message bị khóa
-trước, nên hai lần bấm cùng lúc không tạo hai dòng). Chưa ai khác đọc được đánh giá: bàn điều khiển và việc quản trị
-viên đọc câu hỏi của người khác vẫn là AQ-16.
+trước, nên hai lần bấm cùng lúc không tạo hai dòng). Từ 27/11 dòng đánh giá ghi thêm vai trò và kho của người đánh giá
+lúc đánh giá (`rater_roles`, `rater_warehouses`, V20270107000400), không ghi ai. System Admin (quyền riêng
+`assistant-feedback:READ`, chỉ SYSTEM_ADMIN) đọc các câu trả lời bị đánh giá sai qua `GET /api/v1/assistant/feedback`:
+câu hỏi, câu trả lời, các tool đã gọi kèm tham số, nhận xét, và một ca bộ câu hỏi chuẩn dựng sẵn để dán vào
+`golden-set.json` (`useCase` và `facts` để trống cho người duyệt điền). Văn bản giữ nguyên như đã lưu, khách hàng là bí
+danh `KH-n`, vì ca được commit vào repo. Đánh giá vẫn bị xóa cùng hội thoại (90 ngày); giữ lâu hơn vẫn là AQ-16.
+
+**Đếm việc dùng tính năng (`feature_use`).** Mỗi tính năng của trợ lý (chat, thẻ "hôm nay", giải thích lỗi và các
+tính năng trong màn hình, khóa ở hợp đồng FE §5.2) được đếm theo khóa, vai trò và ngày, không ghi người dùng, không ghi
+nội dung. `AssistantTelemetry.featureUsed` vừa tăng counter Micrometer `assistant.feature.used`, vừa đếm trong bộ nhớ
+(`FeatureUse`) rồi cộng vào `assistant.feature_use` khoảng mỗi phút một lần (upsert), nên yêu cầu không phải chờ cơ sở dữ
+liệu; mất tối đa một phút số đếm nếu tiến trình chết đột ngột. System Admin và Quản lý kinh doanh đọc qua
+`GET /api/v1/assistant/usage` (`assistant-usage:READ`) để bỏ những tính năng không ai dùng. Giữ 400 ngày.
 
 Thân phản hồi của `/capabilities` (ví dụ: quản lý kho ở HCM, cắt bớt còn ba tool):
 
@@ -1544,7 +1579,7 @@ câu trả lời HTTP có trước khi endpoint chạy.
   việc cục bộ, `@AuthenticatedUser` vẫn từ chối request không có người dùng (401), nên không profile nào để tool trả
   lời một client ẩn danh.
 - Guard: `@RequiresPermission(assistant-mcp, CREATE, OWN)` rồi `ScopeGuards.requireBackOffice`. Đây là quyền riêng của
-  MCP (P7, `V20261125001100`), **opt-in**: migration chỉ cấp cho SYSTEM_ADMIN. Doanh nghiệp chọn vai trò nào được dùng
+  MCP (P7, `V20270106001100`), **opt-in**: migration chỉ cấp cho SYSTEM_ADMIN. Doanh nghiệp chọn vai trò nào được dùng
   MCP trong ma trận quyền (AQ-17), vì một token sống tới 90 ngày và gửi những gì tool đọc tới nhà cung cấp model mà
   client của người dùng chọn. Quyền này chỉ mở endpoint, không cấp dữ liệu nào (§2, Phân quyền). Trước P7, mọi vai
   trò hỏi được khung chat đều dùng được MCP khi nó bật; nay phải cấp thêm.
@@ -1574,7 +1609,7 @@ bị từ chối ghi ở mức WARN, để một loạt lần dò quyền hiện
 
 - Không ghi tham số và kết quả: chúng có thể chứa chữ người gõ (tên nhà cung cấp, ghi chú đơn), và log đi xa hơn,
   giữ lâu hơn bản ghi của khung chat.
-- Từ 4/11 (`V20261125000700`), mỗi lần gọi qua MCP là một dòng `assistant.tool_call` với `channel = MCP`, `user_id`
+- Từ 4/11 (`V20270106000700`), mỗi lần gọi qua MCP là một dòng `assistant.tool_call` với `channel = MCP`, `user_id`
   của người gọi, tham số và kết quả, không có hội thoại; nó đi cùng job retention như hội thoại.
 
 **Token cá nhân cho MCP (P7, 05/11, ADR-0014).** Client AI được cài một lần và chạy nhiều tuần, còn token đăng nhập chỉ
@@ -1743,9 +1778,11 @@ hai dựa trên mua hàng, mà doanh nghiệp không còn mua hàng:
 
 Những gì đã học ở đây vẫn là cách làm nếu sau này trợ lý được ghi lại (ADR-0012 giữ nguyên lập luận): model không có tool
 ghi; đề xuất là dòng của chính người hỏi; chứng từ chỉ được tạo khi người đó bấm, qua endpoint mang đúng guard của màn
-chứng từ; chỉ tạo bản nháp; đúng một lần dưới khóa dòng; quy tắc của chứng từ do module của nó áp. Một sửa ở lớp nền
-làm cùng đợt vẫn còn và vẫn đúng cho mọi module: `AuditAspect` chỉ ghi SUCCESS cho method có audit chạy trong
-transaction của nơi gọi khi transaction đó commit, rollback thì ghi FAILURE "rolled back". Chi tiết đầy đủ của ba mục
+chứng từ; chỉ tạo bản nháp; đúng một lần dưới khóa dòng; quy tắc của chứng từ do module của nó áp. Sửa ở lớp nền làm
+cùng đợt (`AuditAspect` chỉ ghi SUCCESS cho method chạy trong transaction của nơi gọi khi transaction đó commit) đã được
+gỡ ngày 27/11/2026: lý do của nó (trợ lý tạo chứng từ nháp trong transaction xác nhận) không còn, và nó đổi hành vi audit
+của mọi module mà `develop` không có, làm hỏng test audit của `develop`. `AuditAspect` giờ đúng như bản của `develop`;
+nếu trợ lý lại được ghi, sửa đó phải đi qua `develop` như một thay đổi của lớp nền. Chi tiết đầy đủ của ba mục
 trên nằm trong lịch sử git của file này (bản trước 16/11/2026).
 
 ### 8.3 Câu hỏi bằng giọng nói (đợt 4, 06/11, ADR-0016)
@@ -1807,9 +1844,9 @@ Từ 16/11/2026 (`TodayCard`, đợt dọn ADR-0010 rescope) thẻ có bốn ph�
 
 Ba phần đầu chạy khi người xem được dùng `findOrders`, phần cuối khi được dùng `findGoodsReceipts`. Theo quyền seed
 16/11 (§1): SYSTEM_ADMIN và WAREHOUSE_MANAGER có cả bốn phần (phiếu nhập chỉ của kho mình; đơn là của cả công ty, vì
-danh sách đơn không có quy tắc kho); SALES_STAFF, PRODUCTION_COORDINATOR và ACCOUNTANT có ba phần đơn; WAREHOUSE_STAFF
-chỉ có `receiptsToPutAway`; SALES_MANAGER không có phần nào, vì seed không cho vai trò này đọc đơn hay phiếu nhập
-(AQ-19).
+danh sách đơn không có quy tắc kho); ACCOUNTANT cũng có cả bốn phần (đọc phiếu nhập từ `V20261222000100`);
+SALES_STAFF, SALES_MANAGER (đọc đơn từ QĐ14, AQ-19) và PRODUCTION_COORDINATOR có ba phần đơn; WAREHOUSE_STAFF chỉ có
+`receiptsToPutAway`.
 
 **Đã bỏ cùng đợt dọn 16/11:** `lowStock` (`findLowStock`: không còn điểm đặt hàng), `expiredLots` và `expiringLots`
 (`findExpiringLots`: hàng không có hạn dùng), `overduePurchaseOrders` (`findPurchaseOrders`: không còn PO),
@@ -1833,7 +1870,7 @@ phần PO trễ ghép hai lần đọc).
 bucket theo sức chứa của từng lần gọi, nên hai giới hạn trên một bucket sẽ cắt 10 câu hỏi một phút xuống còn một. Giao
 diện giữ thẻ cuối cùng cùng `generatedAt`; mở lại trong vòng một phút nhận 429 `RATE_LIMITED`.
 
-**Mỗi lần đọc là một dòng `assistant.tool_call`** (từ 4/11, `V20261125000700`): `channel = TODAY`, `user_id` của người
+**Mỗi lần đọc là một dòng `assistant.tool_call`** (từ 4/11, `V20270106000700`): `channel = TODAY`, `user_id` của người
 mở thẻ, tham số và kết quả, không có hội thoại. Việc ghi chạy trong transaction riêng (`ToolRunRecorder`); ghi lỗi thì
 log ERROR và thẻ vẫn trả về, vì tool đã chạy xong. Log vẫn có một dòng cho mỗi thẻ, không có dữ liệu.
 
@@ -1892,7 +1929,7 @@ người tiếp theo.
 - Mục được nhận ra bằng số đơn kèm lý do giữ (bị giữ lại vì lý do khác là một lần giữ mới). Trước 16/11 còn SKU (hàng
   thấp) và số PO (PO trễ).
 
-**Lúc nào không phải tin mới** (`assistant.watch_state`, `V20261125001000`). Ba trường hợp chỉ ghi nhận, không báo:
+**Lúc nào không phải tin mới** (`assistant.watch_state`, `V20270106001000`). Ba trường hợp chỉ ghi nhận, không báo:
 - lần nhìn đầu tiên một danh sách;
 - lần nhìn sau khi tầm nhìn của người dùng đổi (scope hay kho, ví dụ quản lý chuyển kho): tin cũ của kho mới không phải
   tin mới;
@@ -1979,8 +2016,14 @@ U7 catalog (3), không được làm M (4), U14 giá theo khách (2), U16 hàng 
 chuyến giao (4), T câu trả lời đúng là "không có" hay "không có tool" (4), U18 đơn theo khách (3), U19 nhãn quét (3),
 U22 tiền của đơn theo đợt thanh toán (3: đơn đã kiểm thùng mà còn nợ đợt trước giao, đơn chờ đợt khi ký, đơn
 SO-20261120-900001 chưa ký hợp đồng), PAR nhiều tool trong một bước (1). Có 16 ca từ chối và 10 ca smoke. Persona dùng
-vai trò mới: SALES_STAFF (27 ca), SYSTEM_ADMIN (19), ACCOUNTANT (13), WAREHOUSE_MANAGER và WAREHOUSE_STAFF ở HCM (12 mỗi
+vai trò mới: SALES_STAFF (26 ca), SYSTEM_ADMIN (19), ACCOUNTANT (14), WAREHOUSE_MANAGER và WAREHOUSE_STAFF ở HCM (12 mỗi
 vai trò), SALES_MANAGER (2), PRODUCTION_COORDINATOR (2).
+
+**Đổi ngày 27/11 theo mô hình mới của `develop`** (chỉ SKU riêng của khách mới có tồn và được đặt, `V20270105000100`;
+các quyền đọc mới của QĐ14, QĐ15): S-09 hỏi `EVAL-PLATE-9IN`, SKU của chính bộ ca, thay `TABLE-OAK-160` đã rời demo;
+U4-03 (từ chối truy vết lô) chuyển sang ACCOUNTANT, vì Sales đọc được báo cáo truy vết lô từ `V20261209000300`; U7-03
+chỉ còn kiểm mã catalog `EVAL-KRAFT-12OZ`: biến thể catalog không có tồn, tồn là của SKU riêng `EVAL-KRAFT-12OZ-KH`
+mà chưa tool nào dẫn từ catalog tới được; U6-07 mong đoạn `17 §4.6 (2)`, vì §4.6 dài ra và bị cắt làm hai.
 
 **Ca đã bỏ cùng đợt dọn 16/11** (32 ca): U1 (hàng thấp, 4), U2 (đề xuất nhập, 4), U5 (lô sắp hết hạn, 4), P (PO và
 điều khoản nhà cung cấp, 7), U15 (công nợ, 2), U17-05 và U17-06 (khách nợ quá hạn), PAR-02 và PAR-03 (có
@@ -2480,7 +2523,7 @@ và câu hỏi bằng giọng nói; cùng một câu hỏi bị từ chối vớ
 | Mã | Câu hỏi | Đề xuất |
 |---|---|---|
 | **AQ-01** | Có được gửi kết quả tool (tồn kho, đơn hàng, tên khách hàng) tới nhà cung cấp model bên ngoài không (kể cả tên và địa chỉ người dùng gõ trong ghi chú, vốn không bị che)? Nếu có, có thêm tên công ty khách vào `findOrder` và `traceLot` không (PRM-13)? Gói miễn phí của Gemini có được dùng ngoài dữ liệu demo không? Từ 29/10 còn: tên công ty khách qua `getCustomerPrice` (và tới 16/11 `getCustomerCredit`), dưới bí danh từ 5/11; ảnh phiếu giao hàng (§8.1, bỏ ngày 16/11); bản ghi âm câu hỏi bằng giọng nói (§8.3); các đoạn của kho tri thức và từ khóa tìm kiếm khi bật embedding Gemini (§6.4); kết quả tool tới nhà cung cấp của client MCP (AQ-17). | Chỉ bật trong môi trường phát triển và demo cho tới khi chủ doanh nghiệp chấp nhận bằng văn bản. Với dữ liệu thật, chỉ dùng gói trả phí. Chưa trả tên khách trong `findOrder` và `traceLot` cho tới khi có câu trả lời; mô tả tool nói rõ là không có. Giọng nói cần một lần đồng ý riêng (ADR-0016); endpoint của nó mặc định tắt. |
-| **AQ-02** | Những vai trò nào được cấp `assistant-conversations`? | Như §2: từ 16/11 cả bảy vai trò back-office của đợt dọn (WAREHOUSE_STAFF qua `V20261125000500`, sáu vai trò còn lại qua `V20261125000200`), có tăng `app_role.version`. Không bao giờ CUSTOMER. Chờ chủ repo xác nhận trước khi merge. Nhân viên kho dùng được tồn kho, lô, nhãn quét, điều chỉnh chờ duyệt, chuyến giao, task của chính họ và phiếu nhập của kho mình. Trần câu hỏi (AQ-04) áp cho họ như mọi người. (PRODUCTION_STAFF, cấp ngày 29/10, không còn là vai trò.) |
+| **AQ-02** | Những vai trò nào được cấp `assistant-conversations`? | Như §2: từ 16/11 cả bảy vai trò back-office của đợt dọn (WAREHOUSE_STAFF qua `V20270106000500`, sáu vai trò còn lại qua `V20270106000200`), có tăng `app_role.version`. Không bao giờ CUSTOMER. Chờ chủ repo xác nhận trước khi merge. Nhân viên kho dùng được tồn kho, lô, nhãn quét, điều chỉnh chờ duyệt, chuyến giao, task của chính họ và phiếu nhập của kho mình. Trần câu hỏi (AQ-04) áp cho họ như mọi người. (PRODUCTION_STAFF, cấp ngày 29/10, không còn là vai trò.) |
 | **AQ-03** | Giữ hội thoại bao lâu? | 90 ngày, cấu hình được. |
 | **AQ-04** | Ngân sách và trần cho mỗi người dùng? | 50 câu mỗi người mỗi ngày; điều chỉnh theo cột token sau hai tuần. |
 | **AQ-05** | Ai chịu trách nhiệm công thức đặt hàng lại (§8)? | **Hết hiệu lực 16/11:** công thức `ReorderPolicy` và đề xuất nhập đã bỏ cùng mua hàng (ADR-0010 rescope). |
@@ -2490,14 +2533,14 @@ và câu hỏi bằng giọng nói; cùng một câu hỏi bị từ chối vớ
 | **AQ-10** | Đề xuất cho cả công ty hay theo từng kho nhận? | **Hết hiệu lực 16/11** cùng đề xuất nhập. |
 | **AQ-08** | Ai được dùng đề xuất nhập hàng? | **Hết hiệu lực 16/11**: `proposeReorder` đã bỏ; PROCUREMENT_STAFF không còn. |
 | **AQ-11** | Có nên gửi cho model chỉ những tool người dùng được dùng (thay vì mọi tool kèm danh sách trong ngữ cảnh) không? Khi đó một lần từ chối không tốn request nào. | **Đã quyết 29/10: có.** Model chỉ nhận định nghĩa của các tool người dùng được dùng (`ToolAvailability.specsFor`), sắp theo tên, cố định cho mỗi tập quyền và vẫn được cache; ADR-0011 có ghi sửa đổi. Lần thử gọi tool không được gửi vẫn chạy qua proxy, bị từ chối và được ghi trong `assistant.tool_call`. |
-| **AQ-12** | Người không có `sales-orders:READ` có được thấy số đơn bán mà lệnh sản xuất làm cho không? | Trước 16/11 hỏi cho LSX của xưởng (QC, mua hàng, quản lý kho), code trả lời "không". Sau đợt dọn câu hỏi chuyển sang `findProductionOrders` mới (đang làm): theo seed, người có `production-orders:READ` mà không có `sales-orders:READ` là SALES_MANAGER (AQ-19). Phiên làm tool đó quyết và ghi lại. |
+| **AQ-12** | Người không có `sales-orders:READ` có được thấy số đơn bán mà lệnh sản xuất làm cho không? | Trước 16/11 hỏi cho LSX của xưởng (QC, mua hàng, quản lý kho), code trả lời "không". Sau đợt dọn câu hỏi chuyển sang `findProductionOrders` mới (đang làm): theo seed 16/11, người có `production-orders:READ` mà không có `sales-orders:READ` là SALES_MANAGER (AQ-19). **Đã làm:** `findProductionOrders` trả số đơn chỉ cho người đọc được đơn hoặc đã gõ số đó. Từ QĐ14 (27/11) mọi vai trò seed đọc LSX đều đọc được đơn, nên quy tắc chỉ còn `FindProductionOrdersToolTest` giữ. |
 | **AQ-13** | SALES_STAFF có được xem hàng còn bán được (ATP) không (ROLE-9)? Sales báo giá theo thùng nhưng trợ lý từ chối tồn kho với họ. | Doanh nghiệp chọn một trong ba: cấp một quyền đọc tồn mà màn hình cũng tôn trọng (`inventory-stock-items:READ` mở cả bin và lô, rộng hơn cần); thêm một tool hẹp chỉ trả ATP, với resource riêng của trợ lý (phải ghi ngoại lệ vào ADR-0011); hoặc giữ từ chối như hiện nay. Vẫn mở sau đợt dọn. |
 | **AQ-14** | Kế hoạch viên có được thấy hàng đã đặt mua trong "mã nào dưới điểm đặt hàng" không? | **Hết hiệu lực 16/11**: `findLowStock` và INVENTORY_PLANNER không còn. |
 | **AQ-15** | Thẻ "hôm nay" (§9, FEAT-7): mỗi vai trò thấy phần nào? Có thêm phần điều chỉnh tồn chờ duyệt cho quản lý kho, chuyến giao không thành công, lệnh sản xuất trễ (khi có tool), và ba câu tóm tắt bằng model (một request, tính vào trần) không? | Đã làm theo mặc định: mỗi vai trò chỉ thấy phần mà tool của họ trả lời được. Từ 16/11 thẻ có bốn phần (§9); quản lý kho giờ có cả ba phần đơn vì seed cho họ `sales-orders:READ`. Các phần thêm chờ doanh nghiệp chọn. |
-| **AQ-16** | Có lưu đánh giá đúng/sai của người dùng cho từng câu trả lời không (FEAT-8)? Quản trị viên có được đọc câu hỏi của người khác (câu hỏi có thể nêu tên khách) không, và đánh giá có được giữ lâu hơn 90 ngày của hội thoại không? | Phần lưu đã làm ngày 29/10 (`answer_feedback`, xóa cùng hội thoại; chưa ai khác đọc được). Vẫn chờ doanh nghiệp quyết: resource riêng (`assistant-feedback`, chỉ cấp cho SYSTEM_ADMIN, có tăng `app_role.version`), bàn điều khiển, việc đọc câu hỏi của người khác, giữ đánh giá lâu hơn hội thoại, và việc biến một đánh giá thành bản nháp ca mới cho bộ câu hỏi chuẩn. |
-| **AQ-17** | Có bật MCP (§7) ở môi trường thật không? Qua MCP, kết quả tool đi tới nhà cung cấp model mà người dùng tự chọn trong client của họ (Claude Desktop với tài khoản cá nhân, một agent trong IDE), không phải nhà cung cấp doanh nghiệp đã chấp nhận ở AQ-01. Về quyền thì MCP không mở thêm gì: cùng token đó đã đọc được các API tương ứng. | Code đã làm theo đề xuất: mặc định tắt (`ASSISTANT_MCP_ENABLED=false`), chỉ profile `local` và `test` bật. Giữ tắt ở production cho tới khi AQ-01 được trả lời và doanh nghiệp chọn client và tài khoản được phép. Từ P7 (05/11) MCP có quyền riêng `assistant-mcp:CREATE`, opt-in: migration chỉ cấp cho SYSTEM_ADMIN (`V20261125001100`), doanh nghiệp chọn vai trò nào giữ nó. Client dùng token cá nhân chỉ mở endpoint MCP, thu hồi được từng cái (ADR-0014). |
+| **AQ-16** | Có lưu đánh giá đúng/sai của người dùng cho từng câu trả lời không (FEAT-8)? Quản trị viên có được đọc câu hỏi của người khác (câu hỏi có thể nêu tên khách) không, và đánh giá có được giữ lâu hơn 90 ngày của hội thoại không? | Phần lưu đã làm ngày 29/10 (`answer_feedback`, xóa cùng hội thoại; chưa ai khác đọc được). Ngày 27/11 đã làm: resource riêng `assistant-feedback:READ` chỉ cấp cho SYSTEM_ADMIN (V20270107000400, có tăng `app_role.version`), danh sách câu trả lời bị đánh giá kèm câu hỏi của người khác (bí danh khách, người đánh giá chỉ theo vai trò), và bản nháp ca mới cho bộ câu hỏi chuẩn. Vẫn chờ doanh nghiệp quyết: giữ đánh giá lâu hơn hội thoại. |
+| **AQ-17** | Có bật MCP (§7) ở môi trường thật không? Qua MCP, kết quả tool đi tới nhà cung cấp model mà người dùng tự chọn trong client của họ (Claude Desktop với tài khoản cá nhân, một agent trong IDE), không phải nhà cung cấp doanh nghiệp đã chấp nhận ở AQ-01. Về quyền thì MCP không mở thêm gì: cùng token đó đã đọc được các API tương ứng. | Code đã làm theo đề xuất: mặc định tắt (`ASSISTANT_MCP_ENABLED=false`), chỉ profile `local` và `test` bật. Giữ tắt ở production cho tới khi AQ-01 được trả lời và doanh nghiệp chọn client và tài khoản được phép. Từ P7 (05/11) MCP có quyền riêng `assistant-mcp:CREATE`, opt-in: migration chỉ cấp cho SYSTEM_ADMIN (`V20270106001100`), doanh nghiệp chọn vai trò nào giữ nó. Client dùng token cá nhân chỉ mở endpoint MCP, thu hồi được từng cái (ADR-0014). |
 | **AQ-18** | Đọc ảnh phiếu giao hàng (§8.1) có cần trần riêng mỗi ngày không? | **Hết hiệu lực 16/11**: tính năng đã bỏ cùng mua hàng. |
-| **AQ-19** (16/11) | SALES_MANAGER không có `sales-orders:READ` trong baseline của `develop`, nên qua trợ lý không tra được đơn nào, không có phần đơn trên thẻ "hôm nay", dù vai trò này duyệt lệnh sản xuất và giá. Đó là ý định của ma trận quyền hay một chỗ sót? | Hỏi người giữ ma trận quyền. Nếu là chỗ sót: một migration cấp `sales-orders:READ` cho SALES_MANAGER (có tăng `app_role.version`), trợ lý không phải đổi gì. Nếu là ý định: giữ như hiện nay; trợ lý nói rõ quyền còn thiếu. |
+| **AQ-19** (16/11) | SALES_MANAGER không có `sales-orders:READ` trong baseline của `develop`, nên qua trợ lý không tra được đơn nào, không có phần đơn trên thẻ "hôm nay", dù vai trò này duyệt lệnh sản xuất và giá. Đó là ý định của ma trận quyền hay một chỗ sót? | **Đã quyết (QĐ14, 24/11): chỗ sót.** `V20261227000400` cấp `sales-quotes` và `sales-orders` VIEW_PAGE + READ cho SALES_MANAGER (có tăng `app_role.version`); trợ lý không phải đổi gì: vai trò này giờ dùng `findOrder`, `findOrders` và có ba phần đơn trên thẻ "hôm nay". |
 
 ---
 
@@ -2701,10 +2744,10 @@ trong lần `mvn test` đầy đủ sau khi gộp (mục "Kiểm chứng" dướ
   không kết nối được, leo thang một lần khi không ra câu trả lời dùng được; lịch sử được dựng lại cho đúng model được
   gọi (§3.1, §3.4, §11).
 - P3: bảng dưới câu trả lời (`ResultTable`), kiểm số lúc chạy (`AnswerNumbers`), câu hỏi gợi ý (`FollowUps`), lưu đánh
-  giá (`answer_feedback`, `V20261125000400`), và system prompt bảo model không chép dòng của bảng (§3.3, §7).
+  giá (`answer_feedback`, `V20270106000400`), và system prompt bảo model không chép dòng của bảng (§3.3, §7).
 - P4: bốn tool `getCustomerPrice`, `getCustomerCredit`, `findFulfillmentTasks`, `findGoodsReceipts`, `GoodsReceiptQueries`
-  trong `procurement :: api`, và trợ lý cho WAREHOUSE_STAFF, PRODUCTION_STAFF (`V20261125000500`) (§1, §4.2, §4.3).
-- P5: tìm theo nghĩa bằng embedding Gemini, lưu `real[]`, gộp RRF với tìm từ khóa (`V20261125000600`, §6.4).
+  trong `procurement :: api`, và trợ lý cho WAREHOUSE_STAFF, PRODUCTION_STAFF (`V20270106000500`) (§1, §4.2, §4.3).
+- P5: tìm theo nghĩa bằng embedding Gemini, lưu `real[]`, gộp RRF với tìm từ khóa (`V20270106000600`, §6.4).
 - P6: endpoint MCP `POST /api/v1/assistant/mcp` cho một AI client khác, dưới quyền của người đăng nhập (§7).
 - P7: thẻ "hôm nay" `GET /api/v1/assistant/today`, thay bản tin buổi sáng (§9).
 - P8: phiếu nhập nháp từ ảnh phiếu giao hàng, `POST /api/v1/assistant/receipt-drafts`, port `DocumentReader` (§8.1).
@@ -2738,9 +2781,9 @@ trong lần `mvn test` đầy đủ sau khi gộp (mục "Kiểm chứng" dướ
    `assistant.today.denied=Tài khoản của bạn không có quyền xem phần này.`).
 10. `PlaygroundSeed` tạo thêm hai tài khoản tầng xưởng, giá riêng, điều khoản tín dụng và công nợ của khách demo, và
     giao task nhặt của đơn bị giữ cho `play.nvkho.hcm` (§10.3).
-11. Ba migration của vòng này: `V20261125000400` (đánh giá), `V20261125000500` (quyền tầng xưởng, tăng
-    `identity.app_role.version`) và `V20261125000600` (embedding). Ngày 5/11, khi gộp `develop`, cả 11 migration của trợ
-    lý được đổi số thành `V20261125000100`–`V20261125001100`, giữ nguyên thứ tự, vì migration mới nhất của `develop` lúc
+11. Ba migration của vòng này: `V20270106000400` (đánh giá), `V20270106000500` (quyền tầng xưởng, tăng
+    `identity.app_role.version`) và `V20270106000600` (embedding). Ngày 5/11, khi gộp `develop`, cả 11 migration của trợ
+    lý được đổi số thành `V20270106000100`–`V20270106001200`, giữ nguyên thứ tự, vì migration mới nhất của `develop` lúc
     đó là `V20261103000100`. Nếu `develop` có migration mới hơn trước khi PR được gộp, phải đổi số lần nữa (§2).
 12. ADR-0011 có mục sửa đổi ngày 29/10: chỉ gửi tool được dùng, tìm theo nghĩa, định tuyến model, MCP.
 

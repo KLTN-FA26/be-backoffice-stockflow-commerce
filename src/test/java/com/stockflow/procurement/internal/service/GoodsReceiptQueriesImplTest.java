@@ -33,7 +33,8 @@ import static org.mockito.Mockito.when;
 class GoodsReceiptQueriesImplTest {
 
     private final GoodsReceipts receipts = mock(GoodsReceipts.class);
-    private final GoodsReceiptQueriesImpl queries = new GoodsReceiptQueriesImpl(receipts);
+    private final GoodsReceiptQueriesImpl queries = new GoodsReceiptQueriesImpl(receipts,
+            mock(com.stockflow.procurement.internal.repository.ReturnReceiptSearch.class));
 
     private static GoodsReceipts.Row row(GoodsReceiptStatus status) {
         Instant received = Instant.parse("2026-10-28T02:30:00Z");

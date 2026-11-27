@@ -19,16 +19,16 @@ import java.util.UUID;
  * the snapshot's manifest whose checksum is the snapshot checksum, a reviewer and a confirmer — so
  * {@code DesignService.verifySnapshotForSku} passes for real, not through a mock, and the print file can be
  * downloaded (prepress, the subcontract dispatch note). A manifest-less snapshot would be the legacy shape, which
- * verifies but has no PRINT_READY file to hand out. The product is {@link DemoData#PRODUCT_SOFA}, whose SKU
- * {@link #BLANK} has stock in HCM.
+ * verifies but has no PRINT_READY file to hand out. The product is {@link DemoData#PRODUCT_CUP}, whose blank
+ * {@link #BLANK} has no stock of its own.
  *
  * <p>Needs the upload scanner off ({@code stockflow.upload-inspection.enabled=false}): there is no ClamAV
  * container in tests, and switching it off is the supported developer setting.</p>
  */
 public final class ConfirmedDesigns {
 
-    /** A demo SKU of {@code DemoData.PRODUCT_SOFA} with sellable stock in HCM. */
-    public static final String BLANK = "SOFA-3S-GREY";
+    /** The blank cup of {@code DemoData.PRODUCT_CUP}: the product's default variant, never stocked. */
+    public static final String BLANK = DemoData.BLANK_CUP;
 
     public record Design(UUID snapshotId, String checksum) {
     }
@@ -36,37 +36,12 @@ public final class ConfirmedDesigns {
     private ConfirmedDesigns() {
     }
 
-    /**
-     * At least {@code units} sellable {@link #BLANK} free in HCM, topped up with a fresh layer received a while ago
-     * when there are fewer. A sample's blanks are held from its submission (decision Q1), so a test that submits
-     * samples brings its own blanks instead of eating the 33 demo units the checkout tests count on — and only
-     * up to {@code units}, so the free stock stays small enough for a test to ask for more than there is.
-     */
-    public static void stockBlanks(JdbcTemplate jdbc, TransactionTemplate tx, int units) {
-        tx.executeWithoutResult(s -> {
-            Integer free = jdbc.queryForObject("""
-                    SELECT (SELECT COALESCE(SUM(on_hand - reserved), 0) FROM inventory.stock_item
-                             WHERE sku = ? AND status = 'AVAILABLE' AND location_code LIKE 'HCM-%')
-                         - (SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation
-                             WHERE sku = ? AND stock_item_id IS NULL AND status = 'HELD')""",
-                    Integer.class, BLANK, BLANK);   // SCRUM-152: checkout reservations promise stock on no row
-            if (free < units) {
-                jdbc.update("""
-                        INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
-                            created_at, received_at)
-                        VALUES (?, ?, 'HCM-A02-1-A', 'UNTRACED', ?, 0, 'AVAILABLE', 0, NOW(),
-                            clock_timestamp() - interval '2 days' - random() * interval '300 days')""",
-                        Identifiers.newId(), BLANK, units - free);
-            }
-        });
-    }
-
     public static Design confirmed(FileStorage storage, JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em,
                                    UUID customerId) throws Exception {
-        return confirmed(storage, jdbc, tx, em, customerId, false, DemoData.PRODUCT_SOFA);
+        return confirmed(storage, jdbc, tx, em, customerId, false, DemoData.PRODUCT_CUP);
     }
 
-    /** The same for another product than the demo sofa: a test of that product's own life cycle. */
+    /** The same for another product than the demo cup: a test of that product's own life cycle. */
     public static Design confirmedFor(FileStorage storage, JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em,
                                       UUID customerId, UUID productId) throws Exception {
         return confirmed(storage, jdbc, tx, em, customerId, false, productId);
@@ -78,7 +53,7 @@ public final class ConfirmedDesigns {
      */
     public static Design confirmedWithPreview(FileStorage storage, JdbcTemplate jdbc, TransactionTemplate tx,
                                               EntityManager em, UUID customerId) throws Exception {
-        return confirmed(storage, jdbc, tx, em, customerId, true, DemoData.PRODUCT_SOFA);
+        return confirmed(storage, jdbc, tx, em, customerId, true, DemoData.PRODUCT_CUP);
     }
 
     private record Stored(UUID artifactId, String role, String key, String name, String contentType, int size,

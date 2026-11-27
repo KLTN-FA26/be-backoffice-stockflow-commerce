@@ -6,6 +6,7 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.SecretCipher;
+import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.InvoiceSeries;
 import com.stockflow.invoicing.internal.domain.ProviderAccounts;
 import org.springframework.stereotype.Service;
@@ -40,6 +41,14 @@ public class EInvoiceProviderAccountService {
         this.cipher = cipher;
     }
 
+    /**
+     * The adapter of a provider, for what it can do (WF-05 BE-58, F-11): read by the settings screen so it offers only
+     * what works with it. Empty for a provider that has no adapter in this deployment.
+     */
+    public java.util.Optional<com.stockflow.invoicing.internal.domain.EInvoiceProvider> adapter(String provider) {
+        return providers.find(provider);
+    }
+
     /** What a provider's password is sealed under: the provider's row. Opening it takes the same. */
     static String secretContext(UUID providerConfigId) {
         return "einvoice-provider:" + providerConfigId + ":secret";
@@ -57,8 +66,10 @@ public class EInvoiceProviderAccountService {
      * @param environment {@code SANDBOX} (the provider's test system) or {@code PRODUCTION}
      * @param secret      the account's password; null keeps the one stored. Never logged, never returned
      * @throws BusinessException 404 {@code NOT_FOUND} for an unknown provider; 400 {@code VALIDATION_FAILED} for the
-     *         sandbox, which has no account, or an environment that is neither; 503 {@code SECRETS_UNAVAILABLE} when
-     *         no secrets key is configured; 409 {@code OPTIMISTIC_LOCK}
+     *         sandbox, which has no account, a provider whose account is the deployment's
+     *         ({@link EInvoiceProvider#accountInDeployment()}), or an environment that is neither; 503
+     *         {@code EINVOICE_PROVIDER_UNAVAILABLE} when this build has no implementation of it; 503
+     *         {@code SECRETS_UNAVAILABLE} when no secrets key is configured; 409 {@code OPTIMISTIC_LOCK}
      */
     @Transactional
     @Auditable(action = AuditAction.UPDATE, resourceType = "einvoice-settings", resourceId = "#provider")
@@ -67,6 +78,9 @@ public class EInvoiceProviderAccountService {
         ProviderAccounts.Account account = require(provider);
         if (SandboxProvider.CODE.equals(provider)) {
             throw invalid("provider", "The sandbox has no account");
+        }
+        if (providers.require(provider).accountInDeployment()) {
+            throw invalid("provider", "This provider's account is set in the deployment's environment, not here");
         }
         if (!"SANDBOX".equals(environment) && !"PRODUCTION".equals(environment)) {
             throw invalid("environment", "SANDBOX or PRODUCTION");
@@ -85,10 +99,18 @@ public class EInvoiceProviderAccountService {
     /**
      * Makes a series the one invoices of its year are numbered under at a provider.
      *
+     * <p>For a provider that lists its account's templates ({@link EInvoiceProvider#checkSeries}: SePay), the template
+     * code and the symbol are checked against that list now (HĐ-1): a series it does not offer would have every invoice
+     * sent under it refused, which used to surface only as invoices that never left SUBMITTING. A provider that is not
+     * configured yet, or lists nothing, is not asked; its invoices are then refused under a code of their own if the
+     * series is wrong.</p>
+     *
      * @param providerTemplateCode the provider's own code of the template; required for a real provider (every
-     *                             SInvoice call names the template by it), absent for the sandbox
+     *                             SInvoice and SePay call names the template by it), absent for the sandbox
      * @throws BusinessException 404 {@code NOT_FOUND}; 400 {@code VALIDATION_FAILED} when the symbol is not of the year
-     *         or the provider's template code is missing or superfluous
+     *         or the provider's template code is missing or superfluous; 409 {@code EINVOICE_SERIES_NOT_AT_PROVIDER}
+     *         when the provider does not offer the template and symbol on the account; 503
+     *         {@code EINVOICE_PROVIDER_UNAVAILABLE} when it does not answer the question
      */
     @Transactional
     @Auditable(action = AuditAction.UPDATE, resourceType = "einvoice-settings", resourceId = "#provider")
@@ -110,6 +132,22 @@ public class EInvoiceProviderAccountService {
             throw invalid("providerTemplateCode", sandbox ? "The sandbox has no template code of its own"
                     : "The provider's own template code is required");
         }
+        if (!sandbox) {
+            EInvoiceProvider.SeriesCheck offered;
+            try {
+                offered = providers.find(provider).map(port -> port.checkSeries(ownTemplateCode, symbol))
+                        .orElse(EInvoiceProvider.SeriesCheck.NOT_CHECKED);
+            } catch (EInvoiceProvider.ProviderUnavailableException unavailable) {
+                throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_UNAVAILABLE,
+                        "%s did not say whether it offers template %s, symbol %s".formatted(provider, ownTemplateCode,
+                                symbol));
+            }
+            if (offered == EInvoiceProvider.SeriesCheck.NOT_OFFERED) {
+                throw new BusinessException(ErrorCode.EINVOICE_SERIES_NOT_AT_PROVIDER, ("%s does not offer template %s, "
+                        + "symbol %s on the account; use one of the account's templates").formatted(provider,
+                        ownTemplateCode, symbol));
+            }
+        }
         accounts.useSeries(new InvoiceSeries(provider, templateCode, symbol, year), ownTemplateCode);
     }
 
@@ -118,14 +156,17 @@ public class EInvoiceProviderAccountService {
      *
      * @throws BusinessException 404 {@code NOT_FOUND}; 503 {@code EINVOICE_PROVIDER_UNAVAILABLE} when this build has no
      *         implementation of it; 409 {@code EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE} for a real provider without a
-     *         stored account ({@code ck_einvoice_provider_config_account} says the same); 409 {@code OPTIMISTIC_LOCK}
+     *         stored account ({@code ck_einvoice_provider_config_account} says the same), or, for one whose account is
+     *         the deployment's, without one configured there; 409 {@code OPTIMISTIC_LOCK}
      */
     @Transactional
     @Auditable(action = AuditAction.UPDATE, resourceType = "einvoice-settings", resourceId = "#provider")
     public ProviderAccounts.Account activate(String provider, long expectedVersion) {
         ProviderAccounts.Account account = require(provider);
-        providers.require(provider);
-        if (!SandboxProvider.CODE.equals(provider) && !account.complete()) {
+        EInvoiceProvider implementation = providers.require(provider);
+        boolean hasAccount = implementation.accountInDeployment() ? implementation.deploymentAccountReady()
+                : account.complete();
+        if (!SandboxProvider.CODE.equals(provider) && !hasAccount) {
             throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE,
                     "Provider %s has no account stored".formatted(provider));
         }

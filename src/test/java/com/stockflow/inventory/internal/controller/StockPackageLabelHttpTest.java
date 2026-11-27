@@ -65,7 +65,7 @@ class StockPackageLabelHttpTest {
         UUID receiptId = receivables.draftReceipt(goods, clerk).id();
         String body = """
                 {"lines":[{"productionOrderLineId":"%s","locationCode":"%s",
-                           "packages":[{"quantity":1000},{"quantity":1000}]}]}""".formatted(
+                           "packages":[{},{}]}]}""".formatted(
                 goods.productionOrderLineId(), RECEIVING);
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put("/api/v1/goods-receipts/" + receiptId + "/lines")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
@@ -111,6 +111,53 @@ class StockPackageLabelHttpTest {
                 .andReturn().getResponse().getContentAsByteArray();
         try (PDDocument doc = Loader.loadPDF(pdf)) {
             assertThat(doc.getNumberOfPages()).isEqualTo(2);
+        }
+    }
+
+    @Test
+    @DisplayName("a received carton reprinted by LPN prints the lot the carton is of")
+    void reprintPrintsTheStockRowsLot() throws Exception {
+        ProductionReceivables.Receivable goods = receivables.sent(WAREHOUSE_HCM, 1, 1000);
+        UUID receiptId = receivables.received(goods, RECEIVING, 1, clerk).id();
+        String lpn = jdbc.queryForObject("""
+                SELECT p.lpn FROM inventory.stock_package p
+                  JOIN procurement.goods_receipt_lines l ON l.id = p.goods_receipt_line_id
+                 WHERE l.receipt_id = ?""", String.class, receiptId);
+        String rowLot = jdbc.queryForObject("""
+                SELECT l.lot_number FROM inventory.stock_package p
+                  JOIN inventory.stock_lot l ON l.id = p.lot_id
+                 WHERE p.lpn = ?""", String.class, lpn);
+        assertThat(rowLot).isEqualTo(goods.productionCode());
+
+        byte[] pdf = print(Role.WAREHOUSE_STAFF, clerk,
+                "{\"format\":\"THERMAL_ROLL\",\"lpns\":" + quoted(List.of(lpn)) + "}")
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            assertThat(new org.apache.pdfbox.text.PDFTextStripper().getText(doc)).contains(rowLot);
+        }
+    }
+
+    @Test
+    @DisplayName("a carton still being counted prints its receipt line's lot and its SKU's name, asked of procurement "
+            + "and product")
+    void printsTheLotAndTheName() throws Exception {
+        String lot = jdbc.queryForObject("SELECT lot_number FROM procurement.goods_receipt_lines WHERE id = ?",
+                String.class, receiptLineId);
+        String name = jdbc.queryForObject("""
+                SELECT c.name FROM product.customer_skus c
+                  JOIN inventory.inventory_items i ON i.sku = c.sku
+                  JOIN inventory.stock_package p ON p.inventory_item_id = i.id
+                 WHERE p.lpn = ?""", String.class, lpns.get(0));
+        byte[] pdf = print(Role.WAREHOUSE_STAFF, clerk,
+                "{\"format\":\"A4_SHEET\",\"receiptLineId\":\"" + receiptLineId + "\"}")
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        try (PDDocument doc = Loader.loadPDF(pdf)) {
+            String text = new org.apache.pdfbox.text.PDFTextStripper().getText(doc).replaceAll("\\s+", " ");
+            assertThat(text).contains(lot);
+            // A long name wraps and may be cut; its start is on the label either way.
+            assertThat(text).contains(name.length() > 20 ? name.substring(0, 20) : name);
         }
     }
 

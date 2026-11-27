@@ -3,6 +3,7 @@ package com.stockflow.warehouse.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -92,6 +93,7 @@ class AreaAndBoundaryIntegrationTest {
             assertThat(errorOf(() -> create("X01", AreaType.OVERFLOW, at("6", "5", "2", "1"))))
                     .isEqualTo(ErrorCode.LAYOUT_OVERLAP);
 
+            CartonRows.moveOut(jdbc, "HCM-A01-", "HCM-OVF01");     // 06 BR-04: emptied before it goes off the layout
             shelves.changeShelfStatus(DemoData.shelf("A01"), LocationStatus.INACTIVE);
 
             assertThat(create("X01", AreaType.OVERFLOW, at("6", "5", "2", "1")).code()).isEqualTo("X01");
@@ -166,8 +168,10 @@ class AreaAndBoundaryIntegrationTest {
             areas.changeAreaStatus(DemoData.area("QC01"), LocationStatus.BLOCKED);
             entityManager.flush();
 
+            // By id: area codes are unique per warehouse only, and the demo's DNI has a QC01 too (V20261128000200).
             assertThat(jdbc.queryForObject("select a.status || '/' || l.status from warehouse.area a "
-                    + "join warehouse.storage_location l on l.id = a.location_id where a.code = 'QC01'", String.class))
+                    + "join warehouse.storage_location l on l.id = a.location_id where a.id = ?", String.class,
+                    DemoData.area("QC01")))
                     .isEqualTo("BLOCKED/BLOCKED");
         }
 
@@ -175,6 +179,7 @@ class AreaAndBoundaryIntegrationTest {
         @DisplayName("an INACTIVE area frees its place and cannot come back while it is taken (#18 D3)")
         void inactiveAreasFreeTheirPlace() {
             UUID qc01 = DemoData.area("QC01");
+            CartonRows.moveOut(jdbc, "HCM-QC01", "HCM-OVF01");     // 06 BR-04: emptied before it goes off the layout
             areas.changeAreaStatus(qc01, LocationStatus.INACTIVE);
 
             create("X01", AreaType.OVERFLOW, at("41", "13", "2", "2"));

@@ -221,13 +221,13 @@ class DelayAlertRepositoryAdapter implements DelayAlertRepository, ProductionSch
     }
 
     @Override
-    public AlertPage alerts(UUID salesOrderId, DelayAlertType type, boolean openOnly, Collection<UUID> warehouses,
-                            int limit, long offset) {
-        if (warehouses != null && warehouses.isEmpty()) {
+    public AlertPage alerts(UUID salesOrderId, Collection<DelayAlertType> types, boolean openOnly,
+                            Collection<UUID> warehouses, int limit, long offset) {
+        if (types.isEmpty() || warehouses != null && warehouses.isEmpty()) {
             return new AlertPage(List.of(), 0);
         }
         MapSqlParameterSource params = new MapSqlParameterSource("order", salesOrderId)
-                .addValue("type", type == null ? null : type.name()).addValue("open", openOnly)
+                .addValue("types", types.stream().map(DelayAlertType::name).toList()).addValue("open", openOnly)
                 .addValue("warehouses", warehouses)
                 .addValue("limit", limit).addValue("offset", offset);
         // The warehouse an alert concerns, where it lives now: the production order's receiving warehouse, the order's
@@ -238,7 +238,7 @@ class DelayAlertRepositoryAdapter implements DelayAlertRepository, ProductionSch
                   LEFT JOIN ordering.production_order p ON p.id = a.production_order_id
                   LEFT JOIN ordering.delivery_batch b ON b.id = a.delivery_batch_id
                  WHERE (CAST(:order AS uuid) IS NULL OR a.sales_order_id = :order)
-                   AND (CAST(:type AS varchar) IS NULL OR a.type = :type)
+                   AND a.type IN (:types)
                    AND (NOT :open OR a.closed_at IS NULL)
                 """ + (warehouses == null ? ""
                 : "   AND COALESCE(p.receiving_warehouse_id, o.shipping_warehouse_id) IN (:warehouses)\n");

@@ -67,8 +67,9 @@ public class DesignSnapshotJpaEntity extends BaseEntity {
 
     /**
      * An approved customer's design (kltn-docs 12 §4.5): its files, its layout and the images it places, and the
-     * template as it was approved on. {@code reviewer} is the Sales Manager who approved it. The customer's SKU issued
-     * for it names this snapshot, not the other way round: the snapshot is written once.
+     * template as it was approved on. {@code reviewer} is who approved it: the Production Coordinator, the Sales
+     * Manager before V20261213000200. The customer's SKU issued for it names this snapshot, not the other way round:
+     * the snapshot is written once.
      */
     public static DesignSnapshotJpaEntity approved(UUID id, DesignDraftJpaEntity draft,
                                                    List<DesignArtifactJpaEntity> files, String document,

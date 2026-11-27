@@ -69,6 +69,14 @@ final class InMemoryKnowledgeRepository implements KnowledgeRepository {
     }
 
     @Override
+    public List<KnowledgeChunk> rules(java.util.Collection<String> anchors) {
+        return chunks.values().stream().filter(chunk -> chunk.kind() == KnowledgeChunk.Kind.RULE)
+                .filter(chunk -> anchors.stream().anyMatch(anchor -> chunk.anchor().equals(anchor)
+                        || chunk.anchor().startsWith(anchor + " (")))
+                .sorted(Comparator.comparing(KnowledgeChunk::anchor)).toList();
+    }
+
+    @Override
     public List<KnowledgeChunk> search(String query, int limit, int minMatched) {
         searchLimits.add(limit);
         return rankings.getOrDefault(query, List.of()).stream().limit(limit).toList();

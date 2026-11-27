@@ -21,7 +21,9 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.ResourceBundle;
 import java.util.UUID;
 
 /** See {@link PaymentSchedules}. */
@@ -31,6 +33,9 @@ class PaymentScheduleService implements PaymentSchedules {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentScheduleService.class);
     private static final BigDecimal HUNDRED = new BigDecimal("100.00");
+    /** The unset schedule's one installment, named as the contract drafted from it prints it (Vietnamese bundle). */
+    private static final String ON_SIGNING = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"))
+            .getString("contract.installment.onSigning");
 
     private final CustomerRepository customers;
     private final CreditProfileRepository creditProfiles;
@@ -130,13 +135,15 @@ class PaymentScheduleService implements PaymentSchedules {
     }
 
     /**
-     * No schedule set: everything on signing. Never credit - that is a schedule accounting approves (15 BR-12). Until
+     * No schedule set: everything on signing, due within {@link DefaultPaymentSchedule#DEFAULT_ON_SIGNING_DUE_DAYS}
+     * days. Never credit - that is a schedule accounting approves (15 BR-12). Until
      * 4B-10 a deposit customer's terms gave the deposit share on signing and the rest before delivery; customers have
      * no payment terms of their own any more.
      */
     static DefaultPaymentSchedule unset(UUID customerId) {
         return new DefaultPaymentSchedule(customerId, false, List.of(new DefaultPaymentSchedule.Installment(1,
-                "On signing", HUNDRED, PaymentMilestone.ON_SIGNING, 0)), null, null, null, null, null, -1L);
+                ON_SIGNING, HUNDRED, PaymentMilestone.ON_SIGNING, DefaultPaymentSchedule.DEFAULT_ON_SIGNING_DUE_DAYS)),
+                null, null, null, null, null, -1L);
     }
 
     static DefaultPaymentSchedule view(PaymentSchedule s) {

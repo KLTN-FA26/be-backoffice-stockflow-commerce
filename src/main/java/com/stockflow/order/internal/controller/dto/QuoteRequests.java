@@ -96,6 +96,17 @@ public final class QuoteRequests {
                            @Size(max = 2000, message = "feedback is at most 2000 characters") String feedback) {
     }
 
+    /** 14 BR-10: approving a quote's prices, with an optional note for Sales. */
+    public record PriceApproval(@NotNull(message = "version is required") Long version,
+                                @Size(max = 500, message = "note is at most 500 characters") String note) {
+    }
+
+    /** 14 BR-10: rejecting a quote's prices says why. */
+    public record PriceRejection(@NotNull(message = "version is required") Long version,
+                                 @NotBlank(message = "reason is required")
+                                 @Size(max = 500, message = "reason is at most 500 characters") String reason) {
+    }
+
     public record Cancellation(@NotNull(message = "version is required") Long version,
                                @NotBlank(message = "reason is required")
                                @Size(max = 500, message = "reason is at most 500 characters") String reason) {

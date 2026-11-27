@@ -10,13 +10,21 @@ import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeCorrectionRequest;
+import com.stockflow.fulfillment.internal.controller.dto.FailureReasonCorrectionRequest;
 import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeRequest;
+import com.stockflow.fulfillment.internal.controller.dto.ShipmentCancellationRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentRowResponse;
+import com.stockflow.fulfillment.internal.service.DeliveryNoteService;
+import com.stockflow.fulfillment.internal.service.ShipmentCancellations;
 import com.stockflow.fulfillment.internal.service.Shipments;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,13 +37,18 @@ import java.util.UUID;
 
 /**
  * Shipments in the back office (G4-2a; kltn-docs 09 §5): the list load plans are built from, a shipment's parcels and
- * timeline, and the outcome recorded when the carrier reports back (§4.3).
+ * timeline, its delivery note to print and sign (§4.2; the signed copy is its POD), and the outcome recorded when the
+ * carrier reports back (§4.3).
  *
  * <p>Outcomes have a resource of their own, {@code fulfillment-delivery-outcomes}: UPDATE records one, and on its own
  * only RETURNED (09 §5 "Warehouse": the warehouse manager may record a shipment back at the warehouse until the
  * returns receipt, SCRUM-295, records it itself); DELIVERED and DELIVERY_FAILED also need APPROVE (09 BR-02), the
  * warehouse manager's since the order coordinator role was retired (17 BR-27, team plan 5-7), as they move the order
  * and bill it.</p>
+ *
+ * <p>A shipment waiting for dispatch is cancelled by the warehouse manager ({@code fulfillment-shipment-cancellations},
+ * 09 §5.1; RTM-RTDCANCEL): the order is held for stock and the cartons are replaced (see
+ * {@link ShipmentCancellations}).</p>
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/shipments")
@@ -44,10 +57,15 @@ class ShipmentController {
 
     private final Shipments shipments;
     private final DispatchWebMapper mapper;
+    private final DeliveryNoteService deliveryNotes;
+    private final ShipmentCancellations cancellations;
 
-    ShipmentController(Shipments shipments, DispatchWebMapper mapper) {
+    ShipmentController(Shipments shipments, DispatchWebMapper mapper, DeliveryNoteService deliveryNotes,
+                       ShipmentCancellations cancellations) {
         this.shipments = shipments;
         this.mapper = mapper;
+        this.deliveryNotes = deliveryNotes;
+        this.cancellations = cancellations;
     }
 
     @GetMapping
@@ -70,33 +88,87 @@ class ShipmentController {
         return ApiResponse.ok(mapper.toResponse(shipments.get(shipmentId)));
     }
 
+    @GetMapping(value = "/{shipmentId}/delivery-note", produces = MediaType.APPLICATION_PDF_VALUE)
+    @Operation(summary = "The shipment's delivery note as a PDF (09 §4.2): shipment code as barcode and QR, order, "
+            + "contract and delivery batch, customer and delivery address, vehicle, cartons by SKU with their LPNs, "
+            + "three signatures; once signed, its photo or scan is the shipment's POD. Printable from "
+            + "READY_TO_DISPATCH on; 409 SHIPMENT_STATE_CONFLICT for a cancelled shipment, 404 SHIPMENT_NOT_FOUND, "
+            + "403 for a shipment of another warehouse")
+    @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
+    public ResponseEntity<byte[]> deliveryNote(@PathVariable UUID shipmentId) {
+        DeliveryNoteService.Pdf pdf = deliveryNotes.deliveryNote(shipmentId);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.inline().filename(pdf.fileName()).build()
+                        .toString())
+                .contentType(MediaType.APPLICATION_PDF)
+                .body(pdf.content());
+    }
+
     @PostMapping("/{shipmentId}/delivery-outcome")
     @Operation(summary = "Record what the carrier reported: DELIVERED, DELIVERY_FAILED (with failureReason; OTHER needs "
-            + "a note) or RETURNED; the order follows: a delivery makes the batch's installments after delivery due, "
-            + "a RETURNED shipment puts the order ON_HOLD (DELIVERY_FAILED) until Sales decide to deliver again or "
-            + "cancel what was not delivered. Nothing is billed here. fulfillment-delivery-outcomes:UPDATE; "
-            + "DELIVERED / DELIVERY_FAILED also :APPROVE. 409 SHIPMENT_STATE_CONFLICT")
+            + "a note) or RETURNED; the order follows. A delivery makes the batch's installments after delivery due. "
+            + "RETURNED (the goods are back at the warehouse) is final for the shipment: its return receipt is opened, "
+            + "and the shipment's money - its own batch's installments first, the surplus to refund - is settled when "
+            + "the warehouse confirms that receipt (WF-05 Q-2, Q-7), not here. Nothing is billed here. "
+            + "fulfillment-delivery-outcomes:UPDATE and :APPROVE for every outcome, RETURNED included (403 FORBIDDEN "
+            + "without APPROVE). DELIVERED takes an optional deliveredAt (ISO-8601, the time the carrier delivered; "
+            + "default now): it is the order's delivery time and dates the draft invoice; 422 "
+            + "SHIPMENT_DELIVERY_TIME_IN_FUTURE / SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER / "
+            + "SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE, 400 VALIDATION_FAILED with another outcome. 409 "
+            + "SHIPMENT_STATE_CONFLICT")
     @RequiresPermission(resource = FulfillmentResources.DELIVERY_OUTCOMES, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> recordOutcome(@PathVariable UUID shipmentId,
             @Valid @RequestBody DeliveryOutcomeRequest request, @AuthenticatedUser CurrentUser actor) {
-        // 09 BR-02: delivered / not delivered take APPROVE (the warehouse manager's, 17 BR-27); the grant says who.
-        if (!"RETURNED".equals(request.outcome())) {
-            actor.require(FulfillmentResources.DELIVERY_OUTCOMES, Action.APPROVE);
-        }
+        // 09 BR-02, WF-05 Q-7: every outcome takes APPROVE as well - required by the service, for every caller.
         return ApiResponse.ok(mapper.toResponse(shipments.recordOutcome(shipmentId, new Shipments.Outcome(
-                request.outcome(), request.failureReason(), request.note()), actor)));
+                request.outcome(), request.failureReason(), request.note(), request.deliveredAt()), actor)));
+    }
+
+    @PostMapping("/{shipmentId}/cancellation")
+    @Operation(summary = "Cancel a shipment waiting for dispatch (09 §5.1, RTM-RTDCANCEL), with a reason and the "
+            + "cartons found damaged: the shipment CANCELLED, its cartons out of it, their labels void; the damaged "
+            + "ones wait in the put-back queue for quarantine, the others for a bin; the order ON_HOLD (INVENTORY) until "
+            + "the warehouse manager reallocates replacements (POST /tasks/{taskId}/pick-lines/{lineId}/reallocation), "
+            + "which are picked and checked into a new shipment - the check reopened even when it was COMPLETED. "
+            + "fulfillment-shipment-cancellations:UPDATE. 400 VALIDATION_FAILED (no reason; a damaged carton not in the "
+            + "shipment); 409 SHIPMENT_STATE_CONFLICT unless READY_TO_DISPATCH; 409 PACKAGE_IN_LOAD_PLAN while in a "
+            + "live load plan or on an open load; 409 PACKAGE_UNLOAD_PENDING while a carton is to be scanned off a "
+            + "vehicle called off")
+    @RequiresPermission(resource = FulfillmentResources.SHIPMENT_CANCELLATIONS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
+    public ApiResponse<ShipmentResponse> cancel(@PathVariable UUID shipmentId,
+            @Valid @RequestBody ShipmentCancellationRequest request, @AuthenticatedUser CurrentUser actor) {
+        cancellations.cancel(shipmentId, new ShipmentCancellations.Cancellation(request.reason(),
+                request.damagedPackageIds()), actor);
+        return ApiResponse.ok(mapper.toResponse(shipments.get(shipmentId)));
     }
 
     @PostMapping("/{shipmentId}/delivery-outcome-correction")
     @Operation(summary = "Correct an outcome the carrier reported wrongly: DELIVERED <-> DELIVERY_FAILED, with a reason, "
             + "while the order is not completed; the shipment takes no carrier report for its outcome afterwards (E17). "
-            + "409 ORDER_DELIVERY_NOT_CORRECTABLE for a completed order or a delivery that billed the customer")
+            + "409 ORDER_DELIVERY_NOT_CORRECTABLE for a completed order or a delivery that billed the customer; "
+            + "409 ORDER_DELIVERY_HAS_RETURN, to DELIVERY_FAILED, while a return request against the shipment is open "
+            + "or resolved. Correcting to DELIVERED takes the same optional deliveredAt as recording one")
     @RequiresPermission(resource = FulfillmentResources.DELIVERY_CORRECTIONS, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> correctOutcome(@PathVariable UUID shipmentId,
             @Valid @RequestBody DeliveryOutcomeCorrectionRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(shipments.correctOutcome(shipmentId, new Shipments.Correction(
-                request.outcome(), request.failureReason(), request.note(), request.reason()), actor)));
+                request.outcome(), request.failureReason(), request.note(), request.reason(), request.deliveredAt()), actor)));
+    }
+
+    @PostMapping("/{shipmentId}/failure-reason-correction")
+    @Operation(summary = "Correct the failure reason of a failed or returned shipment once the real one is known, with "
+            + "why (09 edge: a return the carrier reported first is recorded OTHER); the status does not change. "
+            + "409 SHIPMENT_STATE_CONFLICT for a shipment neither failed nor returned; 409 "
+            + "SHIPMENT_FAILURE_REASON_LOCKED once its returned goods were received and their case opened")
+    @RequiresPermission(resource = FulfillmentResources.DELIVERY_CORRECTIONS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "shipment", resourceId = "#shipmentId")
+    public ApiResponse<ShipmentResponse> correctFailureReason(@PathVariable UUID shipmentId,
+            @Valid @RequestBody FailureReasonCorrectionRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(shipments.correctFailureReason(shipmentId,
+                new Shipments.ReasonCorrectionRequest(request.failureReason(), request.note(), request.reason()),
+                actor)));
     }
 }

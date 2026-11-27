@@ -23,11 +23,21 @@ public interface DeliveryFailureCases {
     /** The case of a returned shipment, if its goods were received back. */
     Optional<DeliveryFailureCase> findByShipment(UUID shipmentId);
 
+    /**
+     * WF-05 BE-13: cartons of a later return receipt of the case's shipment, added to the case - whatever its status,
+     * the cartons being a record of what came back (append-only). A carton the case lists already (an event seen again)
+     * is left as it is.
+     *
+     * @return how many were added
+     */
+    int appendCartons(UUID caseId, java.util.List<DeliveryFailureCase.Carton> cartons);
+
     /** The order's cases, oldest first. */
     List<DeliveryFailureCase> ofOrder(UUID orderId);
 
     /**
-     * Cases in {@code status} (any when null), oldest first: what waits for Sales. {@code warehouses} not null keeps
+     * Cases in {@code status} (any when null), newest first (WF-05: most are records the system closed).
+     * {@code warehouses} not null keeps
      * the cases whose goods came back to one of them - empty keeps none (a caller limited to warehouses and assigned
      * none sees nothing, never everything).
      */
@@ -48,10 +58,8 @@ public interface DeliveryFailureCases {
     List<UUID> ordersWantingGoodsHeld(Collection<String> skus);
 
     /**
-     * Orders RETURNED whose every delivery failure case is closed and one of them CANCELLED, with no shipment
-     * DELIVERED: nothing of the order was delivered and Sales cancelled what was not - they wait only for their
-     * refunds. An order with goods delivered is RETURNED by a return request, which moves it (WF-05 review F2). Oldest decision first, the first
-     * {@code skip} left out (the ones a run looked at and left as they were).
+     * RTM-RETURNED: orders a shipment of which came back, waiting for the refund of what it closed - RETURNED with
+     * nothing delivered, or PARTIALLY_FULFILLED with every other shipment delivered - oldest return first.
      */
     List<UUID> ordersReturnedByCancellation(int skip, int limit);
 

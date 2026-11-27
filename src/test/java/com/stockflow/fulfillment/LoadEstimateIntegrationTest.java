@@ -1,5 +1,6 @@
 package com.stockflow.fulfillment;
 
+import com.stockflow.support.StockedSkus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.id.Identifiers;
@@ -39,8 +40,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * SCRUM-287 PR EST: the advisory load estimate through the real filter chain, permission aspect, resolver, planner and
  * database (design v2 §2-§5; LP2-1 to LP2-5, LP2-10). A released order with a pallet-unit SKU (the default shipping
- * unit, with a remainder carton), a kit item (one unit = 2 same-size boxes) and an item never measured: blocked with
- * 422 naming that item; once measured, estimated into the viewer's Layout contract, repeatably, superseding the
+ * unit, with a remainder carton), a table shipped one to a carton and an item whose carton is never declared: blocked
+ * with 422 naming that item; once its carton is, estimated into the viewer's Layout contract, repeatably, superseding the
  * previous estimate. Who may estimate is decided by permission codes and the warehouse scope alone.
  */
 @SecuredIntegrationTest
@@ -65,7 +66,7 @@ class LoadEstimateIntegrationTest {
     private UUID container;
 
     private String palletSku;
-    private String kitSku;
+    private String tableSku;
     private String bareSku;
     private UUID bareItem;
     private UUID order;
@@ -82,29 +83,21 @@ class LoadEstimateIntegrationTest {
         customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         container = tx.execute(s -> vehicleType("ACTIVE"));
 
-        palletSku = tx.execute(s -> ReferenceRows.product(entityManager).sku());
-        kitSku = tx.execute(s -> ReferenceRows.product(entityManager).sku());
-        bareSku = tx.execute(s -> ReferenceRows.product(entityManager).sku());
+        palletSku = tx.execute(s -> ownSku());
+        tableSku = tx.execute(s -> ownSku());
+        bareSku = tx.execute(s -> ownSku());
         tx.executeWithoutResult(s -> {
-            // The seeded LYG-1L-12OZ: a carton 52 x 42 x 60 cm, 6.5 kg shipped; 24 on a pallet of 181 kg, flagged.
+            // 24 on a pallet of 181 kg, 120 x 100 x 150 cm, flagged.
             jdbc.update("""
-                    UPDATE inventory.inventory_items SET weight_kg = 5.98, length_cm = 50, width_cm = 40, height_cm = 58,
-                        package_weight_kg = 6.5, package_length_cm = 52, package_width_cm = 42, package_height_cm = 60
-                    WHERE sku = ?""", palletSku);
-            jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, default_shipping, created_by)
-                    SELECT ?, i.id, 'PALLET', 24, FALSE, 181, 120, 100, 150, FALSE, TRUE, TRUE, 'test'
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
+                        weight_kg, length_cm, width_cm, height_cm, active, created_by)
+                    SELECT ?, i.variant_id, 'PALLET', 24, 181, 120, 100, 150, TRUE, 'test'
                     FROM inventory.inventory_items i WHERE i.sku = ?""", Identifiers.newId(), palletSku);
-            // A table that ships as 2 boxes of 160 x 90 x 12 cm, 24 kg each (LP2-5).
-            jdbc.update("""
-                    UPDATE inventory.inventory_items SET weight_kg = 45, length_cm = 160, width_cm = 90, height_cm = 75,
-                        package_count = 2, package_weight_kg = 24, package_length_cm = 160, package_width_cm = 90,
-                        package_height_cm = 12
-                    WHERE sku = ?""", kitSku);
+            // A table, one to a carton of 160 x 90 x 75 cm, 45 kg.
+            carton(tableSku, "TABLE", 1, "45", "160", "90", "75");
         });
         bareItem = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, bareSku);
-        order = tx.execute(s -> order("READY_TO_FULFILL", Map.of(palletSku, 30, kitSku, 3, bareSku, 2)));
+        order = tx.execute(s -> order("READY_TO_FULFILL", Map.of(palletSku, 30, tableSku, 3, bareSku, 2)));
         lineOf = new HashMap<>();
         jdbc.query("SELECT sku, id FROM ordering.order_line WHERE order_id = ?",
                 rs -> { lineOf.put(rs.getString(1), rs.getObject(2, UUID.class)); }, order);
@@ -112,13 +105,25 @@ class LoadEstimateIntegrationTest {
 
     // ---- fixtures ------------------------------------------------------------------------------------------------
 
+    /**
+     * A SKU of the customer's, on a catalogue variant of its own (an order names only a customer's SKU, 14 BR-04),
+     * with the item its order made (owner decision Q5): its cartons are declared on that variant.
+     */
+    private String ownSku() {
+        ReferenceRows.ProductRow product = ReferenceRows.product(entityManager);
+        String sku = product.sku() + "-C";
+        StockedSkus.customerSkuOf(jdbc, customer, product.productId(), product.variantId(), sku,
+                "Estimate fixture");
+        return sku;
+    }
+
     private UUID otherWarehouse() {
         UUID id = Identifiers.newId();
         jdbc.update("""
                 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
                                                  version, created_at)
                 VALUES (?, 'Elsewhere', 'ACTIVE', ?, 'Somewhere', 'M', 50, 50, 0, NOW())""", id,
-                "E" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT));
+                ReferenceRows.warehousePrefix("E"));
         return id;
     }
 
@@ -168,10 +173,19 @@ class LoadEstimateIntegrationTest {
         return id;
     }
 
+    /** The SKU's one carton unit, the one it ships in; a null measure is one nobody declared. */
+    private void carton(String sku, String code, int factor, String kg, String length, String width, String height) {
+        jdbc.update("""
+                INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
+                    weight_kg, length_cm, width_cm, height_cm, active, created_by)
+                SELECT ?, i.variant_id, ?, ?, ?::numeric, ?::numeric, ?::numeric, ?::numeric, TRUE, 'test'
+                FROM inventory.inventory_items i WHERE i.sku = ?""", Identifiers.newId(), code, factor, kg, length,
+                width, height, sku);
+    }
+
+    /** The bare item gets its carton: one unit to a carton of 30 x 20 x 10 cm, 1.2 kg. */
     private void measureTheBareItem() {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                UPDATE inventory.inventory_items SET weight_kg = 1.2, length_cm = 30, width_cm = 20, height_cm = 10
-                WHERE id = ?""", bareItem));
+        tx.executeWithoutResult(s -> carton(bareSku, "CTN", 1, "1.2", "30", "20", "10"));
     }
 
     private String body(UUID source, String type, UUID... types) {
@@ -203,7 +217,8 @@ class LoadEstimateIntegrationTest {
     // ---- tests ---------------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("LP2-3: an item never measured blocks only its line: estimated without it, listed in missing")
+    @DisplayName("LP2-3: an item whose carton is never declared blocks only its line: estimated without it, listed "
+            + "in missing")
     void missingPackagingBlocksOnlyThatLine() throws Exception {
         JsonNode estimate = data(estimate(Role.SALES_STAFF, coordinator, body(order, "ORDER", container))
                 .andExpect(status().isCreated()));
@@ -217,8 +232,8 @@ class LoadEstimateIntegrationTest {
         assertThat(json.convertValue(missing.path("missingFields"), List.class))
                 .containsExactly("lengthCm", "widthCm", "heightCm", "weightKg");
         assertThat(estimate.path("lines")).extracting(l -> l.path("sku").asText())
-                .containsExactlyInAnyOrder(palletSku, kitSku);
-        assertThat(estimate.path("vehicles").get(0).path("boxes")).hasSize(2 + 3 * 2);
+                .containsExactlyInAnyOrder(palletSku, tableSku);
+        assertThat(estimate.path("vehicles").get(0).path("boxes")).hasSize(2 + 3);
         // Stored with the estimate: GET answers the same.
         as(Role.SALES_STAFF, coordinator, get(BASE + "?sourceType=ORDER&sourceId=" + order))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.incomplete").value(true))
@@ -230,12 +245,10 @@ class LoadEstimateIntegrationTest {
     @Test
     @DisplayName("LP2-3: when no line resolves, 422 naming each item; only the fields really missing; nothing stored")
     void noLineResolvesIsRefused() throws Exception {
-        String weightless = tx.execute(s -> ReferenceRows.product(entityManager).sku());
+        String weightless = tx.execute(s -> ownSku());
         UUID weightlessItem = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
                 weightless);
-        tx.executeWithoutResult(s -> jdbc.update("""
-                UPDATE inventory.inventory_items SET length_cm = 30, width_cm = 20, height_cm = 10, weight_kg = NULL
-                WHERE id = ?""", weightlessItem));
+        tx.executeWithoutResult(s -> carton(weightless, "CTN", 1, null, "30", "20", "10"));
         UUID unmeasured = tx.execute(s -> order("READY_TO_FULFILL", Map.of(bareSku, 2, weightless, 1)));
 
         estimate(Role.SALES_STAFF, coordinator, body(unmeasured, "ORDER", container))
@@ -246,20 +259,22 @@ class LoadEstimateIntegrationTest {
                         .value("PackagingMissing"))
                 .andExpect(jsonPath("$.fieldErrors[?(@.field=='inventoryItems[" + weightlessItem + "]')].message")
                         .value(org.hamcrest.Matchers.contains(org.hamcrest.Matchers.endsWith(
-                                "has no weightKg on its inventory item"))));
+                                "has no weightKg on its carton unit"))));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.load_estimate WHERE source_id = ?",
                 Integer.class, unmeasured)).isZero();
     }
 
     @Test
-    @DisplayName("only what is still to ship: units shipped (not returned) and closed out are not loaded again")
+    @DisplayName("only what is still to ship: units shipped, units on a shipment the carrier brought back (WF-05 Q-7, "
+            + "RTM-RETURNED: never sent again on this order) and units closed out are not loaded again")
     void remainingUnitsOnly() throws Exception {
         measureTheBareItem();
-        UUID partial = tx.execute(s -> order("PARTIALLY_FULFILLED", Map.of(palletSku, 30, kitSku, 3, bareSku, 2)));
+        UUID partial = tx.execute(s -> order("PARTIALLY_FULFILLED", Map.of(palletSku, 30, tableSku, 3, bareSku, 2)));
         Map<String, UUID> lines = new HashMap<>();
         jdbc.query("SELECT sku, id FROM ordering.order_line WHERE order_id = ?",
                 rs -> { lines.put(rs.getString(1), rs.getObject(2, UUID.class)); }, partial);
-        // PACK-EARLY: 24 pallet units and every measured item went out; one returned shipment does not count.
+        // PACK-EARLY: 24 pallet units and every measured item went out. A shipment the carrier brought back still holds
+        // its table until its return receipt closes it (WF-05 Q-7): it is never loaded again on this order.
         UUID shipped = com.stockflow.support.ShipmentRows.ready(jdbc, tx, partial, Identifiers.newId());
         UUID returned = com.stockflow.support.ShipmentRows.ready(jdbc, tx, partial, Identifiers.newId());
         tx.executeWithoutResult(s -> {
@@ -273,10 +288,10 @@ class LoadEstimateIntegrationTest {
                     shipped, lines.get(palletSku));
             jdbc.update("INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity) VALUES (?, ?, 2)",
                     shipped, lines.get(bareSku));
-            jdbc.update("INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity) VALUES (?, ?, 3)",
-                    returned, lines.get(kitSku));
+            jdbc.update("INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity) VALUES (?, ?, 1)",
+                    returned, lines.get(tableSku));
             // One table closed out of the order (#150).
-            jdbc.update("UPDATE ordering.order_line SET cancelled_quantity = 1 WHERE id = ?", lines.get(kitSku));
+            jdbc.update("UPDATE ordering.order_line SET cancelled_quantity = 1 WHERE id = ?", lines.get(tableSku));
         });
 
         JsonNode estimate = data(estimate(Role.SALES_STAFF, coordinator, body(partial, "ORDER", container))
@@ -284,31 +299,44 @@ class LoadEstimateIntegrationTest {
 
         Map<String, JsonNode> bySku = new HashMap<>();
         estimate.path("lines").forEach(l -> bySku.put(l.path("sku").asText(), l));
-        assertThat(bySku).containsOnlyKeys(palletSku, kitSku);
+        assertThat(bySku).containsOnlyKeys(palletSku, tableSku);
         assertThat(bySku.get(palletSku).path("quantity").asInt()).isEqualTo(6);
         assertThat(bySku.get(palletSku).path("cartons").asInt()).isEqualTo(1);
         assertThat(bySku.get(palletSku).path("partial").path("units").asInt()).isEqualTo(6);
-        assertThat(bySku.get(kitSku).path("quantity").asInt()).isEqualTo(2);
-        assertThat(estimate.path("vehicles").get(0).path("boxes")).hasSize(1 + 2 * 2);
+        assertThat(bySku.get(tableSku).path("quantity").asInt()).as("3 ordered, 1 closed out, 1 brought back")
+                .isEqualTo(1);
+        assertThat(estimate.path("vehicles").get(0).path("boxes")).hasSize(1 + 1);
         assertThat(estimate.path("incomplete").asBoolean()).isFalse();
     }
 
     @Test
-    @DisplayName("CONFIRMED: estimated in the release dialog for the warehouse it will go to, within the caller's scope")
+    @DisplayName("09 §4.0 step 1 (RTM-ESTWH): a CONFIRMED order with no shipping warehouse chosen is refused "
+            + "LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN; once Sales chose it, the estimate is of that warehouse, within the "
+            + "caller's scope")
     void confirmedOrderNeedsItsTargetWarehouse() throws Exception {
         measureTheBareItem();
         UUID confirmed = tx.execute(s -> order("CONFIRMED", Map.of(palletSku, 30)));
         estimate(Role.SALES_STAFF, coordinator, body(confirmed, "ORDER", container))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("warehouseId"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN"));
+        estimate(Role.WAREHOUSE_MANAGER, manager, bodyFor(confirmed, "ORDER", HCM, container))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fulfillment.load_estimate WHERE source_id = ?",
+                Integer.class, confirmed)).isZero();
+
+        // Sales chooses its shipping warehouse (17 §4.2), as ShippingWarehouseService#choose records it.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET shipping_warehouse_id = ?, "
+                + "shipping_warehouse_chosen_at = NOW(), shipping_warehouse_chosen_by = ? WHERE id = ?", HCM,
+                coordinator, confirmed));
         estimate(Role.SALES_STAFF, coordinator, bodyFor(confirmed, "ORDER", UUID.randomUUID(), container))
-                .andExpect(status().isNotFound());
-        estimate(Role.WAREHOUSE_MANAGER, managerElsewhere, bodyFor(confirmed, "ORDER", HCM, container))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("WarehouseMismatch"));
+        estimate(Role.WAREHOUSE_MANAGER, managerElsewhere, body(confirmed, "ORDER", container))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
 
-        JsonNode estimate = data(estimate(Role.WAREHOUSE_MANAGER, manager, bodyFor(confirmed, "ORDER", HCM, container))
+        JsonNode estimate = data(estimate(Role.WAREHOUSE_MANAGER, manager, body(confirmed, "ORDER", container))
                 .andExpect(status().isCreated()));
         assertThat(estimate.path("warehouseId").asText()).isEqualTo(HCM.toString());
         as(Role.WAREHOUSE_MANAGER, managerElsewhere, get(BASE + "/" + estimate.path("id").asText()))
@@ -367,7 +395,7 @@ class LoadEstimateIntegrationTest {
     }
 
     @Test
-    @DisplayName("pallet with a remainder, a kit of 2 boxes, a measured item: lines and the viewer's Layout")
+    @DisplayName("pallet with a remainder, a table to a carton, a measured item: lines and the viewer's Layout")
     void estimatesIntoTheLayoutContract() throws Exception {
         measureTheBareItem();
         JsonNode estimate = data(estimate(Role.SALES_STAFF, coordinator, body(order, "ORDER", container))
@@ -390,20 +418,20 @@ class LoadEstimateIntegrationTest {
         assertThat(pallet.path("factor").asInt()).isEqualTo(24);
         assertThat(pallet.path("cartons").asInt()).isEqualTo(2);
         assertThat(pallet.path("partial").path("units").asInt()).isEqualTo(6);
-        // LP2-4: 6 cartons of 6.5 kg plus the pallet's 25 kg of wood.
-        assertThat(pallet.path("partial").path("weightKg").decimalValue()).isEqualByComparingTo("64");
+        // LP2-4: the pallet's weight pro rata, 181 x 6 / 24 (no unit weight on record, V20261215000100).
+        assertThat(pallet.path("partial").path("weightKg").decimalValue()).isEqualByComparingTo("45.25");
         assertThat(pallet.path("dimsMm").path("l").asInt()).isEqualTo(1200);
         assertThat(pallet.path("dimsMm").path("w").asInt()).isEqualTo(1000);
         assertThat(pallet.path("dimsMm").path("h").asInt()).isEqualTo(1500);
         assertThat(pallet.path("weightKg").decimalValue()).isEqualByComparingTo("181");
         assertThat(pallet.path("kitParts").asInt()).isEqualTo(1);
 
-        JsonNode kit = lines.get(kitSku);
-        assertThat(kit.path("rule").asText()).isEqualTo("ITEM_BOX");
-        assertThat(kit.path("kitParts").asInt()).isEqualTo(2);
-        assertThat(kit.path("cartons").asInt()).isEqualTo(3);
-        assertThat(kit.hasNonNull("partial")).isFalse();
-        assertThat(lines.get(bareSku).path("rule").asText()).isEqualTo("ITEM_UNIT");
+        JsonNode table = lines.get(tableSku);
+        assertThat(table.path("rule").asText()).isEqualTo("DEFAULT_SHIPPING_UNIT");
+        assertThat(table.path("kitParts").asInt()).as("no kits since the item lost its boxes").isEqualTo(1);
+        assertThat(table.path("cartons").asInt()).isEqualTo(3);
+        assertThat(table.hasNonNull("partial")).isFalse();
+        assertThat(lines.get(bareSku).path("rule").asText()).isEqualTo("DEFAULT_SHIPPING_UNIT");
 
         assertThat(estimate.path("unplaced")).isEmpty();
         assertThat(estimate.path("vehicles")).hasSize(1);
@@ -414,9 +442,8 @@ class LoadEstimateIntegrationTest {
         assertThat(vehicle.path("maxPayloadKg").decimalValue()).isEqualByComparingTo("26500");
         assertThat(vehicle.path("gussets")).hasSize(2);
         JsonNode boxes = vehicle.path("boxes");
-        assertThat(boxes).hasSize(2 + 3 * 2 + 2);
+        assertThat(boxes).hasSize(2 + 3 + 2);
         Set<String> refs = new HashSet<>();
-        Map<String, Integer> perKitGroup = new HashMap<>();
         for (JsonNode box : boxes) {
             refs.add(box.path("ref").asText());
             for (String field : List.of("xMm", "yMm", "zMm", "wMm", "hMm", "dMm", "label", "partName", "origMm",
@@ -425,19 +452,15 @@ class LoadEstimateIntegrationTest {
             }
             String line = box.path("sourceRef").asText();
             assertThat(box.path("ref").asText()).startsWith(line + "#");
-            if (box.hasNonNull("kitGroup")) {
-                assertThat(box.path("partName").asText()).isIn(kitSku + "/1", kitSku + "/2");
-                assertThat(box.path("label").asText()).isEqualTo(kitSku);
-                perKitGroup.merge(box.path("kitGroup").asText(), 1, Integer::sum);
-            }
+            assertThat(box.hasNonNull("kitGroup")).as("no box is part of a kit").isFalse();
         }
-        assertThat(refs).hasSize(10);
-        assertThat(perKitGroup).hasSize(3).allSatisfy((group, parts) -> assertThat(parts).isEqualTo(2));
-        assertThat(vehicle.path("usedWeightKg").decimalValue()).isEqualByComparingTo("391.4"); // 181+64+6*24+2*1.2
+        assertThat(refs).hasSize(7);
+        assertThat(vehicle.path("usedWeightKg").decimalValue())
+                .isEqualByComparingTo("363.65"); // 181 + 45.25 + 3 * 45 + 2 * 1.2
         JsonNode meta = estimate.path("meta");
         assertThat(meta.path("seed").asLong()).isZero();
         assertThat(meta.path("budgetExhausted").asBoolean()).isFalse();
-        assertThat(meta.path("placedBoxes").asInt()).isEqualTo(10);
+        assertThat(meta.path("placedBoxes").asInt()).isEqualTo(7);
 
         // GET by id answers what the POST did.
         JsonNode read = data(as(Role.SALES_STAFF, coordinator, get(BASE + "/" + estimate.path("id").asText()))

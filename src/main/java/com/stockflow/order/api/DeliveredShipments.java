@@ -23,4 +23,12 @@ public interface DeliveredShipments {
      * much of the fee the order's invoices already carry is the invoicing module's to say.
      */
     Optional<OrderShippingFee> shippingFee(UUID orderId, Instant on);
+
+    /**
+     * Every fee of the order - its shipping fee ({@link OrderShippingFee#fee}, null when it has none above zero) and its
+     * plate fees ({@link OrderShippingFee#plateFees}) - with the VAT rates of the day of {@code on}; empty when the
+     * order does not exist or has no fee above zero (WF-05 BE-62, Q-19: a plate fee no delivery's invoice carries -
+     * the order's goods all came back - is invoiced with the rest of its fees once its deliveries are over).
+     */
+    Optional<OrderShippingFee> orderFees(UUID orderId, Instant on);
 }

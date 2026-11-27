@@ -33,21 +33,25 @@ class DeployConfigurationTest {
     }
 
     @Test
-    @DisplayName("SCRUM-352: the server gets the Resend settings; the dev server stays on SMTP until switched to Resend")
+    @DisplayName("SCRUM-352: the server gets the Resend settings and sends through Resend; a local dev run stays on SMTP")
     void theResendSettingsReachTheServer() throws Exception {
         String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
         String application = Files.readString(Path.of("src/main/resources/application.yml"), StandardCharsets.UTF_8);
         String dev = Files.readString(Path.of("src/main/resources/application-dev.yml"), StandardCharsets.UTF_8);
 
-        for (String variable : java.util.List.of("EMAIL_PROVIDER", "RESEND_API_KEY", "RESEND_FROM", "RESEND_REPLY_TO",
+        for (String variable : java.util.List.of("RESEND_API_KEY", "RESEND_FROM", "RESEND_REPLY_TO",
                 "RESEND_WEBHOOK_SECRET", "CUSTOMER_EMAIL_ENABLED")) {
             assertThat(compose).as("compose passes %s", variable).contains(variable + ": ${" + variable + ":");
             assertThat(application + dev).as("the application reads %s", variable).contains("${" + variable);
         }
-        // Deployed on every push to develop: a server not yet given a Resend key must still start (on its Mailpit).
+        assertThat(application + dev).as("the application reads EMAIL_PROVIDER").contains("${EMAIL_PROVIDER");
+        // A local dev run keeps its SMTP default (Mailpit in the root compose file).
         assertThat(dev).as("dev stays on SMTP unless told to use Resend").contains("provider: ${EMAIL_PROVIDER:smtp}")
                 .contains("from: ${RESEND_FROM:${MAIL_FROM:}}");
-        assertThat(compose).as("so does the deployed server").contains("EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}");
+        // The dev server's stack has no SMTP relay any more (Mailpit removed, PR #363): it sends through Resend only,
+        // and the mail health check, which would probe the missing relay, is off.
+        assertThat(compose).as("the deployed server sends through Resend").contains("EMAIL_PROVIDER: resend")
+                .contains("MAIL_HEALTH_ENABLED: \"false\"");
     }
 
     @Test
@@ -99,5 +103,30 @@ class DeployConfigurationTest {
                     + ":-[^}]+}");
             assertThat(example).as(".env.example lists %s", variable).contains("\n" + variable + "=");
         }
+    }
+
+    @Test
+    @DisplayName("BE-3: approved print files get the FOGRA39 intent out of the box, on a laptop and on the server alike")
+    void theBundledPrintProfileIsTheDefaultEverywhere() throws Exception {
+        String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
+        String example = Files.readString(Path.of("deploy/.env.example"), StandardCharsets.UTF_8);
+        String application = Files.readString(Path.of("src/main/resources/application.yml"), StandardCharsets.UTF_8);
+        String bundled = "classpath:print/icc/ISOcoated_v2_eci.icc";
+
+        assertThat(application).as("a run with no variable set stamps the bundled profile")
+                .contains("profile: ${DESIGN_PRINT_ICC_PROFILE:" + bundled + "}");
+        // ":-": a blank left in the server's .env must not reach the application, where it means the interim sRGB.
+        assertThat(compose).as("compose falls back to the bundled profile")
+                .contains("DESIGN_PRINT_ICC_PROFILE: ${DESIGN_PRINT_ICC_PROFILE:-" + bundled + "}");
+        for (String variable : java.util.List.of("DESIGN_PRINT_OUTPUT_CONDITION", "DESIGN_PRINT_OUTPUT_INFO")) {
+            assertThat(application).as("the application reads %s", variable).contains("${" + variable + ":}");
+            assertThat(compose).as("compose passes %s", variable).contains(variable + ": ${" + variable + ":-}");
+        }
+        for (String variable : java.util.List.of("DESIGN_PRINT_ICC_PROFILE", "DESIGN_PRINT_OUTPUT_CONDITION",
+                "DESIGN_PRINT_OUTPUT_INFO")) {
+            assertThat(example).as(".env.example lists %s as optional", variable).contains("\n# " + variable + "=");
+        }
+        assertThat(Files.size(Path.of("src/main/resources/print/icc/ISOcoated_v2_eci.icc")))
+                .as("the profile is in the jar, as ECI published it").isEqualTo(1_829_077L);
     }
 }

@@ -10,6 +10,7 @@ import com.stockflow.design.internal.domain.DesignReadRights;
 import com.stockflow.design.internal.domain.CustomerDesignRules;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
+import com.stockflow.design.internal.entity.DesignProjectJpaEntity;
 import com.stockflow.design.internal.entity.DesignSnapshotJpaEntity;
 import com.stockflow.design.internal.repository.DesignDecisionJpaRepository;
 import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
@@ -40,30 +41,35 @@ public class DesignWorkflowService {
     private final DesignDecisionJpaRepository decisions;
     private final DraftViews views;
     private final CustomerDesignService customerDesigns;
+    private final DesignProjectService projects;
     private final com.stockflow.product.api.CustomerSkus customerSkus;
 
     public DesignWorkflowService(DesignDraftJpaRepository drafts, DesignSnapshotJpaRepository snapshots,
                                  DesignDecisionJpaRepository decisions, DraftViews views,
-                                 CustomerDesignService customerDesigns,
+                                 CustomerDesignService customerDesigns, DesignProjectService projects,
                                  com.stockflow.product.api.CustomerSkus customerSkus) {
         this.drafts = drafts;
         this.snapshots = snapshots;
         this.decisions = decisions;
         this.views = views;
         this.customerDesigns = customerDesigns;
+        this.projects = projects;
         this.customerSkus = customerSkus;
     }
 
     /**
      * A design as the API shows it. {@code productSlug} is null for a product since removed; {@code sku} and
      * {@code templateCode} are null for a design staff started before customers designed; {@code reviewNotes} is the
-     * Sales Manager's reason when it was returned; {@code updatedAt} is when the design or its layout last changed.
+     * coordinator's reason when it was returned; {@code updatedAt} is when the design or its layout last changed;
+     * {@code customerSku} is the customer's own SKU, issued at approval, so null until the design is approved;
+     * {@code customerName} names the customer whose design it is.
      */
     public record DraftView(UUID id, UUID customerId, UUID productId, UUID ownerUserId, String name, String spec,
             String status, UUID currentArtifactId, UUID reviewedBy, String reviewNotes, long version,
             UUID parentSnapshotId, String productSlug, String sku, String templateCode, Instant reviewRequestedAt,
             Instant reviewedAt, Instant updatedAt, UUID projectId, String previewUrl, String variantName,
-            String productName) { }
+            String productName, String customerSku, String customerName, Integer unitsPerCarton,
+            String projectName, String projectStatus, String reviewedByName) { }
 
     /**
      * An approved design's snapshot. {@code document}, {@code documentChecksum}, {@code assets} and
@@ -89,13 +95,15 @@ public class DesignWorkflowService {
     /**
      * The user's own designs, newest first: in {@code status} when one is given (in any case; blank is none),
      * otherwise every one but an archived design. An archived design is listed for nobody (BR-16), so asking for
-     * {@code ARCHIVED} - or for a status that does not exist - is a 400.
+     * {@code ARCHIVED} - or for a status that does not exist - is a 400. {@code inProject} keeps only the designs in a
+     * design project ({@code true}) or in none ({@code false}); null keeps both.
      */
     @Transactional(readOnly = true)
-    public Page<DraftView> list(UUID actor, String status, Pageable page) {
+    public Page<DraftView> list(UUID actor, String status, Boolean inProject, Pageable page) {
         authenticated(actor);
-        Page<DesignDraftJpaEntity> found = drafts.findOwnedBy(actor, statuses(status), Pages.of(page.getPageNumber(),
-                page.getPageSize(), Sort.by(Sort.Direction.DESC, "createdAt", "id")));
+        Page<DesignDraftJpaEntity> found = drafts.findAll(DesignDraftJpaRepository.ownedBy(actor, statuses(status),
+                inProject), Pages.of(page.getPageNumber(), page.getPageSize(),
+                Sort.by(Sort.Direction.DESC, "createdAt", "id")));
         return new PageImpl<>(views.of(found.getContent()), found.getPageable(), found.getTotalElements());
     }
 
@@ -135,12 +143,16 @@ public class DesignWorkflowService {
      * {@link CustomerDesignService#revise}: same variant and template, the approved layout and images copied, counted
      * against the draft limit. A design staff started has no layout to copy: the revision is a new draft of the same
      * customer and product naming the same snapshot, counted against the limit too (B37).
+     *
+     * <p>Either way the revision is written into a project (BR-23.3): {@code projectId} when the caller names one,
+     * else the source's own while it is open and has room; otherwise it is refused before anything is written
+     * ({@link DesignProjectService#lockForCopy}).</p>
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "design", resourceId = "#id")
-    public DraftView fork(UUID id, UUID actor) {
+    public DraftView fork(UUID id, UUID actor, UUID projectId) {
         var source = readable(id, actor, DesignReadRights.NONE);
         if (source.getTemplateId() != null) {
-            return customerDesigns.revise(id, actor);
+            return customerDesigns.revise(id, actor, projectId);
         }
         if (source.getStatus() != DesignStatus.APPROVED) {
             throw new BusinessException(ErrorCode.CONFLICT, "Only an approved design can be revised");
@@ -148,12 +160,13 @@ public class DesignWorkflowService {
         UUID snapshotId = snapshots.findByDraftId(id)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "The approved design has no snapshot"))
                 .getId();
+        DesignProjectJpaEntity project = projects.lockForCopy(id, projectId, actor, source.getCustomerId());
         customerDesigns.requireRoomForDraft(source.getCustomerId());
         var draft = new DesignDraftJpaEntity(com.stockflow.common.id.Identifiers.newId(), source.getCustomerId(),
                 source.getProductId(), source.getName(), source.getSpec(), DesignStatus.DRAFT);
         draft.ownedBy(source.getOwnerUserId());
         draft.derivedFrom(snapshotId);
-        drafts.saveAndFlush(draft);
+        projects.writeNew(project, draft, actor);
         decisions.save(new com.stockflow.design.internal.entity.DesignDecisionJpaEntity(draft, actor,
                 com.stockflow.design.internal.domain.DesignDecisionType.DERIVED_FROM_SNAPSHOT.name(),
                 snapshotId.toString()));

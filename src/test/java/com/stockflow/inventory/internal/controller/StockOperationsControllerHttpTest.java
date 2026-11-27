@@ -4,30 +4,39 @@ import com.stockflow.common.security.AuthenticatedUserArgumentResolver;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
+import com.stockflow.inventory.api.StockAdjustmentDirection;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.internal.domain.AdjustmentDirection;
+import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.service.StockOperations;
+import com.stockflow.warehouse.api.WarehouseService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -42,14 +51,17 @@ class StockOperationsControllerHttpTest {
 
     private final StockOperations operations = mock(StockOperations.class);
     private final CurrentUserProvider users = mock(CurrentUserProvider.class);
+    private final IdentityService identities = mock(IdentityService.class);
     private final UUID clerk = UUID.randomUUID();
     private final MockMvc mvc;
 
     StockOperationsControllerHttpTest() {
         when(users.current()).thenReturn(Optional.of(new CurrentUser(clerk, "keeper",
                 Set.of(), Set.of(), DataScope.ALL, Set.of())));
+        when(identities.displayNames(any())).thenReturn(Map.of(clerk, "Nguyen Van Kho"));
         mvc = MockMvcBuilders.standaloneSetup(new StockOperationsController(operations,
-                        new StockOperationsWebMapperImpl()))
+                        new StockOperationsWebMapperImpl(),
+                        new ResponseLabels(identities, mock(WarehouseService.class))))
                 .setCustomArgumentResolvers(new AuthenticatedUserArgumentResolver(users)).build();
     }
 
@@ -57,7 +69,7 @@ class StockOperationsControllerHttpTest {
     void cartonsAreMovedByLpnToOneDestination() throws Exception {
         UUID requestId = UUID.randomUUID();
         when(operations.moveStockPackages(any())).thenReturn(List.of(new StockPackageView(UUID.randomUUID(),
-                "LPN-20261109-000001", null, "CUP_PET", UUID.randomUUID(), "CARTON", 50, 50, 50, "HCM-A01-1-A",
+                "LPN-20261109-000001", null, "CUP_PET", UUID.randomUUID(), "CARTON", 50, 50, java.time.Instant.parse("2026-11-09T02:00:00Z"), "HCM-A01-1-A",
                 "IN_STOCK")));
 
         mvc.perform(post("/api/v1/inventory/movements").contentType("application/json").content("""
@@ -89,9 +101,9 @@ class StockOperationsControllerHttpTest {
         verifyNoInteractions(operations);
     }
 
-    private static StockAdjustmentSummary summary(UUID carton) {
-        return new StockAdjustmentSummary(UUID.randomUUID(), "ADJ-20261113-0001", "HCM-A01-1-A", "CUP_PET", "L1", -50,
-                StockAdjustmentReason.DAMAGED, "Crushed", StockAdjustmentStatus.PENDING_APPROVAL, UUID.randomUUID(),
+    private StockAdjustmentSummary summary(UUID carton) {
+        return new StockAdjustmentSummary(UUID.randomUUID(), "ADJ-20261113-0001", "HCM-A01-1-A", "CUP_PET", "L1",
+                StockAdjustmentDirection.WRITE_OFF, StockAdjustmentReason.DAMAGED, "Crushed", StockAdjustmentStatus.PENDING_APPROVAL, clerk,
                 java.time.Instant.now(), null, null, null, null, null, 0L, carton, null);
     }
 
@@ -104,7 +116,10 @@ class StockOperationsControllerHttpTest {
                         {"lpn":"lpn-20261113-000001","direction":"WRITE_OFF","reason":"DAMAGED","note":"Crushed"}"""))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.stockPackageId").value(carton.toString()))
-                .andExpect(jsonPath("$.data.quantityDelta").value(-50));
+                .andExpect(jsonPath("$.data.direction").value("WRITE_OFF"))
+                .andExpect(jsonPath("$.data.quantityDelta").doesNotExist())
+                .andExpect(jsonPath("$.data.requestedByName").value("Nguyen Van Kho"))
+                .andExpect(jsonPath("$.data.decidedByName").doesNotExist());
 
         ArgumentCaptor<StockOperations.PackageAdjustmentRequest> sent =
                 ArgumentCaptor.forClass(StockOperations.PackageAdjustmentRequest.class);
@@ -114,6 +129,31 @@ class StockOperationsControllerHttpTest {
         assertThat(sent.getValue().reason()).isEqualTo(StockAdjustmentReason.DAMAGED);
         assertThat(sent.getValue().note()).isEqualTo("Crushed");
         assertThat(sent.getValue().requestedBy()).isEqualTo(clerk);
+    }
+
+    @Test
+    void theLedgerNamesItsActorsWithOneLookupForThePage() throws Exception {
+        UUID approver = UUID.randomUUID();
+        when(identities.displayNames(any())).thenReturn(Map.of(clerk, "Nguyen Van Kho", approver, "Tran Thi Duyet"));
+        StockOperations.LedgerLine adjustment = new StockOperations.LedgerLine(UUID.randomUUID(),
+                StockMovement.MovementType.ADJUSTMENT, "CUP_PET", "L1", "HCM-A01-1-A", null, -50, "AVAILABLE", null,
+                "ADJUSTMENT", UUID.randomUUID(), "DAMAGED", approver, java.time.Instant.now(), clerk, null,
+                "LPN-261126-000001");
+        StockOperations.LedgerLine system = new StockOperations.LedgerLine(UUID.randomUUID(),
+                StockMovement.MovementType.MOVE, "CUP_PET", "L1", "HCM-STG", "HCM-A01-1-A", 50, "AVAILABLE",
+                null, "PUTAWAY_TASK", UUID.randomUUID(), null, null, java.time.Instant.now(), null, null,
+                "LPN-261126-000002");
+        when(operations.ledger(any(), anyInt(), anyInt(), any()))
+                .thenReturn(PageResponse.of(List.of(adjustment, system), 0, 20, 2));
+
+        mvc.perform(get("/api/v1/inventory/movements"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].actorName").value("Tran Thi Duyet"))
+                .andExpect(jsonPath("$.data.items[0].requestedByName").value("Nguyen Van Kho"))
+                .andExpect(jsonPath("$.data.items[0].countedByName").doesNotExist())
+                .andExpect(jsonPath("$.data.items[1].actorName").doesNotExist());
+
+        verify(identities, times(1)).displayNames(any());
     }
 
     @Test

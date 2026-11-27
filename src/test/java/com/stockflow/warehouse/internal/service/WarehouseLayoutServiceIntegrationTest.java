@@ -12,6 +12,7 @@ import com.stockflow.warehouse.internal.domain.MapUnit;
 import com.stockflow.warehouse.internal.domain.Warehouse;
 import com.stockflow.warehouse.internal.domain.WarehouseRepository;
 import com.stockflow.warehouse.internal.domain.WarehouseStatus;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -31,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Warehouses and zones through the application service, on a real Postgres with the demo seed
  * ({@code db/demo/V20260928009000}): warehouse {@code HCM}, a 60 x 40 map whose layout reaches
  * 60 x 38 - the north wall and east door at x = 60, the office area down to y = 38 - and zones
- * "Khu A - Sofa" and "Khu B - Bàn". Every test rolls back.
+ * "Khu A - Ly giấy xanh" and "Khu B - Ly giấy đỏ". Every test rolls back.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -42,6 +43,7 @@ class WarehouseLayoutServiceIntegrationTest {
     @Autowired WarehouseRepository warehouseRepository;
     @Autowired PermissionCatalog permissionCatalog;
     @Autowired JdbcTemplate jdbc;
+    @Autowired EntityManager entityManager;
 
     private WarehouseSummary registerHanoi() {
         return layout.register(new RegisterWarehouseCommand("hn", "Kho Hà Nội", "1 Phố Huế", null,
@@ -96,15 +98,28 @@ class WarehouseLayoutServiceIntegrationTest {
         @DisplayName("updates the details and keeps the prefix")
         void updates() {
             WarehouseSummary hanoi = registerHanoi();
+            assertThat(hanoi.utilizationFactor()).as("100% until the manager sets it (C43)").isEqualByComparingTo("1");
 
             WarehouseSummary updated = layout.update(new UpdateWarehouseCommand(hanoi.id(),
                     "Kho Hà Nội mới", "2 Phố Huế", "Kho trả hàng", new BigDecimal("45"),
-                    new BigDecimal("25"), hanoi.version()));
+                    new BigDecimal("25"), hanoi.version(), new BigDecimal("0.85")));
 
             assertThat(updated.prefix()).isEqualTo("HN");
             assertThat(updated.name()).isEqualTo("Kho Hà Nội mới");
             assertThat(updated.mapWidth()).isEqualByComparingTo("45");
+            assertThat(updated.utilizationFactor()).isEqualByComparingTo("0.85");
             assertThat(updated.version()).isEqualTo(hanoi.version() + 1);
+            entityManager.flush();
+            assertThat(jdbc.queryForObject("select utilization_factor from warehouse.warehouse where id = ?",
+                    BigDecimal.class, hanoi.id())).isEqualByComparingTo("0.85");
+
+            // Absent, the factor stays: a client that does not know the capacity board does not reset it.
+            WarehouseSummary renamed = layout.update(new UpdateWarehouseCommand(hanoi.id(), "Kho Hà Nội 3",
+                    "2 Phố Huế", null, new BigDecimal("45"), new BigDecimal("25"), updated.version(), null));
+            assertThat(renamed.utilizationFactor()).isEqualByComparingTo("0.85");
+            assertThat(errorOf(() -> layout.update(new UpdateWarehouseCommand(hanoi.id(), "Kho Hà Nội 3",
+                    "2 Phố Huế", null, new BigDecimal("45"), new BigDecimal("25"), renamed.version(),
+                    BigDecimal.ZERO)))).as("C43: above 0").isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
 
         @Test
@@ -113,7 +128,7 @@ class WarehouseLayoutServiceIntegrationTest {
             WarehouseSummary hanoi = registerHanoi();
 
             assertThat(errorOf(() -> layout.update(new UpdateWarehouseCommand(hanoi.id(), "X", "Y",
-                    null, hanoi.mapWidth(), hanoi.mapHeight(), hanoi.version() + 1))))
+                    null, hanoi.mapWidth(), hanoi.mapHeight(), hanoi.version() + 1, null))))
                     .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         }
 
@@ -159,8 +174,9 @@ class WarehouseLayoutServiceIntegrationTest {
                     .extracting(WarehouseSummary::prefix).containsExactly("HN");
             assertThat(layout.list(new ListWarehousesQuery(0, 20, null, WarehouseStatus.INACTIVE, null))
                     .items()).isEmpty();
+            // HCM is the demo seed's, DNI the demo history's (V20261128000200), HN this test's.
             assertThat(layout.list(new ListWarehousesQuery(0, 20, null, null, "prefix,desc")).items())
-                    .extracting(WarehouseSummary::prefix).containsExactly("HN", "HCM");
+                    .extracting(WarehouseSummary::prefix).containsExactly("HN", "HCM", "DNI");
         }
 
         @Test
@@ -174,7 +190,7 @@ class WarehouseLayoutServiceIntegrationTest {
         private WarehouseSummary resize(WarehouseSummary current, String width, String height) {
             return layout.update(new UpdateWarehouseCommand(current.id(), current.name(),
                     current.address(), current.returnAddress(), new BigDecimal(width),
-                    new BigDecimal(height), current.version()));
+                    new BigDecimal(height), current.version(), null));
         }
     }
 
@@ -185,48 +201,51 @@ class WarehouseLayoutServiceIntegrationTest {
         @Test
         @DisplayName("creates a zone with an upper-cased colour")
         void creates() {
-            ZoneSummary zone = layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "Khu C - Ghế", "#ff8800"));
+            ZoneSummary zone = layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "Khu C - Hộp giấy", "#ff8800"));
 
             assertThat(zone.color()).isEqualTo("#FF8800");
             assertThat(layout.listZones(WAREHOUSE_HCM)).extracting(ZoneSummary::name)
-                    .containsExactly("Khu A - Sofa", "Khu B - Bàn", "Khu C - Ghế");
+                    .containsExactly("Khu A - Ly giấy xanh", "Khu B - Ly giấy đỏ", "Khu C - Hộp giấy");
         }
 
         @Test
         @DisplayName("refuses a second zone with the same name in one warehouse, allows it in another")
         void namesAreUniquePerWarehouse() {
-            assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "Khu A - Sofa", null))))
+            assertThat(errorOf(() -> layout.createZone(
+                    new CreateZoneCommand(WAREHOUSE_HCM, "Khu A - Ly giấy xanh", null))))
                     .isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
 
             UUID hanoi = registerHanoi().id();
-            assertThat(layout.createZone(new CreateZoneCommand(hanoi, "Khu A - Sofa", null)).warehouseId())
+            assertThat(layout.createZone(new CreateZoneCommand(hanoi, "Khu A - Ly giấy xanh", null)).warehouseId())
                     .isEqualTo(hanoi);
         }
 
         @Test
         @DisplayName("renames a zone, but not onto another zone's name; keeping its own name is fine")
         void renames() {
-            ZoneSummary a = zoneNamed("Khu A - Sofa");
+            ZoneSummary a = zoneNamed("Khu A - Ly giấy xanh");
 
-            assertThat(errorOf(() -> layout.updateZone(new UpdateZoneCommand(a.id(), "Khu B - Bàn",
+            assertThat(errorOf(() -> layout.updateZone(new UpdateZoneCommand(a.id(), "Khu B - Ly giấy đỏ",
                     null, a.version())))).isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
-            assertThat(layout.updateZone(new UpdateZoneCommand(a.id(), "Khu A - Sofa", "#000000",
+            assertThat(layout.updateZone(new UpdateZoneCommand(a.id(), "Khu A - Ly giấy xanh", "#000000",
                     a.version())).color()).isEqualTo("#000000");
         }
 
         @Test
         @DisplayName("a name differing only in case is taken; re-casing a zone's own name is fine")
         void namesIgnoreCase() {
-            assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "KHU A - SOFA", null))))
+            assertThat(errorOf(() -> layout.createZone(
+                    new CreateZoneCommand(WAREHOUSE_HCM, "KHU A - LY GIẤY XANH", null))))
                     .isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
-            assertThat(errorOf(() -> layout.createZone(new CreateZoneCommand(WAREHOUSE_HCM, "khu b - bàn", null))))
+            assertThat(errorOf(() -> layout.createZone(
+                    new CreateZoneCommand(WAREHOUSE_HCM, "khu b - ly giấy đỏ", null))))
                     .isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
 
-            ZoneSummary a = zoneNamed("Khu A - Sofa");
-            assertThat(errorOf(() -> layout.updateZone(new UpdateZoneCommand(a.id(), "KHU B - BÀN",
+            ZoneSummary a = zoneNamed("Khu A - Ly giấy xanh");
+            assertThat(errorOf(() -> layout.updateZone(new UpdateZoneCommand(a.id(), "KHU B - LY GIẤY ĐỎ",
                     null, a.version())))).isEqualTo(ErrorCode.ZONE_NAME_ALREADY_EXISTS);
-            assertThat(layout.updateZone(new UpdateZoneCommand(a.id(), "KHU A - SOFA", null,
-                    a.version())).name()).isEqualTo("KHU A - SOFA");
+            assertThat(layout.updateZone(new UpdateZoneCommand(a.id(), "KHU A - LY GIẤY XANH", null,
+                    a.version())).name()).isEqualTo("KHU A - LY GIẤY XANH");
         }
 
         @Test

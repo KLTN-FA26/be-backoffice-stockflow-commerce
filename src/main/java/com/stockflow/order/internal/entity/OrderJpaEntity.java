@@ -223,6 +223,19 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "hold_note", length = 1000)
     private String holdNote;
 
+    /**
+     * WF-05 BE-40 (V20261217000200): while RETURN_REQUESTED or RETURNED by a claim, the status the claim was opened
+     * from - what the order goes back to when its claims end without money. Null otherwise, and on rows opened before
+     * it was kept.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status_before_return", length = 32)
+    private OrderStatus statusBeforeReturn;
+
+    /** D23 (V20261217000200): when the rest of the order was last closed; null when it never was. */
+    @Column(name = "remainder_closed_at")
+    private Instant remainderClosedAt;
+
     @Column(name = "shipped_at")
     private Instant shippedAt;
 
@@ -309,6 +322,11 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     public Instant getFulfilmentStartedAt() { return fulfilmentStartedAt; }
 
+
+    /** Sales changed the delivery address before the first label (kltn-docs 17 BR-16; tg_order_label_lock after it). */
+    public void applyShippingAddress(OrderAddressJpaEmbeddable address) {
+        this.shippingAddress = address;
+    }
 
     public void applyFirstLabeled(Instant firstLabeled) {
         this.firstLabeledAt = firstLabeled;
@@ -447,6 +465,13 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.holdNote = holdNote;
     }
 
+    public void applyReturnPath(OrderStatus before, Instant remainderClosed) {
+        this.statusBeforeReturn = before;
+        this.remainderClosedAt = remainderClosed;
+    }
+
+    public OrderStatus getStatusBeforeReturn() { return statusBeforeReturn; }
+    public Instant getRemainderClosedAt() { return remainderClosedAt; }
     public com.stockflow.order.api.HoldReason getHoldReason() { return holdReason; }
     public OrderStatus getStatusBeforeHold() { return statusBeforeHold; }
     public String getHoldNote() { return holdNote; }

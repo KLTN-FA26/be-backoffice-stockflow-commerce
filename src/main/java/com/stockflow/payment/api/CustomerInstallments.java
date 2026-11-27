@@ -3,6 +3,7 @@ package com.stockflow.payment.api;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -18,10 +19,14 @@ public interface CustomerInstallments {
      * @param status   {@code NOT_DUE}, {@code DUE} or {@code PARTIALLY_PAID}, the payment module's names
      * @param overdue  whether its due date has passed (overdue is derived, never stored: V20261121000100)
      * @param dueDate  null while its milestone has not been reached
+     * @param reducedAmount what a closure of the rest of the order took off it (15 §4.6 step 19), zero for most
+     * @param outstanding   what it still owes: {@code amount - paidAmount - reducedAmount}, the installment's own
+     *                      {@code outstanding()}. Given rather than left to the reader, because {@code amount -
+     *                      paidAmount} overstates a reduced installment and the chat sends that figure to the customer
      */
     record OpenInstallment(UUID id, UUID contractId, String contractNumber, UUID orderId, String orderNumber, int seq,
                            String name, BigDecimal amount, BigDecimal paidAmount, String currency, LocalDate dueDate,
-                           String status, boolean overdue) {
+                           String status, boolean overdue, BigDecimal reducedAmount, BigDecimal outstanding) {
     }
 
     /** The customer's open instalments, the earliest due first (those with no due date last), at most {@code limit}. */
@@ -43,4 +48,20 @@ public interface CustomerInstallments {
 
     /** One instalment's transfer details, whatever its status; empty when there is no such instalment. */
     java.util.Optional<Transfer> transfer(UUID installmentId);
+
+    /**
+     * When an instalment of a signed contract's plan falls due and how late it is (R5-12), for the contract's own view.
+     *
+     * @param dueDate     null while its milestone has not been reached
+     * @param daysOverdue days past {@code dueDate} it is still owing, today in the business calendar; 0 when not overdue
+     */
+    record PlanDue(int seq, LocalDate dueDate, int daysOverdue) {
+    }
+
+    /**
+     * {@link PlanDue} of each instalment made from {@code contractId}'s plan, by its {@code seq} - the plan row's; fee
+     * items (a cancellation's, a failed trip's) name no plan row and are absent, as is everything of a contract not
+     * signed. One statement; overdue as {@code payment.installment_is_overdue} reads it.
+     */
+    Map<Integer, PlanDue> planDues(UUID contractId);
 }

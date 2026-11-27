@@ -5,6 +5,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
+import java.util.OptionalLong;
 
 /**
  * Port: an e-invoice provider - the company outside the system that signs an invoice, sends it to the tax authority
@@ -26,13 +28,39 @@ import java.util.List;
  * <p>A provider must treat a second {@code submit} of a transaction id it already holds as the first one again, never
  * as a second invoice. Every implementation is held to that; it is what lets the caller retry.</p>
  *
- * <p>Implementations: {@code SandboxProvider} (the default; no legal value) and {@code ViettelSInvoiceProvider}
- * (package E3), chosen by configuration - nothing about an invoice's rules names a provider.</p>
+ * <p>Implementations: {@code SandboxProvider} (the default; no legal value), {@code ViettelSInvoiceProvider}
+ * (package E3) and {@code SepayEInvoiceProvider}, chosen by configuration - nothing about an invoice's rules names a
+ * provider.</p>
  */
 public interface EInvoiceProvider {
 
     /** The provider's code as {@code invoicing.einvoice_provider_config} names it. */
     String code();
+
+    /**
+     * Whether a refusal recorded under {@code rejectionCode} came from what the provider reported of its processing
+     * alone, without its invoice look-up confirming that nothing was issued (HĐ-1; SePay: its tracking said
+     * {@code Failed}). Such a refusal is read from the provider's words, and a provider that changes them, or that is
+     * still settling the result with the body that numbers invoices, may yet issue that attempt. So such a refusal is
+     * recorded only once the provider can no longer be working on the transaction and, asked again then, still reports
+     * it ({@code EInvoiceIssuance}, "A refusal nobody confirmed is recorded only once it is settled"); until then the
+     * invoice stays SUBMITTING. False for every other refusal, which the provider's look-up stood behind.
+     */
+    default boolean refusalUnconfirmedByLookup(String rejectionCode) {
+        return false;
+    }
+
+    /**
+     * Whether an UNKNOWN answer carrying {@code errorCode} is the provider saying, in so many words, that it cannot
+     * confirm what became of the transaction (SePay's tracking {@code Failed} "chưa xác nhận được kết quả phát hành").
+     * Only such an invoice may ever be taken back without the provider's "no record" (WF-05 BE-07, decision Q-5), and
+     * only on the written word of the provider's support. Every other UNKNOWN - an answer not read, a 4xx, an error
+     * code with no entry - says nothing about the invoice and is never a reason to let its transaction go: it is
+     * asked again, and an answer that never comes is the accountant's to settle on the provider's portal (BE-08).
+     */
+    default boolean resultUnconfirmed(String errorCode) {
+        return false;
+    }
 
     /**
      * Hands an invoice over under its transaction id.
@@ -72,6 +100,134 @@ public interface EInvoiceProvider {
      */
     default boolean issuesCorrections() {
         return false;
+    }
+
+    /**
+     * Whether this provider takes an invoice dated only on the day it is sent (WF-05 Q-1). SePay does, for every kind
+     * of invoice: an original, an adjustment or a replacement dated another day is refused at once with
+     * {@code ISSUED_DATE_INVALID} (sandbox runs T-1 and T-6, 23/11/2026). Under such a provider an original issued
+     * after its delivery day carries the day it is issued and is flagged {@code ISSUED_LATE}. Whatever the provider,
+     * an invoice is due by the end of its date ({@link IssueDeadline}). A correction carries the day it is issued
+     * under every provider - its date is the day it is signed, never the delivery's.
+     */
+    default boolean datesOnlyToday() {
+        return false;
+    }
+
+    /**
+     * Whether a PENDING look-up may be an invoice the tax authority refused (WF-05 BE-08, Q-8): Viettel SInvoice keeps a
+     * refused entry under its number without a code, so only its portal shows the refusal, and the accountant's record
+     * of it is the way out. Elsewhere PENDING is the provider holding the transaction - SePay's "issued, no number yet"
+     * or its processing still running - and such an invoice is never recorded refused on anyone's word (Q-5): the
+     * provider reports a real refusal itself.
+     */
+    default boolean pendingMayBeRefusedByTaxAuthority() {
+        return false;
+    }
+
+    /**
+     * Whether this provider numbers an adjustment or a replacement under a series it chooses itself (WF-05 BE-30).
+     * SePay does: its adjust and replace calls take no series at all (sandbox T-4: the adjustment came back numbered
+     * under {@code C26TSE}, the series of its original, and which series a correction of a previous year's invoice
+     * takes is not known). The series such a correction was sent under is only the one in use here that day, so the
+     * one the provider names is recorded instead ({@code EInvoice.numberedUnder}) - the recorded series is always the
+     * provider's. An original is sent under its series and is never recorded under another.
+     */
+    default boolean picksCorrectionSeries() {
+        return false;
+    }
+
+    /**
+     * Whether this provider adjusts a replacement invoice. None here does: TT 91/2026/TT-BTC Điều 10 khoản 6 điểm a keeps
+     * the form first chosen - a replacement is put right by another replacement - and SePay refuses an adjustment of a
+     * replacement with 422 {@code INVALID_ORIGIN_INVOICE} (sandbox run T-5). The aggregate refuses it whatever the
+     * provider ({@code EInvoice.drawUpAdjustment}); the flag is what the back office reads to hide the action (F-11).
+     */
+    default boolean adjustsReplacements() {
+        return false;
+    }
+
+    /**
+     * Whether the account this provider is called with is the deployment's configuration (environment variables) and
+     * not a row an administrator stores ({@code invoicing.einvoice_provider_config}). Such a provider takes no stored
+     * account, and is put in use only when {@link #deploymentAccountReady()} says the deployment gave it one.
+     */
+    default boolean accountInDeployment() {
+        return false;
+    }
+
+    /** For a provider whose account is in the deployment: whether the deployment configured one. */
+    default boolean deploymentAccountReady() {
+        return false;
+    }
+
+    /**
+     * Whether a refusal code this provider answered is about <b>the account</b> rather than the invoice: the plan's
+     * quota used up, its bill unpaid, the registration not finished or not approved by the tax authority (HĐ-1). Such a
+     * refusal is still a refusal - nothing was created - but every invoice sent meanwhile meets it, and it is fixed on
+     * the provider's portal, not on the invoice: the accountants are told once per cause, not once per invoice.
+     *
+     * @param errorCode the rejection code the provider's answer was recorded under
+     * @return the kind of problem; empty for a refusal of the invoice itself, and for every code by default
+     */
+    default Optional<AccountProblem> accountProblem(String errorCode) {
+        return Optional.empty();
+    }
+
+    /** What is wrong with the account a provider is called with (HĐ-1). */
+    enum AccountProblem {
+        /** The plan's invoices are used up: more are bought on the provider's portal. */
+        QUOTA_EXHAUSTED,
+        /** The plan is not paid. */
+        BILLING_UNPAID,
+        /** The registration is not complete, not approved by the tax authority, or not found. */
+        ACCOUNT_NOT_READY
+    }
+
+    /**
+     * How many invoices the provider's plan still issues (kltn-docs 21 BR-09), asked now; empty when the provider has
+     * no such figure (the sandbox, Viettel's adapter) or is not configured.
+     *
+     * @throws ProviderUnavailableException when the provider did not answer
+     */
+    default OptionalLong remainingQuota() {
+        return OptionalLong.empty();
+    }
+
+    /**
+     * Whether this provider can send a 04/SS-HĐĐT notice ({@link #notifyError}). One that cannot is never handed one:
+     * the notice is filed on the provider's or the tax authority's portal by hand, and nothing here records it as sent
+     * (HĐ-6) - a notice recorded but never sendable used to tell the buyer the tax authority was notified.
+     */
+    default boolean sendsErrorNotices() {
+        return false;
+    }
+
+    /**
+     * Whether the XML this provider hands back carries the seller's digital signature, so an issued invoice's XML is
+     * checked ({@code InvoiceXmlSignature}) before the buyer is sent it (HĐ-8). The sandbox signs nothing; a real
+     * provider's test system may not either.
+     */
+    default boolean signsDocuments() {
+        return true;
+    }
+
+    /**
+     * Whether the account offers a series - the provider's own template code and the symbol - so a series it would
+     * refuse every invoice under is refused when it is declared (HĐ-1).
+     *
+     * @throws ProviderUnavailableException when the provider did not answer
+     */
+    default SeriesCheck checkSeries(String providerTemplateCode, String symbol) {
+        return SeriesCheck.NOT_CHECKED;
+    }
+
+    /** What {@link #checkSeries} found. */
+    enum SeriesCheck {
+        OFFERED,
+        NOT_OFFERED,
+        /** The provider lists no templates, or is not configured yet: nothing is known either way. */
+        NOT_CHECKED
     }
 
     /**
@@ -116,9 +272,9 @@ public interface EInvoiceProvider {
      * authority through the provider, and returns its answer (Mẫu 01/TB-SSĐT, khoản 4) if it is already there. The
      * notice's reference is the system's own and the provider treats a second sending of it as the first again.
      *
-     * <p>A provider that has no such call answers {@link NoticeOutcome#NOT_SUPPORTED}: the notice stays recorded and
-     * is filed with the tax authority by hand. That is the default, so an implementation written before notices
-     * existed needs no change.</p>
+     * <p>Called only on a provider that says {@link #sendsErrorNotices()}: a notice for any other is refused before it
+     * is recorded, and filed by hand on a portal (HĐ-6). The default still answers {@link NoticeOutcome#NOT_SUPPORTED},
+     * which leaves a notice as it was, so nothing is ever taken for sent that was not.</p>
      *
      * @throws ProviderUnavailableException when the provider did not answer
      */
@@ -163,8 +319,18 @@ public interface EInvoiceProvider {
         REJECTED
     }
 
-    /** @param errorCode and {@code message}: why it was refused; null unless REJECTED */
-    record Submission(SubmissionOutcome outcome, String errorCode, String message) {
+    /**
+     * @param errorCode         and {@code message}: why it was refused; null unless REJECTED
+     * @param providerReference the provider's own handle on the submission, for a provider that tells its result
+     *                          only through it (SePay's tracking code); kept in the call log, never needed again by
+     *                          anyone else; null when there is none
+     */
+    record Submission(SubmissionOutcome outcome, String errorCode, String message, String providerReference) {
+
+        /** A submission the provider gives no handle on. */
+        public Submission(SubmissionOutcome outcome, String errorCode, String message) {
+            this(outcome, errorCode, message, null);
+        }
     }
 
     /** Where a transaction stands at the provider. */
@@ -191,12 +357,29 @@ public interface EInvoiceProvider {
      * @param signedAt         when the seller's signature was put on it; null unless ISSUED
      * @param errorCode        and {@code message}: why it was refused, or what the unclear answer said; null unless
      *                         REJECTED or UNKNOWN
+     * @param templateCode     and {@code symbol}: the series the provider says it numbered the invoice under (WF-05
+     *                         BE-30) - SePay's look-up names it ({@code invoice_series}; its template code is SePay's
+     *                         own, not the tax authority's form number, so only the symbol is compared); null where the
+     *                         provider does not say. An invoice is recorded ISSUED under the series it was sent under,
+     *                         and never when the provider names another ({@code EInvoiceIssuanceSteps.issued})
      */
     record Result(ResultState state, Integer invoiceNumber, String taxAuthorityCode, String lookupCode,
-                  Instant signedAt, String errorCode, String message) {
+                  Instant signedAt, String errorCode, String message, String templateCode, String symbol) {
+
+        /** A result that says nothing of the series it was numbered under. */
+        public Result(ResultState state, Integer invoiceNumber, String taxAuthorityCode, String lookupCode,
+                      Instant signedAt, String errorCode, String message) {
+            this(state, invoiceNumber, taxAuthorityCode, lookupCode, signedAt, errorCode, message, null, null);
+        }
 
         public static Result of(ResultState state) {
             return new Result(state, null, null, null, null, null, null);
+        }
+
+        /** The same result, with the series the provider says it numbered the invoice under. */
+        public Result numberedUnder(String providerTemplateCode, String providerSymbol) {
+            return new Result(state, invoiceNumber, taxAuthorityCode, lookupCode, signedAt, errorCode, message,
+                    providerTemplateCode, providerSymbol);
         }
     }
 
@@ -208,11 +391,20 @@ public interface EInvoiceProvider {
      * The invoice an adjustment or a replacement changes, as the new invoice must name it (TT 91 Điều 10 khoản 1 điểm
      * b.1, b.2: "Điều chỉnh / Thay thế cho hóa đơn Mẫu số... ký hiệu... số... ngày... tháng... năm").
      *
-     * @param type   ADJUSTMENT or REPLACEMENT
-     * @param reason what was wrong, or what the adjustment is for
+     * @param type                  ADJUSTMENT or REPLACEMENT
+     * @param reason                what was wrong, or what the adjustment is for
+     * @param originalTransactionId the transaction the changed invoice was issued under: a provider that names an
+     *                              invoice by the reference it was handed (SePay) needs it, one that names it by its
+     *                              number does not; null where it is not known
      */
     record Correction(EInvoiceType type, String templateCode, String symbol, int invoiceNumber, LocalDate issueDate,
-                      String reason) {
+                      String reason, String originalTransactionId) {
+
+        /** A correction naming the invoice by its number alone. */
+        public Correction(EInvoiceType type, String templateCode, String symbol, int invoiceNumber, LocalDate issueDate,
+                          String reason) {
+            this(type, templateCode, symbol, invoiceNumber, issueDate, reason, null);
+        }
     }
 
     /**

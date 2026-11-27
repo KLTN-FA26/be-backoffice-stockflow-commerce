@@ -1,7 +1,10 @@
 package com.stockflow.order.internal.service;
 
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
+import com.stockflow.order.internal.domain.DeliveryFailureCases;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,17 +19,22 @@ import java.util.UUID;
  * assigned"), so they read only orders that ship from one of their warehouses (4B-7) or were released to one.
  *
  * <p>Why not the generic data-scope filter: an order row has no warehouse attribute for it (it has none until a
- * shipping warehouse is chosen or it is released), and the order endpoints declare scope ALL or OWN, under which
- * {@code WarehouseScope} does not limit. So the order controller asks here, explicitly.</p>
+ * shipping warehouse is chosen or it is released), so {@code WarehouseScope.requireWarehouse(order.warehouseId())}
+ * would refuse an order that is not released yet though it ships from the caller's warehouse. And several order
+ * endpoints declare scope OWN for the customer, under which {@code WarehouseScope} does not limit at all (it limits
+ * under WAREHOUSE and ALL only). This class reads the caller's own scope, whatever the endpoint declares, so the order
+ * endpoints ask here, explicitly.</p>
  */
 @Service
 @Transactional(readOnly = true)
 public class OrderWarehouseVisibility {
 
     private final OrderSearchRepository search;
+    private final DeliveryFailureCases deliveryFailures;
 
-    OrderWarehouseVisibility(OrderSearchRepository search) {
+    OrderWarehouseVisibility(OrderSearchRepository search, DeliveryFailureCases deliveryFailures) {
         this.search = search;
+        this.deliveryFailures = deliveryFailures;
     }
 
     /**
@@ -45,5 +53,28 @@ public class OrderWarehouseVisibility {
     public boolean visible(UUID orderId, CurrentUser user) {
         Set<UUID> limit = limitOf(user);
         return limit == null || search.inWarehouses(orderId, limit);
+    }
+
+    /** {@link #visible}, or 404 as for an unknown order: an order of another warehouse is not revealed to exist. */
+    public void requireVisible(UUID orderId, CurrentUser user) {
+        if (!visible(orderId, user)) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId);
+        }
+    }
+
+    /**
+     * {@link #requireVisible} for a release: the order is of one of the caller's warehouses, or goods of it came back to
+     * one of them and wait to be released from there (a delivery failure case there awaiting release: the redelivery is
+     * released from the warehouse the goods came back to, WF-05 fix plan, section 2). A case already released, closed
+     * or cancelled opens nothing: that warehouse has no more to release for the order. Asked before the release reads the order at all: its refusals name the order, its
+     * return receipt, its batches and its SKUs with their held cartons, none of which an out-of-scope caller may learn.
+     */
+    public void requireReleasable(UUID orderId, CurrentUser user) {
+        Set<UUID> limit = limitOf(user);
+        if (limit == null || search.inWarehouses(orderId, limit) || deliveryFailures.ofOrder(orderId).stream()
+                .anyMatch(failure -> failure.awaitingRelease() && limit.contains(failure.warehouseId()))) {
+            return;
+        }
+        throw new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId);
     }
 }

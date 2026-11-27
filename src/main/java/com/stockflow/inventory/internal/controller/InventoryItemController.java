@@ -35,8 +35,8 @@ import java.util.UUID;
  * with the columns that held a choice nobody may make.</p>
  *
  * <p>The resource declares only the actions an endpoint here checks. V20260928006000 also seeded CREATE and EXPORT
- * for it, but items are created by the variant trigger and nothing exports them, so the role matrix would offer
- * grants that guard nothing. Undeclared grants are left alone by the matrix rather than shown or removed.</p>
+ * for it, but an item is opened by placing an order (owner decision Q5, {@code InventoryService.openItems}), never
+ * here, and nothing exports them, so the role matrix would offer grants that guard nothing. Undeclared grants are left alone by the matrix rather than shown or removed.</p>
  */
 @RestController
 @RequestMapping("/api/v1/inventory/items")
@@ -83,8 +83,8 @@ class InventoryItemController {
     @GetMapping("/{id}/packaging-preview")
     @Operation(summary = "How a quantity of this item would be packed for load planning (advisory)",
             description = "quantity is in base units. Returns the carton, the full cartons and the remainder, the "
-                    + "rule level used and any warnings; status MISSING (still 200) when not even the item's own "
-                    + "unit has a size and weight. Read-only: nothing is stored.")
+                    + "rule level used and any warnings; status MISSING (still 200) when the item has no carton unit "
+                    + "with a full size and weight. Read-only: nothing is stored.")
     @RequiresPermission(resource = InventoryResources.INVENTORY_ITEMS, action = Action.READ)
     public ApiResponse<PackagingSpec> packagingPreview(@PathVariable UUID id, @RequestParam int quantity) {
         return ApiResponse.ok(packaging.resolve(id, quantity));

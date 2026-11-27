@@ -7,6 +7,8 @@ import com.stockflow.assistant.internal.controller.dto.FeedbackRequest;
 import com.stockflow.assistant.internal.controller.dto.TranscriptEntryResponse;
 import com.stockflow.assistant.internal.service.AssistantService;
 import com.stockflow.assistant.internal.service.AssistantStreams;
+import com.stockflow.assistant.internal.service.AssistantTelemetry;
+import com.stockflow.assistant.internal.service.FeatureUse;
 import com.stockflow.assistant.internal.service.ConversationService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
@@ -83,9 +85,11 @@ class AssistantController {
     private final AssistantService assistant;
     private final AssistantStreams streams;
     private final AssistantWebMapper mapper;
+    private final AssistantTelemetry telemetry;
 
     AssistantController(ConversationService conversations, AssistantService assistant, AssistantStreams streams,
-                        AssistantWebMapper mapper) {
+                        AssistantWebMapper mapper, AssistantTelemetry telemetry) {
+        this.telemetry = telemetry;
         this.conversations = conversations;
         this.assistant = assistant;
         this.streams = streams;
@@ -189,9 +193,11 @@ class AssistantController {
     /**
      * The answer's body for {@code user}, on the request thread or the stream's worker alike. An answer stating numbers
      * that nothing it was given holds is logged with the correlation id, which MDC carries on both: the count and the
-     * message, never the figures themselves, which are business data.
+     * message, never the figures themselves, which are business data. Counted as one use of the chat (contract §5.2),
+     * plain or streamed alike.
      */
     private AnswerResponse answered(AssistantService.Answer answer, CurrentUser user) {
+        telemetry.featureUsed(FeatureUse.CHAT, user);
         if (!answer.unverifiedNumbers().isEmpty() || !answer.unverifiedCodes().isEmpty()) {
             log.warn("Assistant answer {} states {} number(s) and {} code(s) that no lookup, question or context "
                             + "holds (correlation id {})", answer.messageId(), answer.unverifiedNumbers().size(),

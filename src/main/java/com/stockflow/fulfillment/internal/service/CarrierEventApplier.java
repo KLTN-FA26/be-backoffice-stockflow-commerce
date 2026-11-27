@@ -49,7 +49,8 @@ import java.util.stream.Collectors;
  *       what was matched. Nothing is locked: loads and bookings are read as projections, so the locks taken by the
  *       change that follows read their rows fresh.</li>
  *   <li>{@link #apply}: under the load's carrier-event lock, decide a repeat (BR-27: DUPLICATE) and an outdated report
- *       (older than the last applied to the same shipment, or to the load: STALE), then apply it through the load or the
+ *       (STALE: an outcome older than the last applied to the same shipment, or than an outcome applied to the whole
+ *       load; anything else older than the last report applied to the load), then apply it through the load or the
  *       shipment, recorded by nobody at the carrier's time.</li>
  * </ol>
  * A change the load's or shipment's state refuses throws; the caller then decides the call NEEDS_REVIEW in a third
@@ -70,7 +71,12 @@ class CarrierEventApplier {
                    String carrierOrderId, UUID shipmentId, String dedupeKey, List<CarrierReport> stops,
                    FailureReasonMap.Resolution failure) { }
 
-    private static final String E21_NOTE = "Returned by the carrier with no failed delivery reported first";
+    /**
+     * E21: the note of the failed delivery recorded for a shipment the carrier reports returned while still handed over.
+     * Stored on the shipment and read by staff on its timeline, so it is written as kltn-docs 09 §4.5 step 7 and BR-26
+     * word it (as {@code chat}'s document cards keep their Vietnamese titles), not in English.
+     */
+    static final String E21_NOTE = "hãng báo hoàn hàng";
 
     private final CarrierEventJpaRepository events;
     private final DispatchLoadJpaRepository loads;
@@ -289,6 +295,14 @@ class CarrierEventApplier {
         CarrierReport report = m.report();
         Instant last = newerApplied(m);
         if (last != null) {
+            List<String> waiting = isOutcome(report.kind()) ? awaitingOutcome(m) : List.of();
+            if (!waiting.isEmpty()) {
+                // WF-05 BE-15: dropped as STALE, nobody saw it, and a shipment with no outcome stayed HANDED_OVER for
+                // ever - no invoice, no installment due, no return window. The manager decides it instead.
+                return decide(event, CarrierEventResult.NEEDS_REVIEW, ("Older than the last outcome applied (%s), "
+                        + "but %s has no outcome yet: check with the carrier and record it by hand")
+                        .formatted(last, String.join(", ", waiting)));
+            }
             return decide(event, CarrierEventResult.STALE, "Older than the last report applied (" + last + ")");
         }
         Instant at = report.reportedAt() != null ? report.reportedAt() : event.getReceivedAt();
@@ -310,17 +324,57 @@ class CarrierEventApplier {
     }
 
     /**
-     * The time of a report applied to the same shipment, or to the load, that is later than this one's (BR-27: this one
-     * is then outdated); null when there is none, or the report carries no time.
+     * The time of a report applied before that is later than this one's (BR-27: this one is then outdated); null when
+     * there is none, or the report carries no time.
+     *
+     * <p>An outcome (delivered, not delivered, back) is held against the reports applied to its own shipment and the
+     * outcomes applied to the whole load (an API carrier's completed order among them: it carried its drop-offs'
+     * outcomes) - never against the vehicle's milestones, nor against what other shipments'
+     * reports said (WF-05 BE-15). One clock for the whole load, milestones included, made a drop-off's late "delivered"
+     * outdated by the vehicle's later "returning", and a report about one shipment was dropped because of reports about
+     * others. Anything else - a milestone, the waybill, the driver - is held against every report applied to the load,
+     * as before.</p>
      */
     private Instant newerApplied(Matched m) {
         Instant reportedAt = m.report().reportedAt();
         if (reportedAt == null) {
             return null;
         }
-        Instant last = latest(events.lastAppliedToLoad(m.loadId()),
-                m.shipmentId() == null ? null : events.lastAppliedToShipment(m.shipmentId()));
+        Instant ofLoad = isOutcome(m.report().kind()) ? events.lastOutcomeAppliedToLoad(m.loadId())
+                : events.lastAppliedToLoad(m.loadId());
+        Instant last = latest(ofLoad, m.shipmentId() == null ? null : events.lastAppliedToShipment(m.shipmentId()));
         return last != null && reportedAt.isBefore(last) ? last : null;
+    }
+
+    private static boolean isOutcome(CarrierEventKind kind) {
+        return kind == CarrierEventKind.DELIVERED || kind == CarrierEventKind.DELIVERY_FAILED
+                || kind == CarrierEventKind.RETURNED;
+    }
+
+    /**
+     * The codes of the shipments an outdated outcome is about that have no outcome yet (still HANDED_OVER): the one it
+     * names, or every one on the load for a report naming none.
+     */
+    private List<String> awaitingOutcome(Matched m) {
+        return shipments.statesOnLoad(m.loadId()).stream()
+                .filter(s -> m.shipmentId() == null || s.getId().equals(m.shipmentId()))
+                .filter(s -> s.getStatus() == ShipmentStatus.HANDED_OVER)
+                .map(ShipmentJpaRepository.ShipmentState::getCode).toList();
+    }
+
+    /**
+     * WF-05 BE-15: of the shipments a load-level outcome would apply to, the codes of those with a report of their own
+     * later than it - left as their own report has them, as a later report applied first is not undone by an earlier
+     * one sent after it.
+     */
+    private List<String> withNewerOwnReport(List<ShipmentJpaRepository.ShipmentState> targets, Instant reportedAt) {
+        if (reportedAt == null) {
+            return List.of();
+        }
+        return targets.stream().filter(s -> {
+            Instant own = events.lastAppliedToShipment(s.getId());
+            return own != null && reportedAt.isBefore(own);
+        }).map(ShipmentJpaRepository.ShipmentState::getCode).toList();
     }
 
     /**
@@ -372,6 +426,7 @@ class CarrierEventApplier {
         String note = failure == null ? null : failure.carrierWording() != null ? failure.carrierWording()
                 : reason == DeliveryFailureReason.OTHER ? "The carrier gave no reason" : null;
         List<String> skipped = new ArrayList<>();
+        List<String> newer = new ArrayList<>();
         List<UUID> targets;
         if (m.shipmentId() != null) {
             requireNotCorrected(List.of(m.shipmentId()));
@@ -383,25 +438,38 @@ class CarrierEventApplier {
             }
             skipped.addAll(corrections.correctedAmong(onLoad.stream().map(ShipmentJpaRepository.ShipmentState::getId)
                     .toList()));
-            targets = onLoad.stream().filter(s -> !skipped.contains(s.getCode()))
+            newer.addAll(withNewerOwnReport(onLoad, report.reportedAt()));
+            targets = onLoad.stream().filter(s -> !skipped.contains(s.getCode()) && !newer.contains(s.getCode()))
                     .map(ShipmentJpaRepository.ShipmentState::getId).toList();
         }
         int changed = 0;
+        List<UUID> delivered = new ArrayList<>();
         for (UUID shipment : targets) {
-            changed += shipmentOutcomes.carrierOutcome(shipment, target, reason, note, at, eventId) ? 1 : 0;
+            if (shipmentOutcomes.carrierOutcome(shipment, target, reason, note, at, eventId)) {
+                changed++;
+                delivered.add(shipment);
+            }
         }
-        String untouched = skipped.isEmpty() ? "" : "; corrected by hand, not touched (E17): " + String.join(", ",
-                skipped);
+        if (target == ShipmentStatus.DELIVERED && report.podUrl() != null && !delivered.isEmpty()) {
+            // 09 §4.5 step 7 "POD đính kèm": fetched after commit, with no transaction held while it downloads.
+            publisher.publishEvent(new CarrierPodReported(eventId, report.podUrl(), delivered));
+        }
+        String untouched = (skipped.isEmpty() ? "" : "; corrected by hand, not touched (E17): " + String.join(", ",
+                skipped)) + (newer.isEmpty() ? "" : "; a later report of their own, not touched: "
+                + String.join(", ", newer));
         return changed > 0 ? new Outcome(CarrierEventResult.APPLIED, "%s: %d shipment(s)%s%s".formatted(target,
                         changed, reason == null ? "" : " (" + reason + ")", untouched))
                 : new Outcome(CarrierEventResult.IGNORED, "The shipments were " + target + " already" + untouched);
     }
 
     /**
-     * The goods are back. A WEBHOOK_LOAD carrier: the shipment named, or every shipment of the load not delivered; one
-     * still handed over is recorded failed (OTHER) first, in the same step (E21). An API carrier reports it for the
-     * order: its failed drop-offs are returned; a drop-off it never reported an outcome for goes to the error list
-     * rather than being guessed.
+     * The goods are back. A WEBHOOK_LOAD carrier naming a shipment: that shipment, recorded failed (OTHER) first, in the
+     * same step, when it was still handed over (E21). A report naming none - the whole load, or an API carrier's order -
+     * returns the shipments that already have a failed outcome of their own; one still handed over goes to the error list
+     * rather than being guessed (WF-05 Q-7, BE-14): it may well be at its customer, whose delivery report simply has not
+     * arrived, and RETURNED is final - it closes the shipment's units and has no correction back. Before, a load-level
+     * report forced every undelivered shipment of the load through failed to returned. A shipment with a later report of
+     * its own is left as that report has it (BE-15).
      */
     private Outcome returned(CarrierJpaEntity carrier, Matched m, Instant at, UUID eventId) {
         requireLeft(m);
@@ -411,18 +479,23 @@ class CarrierEventApplier {
                 ? onLoad.stream().filter(s -> s.getId().equals(m.shipmentId())).toList()
                 : onLoad.stream().filter(s -> s.getStatus() != ShipmentStatus.DELIVERED).toList();
         List<String> skipped = new ArrayList<>();
+        List<String> newer = new ArrayList<>();
         if (m.shipmentId() != null) {
             requireNotCorrected(List.of(m.shipmentId()));
         } else if (!targets.isEmpty()) {
             skipped.addAll(corrections.correctedAmong(targets.stream().map(ShipmentJpaRepository.ShipmentState::getId)
                     .toList()));
-            targets = targets.stream().filter(s -> !skipped.contains(s.getCode())).toList();
+            newer.addAll(withNewerOwnReport(targets, m.report().reportedAt()));
+            targets = targets.stream().filter(s -> !skipped.contains(s.getCode()) && !newer.contains(s.getCode()))
+                    .toList();
         }
+        boolean wholeLoad = m.shipmentId() == null;
         List<String> silent = new ArrayList<>();
         int changed = 0;
         for (ShipmentJpaRepository.ShipmentState shipment : targets) {
-            if (api && shipment.getStatus() == ShipmentStatus.HANDED_OVER) {
-                // An API carrier reports each drop-off's outcome: one it never reported is not guessed (09 §4.5 table).
+            if ((api || wholeLoad) && shipment.getStatus() == ShipmentStatus.HANDED_OVER) {
+                // A shipment no report of its own said was not delivered is not guessed returned (09 §4.5 table; WF-05
+                // Q-7): an API carrier reports each drop-off's outcome, and a load-level report is about the vehicle.
                 silent.add(shipment.getCode());
                 continue;
             }
@@ -440,8 +513,9 @@ class CarrierEventApplier {
             return new Outcome(CarrierEventResult.NEEDS_REVIEW, ("RETURNED: %d shipment(s); the carrier reported no "
                     + "outcome for %s: record those by hand").formatted(changed, String.join(", ", silent)));
         }
-        String untouched = skipped.isEmpty() ? "" : "; corrected by hand, not touched (E17): " + String.join(", ",
-                skipped);
+        String untouched = (skipped.isEmpty() ? "" : "; corrected by hand, not touched (E17): " + String.join(", ",
+                skipped)) + (newer.isEmpty() ? "" : "; a later report of their own, not touched: "
+                + String.join(", ", newer));
         if (changed == 0 && recorded == 0) {
             return new Outcome(CarrierEventResult.IGNORED, "The goods were recorded back already" + untouched);
         }
@@ -495,8 +569,7 @@ class CarrierEventApplier {
 
     /**
      * The carrier cancelled the order before the pickup: the booking is cancelled and the dispatchers told; the load is
-     * PLANNED again - or, while it was loading, stays as it is and goes to the error list too: the truck at the dock has
-     * no order any more, so it cannot be handed over on it (unload it with a controlled cancel, or book again).
+     * PLANNED again (09 §4.5), the parcels already on a loading truck to be scanned off first (RTM-LOADCANCEL2).
      */
     private Outcome cancelled(CarrierJpaEntity carrier, Matched m, Instant at) {
         Dispatching.CarrierCancel done = dispatching.carrierOrderCancelled(m.loadId(), m.bookingId(), at);
@@ -508,11 +581,8 @@ class CarrierEventApplier {
                 m.warehouseId(), carrier.getCode(), m.carrierOrderId(), at));
         String wording = m.report().failureWording();
         String said = wording == null ? "" : ": " + wording;
-        return done == Dispatching.CarrierCancel.UNBOOKED
-                ? new Outcome(CarrierEventResult.APPLIED, "The carrier cancelled the order" + said
-                        + "; the load is PLANNED again")
-                : new Outcome(CarrierEventResult.NEEDS_REVIEW, "The carrier cancelled the order" + said + " while load "
-                        + m.loadCode() + " was loading: it cannot leave on that order - unload it or book again");
+        return new Outcome(CarrierEventResult.APPLIED, "The carrier cancelled the order" + said
+                + "; the load is PLANNED again");
     }
 
     /** Milestones and outcomes are a vehicle that left's (09 §4.5 step 7); before that, the error list's. */

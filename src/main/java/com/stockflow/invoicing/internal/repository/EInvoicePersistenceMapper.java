@@ -22,7 +22,7 @@ final class EInvoicePersistenceMapper {
                 s.shipmentId(), s.shipmentCode(), s.deliveryBatchId(), s.customerId(), s.originalEInvoiceId(),
                 s.issueDate(), s.issueDueAt(), s.seller().name(), s.seller().taxCode(), s.seller().address(),
                 s.currency(), s.paymentMethod(), s.subtotal(), s.taxTotal(), s.grandTotal(), s.amountInWords(),
-                s.adjustmentReason(), s.correctionBasis(), s.returnRequestId());
+                s.adjustmentReason(), s.correctionBasis(), s.returnRequestId(), s.deliveredOn());
     }
 
     /** Everything that follows the aggregate after it was drawn up. */
@@ -35,7 +35,9 @@ final class EInvoicePersistenceMapper {
                 s.submittedAt(), s.submittedBy(), s.rejectionCode(), s.rejectionMessage());
         entity.applyIssue(s.invoiceNumber(), s.taxAuthorityCode(), s.lookupCode(), s.signedAt(), s.xmlFileKey(),
                 s.pdfFileKey(), s.issuedAt());
-        entity.applyVoid(s.voidedAt(), s.voidedBy(), s.voidReason());
+        entity.applyVoid(s.voidedAt(), s.voidedBy(), s.voidReason(), s.voidReasonCode());
+        entity.applyDate(s.issueDate(), s.issueDueAt());
+        entity.applyRecording(s.issuedVia(), s.portalRecordedBy(), s.portalRecordedAt());
     }
 
     static EInvoice toDomain(EInvoiceJpaEntity e, List<EInvoiceLine> lines, List<java.util.UUID> listed) {
@@ -52,7 +54,9 @@ final class EInvoicePersistenceMapper {
                 e.getXmlFileKey(), e.getPdfFileKey(), e.getRejectionCode(), e.getRejectionMessage(),
                 e.getSubmittedAt(), e.getSubmittedBy(), e.getIssuedAt(), e.getVoidedAt(), e.getVoidedBy(),
                 e.getVoidReason(), e.getVersion(), e.getCorrectionBasis(), e.getAgreementNumber(),
-                e.getAgreementDate(), e.getReturnRequestId(), listed));
+                e.getAgreementDate(), e.getReturnRequestId(), listed, e.getDeliveryFailedAt(), e.getDeliveredOn(),
+                e.getReversedAt(), e.getIssuedVia(), e.getPortalRecordedBy(), e.getPortalRecordedAt(),
+                e.getVoidReasonCode()));
     }
 
     /** Codes in the enum's order, comma-separated; null for none, so the column says "nothing to look at" plainly. */

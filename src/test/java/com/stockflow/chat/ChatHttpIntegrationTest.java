@@ -266,7 +266,85 @@ class ChatHttpIntegrationTest {
                 .andExpect(status().isCreated());
     }
 
+    @Test
+    @DisplayName("BE-11: the mention picker lists active staff of any role by name, accents ignored; never a customer, "
+            + "never a disabled account; a note accepts whoever it offers")
+    void theMentionPickerOffersActiveStaffOfAnyRole() throws Exception {
+        StaffFixtures people = new StaffFixtures(jdbc, tx, entityManager);
+        String tag = "Zq" + Long.toString(ThreadLocalRandom.current().nextLong(1L << 40), 36);
+        UUID accountant = people.staff("ACCOUNTANT");
+        UUID warehouse = people.staff("WAREHOUSE_MANAGER");
+        UUID disabled = people.staff("ACCOUNTANT");
+        people.setStatus(disabled, "DISABLED");
+        name(accountant, "Nguyễn Thị Kế " + tag);
+        name(warehouse, "Trần Văn Kho " + tag);
+        name(disabled, "Lê Đã Nghỉ " + tag);
+        name(alice.account(), "Phạm Khách " + tag);
+
+        JsonNode found = json.readTree(body(perform(Role.SALES_STAFF, sales, get("/api/v1/chat/staff")
+                .param("q", "NGUYEN THI KE " + tag.toUpperCase(java.util.Locale.ROOT)))
+                .andExpect(status().isOk()))).path("data");
+        assertThat(found).hasSize(1);
+        assertThat(found.get(0).path("id").asText()).isEqualTo(accountant.toString());
+        assertThat(found.get(0).path("name").asText()).isEqualTo("Nguyễn Thị Kế " + tag);
+        assertThat(found.get(0).path("role").asText()).isEqualTo("ACCOUNTANT");
+        assertThat(found.get(0).path("roleName").asText()).isNotBlank();
+
+        JsonNode tagged = json.readTree(body(perform(Role.SALES_STAFF, sales, get("/api/v1/chat/staff")
+                .param("q", tag)).andExpect(status().isOk()))).path("data");
+        assertThat(tagged.findValuesAsText("id")).containsExactly(accountant.toString(), warehouse.toString());
+        assertThat(tagged.get(1).path("role").asText()).isEqualTo("WAREHOUSE_MANAGER");
+        perform(Role.SALES_STAFF, sales, get("/api/v1/chat/staff").param("q", tag).param("limit", "1"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(1));
+        perform(Role.SALES_STAFF, sales, get("/api/v1/chat/staff").param("q", "%"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(0));
+        assertThat(json.readTree(body(perform(Role.SALES_STAFF, sales, get("/api/v1/chat/staff"))
+                .andExpect(status().isOk()))).path("data").size()).as("20 when the picker does not say")
+                .isBetween(5, 20);
+        assertThat(json.readTree(body(perform(Role.SALES_STAFF, sales, get("/api/v1/chat/staff")
+                .param("limit", "500")).andExpect(status().isOk()))).path("data").size()).isLessThanOrEqualTo(50);
+        http.asCustomer(alice.account(), get("/api/v1/chat/staff")).andExpect(status().isForbidden());
+
+        UUID conversation = openAsCustomer(alice, null, "Hoi cong no");
+        claim(sales, conversation);
+        perform(Role.SALES_STAFF, sales, post(STAFF + "/" + conversation + "/notes")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"text\":\"Chi ke toan xem giup\",\"mentions\":[\"" + accountant + "\",\"" + warehouse
+                        + "\"]}"))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    @DisplayName("BE-19: a colleague who is not the assignee is offered no move and no reply; the assignee is")
+    void theViewOffersOnlyWhatTheViewerMayDo() throws Exception {
+        UUID conversation = openAsCustomer(alice, null, "Cho hoi");
+        perform(Role.SALES_STAFF, otherSales, get(STAFF + "/" + conversation)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.canClaim").value(true))
+                .andExpect(jsonPath("$.data.canReply").value(false))
+                .andExpect(jsonPath("$.data.nextStatuses.length()").value(0));
+        claim(sales, conversation);
+        reply(sales, conversation, "Chao anh", null).andExpect(status().isCreated());
+        perform(Role.SALES_STAFF, otherSales, get(STAFF + "/" + conversation)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.canClaim").value(false))
+                .andExpect(jsonPath("$.data.canReply").value(false))
+                .andExpect(jsonPath("$.data.canAssign").value(false))
+                .andExpect(jsonPath("$.data.nextStatuses.length()").value(0));
+        reply(otherSales, conversation, "Chen ngang", null).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CHAT_NOT_ASSIGNEE"));
+        perform(Role.SALES_STAFF, sales, get(STAFF + "/" + conversation)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.canReply").value(true))
+                .andExpect(jsonPath("$.data.canAssign").value(true))
+                .andExpect(jsonPath("$.data.nextStatuses.length()").value(4));
+        http.asCustomer(alice.account(), get(MINE + "/" + conversation)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.canReply").doesNotExist());
+    }
+
     // ---- helpers
+
+    private void name(UUID user, String fullName) {
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE identity.app_user SET full_name = ? WHERE id = ?", fullName,
+                user));
+    }
 
     private Portal portal(StaffFixtures people) {
         UUID account = people.staff("CUSTOMER");

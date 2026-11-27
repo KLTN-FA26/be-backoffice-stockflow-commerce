@@ -32,6 +32,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -70,6 +71,7 @@ class EInvoiceAccountantNoticesIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
+    @Autowired com.stockflow.invoicing.internal.domain.EInvoiceRepository repository;
 
     private ConfirmedOrders confirmedOrders;
     private UUID customer;
@@ -189,6 +191,40 @@ class EInvoiceAccountantNoticesIntegrationTest {
     }
 
     @Test
+    @DisplayName("audit r2 M-2: a draft held back for a tax warning is found by the sweep, noted once with its "
+            + "warnings as the reason, then no longer found; a new warning makes it new; a missing e-mail alone is not "
+            + "held, and an issued invoice never")
+    void aHeldDraftIsFoundAndNotedOnce() {
+        EInvoice.Snapshot draft = draft();
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET warnings = 'TAX_CLASS_UNKNOWN' "
+                + "WHERE id = ?", draft.id()));
+
+        assertThat(repository.findHeldUnannounced(1000)).contains(draft.id());
+        java.util.Optional<String> first = tx.execute(s -> repository.markHeldForWarnings(draft.id(), Instant.now()));
+        java.util.Optional<String> again = tx.execute(s -> repository.markHeldForWarnings(draft.id(), Instant.now()));
+        assertThat(first).contains("TAX_CLASS_UNKNOWN");
+        assertThat(again).as("once").isEmpty();
+        assertThat(repository.findHeldUnannounced(1000)).doesNotContain(draft.id());
+
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET warnings = "
+                + "'TAX_RATE_DIFFERS_FROM_CONTRACT,TAX_CLASS_UNKNOWN' WHERE id = ?", draft.id()));
+        assertThat(repository.findHeldUnannounced(1000)).as("a new reason").contains(draft.id());
+        Boolean refusal = tx.execute(s -> repository.markHeldAnnounced(draft.id(), "EINVOICE_SERIES_NOT_CONFIGURED",
+                Instant.now()));
+        Boolean refusalAgain = tx.execute(s -> repository.markHeldAnnounced(draft.id(),
+                "EINVOICE_SERIES_NOT_CONFIGURED", Instant.now()));
+        assertThat(refusal).isTrue();
+        assertThat(refusalAgain).isFalse();
+
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET warnings = 'BUYER_EMAIL_MISSING' "
+                + "WHERE id = ?", draft.id()));
+        assertThat(repository.findHeldUnannounced(1000)).as("issued anyway (Q-22)").doesNotContain(draft.id());
+        java.util.Optional<String> emailOnly = tx.execute(s -> repository.markHeldForWarnings(draft.id(),
+                Instant.now()));
+        assertThat(emailOnly).isEmpty();
+    }
+
+    @Test
     @DisplayName("stuck SUBMITTING: not announced while the provider may still answer; past stuck-after the accountant "
             + "is warned once per submission, the invoice untouched and still asked about")
     void aStuckSubmissionReachesTheAccountantOnce() {
@@ -269,5 +305,65 @@ class EInvoiceAccountantNoticesIntegrationTest {
         assertThat(noticesOfAnyKind(accountant, far.id())).as("three days ahead: nothing to say yet").isZero();
         assertThat(noticesOfAnyKind(salesStaff, near.id())).isZero();
         assertThat(queries.get(near.id()).status()).as("a warning changes nothing").isEqualTo(EInvoiceStatus.DRAFT);
+    }
+
+    private Instant overdueWarnedAt(UUID invoice) {
+        java.sql.Timestamp at = jdbc.queryForObject("SELECT overdue_warned_at FROM invoicing.einvoice WHERE id = ?",
+                java.sql.Timestamp.class, invoice);
+        return at == null ? null : at.toInstant();
+    }
+
+    @Test
+    @DisplayName("HĐ-2: past its deadline and still not issued, an invoice is reminded of once a day, critically, "
+            + "counted from the last message; never once it is issued, and the invoice itself is not touched")
+    void anOverdueInvoiceIsRemindedOfOnceADay() {
+        EInvoice.Snapshot draft = draft();
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET issue_due_at = NOW() - interval "
+                + "'2 hours' WHERE id = ?", draft.id()));
+        jobs.warnDue();
+        jobs.remindOverdue();
+        assertThat(overdueWarnedAt(draft.id())).as("warned of its deadline a moment ago: no reminder yet").isNull();
+
+        // The warning went out a day ago.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET due_warned_at = due_warned_at - "
+                + "interval '25 hours' WHERE id = ?", draft.id()));
+        long version = queries.get(draft.id()).version();
+        assertThat(jobs.remindOverdue()).isGreaterThanOrEqualTo(1);
+
+        Instant reminded = overdueWarnedAt(draft.id());
+        assertThat(reminded).isNotNull();
+        Await.until("the accountant is reminded", ASYNC,
+                () -> notices(accountant, draft.id(), "EINVOICE_DUE").size() == 2);
+        Map<String, Object> reminder = notices(accountant, draft.id(), "EINVOICE_DUE").stream()
+                .filter(row -> ((String) row.get("dedupe_key")).startsWith("einvoice-overdue:")).findFirst()
+                .orElseThrow();
+        assertThat(reminder.get("severity")).isEqualTo("CRITICAL");
+        assertThat((String) reminder.get("title")).contains(draft.code()).contains("quá hạn");
+        assertThat((String) reminder.get("dedupe_key")).isEqualTo("einvoice-overdue:" + draft.id() + ":"
+                + LocalDate.now(ConfirmedOrders.VIETNAM));
+        assertThat(queries.get(draft.id()).version()).as("a reminder changes nothing the invoice says")
+                .isEqualTo(version);
+
+        // The same day, as often as the sweep runs: nothing more.
+        jobs.remindOverdue();
+        jobs.warnOfDeadlines();
+        assertThat(overdueWarnedAt(draft.id())).isEqualTo(reminded);
+
+        // A day later it is reminded again.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET overdue_warned_at = overdue_warned_at "
+                + "- interval '25 hours' WHERE id = ?", draft.id()));
+        jobs.remindOverdue();
+        assertThat(overdueWarnedAt(draft.id())).as("reminded again").isAfterOrEqualTo(reminded);
+
+        // Issued, however late, a day after the last reminder: never reminded again (an issued row does not change).
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET overdue_warned_at = overdue_warned_at "
+                + "- interval '25 hours' WHERE id = ?", draft.id()));
+        Instant before = overdueWarnedAt(draft.id());
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, draft.id(), queries.get(draft.id()).version(),
+                accountant);
+        assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
+        jobs.remindOverdue();
+        assertThat(overdueWarnedAt(draft.id())).isEqualTo(before);
+        assertThat(noticesOfAnyKind(salesStaff, draft.id())).isZero();
     }
 }

@@ -5,15 +5,17 @@ import com.stockflow.common.domain.Money;
 import java.util.List;
 
 /**
- * A customer's own price for one SKU, as tiers (kltn-docs 13 §4.2): from {@code minQuantity} on - cartons of the
- * customer's own SKU, units of a price kept on a stock variant - each piece costs {@code unitPrice}. {@code moq} is the
- * first tier's quantity. The only kind of price there is (13 BR-04): no base or group price stands behind it.
+ * A price for one SKU, as tiers (kltn-docs 13 §4.2): a customer's own price for its SKU, or the standard price of a
+ * variant of the catalogue (13 BR-04, 2026-11-26). From {@code minQuantity} cartons on each piece costs
+ * {@code unitPrice}. {@code moq} is the first tier's quantity.
  *
  * @param measure what {@code minQuantity} and {@code moq} count, as the customer-prices screen says it: {@code CARTON}
- *                for the customer's own SKU (13 BR-05), {@code UNIT} for a price kept on a stock variant from before
- *                4B-2. Carried because the same number means fifty times as much in one as in the other, and a reader
- *                told "from 10,000" cannot tell which; null only on a schedule built without it
- *                ({@link #PriceSchedule(String, int, List)})
+ *                for the customer's own SKU (13 BR-05) and for a variant's standard price (13 BR-04, 2026-11-26),
+ *                which is every price the catalog answers now: a customer price names only the customer's own SKU
+ *                ({@code catalog.check_customer_price_own_sku}, V20270105000100). {@code UNIT}, a price kept on a
+ *                stock variant from before 4B-2, is kept for readers of older schedules. Carried because the same
+ *                number means fifty times as much in one as in the other, and a reader told "from 10,000" cannot
+ *                tell which; null only on a schedule built without it ({@link #PriceSchedule(String, int, List)})
  */
 public record PriceSchedule(String sku, int moq, List<Tier> tiers, Measure measure) {
 

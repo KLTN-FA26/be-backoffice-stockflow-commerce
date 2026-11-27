@@ -57,17 +57,32 @@ public final class LoadPlan {
 
     /**
      * A parcel the plan holds or held. {@code unplacedReason} is null when it has a place or before a calculation.
-     * {@code shipmentId} is what the parcel leaves with: its shipment.
+     * {@code shipmentId} is what the parcel leaves with: its shipment. {@code fill}: filler cargo ("hàng chèn") of a
+     * {@link SelectionMode#PRIORITY_FILL} plan - its order line was ticked (RTM-LPGROUP); it only tops up the room the
+     * main cargo leaves.
      */
     public record Member(UUID packageId, UUID shipmentId, boolean active, LoadPlanUnplacedReason unplacedReason,
-                         Instant addedAt, UUID addedBy, Instant releasedAt, LoadPlanReleaseReason releaseReason) {
+                         Instant addedAt, UUID addedBy, Instant releasedAt, LoadPlanReleaseReason releaseReason,
+                         boolean fill) {
+
+        /** Main cargo. */
+        public Member(UUID packageId, UUID shipmentId, boolean active, LoadPlanUnplacedReason unplacedReason,
+                      Instant addedAt, UUID addedBy, Instant releasedAt, LoadPlanReleaseReason releaseReason) {
+            this(packageId, shipmentId, active, unplacedReason, addedAt, addedBy, releasedAt, releaseReason, false);
+        }
 
         Member released(LoadPlanReleaseReason reason, Instant at) {
-            return new Member(packageId, shipmentId, false, unplacedReason, addedAt, addedBy, at, reason);
+            return new Member(packageId, shipmentId, false, unplacedReason, addedAt, addedBy, at, reason, fill);
         }
 
         Member withUnplaced(LoadPlanUnplacedReason reason) {
-            return new Member(packageId, shipmentId, active, reason, addedAt, addedBy, releasedAt, releaseReason);
+            return new Member(packageId, shipmentId, active, reason, addedAt, addedBy, releasedAt, releaseReason,
+                    fill);
+        }
+
+        Member withFill(boolean filler) {
+            return new Member(packageId, shipmentId, active, unplacedReason, addedAt, addedBy, releasedAt,
+                    releaseReason, filler);
         }
     }
 
@@ -211,23 +226,36 @@ public final class LoadPlan {
 
     // ---- inputs (09 §4.2 step 1, 3) --------------------------------------------------------------------------------
 
-    /**
-     * Sets what the plan is calculated from: the parcels (package id to its shipment; LP-5: the service passes whole
-     * shipments), the vehicle types it may use and the selection mode (LP-6). From PLANNED this goes back to DRAFT
-     * (09 §5 "đổi kiện / loại xe / chế độ"): the vehicles are dropped and must be calculated again. The same inputs
-     * again change nothing.
-     *
-     * @return the parcels newly held by this plan (to be claimed under BR-09)
-     */
+    /** {@link #setInputs(Map, List, SelectionMode, Set, UUID, Instant)} keeping the filler parcels it has. */
     public Set<UUID> setInputs(Map<UUID, UUID> parcels, List<UUID> types, SelectionMode newMode, UUID by,
                                Instant at) {
+        return setInputs(parcels, types, newMode, null, by, at);
+    }
+
+    /**
+     * Sets what the plan is calculated from: the parcels (package id to its shipment; LP-5: the service passes whole
+     * shipments), the vehicle types it may use, the selection mode (09 §4.2, WF4-LP-MODES) and, for
+     * {@link SelectionMode#PRIORITY_FILL}, which parcels are filler cargo (09 §3 "Phân nhóm kiện chính / phụ"; the
+     * service passes the parcels of the order lines ticked, RTM-LPGROUP). From PLANNED this goes back to DRAFT (09 §5
+     * "đổi kiện / loại xe / chế độ"): the vehicles are dropped and must be calculated again. The same inputs again
+     * change nothing.
+     *
+     * @param fillPackages the parcels that are filler cargo, or null to keep the plan's; only a PRIORITY_FILL plan has
+     *                     any - under another mode none is filler (the split is that mode's input only)
+     * @return the parcels newly held by this plan (to be claimed under BR-09)
+     * @throws BusinessException {@code VALIDATION_FAILED} for filler parcels under another mode, or parcels the plan
+     *         does not hold
+     */
+    public Set<UUID> setInputs(Map<UUID, UUID> parcels, List<UUID> types, SelectionMode newMode,
+                               Set<UUID> fillPackages, UUID by, Instant at) {
         requireStatus("change its inputs", LoadPlanStatus.DRAFT, LoadPlanStatus.PLANNED);
         Objects.requireNonNull(parcels, "parcels");
         List<UUID> newTypes = types == null ? List.of() : List.copyOf(new LinkedHashSet<>(types));
         SelectionMode wanted = newMode == null ? mode : newMode;
+        Set<UUID> fill = wantedFill(parcels.keySet(), wanted, fillPackages);
         Set<UUID> held = activePackageIds();
         boolean same = held.equals(parcels.keySet()) && new HashSet<>(vehicleTypeIds).equals(new HashSet<>(newTypes))
-                && wanted == mode;
+                && wanted == mode && fill.equals(fillPackageIds());
         if (same) {
             return Set.of();
         }
@@ -240,8 +268,11 @@ public final class LoadPlan {
         parcels.forEach((packageId, shipmentId) -> {
             Member m = members.get(packageId);
             if (m == null || !m.active()) {
-                members.put(packageId, new Member(packageId, shipmentId, true, null, at, by, null, null));
+                members.put(packageId, new Member(packageId, shipmentId, true, null, at, by, null, null,
+                        fill.contains(packageId)));
                 claimed.add(packageId);
+            } else if (m.fill() != fill.contains(packageId)) {
+                members.put(packageId, m.withFill(fill.contains(packageId)));
             }
         });
         vehicleTypeIds.clear();
@@ -250,6 +281,37 @@ public final class LoadPlan {
         backToDraft();
         changed = true;
         return claimed;
+    }
+
+    /**
+     * The filler parcels the inputs ask for: those named (null: those the plan has, of the parcels still held) under
+     * PRIORITY_FILL, none under another mode.
+     */
+    private Set<UUID> wantedFill(Set<UUID> parcels, SelectionMode wanted, Set<UUID> fillPackages) {
+        if (wanted != SelectionMode.PRIORITY_FILL) {
+            if (fillPackages != null && !fillPackages.isEmpty()) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Filler cargo is chosen only for the mode "
+                        + "PRIORITY_FILL", List.of(new FieldError("fillOrderLineIds", "only with PRIORITY_FILL",
+                        "LOAD_PLAN_FILL_NOT_IN_MODE")));
+            }
+            return Set.of();
+        }
+        if (fillPackages == null) {
+            Set<UUID> kept = new LinkedHashSet<>(fillPackageIds());
+            kept.retainAll(parcels);
+            return kept;
+        }
+        List<FieldError> problems = new ArrayList<>();
+        for (UUID packageId : fillPackages) {
+            if (!parcels.contains(packageId)) {
+                problems.add(new FieldError(packageId.toString(), "not a package of this plan",
+                        "LOAD_PLAN_PACKAGE_UNKNOWN"));
+            }
+        }
+        if (!problems.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Filler cargo is cargo of the plan", problems);
+        }
+        return new LinkedHashSet<>(fillPackages);
     }
 
     private void backToDraft() {
@@ -670,6 +732,53 @@ public final class LoadPlan {
         return released;
     }
 
+    /**
+     * <b>Takes shipments off a vehicle called off under control</b> (kltn-docs 09 §4.2 step 9, §5.2, §5.3, BR-14;
+     * decided 2026-11-05): the parcels of {@code shipmentIds} placed on vehicle {@code seq} leave the plan
+     * ({@link LoadPlanReleaseReason#REMOVED_FROM_VEHICLE}) and wait at the dispatch area for another plan; the vehicle
+     * keeps the layout recalculated for the parcels it kept ({@code relayout}: one vehicle, every kept parcel placed),
+     * or, keeping none, leaves the plan - no new load is made for it. The service checks first that each shipment is
+     * on this vehicle only.
+     *
+     * @param relayout the planner's answer for the kept parcels; null when none are kept
+     * @return the parcels released
+     * @throws BusinessException {@code LOAD_PLAN_RELAYOUT_INCOMPLETE} when the answer did not place every kept parcel
+     */
+    public Set<UUID> removeFromVehicle(int seq, Set<UUID> shipmentIds, LoadPlanResult relayout,
+                                       Map<UUID, CargoPackage> cartons, Instant at) {
+        requireStatus("have shipments taken off a vehicle", LoadPlanStatus.CONFIRMED);
+        Vehicle vehicle = requireVehicle(seq);
+        Set<UUID> here = new HashSet<>();
+        vehicle.placements().forEach(p -> here.add(p.packageId()));
+        Set<UUID> released = new LinkedHashSet<>();
+        for (Member m : List.copyOf(members.values())) {
+            if (m.active() && here.contains(m.packageId()) && shipmentIds.contains(m.shipmentId())) {
+                released.add(m.packageId());
+            }
+        }
+        Set<UUID> kept = new HashSet<>(here);
+        kept.removeAll(released);
+        int index = vehicles.indexOf(vehicle);
+        if (kept.isEmpty()) {
+            vehicles.set(index, vehicle.retired());
+        } else {
+            Set<UUID> placed = new HashSet<>();
+            if (relayout != null && relayout.vehicles().size() == 1) {
+                relayout.vehicles().getFirst().placements().forEach(p -> placed.add(UUID.fromString(p.ref())));
+            }
+            if (relayout == null || relayout.vehicles().size() != 1 || !relayout.unplaced().isEmpty()
+                    || !placed.equals(kept)) {
+                throw new BusinessException(ErrorCode.LOAD_PLAN_RELAYOUT_INCOMPLETE, ("Vehicle %d of load plan %s: "
+                        + "the %d parcel(s) it keeps could not all be placed again").formatted(seq, code, kept.size()));
+            }
+            vehicles.set(index, withUsage(vehicle.id(), vehicle.seq(), vehicle.spec(),
+                    placedOf(relayout.vehicles().getFirst().placements()), cartons));
+        }
+        released.forEach(id -> members.put(id, members.get(id).released(LoadPlanReleaseReason.REMOVED_FROM_VEHICLE, at)));
+        changed = true;
+        return released;
+    }
+
     /** Every vehicle handed over and gone (BR-15): PR E calls this when the last dispatch load is DISPATCHED. */
     public void markDispatched(Instant at) {
         requireStatus("be dispatched", LoadPlanStatus.CONFIRMED);
@@ -690,15 +799,58 @@ public final class LoadPlan {
         if (!status.isLive()) {
             return false;
         }
-        Set<UUID> dropped = new HashSet<>();
+        if (takeOut(shipmentId, LoadPlanReleaseReason.ORDER_CANCELLED, at).isEmpty()) {
+            return false;
+        }
+        changed = true;
+        if (status == LoadPlanStatus.CONFIRMED && !loadingStarted) {
+            status = LoadPlanStatus.PLANNED;
+            vehicles.replaceAll(v -> v.active() && v.placements().isEmpty() ? v.retired() : v);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * The dispatcher takes a whole shipment out of a PLANNED plan (09 §4.2 step 9: "chưa có xe nào bắt đầu xếp → mở lại
+     * kế hoạch về Planned, gỡ kiện, các xe bị ảnh hưởng chờ tính lại"; a confirmed plan is reopened first, BR-14). Its
+     * parcels leave the plan ({@link LoadPlanReleaseReason#INPUTS_CHANGED}: the parcel list changed) and go back to the
+     * dispatch area; only the vehicles that carried them change - one left empty leaves the plan, any other is flagged
+     * {@code needsRecalculation}, as when an order is cancelled ({@link #dropShipment}). The plan stays PLANNED and the
+     * other vehicles keep their layout.
+     *
+     * @return the parcels released
+     * @throws BusinessException {@code INVALID_LOAD_PLAN_TRANSITION} when the plan is not PLANNED;
+     *         {@code LOAD_PLAN_SHIPMENT_NOT_IN_PLAN} when the plan holds no parcel of the shipment
+     */
+    public Set<UUID> removeShipment(UUID shipmentId, Instant at) {
+        requireStatus("have a shipment taken out (reopen a confirmed plan first)", LoadPlanStatus.PLANNED);
+        Set<UUID> dropped = takeOut(shipmentId, LoadPlanReleaseReason.INPUTS_CHANGED, at);
+        if (dropped.isEmpty()) {
+            throw new BusinessException(ErrorCode.LOAD_PLAN_SHIPMENT_NOT_IN_PLAN,
+                    "Load plan %s holds no package of shipment %s".formatted(code, shipmentId));
+        }
+        changed = true;
+        return dropped;
+    }
+
+    /**
+     * Releases the shipment's parcels with {@code reason} and frees their places: a vehicle left empty leaves the plan
+     * unless the plan is confirmed; a vehicle that lost parcels but keeps others is flagged {@code needsRecalculation}
+     * ("bỏ kiện &amp; tính lại": what rested on a removed parcel may float).
+     *
+     * @return the parcels released; empty when the plan held none of the shipment
+     */
+    private Set<UUID> takeOut(UUID shipmentId, LoadPlanReleaseReason reason, Instant at) {
+        Set<UUID> dropped = new LinkedHashSet<>();
         for (Member m : List.copyOf(members.values())) {
             if (m.active() && Objects.equals(m.shipmentId(), shipmentId)) {
-                members.put(m.packageId(), m.released(LoadPlanReleaseReason.ORDER_CANCELLED, at));
+                members.put(m.packageId(), m.released(reason, at));
                 dropped.add(m.packageId());
             }
         }
         if (dropped.isEmpty()) {
-            return false;
+            return dropped;
         }
         for (int i = 0; i < vehicles.size(); i++) {
             Vehicle v = vehicles.get(i);
@@ -714,13 +866,7 @@ public final class LoadPlan {
                         v.usedWeightKg(), v.volumeFillPct(), v.weightFillPct(), !kept.isEmpty()));
             }
         }
-        changed = true;
-        if (status == LoadPlanStatus.CONFIRMED && !loadingStarted) {
-            status = LoadPlanStatus.PLANNED;
-            vehicles.replaceAll(v -> v.active() && v.placements().isEmpty() ? v.retired() : v);
-            return true;
-        }
-        return false;
+        return dropped;
     }
 
     /** Recomputes the weight figures of the vehicles after {@link #dropShipment}, once the cartons are known. */
@@ -753,6 +899,17 @@ public final class LoadPlan {
                 v.placements().forEach(p -> out.add(p.packageId()));
             }
         }
+        return out;
+    }
+
+    /** Held parcels that are filler cargo ({@link SelectionMode#PRIORITY_FILL} only). */
+    public Set<UUID> fillPackageIds() {
+        Set<UUID> out = new LinkedHashSet<>();
+        members.values().forEach(m -> {
+            if (m.active() && m.fill()) {
+                out.add(m.packageId());
+            }
+        });
         return out;
     }
 

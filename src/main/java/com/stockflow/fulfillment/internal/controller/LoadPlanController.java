@@ -18,10 +18,16 @@ import com.stockflow.fulfillment.internal.controller.dto.LoadPlanVersionRequest;
 import com.stockflow.fulfillment.internal.controller.dto.VehicleRecalculationRequest;
 import com.stockflow.fulfillment.internal.domain.loadplanning.Layout;
 import com.stockflow.fulfillment.internal.service.LoadPlans;
+import com.stockflow.fulfillment.internal.service.LoadingSheetService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -50,9 +56,11 @@ import java.util.UUID;
 class LoadPlanController {
 
     private final LoadPlans loadPlans;
+    private final LoadingSheetService loadingSheets;
 
-    LoadPlanController(LoadPlans loadPlans) {
+    LoadPlanController(LoadPlans loadPlans, LoadingSheetService loadingSheets) {
         this.loadPlans = loadPlans;
+        this.loadingSheets = loadingSheets;
     }
 
     @GetMapping("/load-plan-candidates")
@@ -78,7 +86,7 @@ class LoadPlanController {
                                                     @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(loadPlans.create(new LoadPlans.CreatePlan(request.requestId(), request.warehouseId(),
                 request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode(), request.note(),
-                request.sourceType()), actor));
+                request.sourceType(), request.fillOrderLineIds()), actor));
     }
 
     @GetMapping("/load-plans")
@@ -108,7 +116,20 @@ class LoadPlanController {
     public ApiResponse<LoadPlans.PlanDetail> setInputs(@PathVariable UUID loadPlanId,
             @Valid @RequestBody LoadPlanInputsRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(loadPlans.setInputs(loadPlanId, new LoadPlans.Inputs(request.expectedVersion(),
-                request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode()), actor));
+                request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode(), request.fillOrderLineIds()),
+                actor));
+    }
+
+    @PostMapping("/load-plans/{loadPlanId}/shipments/{shipmentId}/removal")
+    @Operation(summary = "Take one whole shipment out of a PLANNED plan (09 §4.2 step 9): its packages go back to the "
+            + "dispatch area, only the vehicles that carried them wait to be recalculated; the plan stays PLANNED. "
+            + "404 LOAD_PLAN_SHIPMENT_NOT_IN_PLAN; 409 INVALID_LOAD_PLAN_TRANSITION (reopen a confirmed plan first), "
+            + "OPTIMISTIC_LOCK")
+    @RequiresPermission(resource = FulfillmentResources.LOAD_PLANS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "load-plan", resourceId = "#loadPlanId")
+    public ApiResponse<LoadPlans.PlanDetail> removeShipment(@PathVariable UUID loadPlanId, @PathVariable UUID shipmentId,
+            @Valid @RequestBody LoadPlanVersionRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(loadPlans.removeShipment(loadPlanId, shipmentId, request.expectedVersion(), actor));
     }
 
     @PostMapping("/load-plans/{loadPlanId}/calculation")
@@ -133,6 +154,25 @@ class LoadPlanController {
     @RequiresPermission(resource = FulfillmentResources.LOAD_PLANS, action = Action.READ)
     public ApiResponse<Layout> layout(@PathVariable UUID loadPlanId, @PathVariable int seq) {
         return ApiResponse.ok(loadPlans.layout(loadPlanId, seq));
+    }
+
+    @GetMapping(value = "/load-plans/{loadPlanId}/vehicles/{seq}/loading-sheet.pdf",
+            produces = MediaType.APPLICATION_PDF_VALUE)
+    @Operation(summary = "One vehicle's loading sheet as a PDF (09 §4.2 step 5): plan, dispatch load, vehicle type, "
+            + "warehouse, carrier and waybill when booked, plate and driver; packages, volume and weight fill; the "
+            + "placements drawn to scale from above and from the left side; the packages in loading order with LPN, "
+            + "order, SKU, size, weight, position and orientation. Any plan status (an unconfirmed or cancelled plan "
+            + "says so on the sheet); 404 LOAD_PLAN_NOT_FOUND, LOAD_PLAN_VEHICLE_NOT_FOUND; 403 for another warehouse's "
+            + "plan")
+    @RequiresPermission(resource = FulfillmentResources.LOAD_PLANS, action = Action.READ)
+    public ResponseEntity<byte[]> loadingSheet(@PathVariable UUID loadPlanId, @PathVariable int seq) {
+        LoadingSheetService.Pdf pdf = loadingSheets.loadingSheet(loadPlanId, seq);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_PDF)
+                .cacheControl(CacheControl.noStore())
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(pdf.fileName())
+                        .build().toString())
+                .body(pdf.content());
     }
 
     @PutMapping("/load-plans/{loadPlanId}/placements")

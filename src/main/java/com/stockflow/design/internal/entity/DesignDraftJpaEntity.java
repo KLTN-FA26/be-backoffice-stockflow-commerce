@@ -105,7 +105,6 @@ public class DesignDraftJpaEntity extends BaseEntity {
     public void joinProject(UUID project) { projectId = project; }
 
     /** Leaves its project; never while it waits for review (tg_design_draft_project_while_pending). */
-    public void leaveProject() { projectId = null; }
 
     public void rename(String nextName) { name = nextName; }
 
@@ -117,13 +116,13 @@ public class DesignDraftJpaEntity extends BaseEntity {
         }
     }
 
-    /** Passed preflight (kltn-docs 12 §4.3 step 12): it waits for the Sales Manager, and nothing changes it (BR-07). */
+    /** Passed preflight (kltn-docs 12 §4.3 step 12): it waits for the coordinator, and nothing changes it (BR-07). */
     public void submitForReview(Instant at) {
         status = DesignStatus.PENDING_REVIEW;
         reviewRequestedAt = at;
     }
 
-    /** Returned by the Sales Manager with a reason (BR-06): a draft again, for the customer to change. */
+    /** Returned by the Production Coordinator with a reason (BR-06): a draft again, for the customer to change. */
     public void returnToDraft(UUID reviewer, String reason, Instant at) {
         status = DesignStatus.DRAFT;
         reviewedBy = reviewer;

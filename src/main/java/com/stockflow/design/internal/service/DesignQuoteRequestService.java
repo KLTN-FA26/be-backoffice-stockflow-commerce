@@ -130,7 +130,7 @@ public class DesignQuoteRequestService {
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
         if (draft.getTemplateId() == null) {
             // A design of the staff workflow has no SKU of its own: nothing can be quoted on it (BR-15).
-            throw new BusinessException(ErrorCode.DESIGN_NOT_APPROVED, "This design was not made in the studio");
+            throw new BusinessException(ErrorCode.DESIGN_NOT_APPROVED, "This design was not made in the studio").localized("refusal.design.notFromStudio");
         }
         QuoteRequestRules.requireApproved(draft.getStatus());
         requireActiveCustomer(actor, draft);
@@ -272,7 +272,9 @@ public class DesignQuoteRequestService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         if (!"ACTIVE".equals(customer.status())) {
             throw new BusinessException(ErrorCode.CUSTOMER_NOT_ACTIVE,
-                    "The customer is " + customer.status() + "; only an active customer asks for a quote");
+                    "The customer is " + customer.status() + "; only an active customer asks for a quote")
+                    .localized("refusal.design.customerNotActive",
+                            new com.stockflow.common.i18n.Label("CustomerStatus", customer.status()));
         }
     }
 

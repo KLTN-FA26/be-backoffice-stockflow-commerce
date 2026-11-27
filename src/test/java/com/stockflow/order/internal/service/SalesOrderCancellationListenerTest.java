@@ -54,8 +54,8 @@ class SalesOrderCancellationListenerTest {
     private static ProductionOrder production(ProductionOrderStatus status, long version) {
         return new ProductionOrder(UUID.randomUUID(), "PRD-20261109-%04d".formatted(version), ORDER, UUID.randomUUID(),
                 UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1), status, false,
-                false, null, null, "VND", null, UUID.randomUUID(), null, null, null, null, null, null, null, null, null,
-                null, null, null, List.of(), version);
+                false, null, null, UUID.randomUUID(), null, null, null, null, null, null, null, null, null,
+                null, null, null, null, List.of(), version);
     }
 
     private static OrderCancelled cancelled(UUID by, String note) {

@@ -11,7 +11,12 @@ import java.util.UUID;
  * {@code kind} and {@code type}.
  */
 @Schema(description = "The templates a customer may design on, one per ACTIVE variant that has an active template")
-public record CatalogCustomizationResponse(UUID productId, String kind, List<Template> templates) {
+public record CatalogCustomizationResponse(
+        UUID productId, String kind, List<Template> templates,
+        @Schema(description = "The product's published title: the same value as `title` on GET "
+                + "/api/v1/catalog/products/{slug} and on the list cards, so the studio needs no second call to name "
+                + "a design")
+        String productTitle) {
 
     /**
      * One variant's active template. {@code hasCartonSpec}: the variant has an active packing unit of more than one
@@ -39,7 +44,8 @@ public record CatalogCustomizationResponse(UUID productId, String kind, List<Tem
     /** The parametric model; only the fields of its {@code kind} are present. */
     public record Model(String kind, Double topDiameterMm, Double bottomDiameterMm, Double heightMm, Double rimMm,
                         Double seamMm, Double bandTopOffsetMm, Double bandBottomOffsetMm, Double widthMm,
-                        Double gussetMm, Double topFoldMm, String handle, String material) {
+                        Double gussetMm, Double topFoldMm, Double glueFlapMm, Double bottomFoldMm, String handle,
+                        String material) {
     }
 
     /** A print area; its size is the trimmed area's flat bounding box (the bleed lies outside it). */

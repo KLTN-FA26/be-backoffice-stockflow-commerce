@@ -75,7 +75,7 @@ public class ChatReports {
     public Report report(CurrentUser user, LocalDate from, LocalDate to, UUID agentId) {
         callers.staff(user);
         if (from == null || to == null || to.isBefore(from) || from.plusDays(MAX_DAYS).isBefore(to)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A period of 1 to " + MAX_DAYS + " days");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A period of 1 to " + MAX_DAYS + " days").localized("refusal.chat.reportPeriod", MAX_DAYS);
         }
         BusinessHours hours = properties.businessHours();
         Instant start = from.atStartOfDay(hours.zone()).toInstant();

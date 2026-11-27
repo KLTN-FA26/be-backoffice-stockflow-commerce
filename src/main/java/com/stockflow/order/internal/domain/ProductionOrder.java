@@ -4,7 +4,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -18,15 +17,25 @@ import java.util.UUID;
 /**
  * What a producer makes for one delivery batch of a confirmed order of a contract (4A-2, kltn-docs 17 §4.3, §5.3;
  * BR-05, BR-06, BR-23, BR-24, BR-26). The Production Coordinator draws it up for what the batch lacks at the order's
- * shipping warehouse - the receiving warehouse - and submits it; the Sales Manager, never the one who drew it up,
- * approves it, which sends it, or returns it with a reason. It is cancelled before mass printing, and closed - short,
+ * shipping warehouse - the receiving warehouse - and sends it to its producer ({@link #send}): there is no approval
+ * step since 2026-11-20 (owner's decision), because what a second reader checked is enforced by the data - never past
+ * what the batch lacks, the customer-approved design re-hashed at send, a signed contract behind it, no money on it.
+ * {@code submittedAt}, {@code approvedBy}, {@code approvedAt}, {@code returnedReason} and
+ * {@link ProductionOrderStatus#PENDING_APPROVAL} are kept for the orders of before, and read as they were written.
+ * It is cancelled before mass printing, and closed - short,
  * or before anything came - after it started. Goods are received against it while it is {@link #receivable} (4A-5,
  * kltn-docs 03 BR-01, BR-15), and each confirmed receipt moves it on ({@link #receive}). The coordinator records the
  * producer's acceptance with its expected completion day, and the start of mass printing when no print sample is to be
  * approved; with one, the customer's approval of a sample round starts it ({@link SampleRounds}, 4A-4).
  *
+ * <p>A {@link ProductionOrderKind#REPLACEMENT} ({@link #drawUpReplacement}, 17 §4.13, BR-31) makes up cartons of
+ * another production order of the same sales order written off as damaged after they were received: it names them
+ * ({@link Replacement}) and makes no more cartons of a SKU than they wrote off ({@link #maxCartons}). Otherwise it lives
+ * as any other - edited, sent, received, cancelled, closed.</p>
+ *
  * <p>Every change of status is kept with who, when and why ({@link #pullChanges}). The database holds the same rules
- * ({@code ordering.check_production_order}, the CHECKs of {@code production_order}).</p>
+ * ({@code ordering.check_production_order}, the CHECKs of {@code production_order}, and for a replacement
+ * {@code check_production_order_write_off} and {@code check_replacement_cartons}).</p>
  */
 public final class ProductionOrder {
 
@@ -85,13 +94,45 @@ public final class ProductionOrder {
     }
 
     /** What the coordinator may change while it is a draft (B33: the need-by date too). */
-    public record Draft(UUID producerId, LocalDate needByDate, BigDecimal unitPrice, String note,
+    public record Draft(UUID producerId, LocalDate needByDate, String note,
                         boolean sampleApprovalRequired, String sampleWaiverReason,
                         Map<UUID, LineEdit> lines) {
     }
 
     /** A line's new cartons and packing requirements, by order line. */
     public record LineEdit(int cartons, String packingRequirements) {
+    }
+
+    /** A posted {@code DAMAGED} write-off of one whole carton of {@code sku}, made up by a replacement (17 BR-31). */
+    public record WriteOff(UUID adjustmentId, String sku) {
+
+        public WriteOff {
+            Objects.requireNonNull(adjustmentId, "adjustmentId");
+            Objects.requireNonNull(sku, "sku");
+        }
+    }
+
+    /**
+     * What a {@link ProductionOrderKind#REPLACEMENT} makes up (17 §4.13 step 52): the production order whose cartons
+     * were written off as damaged, and those write-offs - one carton each, at least one.
+     */
+    public record Replacement(UUID replacesId, List<WriteOff> writeOffs) {
+
+        public Replacement {
+            Objects.requireNonNull(replacesId, "replacesId");
+            writeOffs = List.copyOf(writeOffs);
+            if (writeOffs.isEmpty()) {
+                throw invalid("A replacement production order names the write-offs it makes up (BR-31)");
+            }
+            if (writeOffs.stream().map(WriteOff::adjustmentId).distinct().count() != writeOffs.size()) {
+                throw invalid("A write-off is made up once");
+            }
+        }
+
+        /** The cartons of {@code sku} written off: one per write-off. */
+        public int cartonsOf(String sku) {
+            return (int) writeOffs.stream().filter(writeOff -> writeOff.sku().equals(sku)).count();
+        }
     }
 
     private final UUID id;
@@ -106,8 +147,6 @@ public final class ProductionOrder {
     private boolean sampleApprovalRequired;
     private final boolean sampleRequiredByDefault;
     private String sampleWaiverReason;
-    private BigDecimal unitPrice;
-    private final String currency;
     private String note;
     private final UUID drawnUpBy;
     private Instant submittedAt;
@@ -115,8 +154,10 @@ public final class ProductionOrder {
     private Instant approvedAt;
     private String returnedReason;
     private Instant sentAt;
+    private UUID sentBy;
     private Instant productionStartedAt;
     private LocalDate expectedCompletionDate;
+    private String acceptanceNote;
     private UUID cancelledBy;
     private Instant cancelledAt;
     private String cancellationReason;
@@ -124,6 +165,7 @@ public final class ProductionOrder {
     private Instant closedAt;
     private String closingReason;
     private List<Line> lines;
+    private final Replacement replacement;
     private final long version;
     private final List<Change> changes = new ArrayList<>();
 
@@ -131,27 +173,48 @@ public final class ProductionOrder {
     public ProductionOrder(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
                            UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
                            ProductionOrderStatus status, boolean sampleApprovalRequired,
-                           boolean sampleRequiredByDefault, String sampleWaiverReason, BigDecimal unitPrice,
-                           String currency, String note, UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
-                           Instant approvedAt, String returnedReason, Instant sentAt, Instant productionStartedAt,
-                           UUID cancelledBy, Instant cancelledAt, String cancellationReason, UUID closedBy,
-                           Instant closedAt, String closingReason, List<Line> lines, long version) {
+                           boolean sampleRequiredByDefault, String sampleWaiverReason, String note,
+                           UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
+                           Instant approvedAt, String returnedReason, Instant sentAt, UUID sentBy,
+                           Instant productionStartedAt, UUID cancelledBy, Instant cancelledAt,
+                           String cancellationReason, UUID closedBy, Instant closedAt, String closingReason,
+                           List<Line> lines, long version) {
         this(id, code, salesOrderId, deliveryBatchId, customerId, producerId, receivingWarehouseId, needByDate, status,
-                sampleApprovalRequired, sampleRequiredByDefault, sampleWaiverReason, unitPrice, currency, note,
-                drawnUpBy, submittedAt, approvedBy, approvedAt, returnedReason, sentAt, productionStartedAt, null,
+                sampleApprovalRequired, sampleRequiredByDefault, sampleWaiverReason, note,
+                drawnUpBy, submittedAt, approvedBy, approvedAt, returnedReason, sentAt, sentBy, productionStartedAt,
+                null, null,
                 cancelledBy, cancelledAt, cancellationReason, closedBy, closedAt, closingReason, lines, version);
     }
 
-    /** Restores one as stored. */
+    /** Restores a {@link ProductionOrderKind#STANDARD} one as stored. */
     public ProductionOrder(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
                            UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
                            ProductionOrderStatus status, boolean sampleApprovalRequired,
-                           boolean sampleRequiredByDefault, String sampleWaiverReason, BigDecimal unitPrice,
-                           String currency, String note, UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
-                           Instant approvedAt, String returnedReason, Instant sentAt, Instant productionStartedAt,
-                           LocalDate expectedCompletionDate, UUID cancelledBy, Instant cancelledAt,
-                           String cancellationReason, UUID closedBy, Instant closedAt, String closingReason,
+                           boolean sampleRequiredByDefault, String sampleWaiverReason, String note,
+                           UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
+                           Instant approvedAt, String returnedReason, Instant sentAt, UUID sentBy,
+                           Instant productionStartedAt, LocalDate expectedCompletionDate, String acceptanceNote,
+                           UUID cancelledBy, Instant cancelledAt, String cancellationReason, UUID closedBy, Instant closedAt,
+                           String closingReason,
                            List<Line> lines, long version) {
+        this(id, code, salesOrderId, deliveryBatchId, customerId, producerId, receivingWarehouseId, needByDate, status,
+                sampleApprovalRequired, sampleRequiredByDefault, sampleWaiverReason, note, drawnUpBy, submittedAt,
+                approvedBy, approvedAt, returnedReason, sentAt, sentBy, productionStartedAt, expectedCompletionDate,
+                acceptanceNote, cancelledBy, cancelledAt, cancellationReason, closedBy, closedAt, closingReason, lines,
+                null, version);
+    }
+
+    /** Restores one as stored; {@code replacement} is null for a {@link ProductionOrderKind#STANDARD} one. */
+    public ProductionOrder(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
+                           UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
+                           ProductionOrderStatus status, boolean sampleApprovalRequired,
+                           boolean sampleRequiredByDefault, String sampleWaiverReason, String note,
+                           UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
+                           Instant approvedAt, String returnedReason, Instant sentAt, UUID sentBy,
+                           Instant productionStartedAt, LocalDate expectedCompletionDate, String acceptanceNote,
+                           UUID cancelledBy, Instant cancelledAt, String cancellationReason, UUID closedBy, Instant closedAt,
+                           String closingReason,
+                           List<Line> lines, Replacement replacement, long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.code = Objects.requireNonNull(code, "code");
         this.salesOrderId = Objects.requireNonNull(salesOrderId, "salesOrderId");
@@ -164,8 +227,6 @@ public final class ProductionOrder {
         this.sampleApprovalRequired = sampleApprovalRequired;
         this.sampleRequiredByDefault = sampleRequiredByDefault;
         this.sampleWaiverReason = sampleWaiverReason;
-        this.unitPrice = unitPrice;
-        this.currency = Objects.requireNonNull(currency, "currency");
         this.note = note;
         this.drawnUpBy = Objects.requireNonNull(drawnUpBy, "drawnUpBy");
         this.submittedAt = submittedAt;
@@ -173,8 +234,10 @@ public final class ProductionOrder {
         this.approvedAt = approvedAt;
         this.returnedReason = returnedReason;
         this.sentAt = sentAt;
+        this.sentBy = sentBy;
         this.productionStartedAt = productionStartedAt;
         this.expectedCompletionDate = expectedCompletionDate;
+        this.acceptanceNote = acceptanceNote;
         this.cancelledBy = cancelledBy;
         this.cancelledAt = cancelledAt;
         this.cancellationReason = cancellationReason;
@@ -182,6 +245,10 @@ public final class ProductionOrder {
         this.closedAt = closedAt;
         this.closingReason = closingReason;
         this.lines = new ArrayList<>(lines);
+        this.replacement = replacement;
+        if (replacement != null && replacement.replacesId().equals(id)) {
+            throw new IllegalArgumentException("A production order does not replace itself");
+        }
         this.version = version;
     }
 
@@ -193,21 +260,85 @@ public final class ProductionOrder {
      */
     public static ProductionOrder drawUp(String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
                                          UUID producerId, UUID receivingWarehouseId, LocalDate needByDate,
-                                         boolean sampleRequiredByDefault, List<Line> lines, String currency, UUID by,
+                                         boolean sampleRequiredByDefault, List<Line> lines, UUID by,
                                          Instant at) {
         if (lines == null || lines.isEmpty()) {
             throw invalid("A production order makes at least one line");
         }
         ProductionOrder order = new ProductionOrder(Identifiers.newId(), code, salesOrderId, deliveryBatchId,
                 customerId, producerId, receivingWarehouseId, needByDate, ProductionOrderStatus.DRAFT,
-                sampleRequiredByDefault, sampleRequiredByDefault, null, null, currency, null, by, null, null, null,
-                null, null, null, null, null, null, null, null, null, lines, 0L);
+                sampleRequiredByDefault, sampleRequiredByDefault, null, null, by, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, lines, 0L);
         order.changes.add(new Change(null, ProductionOrderStatus.DRAFT, null, Objects.requireNonNull(by, "by"), at));
         return order;
     }
 
     /**
-     * The coordinator's changes to a draft (B33): producer, need-by date, price, note, the sample flag - turned off when
+     * A DRAFT {@link ProductionOrderKind#REPLACEMENT} (17 §4.13 step 52, BR-31): for the cartons of a production order
+     * of the same sales order written off as damaged after they were received. Like any other it is for one delivery
+     * batch - the earliest still short - and never more than the batch lacks, which the caller worked out; it makes no
+     * more cartons of a SKU than {@code replacement} wrote off of it. Its print sample is not required by default: the
+     * SKU has been produced (step 52), and the coordinator may still ask for one.
+     *
+     * @throws BusinessException {@code VALIDATION_FAILED} with no line, or a line of a SKU none of the write-offs is
+     *         of; {@code PRODUCTION_ORDER_EXCEEDS_WRITE_OFFS} beyond the cartons written off
+     */
+    public static ProductionOrder drawUpReplacement(String code, UUID salesOrderId, UUID deliveryBatchId,
+                                                    UUID customerId, UUID producerId, UUID receivingWarehouseId,
+                                                    LocalDate needByDate, List<Line> lines, Replacement replacement,
+                                                    UUID by, Instant at) {
+        if (lines == null || lines.isEmpty()) {
+            throw invalid("A production order makes at least one line");
+        }
+        Objects.requireNonNull(replacement, "replacement");
+        ProductionOrder order = new ProductionOrder(Identifiers.newId(), code, salesOrderId, deliveryBatchId,
+                customerId, producerId, receivingWarehouseId, needByDate, ProductionOrderStatus.DRAFT, false, false,
+                null, null, by, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                null, lines, replacement, 0L);
+        order.requireWrittenOff(order.lines);
+        order.changes.add(new Change(null, ProductionOrderStatus.DRAFT,
+                "Replaces damaged cartons (17 BR-31)", Objects.requireNonNull(by, "by"), at));
+        return order;
+    }
+
+    /**
+     * The most cartons each of its order lines may make (BR-05, BR-31): what the batch lacks, {@code lacking}; for a
+     * replacement, never more than the cartons of the line's SKU it makes up. A line it does not name may make none.
+     */
+    public Map<UUID, Integer> maxCartons(Map<UUID, Integer> lacking) {
+        if (replacement == null) {
+            return lacking;
+        }
+        Map<UUID, Integer> max = new java.util.HashMap<>();
+        lines.forEach(line -> max.put(line.orderLineId(), Math.min(lacking.getOrDefault(line.orderLineId(), 0),
+                replacement.cartonsOf(line.sku()))));
+        return max;
+    }
+
+    /** A replacement's lines make no more cartons of a SKU than its write-offs wrote off of it (BR-31). */
+    private void requireWrittenOff(List<Line> made) {
+        if (replacement == null) {
+            return;
+        }
+        List<String> over = new ArrayList<>();
+        for (Line line : made) {
+            int writtenOff = replacement.cartonsOf(line.sku());
+            if (writtenOff == 0) {
+                throw invalid("%s: none of the write-offs replaced is of this SKU (BR-31)".formatted(line.sku()));
+            }
+            if (line.cartons() > writtenOff) {
+                over.add("%s: %d carton(s) written off, not %d".formatted(line.sku(), writtenOff, line.cartons()));
+            }
+        }
+        if (!over.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_EXCEEDS_WRITE_OFFS, ("A replacement production "
+                    + "order makes no more cartons than were written off (BR-31): %s").formatted(String.join("; ",
+                    over)));
+        }
+    }
+
+    /**
+     * The coordinator's changes to a draft (B33): producer, need-by date, note, the sample flag - turned off when
      * it is on by default, with a reason (BR-24) - and the lines' cartons and packing requirements. {@code maxCartons}
      * says, per order line, how many cartons the line may make at most (what the batch lacks); a line it does not name
      * may make none - a slip in building the map refuses an edit rather than lifting the cap.
@@ -222,9 +353,6 @@ public final class ProductionOrder {
         if (!draft.sampleApprovalRequired() && sampleRequiredByDefault && waiver == null) {
             throw invalid("A SKU is produced for the first time: say why its print sample is not approved (BR-24)");
         }
-        if (draft.unitPrice() != null && draft.unitPrice().signum() < 0) {
-            throw invalid("The unit price is not negative");
-        }
         List<Line> edited = new ArrayList<>();
         for (Line line : lines) {
             LineEdit change = draft.lines() == null ? null : draft.lines().get(line.orderLineId());
@@ -235,8 +363,11 @@ public final class ProductionOrder {
             if (change.cartons() < 1) {
                 throw invalid("A line makes at least one carton");
             }
+            Line changed = line.withCartons(change.cartons(), text(change.packingRequirements()));
+            // A replacement is refused for what it makes up first, so the error names the cap it went past (BR-31).
+            requireWrittenOff(List.of(changed));
             requireWithin(line.sku(), change.cartons(), maxCartons.getOrDefault(line.orderLineId(), 0));
-            edited.add(line.withCartons(change.cartons(), text(change.packingRequirements())));
+            edited.add(changed);
         }
         if (draft.lines() != null && draft.lines().keySet().stream()
                 .anyMatch(key -> lines.stream().noneMatch(line -> line.orderLineId().equals(key)))) {
@@ -244,7 +375,6 @@ public final class ProductionOrder {
         }
         this.producerId = Objects.requireNonNull(draft.producerId(), "producerId");
         this.needByDate = Objects.requireNonNull(draft.needByDate(), "needByDate");
-        this.unitPrice = draft.unitPrice();
         this.note = text(draft.note());
         this.sampleApprovalRequired = draft.sampleApprovalRequired();
         this.sampleWaiverReason = draft.sampleApprovalRequired() ? null : waiver;
@@ -253,7 +383,7 @@ public final class ProductionOrder {
 
     /**
      * 4B-8 (kltn-docs 17 §4.5 "Dời cửa sổ giao", BR-26): the window of its delivery batch moved, so a draft takes the
-     * default needed-by date again - the first day of the window in force. One already submitted keeps its date: the
+     * default needed-by date again - the first day of the window in force. One already sent keeps its date: the
      * production coordinator tells the producer if it must change.
      *
      * @return whether the date changed
@@ -284,39 +414,21 @@ public final class ProductionOrder {
         }
     }
 
-    /** DRAFT → PENDING_APPROVAL (17 §4.3 step 7). */
-    public void submit(UUID by, Instant at) {
-        move(ProductionOrderStatus.PENDING_APPROVAL, null, by, at, "submitted");
-        this.submittedAt = at;
-    }
-
     /**
-     * Approved, so sent (17 §4.3 step 7, BR-23): never by the one who drew it up.
+     * Sent to its producer by the coordinator (17 §4.3 step 7, BR-23 as rewritten on 2026-11-20): DRAFT → SENT, with
+     * who sent it and when, both written once (the database refuses a change). The one who drew it up may send it:
+     * there is no second person to check what the data already holds.
      *
-     * @throws BusinessException {@code PRODUCTION_ORDER_SELF_APPROVAL}; {@code PRODUCTION_ORDER_STATUS_INVALID}
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} unless a draft
      */
-    public void approve(UUID by, Instant at) {
-        Objects.requireNonNull(by, "by");
-        if (by.equals(drawnUpBy)) {
-            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_SELF_APPROVAL, ("Production order %s was drawn up by "
-                    + "you: someone else approves it (BR-23)").formatted(code));
-        }
-        move(ProductionOrderStatus.SENT, null, by, at, "approved");
-        this.approvedBy = by;
-        this.approvedAt = at;
+    public void send(UUID by, Instant at) {
+        move(ProductionOrderStatus.SENT, null, by, at, "sent");
+        this.sentBy = by;
         this.sentAt = at;
     }
 
-    /** Returned to the coordinator with a reason (BR-23): PENDING_APPROVAL → DRAFT. */
-    public void returnToDraft(String reason, UUID by, Instant at) {
-        String why = required(reason, "Returning a production order says why (BR-23)");
-        move(ProductionOrderStatus.DRAFT, why, by, at, "returned");
-        this.returnedReason = why;
-    }
-
     /**
-     * Cancelled before mass printing, with a reason (BR-06): from DRAFT, PENDING_APPROVAL, SENT, ACCEPTED or
-     * SAMPLE_PENDING.
+     * Cancelled before mass printing, with a reason (BR-06): from DRAFT, SENT, ACCEPTED or SAMPLE_PENDING.
      *
      * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} once mass printing started
      */
@@ -345,14 +457,20 @@ public final class ProductionOrder {
     /**
      * The producer accepted it and said when the goods will be done (17 §4.3 step 8): SENT → ACCEPTED, recorded by hand
      * by the coordinator. The day is what the AT_RISK alert compares with the need-by date (§4.12), so an acceptance
-     * without one is refused rather than recorded half.
+     * without one is refused rather than recorded half. The optional note is whatever the coordinator wants kept with
+     * the acceptance (who at the producer said it, and how); only this method ever writes it, and the database
+     * keeps it once set.
      *
-     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} unless SENT; {@code VALIDATION_FAILED} with no day
+     * @param note a blank one is no note
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID} unless SENT; {@code VALIDATION_FAILED} with no
+     *         day, or a note over {@value #TEXT_MAX} characters
      */
-    public void accept(LocalDate expectedCompletion, UUID by, Instant at) {
+    public void accept(LocalDate expectedCompletion, String note, UUID by, Instant at) {
         LocalDate day = requiredDay(expectedCompletion);
+        String kept = text(note);
         move(ProductionOrderStatus.ACCEPTED, null, by, at, "accepted");
         this.expectedCompletionDate = day;
+        this.acceptanceNote = kept;
     }
 
     /**
@@ -449,7 +567,10 @@ public final class ProductionOrder {
                 .mapToInt(line -> line.cartons() - line.receivedCartons()).sum();
     }
 
-    /** Sent to the producer and not finished: it counts for an order waiting for stock (17 BR-04). */
+    /**
+     * Sent to the producer and not finished: it counts for an order waiting for stock (17 BR-04). PENDING_APPROVAL is
+     * history, but a row of before reads as not sent, as it was.
+     */
     public boolean sentAndOpen() {
         return status.open() && status != ProductionOrderStatus.DRAFT
                 && status != ProductionOrderStatus.PENDING_APPROVAL;
@@ -595,8 +716,6 @@ public final class ProductionOrder {
     public boolean sampleApprovalRequired() { return sampleApprovalRequired; }
     public boolean sampleRequiredByDefault() { return sampleRequiredByDefault; }
     public String sampleWaiverReason() { return sampleWaiverReason; }
-    public BigDecimal unitPrice() { return unitPrice; }
-    public String currency() { return currency; }
     public String note() { return note; }
     public UUID drawnUpBy() { return drawnUpBy; }
     public Instant submittedAt() { return submittedAt; }
@@ -604,6 +723,10 @@ public final class ProductionOrder {
     public Instant approvedAt() { return approvedAt; }
     public String returnedReason() { return returnedReason; }
     public Instant sentAt() { return sentAt; }
+    public UUID sentBy() { return sentBy; }
+
+    /** What the coordinator kept with the producer's acceptance; null when none. */
+    public String acceptanceNote() { return acceptanceNote; }
     public Instant productionStartedAt() { return productionStartedAt; }
     public LocalDate expectedCompletionDate() { return expectedCompletionDate; }
     public UUID cancelledBy() { return cancelledBy; }
@@ -614,4 +737,11 @@ public final class ProductionOrder {
     public String closingReason() { return closingReason; }
     public List<Line> lines() { return Collections.unmodifiableList(lines); }
     public long version() { return version; }
+
+    public ProductionOrderKind kind() {
+        return replacement == null ? ProductionOrderKind.STANDARD : ProductionOrderKind.REPLACEMENT;
+    }
+
+    /** What a replacement makes up; empty for a {@link ProductionOrderKind#STANDARD} one. */
+    public Optional<Replacement> replacement() { return Optional.ofNullable(replacement); }
 }

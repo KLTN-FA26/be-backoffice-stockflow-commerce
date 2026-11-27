@@ -102,6 +102,9 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
     /** Carriers' webhooks (3-5): anonymous, authenticated by their credential, repeats told apart by the event log. */
     static final String CARRIER_WEBHOOK_PATH = "/api/v1/fulfillment/carrier-webhooks/";
 
+    /** The bank feed's webhook (part C): anonymous, authenticated by SePay's credential, repeats told apart by its id. */
+    static final String BANK_FEED_WEBHOOK_PATH = "/api/v1/bank-transactions/webhooks/";
+
     /**
      * How long a stored response can be replayed.
      *
@@ -139,7 +142,8 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
         // id) and caps its body at 64 KiB as it reads it. Buffering it here first, whatever its size, would bypass
         // that cap (review of #195, N3).
         if (request.getRequestURI() != null && (request.getRequestURI().startsWith(WEBHOOK_PATH)
-                || request.getRequestURI().startsWith(CARRIER_WEBHOOK_PATH))) {
+                || request.getRequestURI().startsWith(CARRIER_WEBHOOK_PATH)
+                || request.getRequestURI().startsWith(BANK_FEED_WEBHOOK_PATH))) {
             return true;
         }
         if (request.getHeader(IdempotencyKeys.HEADER) == null) {

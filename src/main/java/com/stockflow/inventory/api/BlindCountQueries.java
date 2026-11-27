@@ -21,9 +21,9 @@ import java.util.UUID;
 public interface BlindCountQueries {
 
     /**
-     * Of {@code stockItemIds} ({@link StockAvailability#stockItemId()}), those whose quantities the caller may not see
+     * Of {@code stockPackageIds} ({@link StockAvailability#stockItemId()}), those whose quantities the caller may not see
      * now: their slot is under a count, open or with its variance still pending approval. Empty for a caller who may
      * decide counts, and for an empty argument.
      */
-    Set<UUID> hiddenFromCaller(Collection<UUID> stockItemIds);
+    Set<UUID> hiddenFromCaller(Collection<UUID> stockPackageIds);
 }

@@ -29,4 +29,9 @@ public interface PrintConfigs {
      * itself is still active does not matter: a draft keeps its template (B39).
      */
     boolean designable(UUID templateId);
+
+    /** The fonts the design studio offers, in its order; a template's {@code allowedFontCodes} name only these. */
+    default List<PrintFont> fonts() {
+        return List.of(PrintFont.values());
+    }
 }

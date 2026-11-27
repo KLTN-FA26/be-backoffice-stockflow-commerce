@@ -9,11 +9,15 @@ import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository.ItemRow;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
+import com.stockflow.inventory.internal.repository.VariantRotations;
+import com.stockflow.inventory.spi.CartonRotation;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -33,27 +37,32 @@ class PackagingSpecResolverImplTest {
     private static final Sku SKU = new Sku("CUP-12OZ");
     private static final UUID ITEM = UUID.randomUUID();
     private static final UUID CARTON = UUID.randomUUID();
+    private static final UUID VARIANT = UUID.randomUUID();
 
     private final InventoryPolicyRepository items = mock(InventoryPolicyRepository.class);
     private final UomConversionRepository conversions = mock(UomConversionRepository.class);
-    private final PackagingSpecResolverImpl resolver = new PackagingSpecResolverImpl(items, conversions);
+    /** The catalogue's answer (owner decision Q9: whether a carton may be turned is its variant's). */
+    private final Map<UUID, Boolean> catalogue = new HashMap<>();
+    private final PackagingSpecResolverImpl resolver =
+            new PackagingSpecResolverImpl(items, conversions, new VariantRotations(answering(catalogue)));
 
-    private static ItemLogistics logistics(boolean rotatable) {
-        return new ItemLogistics("PCS", null, new BigDecimal("0.010"), new BigDecimal("8"), new BigDecimal("8"),
-                new BigDecimal("12"), null, null, null, null, 1, 1, rotatable);
+    @SuppressWarnings("unchecked")
+    private static ObjectProvider<CartonRotation> answering(Map<UUID, Boolean> catalogue) {
+        ObjectProvider<CartonRotation> provider = mock(ObjectProvider.class);
+        CartonRotation rotation = ids -> Map.copyOf(catalogue);
+        when(provider.getIfAvailable()).thenReturn(rotation);
+        return provider;
     }
 
-    private static ItemRow row(boolean rotatable) {
-        return new ItemRow(ITEM, SKU.code(), 1, logistics(rotatable));
+    /** The item, its variant's cartons turning or not as the catalogue answers. */
+    private ItemRow row(boolean rotatable) {
+        catalogue.put(VARIANT, rotatable);
+        return new ItemRow(ITEM, SKU.code(), 1, new ItemLogistics("PCS", null), VARIANT);
     }
 
-    private static UomConversion base() {
-        return new UomConversion(UUID.randomUUID(), SKU.code(), "PCS", 1, true, null, null, null, null, true, true, 0);
-    }
-
-    private static UomConversion carton(boolean shipping, BigDecimal length) {
-        return new UomConversion(CARTON, SKU.code(), "CARTON", 24, false, new BigDecimal("0.300"), length,
-                new BigDecimal("20.5"), new BigDecimal("30"), false, true, 0, shipping);
+    private static UomConversion carton(BigDecimal length) {
+        return new UomConversion(CARTON, SKU.code(), "CARTON", 24, new BigDecimal("0.300"), length,
+                new BigDecimal("20.5"), new BigDecimal("30"), true, 0);
     }
 
     @Test
@@ -83,7 +92,7 @@ class PackagingSpecResolverImplTest {
     @DisplayName("48 units with a 24-per-carton default shipping unit pack into 2 whole cartons, no partial one")
     void resolvesWholeCartons() {
         when(items.findBySkus(any())).thenReturn(List.of(row(true)));
-        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(base(), carton(true, new BigDecimal("40")))));
+        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(carton(new BigDecimal("40")))));
 
         PackagingSpec spec = resolver.resolve(SKU, 48);
 
@@ -99,7 +108,7 @@ class PackagingSpecResolverImplTest {
     @DisplayName("50 units leave a partial carton of the 2 loose units")
     void resolvesPartialCarton() {
         when(items.findBySkus(any())).thenReturn(List.of(row(true)));
-        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(base(), carton(true, new BigDecimal("40")))));
+        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(carton(new BigDecimal("40")))));
 
         PackagingSpec spec = resolver.resolve(SKU, 50);
 
@@ -111,7 +120,7 @@ class PackagingSpecResolverImplTest {
     @DisplayName("resolveAll answers in the order asked, one spec per line, reading each SKU once")
     void resolveAllKeepsOrder() {
         when(items.findBySkus(any())).thenReturn(List.of(row(true)));
-        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(base(), carton(true, new BigDecimal("40")))));
+        when(conversions.bySkus(any())).thenReturn(Map.of(SKU.code(), List.of(carton(new BigDecimal("40")))));
 
         List<PackagingSpec> specs = resolver.resolveAll(List.of(new PackagingRequest(SKU, 24),
                 new PackagingRequest(SKU, 48)));
@@ -123,7 +132,7 @@ class PackagingSpecResolverImplTest {
     @Test
     @DisplayName("a unit with all four of length, width, height and weight is a carton spec in whole millimetres, rounded up")
     void unitCartonInMillimetres() {
-        when(conversions.find(SKU.code(), CARTON)).thenReturn(Optional.of(carton(false, new BigDecimal("40.01"))));
+        when(conversions.find(SKU.code(), CARTON)).thenReturn(Optional.of(carton(new BigDecimal("40.01"))));
         when(items.findBySkus(any())).thenReturn(List.of(row(false)));
 
         PackagingSpec.CartonSpec spec = resolver.unitCarton(SKU, CARTON).orElseThrow();
@@ -138,7 +147,7 @@ class PackagingSpecResolverImplTest {
     @Test
     @DisplayName("a unit missing a dimension has no carton spec")
     void unitCartonIncomplete() {
-        when(conversions.find(SKU.code(), CARTON)).thenReturn(Optional.of(carton(false, null)));
+        when(conversions.find(SKU.code(), CARTON)).thenReturn(Optional.of(carton(null)));
 
         assertThat(resolver.unitCarton(SKU, CARTON)).isEmpty();
     }
@@ -152,9 +161,9 @@ class PackagingSpecResolverImplTest {
     }
 
     @Test
-    @DisplayName("a carton is rotatable unless the item says otherwise, also when the item cannot be read")
+    @DisplayName("a carton is rotatable unless its variant says otherwise, also when the item cannot be read")
     void rotatableDefaultsToTrue() {
-        when(conversions.find(SKU.code(), CARTON)).thenReturn(Optional.of(carton(false, new BigDecimal("40"))));
+        when(conversions.find(SKU.code(), CARTON)).thenReturn(Optional.of(carton(new BigDecimal("40"))));
         when(items.findBySkus(any())).thenReturn(List.of());
 
         assertThat(resolver.unitCarton(SKU, CARTON).orElseThrow().rotatable()).isTrue();

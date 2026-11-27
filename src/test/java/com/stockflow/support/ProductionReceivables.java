@@ -55,7 +55,7 @@ import java.util.stream.IntStream;
  * SKUs of their own, on a confirmed contract, delivering to a warehouse the test names. The tests of putaway, cartons,
  * lots and stock lookups need a goods receipt to start from; since purchasing went (4A-8) there is no purchase order
  * to write into the tables, and a goods receipt is only ever against a production order, so they get one here - made
- * through the real services (a contract signed, a production order drawn up, approved, its print sample waived),
+ * through the real services (a contract signed, a production order drawn up, its print sample waived, sent),
  * because the database refuses a receipt whose production order is not really SENT.
  *
  * <p>Needs the upload scanner and the customer e-mail off and a mocked mail sender - see
@@ -152,7 +152,7 @@ public class ProductionReceivables {
 
     /** {@code n} new cartons, their count left to the standard. */
     public static List<GoodsReceipts.NewPackage> newCartons(int n) {
-        return IntStream.range(0, n).mapToObj(i -> new GoodsReceipts.NewPackage(null, 0)).toList();
+        return IntStream.range(0, n).mapToObj(i -> new GoodsReceipts.NewPackage(null)).toList();
     }
 
     /**
@@ -199,30 +199,19 @@ public class ProductionReceivables {
         ConfirmedDesigns.Design design = ConfirmedDesigns.confirmedFor(storage, jdbc, tx, entityManager, customerId,
                 product.productId());
         String sku = tx.execute(s -> {
-            UUID variant = Identifiers.newId();
-            String code = product.sku() + "-R" + variant.toString().substring(24, 28).toUpperCase(Locale.ROOT);
+            UUID id = Identifiers.newId();
+            String code = product.sku() + "-R" + id.toString().substring(24, 28).toUpperCase(Locale.ROOT);
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Printed cup', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), code, "OWNED-SKU:" + code, customerId, design.snapshotId(),
-                    product.variantId());
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Printed cup', 'ACTIVE', 0, NOW())""",
+                    id, product.productId(), product.variantId(), customerId, design.snapshotId(), code);
             return code;
         });
-        UUID item = tx.execute(s -> jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?",
-                UUID.class, sku));
-        UUID carton = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12
-                           WHERE id = ?""", item);
-            jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, version, created_at,
-                        default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 1.2, 60, 40, 35, FALSE, TRUE, 0, NOW(), TRUE)""",
-                    carton, item, per);
-        });
+        // The order this production order is for named the SKU, which made its item (owner decision Q5).
+        UUID item = tx.execute(s -> CartonRows.item(jdbc, sku));
+        // Packed in its source variant's carton (owner decision Q1): SKUs issued on one product share it.
+        UUID carton = tx.execute(s -> CartonRows.ofVariant(jdbc, product.variantId(), per, "1.2", "60", "40", "35"));
         return new Issued(sku, item, carton, cartons, per);
     }
 
@@ -262,17 +251,15 @@ public class ProductionReceivables {
         shippingWarehouses.choose(orderId, warehouseId, sales.userId());
 
         UUID coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        UUID manager = tx.execute(s -> ReferenceRows.user(entityManager));
         ProductionOrder draft = productionOrders.drawUp(orderId, 1, producer().id(), coordinator);
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
-                draft.producerId(), draft.needByDate(), draft.unitPrice(), draft.note(), false,
+                draft.producerId(), draft.needByDate(), draft.note(), false,
                 "The customer approved the same print on paper", null));
-        ProductionOrder pending = productionOrders.submit(waived.id(), waived.version(), coordinator);
-        ProductionOrder approved = productionOrders.approve(pending.id(), pending.version(), manager);
+        ProductionOrder production = productionOrders.send(waived.id(), waived.version(), coordinator);
         List<Goods> goods = issued.stream().map(i -> new Goods(i.sku(), i.itemId(), i.cartonUnitId(),
-                i.unitsPerCarton(), i.cartons(), approved.lines().stream().filter(l -> l.sku().equals(i.sku()))
+                i.unitsPerCarton(), i.cartons(), production.lines().stream().filter(l -> l.sku().equals(i.sku()))
                 .findFirst().orElseThrow().id())).toList();
-        return new Receivable(orderId, approved.id(), approved.code(), goods);
+        return new Receivable(orderId, production.id(), production.code(), goods);
     }
 
     /** A DRAFT goods receipt against the production order, as a clerk of the warehouse starts one. */

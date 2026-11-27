@@ -16,7 +16,6 @@ import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.OrderShipment;
-import com.stockflow.payment.api.ChargeFailedDeliveryCommand;
 import com.stockflow.payment.api.PaymentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,7 +23,6 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -38,18 +36,23 @@ import java.util.UUID;
  * an order after the carrier brought one of its shipments back.
  *
  * <pre>
- *   carrier reports it back ─▶ shipment RETURNED ─▶ order ON_HOLD (DELIVERY_FAILED)     (OrderServiceImpl)
- *   return receipt confirmed ─▶ case OPEN, cartons in quarantine                         ({@link #goodsReceived})
- *   Sales decide ─┬─▶ deliver again: hold lifted, goods held as they are put away,       ({@link #redeliver})
- *                 │    released, picked, checked, handed over ─▶ case REDELIVERED
+ *   carrier reports it back ─▶ shipment RETURNED, the order RETURNED or (others delivered) PARTIALLY_FULFILLED;
+ *                              nothing closed, nothing settled yet (Q-7)                 (OrderServiceImpl)
+ *   return receipt confirmed ─▶ the shipment's units closed and settled by payment, ShipmentReturnSettled; a case
+ *                              records what came back, CANCELLED at once - nothing of the shipment is owed
+ *                                                                                       ({@link #goodsReceived})
+ *   refund recorded ─▶ REFUNDED / PARTIALLY_REFUNDED                                      ({@link #followRefunds})
+ *
+ *   RTM-RETURNED (owner 18-19/11): the WF-05 decision to deliver again after the return is gone - Sales make a new
+ *   order to send the goods again. Cases decided before still close as they did:
  *                 └─▶ cancel what was not delivered: the rest closed with its fee,        ({@link #cancelUndelivered})
  *                      what was collected above goods delivered + fee refundable
  *   no receipt yet (goods lost, or not received) ─▶ cancel without a case                 ({@link #cancelWithoutCase})
  * </pre>
  *
- * <p>The order is held from the shipment's outcome, not from the receipt: the customer is owed the goods from the
- * moment they failed to arrive, and the receipt - which needs the shipment RETURNED - only tells Sales what came back
- * and in what state. Nothing here refunds by default: the goods are the customer's own SKU, sold to nobody else.</p>
+ * <p>The order's status follows the shipment's outcome (RTM-RETURNED); its units and its money follow the receipt
+ * (WF-05 Q-7, L-I8): the carrier's report is a word, the confirmed receipt is the goods seen. A load-level report, a
+ * wrong report or a lost parcel therefore never closes units or makes money refundable by itself.</p>
  *
  * <p>Locks: the order's row first, every time, then what payment and inventory lock inside their own calls (orders,
  * then installments; SKU advisory locks, sorted). A case is written only under its order's lock.</p>
@@ -60,11 +63,16 @@ public class DeliveryFailureService {
 
     private static final Logger log = LoggerFactory.getLogger(DeliveryFailureService.class);
 
-    /** The decision note of a case whose goods came back after the rest of the order was closed. */
-    static final String CLOSED_BEFORE_RECEIVED = "Closed with the rest of the order before its goods were received back";
+    /**
+     * The decision note of a case the system closed: nothing of its shipment was owed when its goods came back, so the
+     * case only records them (ck_delivery_failure_case_decided wants a note). Never shown as it is: the API answers
+     * the closure {@code RECORDED_ON_RETURN} instead (F-4, BE-42).
+     */
+    static final String CLOSED_BEFORE_RECEIVED = "Closed when the shipment came back; the goods are a record of the return";
 
-    /** What Sales send to deliver again: why, and what the failed trip is charged at when the customer made it fail. */
-    public record Redeliver(String note, BigDecimal failedTripFee) {
+    /** {@link #CLOSED_BEFORE_RECEIVED}, for the controller to tell a system closure from Sales' (F-4). */
+    public static String systemClosureNote() {
+        return CLOSED_BEFORE_RECEIVED;
     }
 
     /** What Sales send to cancel what was not delivered: why, and the fee agreed for the goods already made. */
@@ -89,11 +97,14 @@ public class DeliveryFailureService {
     private final PaymentService payments;
     private final OrderEventPublisher events;
     private final ApplicationEventPublisher publisher;
+    private final com.stockflow.order.internal.domain.SettlementCandidates candidates;
     private final Clock clock;
 
     DeliveryFailureService(OrderRepository orders, DeliveryFailureCases cases, OrderServiceImpl orderService,
                            ShippingWarehouseService shippingWarehouses, PaymentService payments,
-                           OrderEventPublisher events, ApplicationEventPublisher publisher, Clock clock) {
+                           OrderEventPublisher events, ApplicationEventPublisher publisher,
+                           com.stockflow.order.internal.domain.SettlementCandidates candidates, Clock clock) {
+        this.candidates = candidates;
         this.events = events;
         this.publisher = publisher;
         this.orders = orders;
@@ -107,21 +118,31 @@ public class DeliveryFailureService {
     // ------------------------------------------------------------------ opening
 
     /**
-     * The goods of a returned shipment were received back on a confirmed return receipt (03 §4.2 step 12): its delivery
-     * failure case is OPEN, with the shipment's lines and the cartons that came. Called through
-     * {@link ReturnRequestService#goodsReceived} after the receipt committed, in a transaction of its own; a receipt
-     * seen again opens nothing more. The cartons are in quarantine, so nothing is held yet: they are held for the order
-     * as they are put away ({@link ShippingWarehouseService#holdReturnedGoods}).
+     * The goods of a shipment the carrier brought back were received on a confirmed return receipt (03 §4.2 step 12).
+     * Called through {@link ReturnRequestService#goodsReceived} after the receipt committed, in a transaction of its own.
      *
-     * <p>Goods received back after the rest of the order was closed - Sales cancelled what was not delivered while this
-     * shipment's receipt was still to be made, or before it came back at all - are owed to nobody: the case opens and is
-     * CANCELLED at once, by the receiving clerk, with a note saying why (WF-05 review F1). It is on record and holds
-     * nothing; an OPEN case there would wait for a decision no path can take.</p>
+     * <p><b>The money moves here, not at the carrier's report</b> (WF-05 Q-7, BE-14, L-I8). The shipment's units are
+     * closed on their lines ({@code Order.closeReturnedShipment}) and payment settles them in this transaction - the
+     * shipment's batch first, then older debt, the rest refundable (Q-2, {@link OrderServiceImpl#settleShipmentClosure})
+     * - dated by this transaction's clock (BE-32), the goods back as of the receipt's confirmation (Q-3).
+     * {@code ShipmentReturnSettled} tells payment and invoicing after the commit. A case records what came back -
+     * each carton with the units counted inside it, not its label (Q-18, BE-20) - and is CANCELLED at once: nothing of
+     * the shipment is owed, so there is nothing for Sales to decide (closure {@code RECORDED_ON_RETURN}).</p>
      *
-     * @throws IllegalStateException when the order knows the shipment but not as RETURNED, or when the units that came
-     *         back, still owed, are not whole cartons of their lines (WF-05 review N3: such a case could be held but
-     *         never released) - the publication stays incomplete in the registry and is replayed at the next start, so
-     *         a defect here is seen rather than lost; the order stays held, and Sales may cancel without a case
+     * <p><b>Once per shipment</b> (L-I8). A shipment may come back in several receipts (BE-13): the first closes its
+     * units; each later one adds its cartons to the shipment's case and closes nothing. A receipt seen again - a replayed
+     * publication - adds nothing. A shipment whose units were closed before the closure moved to the receipt (#377,
+     * when it was reported) closes nothing again either.</p>
+     *
+     * <p><b>An order from before RTM-RETURNED</b> (WF-05 Q-13 = a, BE-16) that still owes the shipment's units - held for
+     * the failed delivery, its units owed again - gets an OPEN case: the decision path ({@link #cancelUndelivered}) is
+     * its way out. Closing them here would decide for Sales.</p>
+     *
+     * <p>Goods received back after the rest of the order was closed are owed to nobody: the case opens and is
+     * CANCELLED at once with a note saying why (WF-05 review F1).</p>
+     *
+     * @throws IllegalStateException when the order knows the shipment but not as RETURNED - the publication stays
+     *         incomplete in the registry and is replayed at the next start, so a defect here is seen rather than lost
      */
     public void goodsReceived(ReturnedGoodsReceived event) {
         if (event.shipmentId() == null) {
@@ -130,9 +151,16 @@ public class DeliveryFailureService {
         Order order = orders.findByIdForUpdate(new OrderId(event.orderId())).orElseThrow(() ->
                 new IllegalStateException("Return receipt %s names no order %s".formatted(event.receiptNumber(),
                         event.orderId())));
-        if (cases.findByShipment(event.shipmentId()).isPresent()) {
-            log.info("Order {}: return receipt {} opened its delivery failure case already", order.orderNumber(),
-                    event.receiptNumber());
+        List<DeliveryFailureCase.Carton> cartons = event.cartons().stream()
+                .map(c -> new DeliveryFailureCase.Carton(c.lpn(), c.sku(), c.lotNumber(), c.unitsInside(),
+                        cartonCondition(c))).toList();
+        var existing = cases.findByShipment(event.shipmentId());
+        if (existing.isPresent()) {
+            // BE-13: a later receipt of the same shipment - or this one seen again. Its cartons join the case (each
+            // LPN once); the shipment's units were dealt with at its first receipt.
+            int added = cases.appendCartons(existing.get().id(), cartons);
+            log.info("Order {}: return receipt {} of shipment {} adds {} carton(s) to its delivery failure case",
+                    order.orderNumber(), event.receiptNumber(), event.shipmentId(), added);
             return;
         }
         OrderShipment shipment = order.shipments().stream().filter(s -> s.id().equals(event.shipmentId())).findFirst()
@@ -151,74 +179,60 @@ public class DeliveryFailureService {
             throw new IllegalStateException("Return receipt %s: shipment %s of order %s is %s, not RETURNED".formatted(
                     event.receiptNumber(), event.shipmentId(), order.orderNumber(), shipment.status()));
         }
+        Instant goodsBackAt = event.receivedAt().truncatedTo(ChronoUnit.MICROS);
+        // BE-16: an order from before RTM-RETURNED still owes the shipment's units (they were owed again when it came
+        // back, and Sales were to decide). Its case stays OPEN for that decision; nothing is closed here.
+        // Only a shipment the backfill closed - its units off it, no value settled - can be owed for a decision
+        // (Order.owesUnitsOf): a shipment still holding its units is waiting for exactly this receipt, and one Sales
+        // closed as lost that the carrier found and brought back was settled at its closure (audit r2 lifecycle M-3) -
+        // another batch of the same line still to ship makes neither of them legacy.
+        boolean owedForDecision = order.owesUnitsOf(shipment.id());
+        if (!owedForDecision) {
+            Instant now = now();
+            var closure = order.closeReturnedShipment(shipment.id(), goodsBackAt, now, event.receivedBy());
+            if (closure.isPresent()) {
+                orderService.settleShipmentClosure(order, closure.get(),
+                        com.stockflow.payment.api.SettleShipmentReturnCommand.Cause.CARRIER_RETURN,
+                        OrderServiceImpl.returnedShipmentNote(), event.receivedBy(), now);
+                orderService.saveClosed(order);
+            }
+        }
         DeliveryFailureCase failure = DeliveryFailureCase.open(Identifiers.newId(), event.orderId(), shipment.id(),
                 shipment.deliveryBatchId(), event.receiptId(), event.receiptNumber(), event.warehouseId(),
                 shipment.failureReason() == null ? DeliveryFailureReason.OTHER : shipment.failureReason(),
-                shipment.failureNote(), shipment.quantities(), event.cartons().stream()
-                        .map(c -> new DeliveryFailureCase.Carton(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
-                                c.condition())).toList(),
-                event.receivedAt().truncatedTo(ChronoUnit.MICROS));
-        if (!order.owesUnitsOf(shipment.id())) {
-            // ck_delivery_failure_case_* and the trigger allow a case to be born OPEN only: it is opened, then closed.
-            // It holds nothing, so whether its units are whole cartons does not matter.
-            failure = cases.save(failure);
-            failure.cancel(CLOSED_BEFORE_RECEIVED, event.receivedBy(), failure.openedAt());
-            cases.save(failure);
-            log.info("Order {}: the goods of shipment {} came back on receipt {} after the rest was closed; its case is "
-                    + "cancelled", order.orderNumber(), shipment.id(), event.receiptNumber());
+                shipment.failureNote(), shipment.quantities(), cartons, goodsBackAt);
+        failure = cases.save(failure);
+        if (owedForDecision) {
+            log.warn("Order {}: shipment {} came back on receipt {} while its units are still owed (an order from "
+                    + "before RTM-RETURNED); its delivery failure case waits for Sales", order.orderNumber(),
+                    shipment.id(), event.receiptNumber());
             return;
         }
-        Map<UUID, Integer> unitsPerCarton = new java.util.HashMap<>();
-        order.lines().forEach(line -> unitsPerCarton.put(line.id(),
-                line.unitsPerCarton() == null || line.unitsPerCarton() < 1 ? 1 : line.unitsPerCarton()));
-        failure.requireWholeCartons(unitsPerCarton);
+        // Nothing of the shipment is owed: its case is a record of what came back, closed at once by the system
+        // (closure RECORDED_ON_RETURN). ck_delivery_failure_case_* and the trigger allow a case to be born OPEN only:
+        // it is opened, then closed. It holds nothing, so whether its units are whole cartons does not matter.
+        failure.cancel(CLOSED_BEFORE_RECEIVED, event.receivedBy(), failure.openedAt());
         cases.save(failure);
-        log.info("Order {}: delivery failure case opened for shipment {} ({}), {} carton(s) back on receipt {}",
-                order.orderNumber(), shipment.id(), failure.failureReason(), failure.cartons().size(),
-                event.receiptNumber());
+        log.info("Order {}: the goods of shipment {} came back on receipt {}; units closed and settled, its case "
+                + "records them, closed", order.orderNumber(), shipment.id(), event.receiptNumber());
+        // Refunds made already: no refund record will come to move it on. Nothing made refundable: it does not move
+        // (BE-45) and the nightly settlement closes it from where it is.
+        followRefunds(order.id().value(), event.receivedBy());
+    }
+
+    /**
+     * What a case keeps of a carton's state: what the warehouse noted, and - Q-18 - that it came back opened and was
+     * not put into stock. Cut to the column's 500.
+     */
+    private static String cartonCondition(ReturnedGoodsReceived.Carton carton) {
+        String condition = carton.condition() == null || carton.condition().isBlank() ? null : carton.condition().strip();
+        if (!carton.enteredStock()) {
+            condition = condition == null ? "NOT_STOCKED" : "NOT_STOCKED: " + condition;
+        }
+        return condition == null || condition.length() <= 500 ? condition : condition.substring(0, 500);
     }
 
     // ------------------------------------------------------------------ deciding
-
-    /**
-     * (a) Sales decide to deliver the goods again (09 §4.3): the case is REDELIVERY, the order leaves its hold for
-     * PARTIALLY_FULFILLED once nothing of it waits for a decision ({@link #decisionsWait}: a case OPEN, or a shipment
-     * that came back and whose receipt is still to be made), and what of the goods is stock to promise is held for
-     * it at once - the rest as it is put away. The warehouse manager then releases it; fulfillment picks, checks and
-     * hands it over as a new shipment, which closes the case.
-     *
-     * <p>A trip the customer made fail - they refused the goods, or the address was wrong - is charged to them: the
-     * amount Sales enter is owed on a fee item of the contract, in this transaction. Any other reason charges nothing
-     * and is marked for a claim against the carrier.</p>
-     *
-     * @throws BusinessException {@code DELIVERY_FAILURE_CASE_NOT_FOUND}; {@code DELIVERY_FAILURE_INVALID_TRANSITION}
-     *         (not OPEN); {@code VALIDATION_FAILED} (the fee missing, not wanted, or not a whole positive amount; no
-     *         note); {@code CONFLICT} when the trip is to be charged and the order has no installments
-     */
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "delivery-failure-case", resourceId = "#caseId",
-            details = "{to: 'REDELIVERY'}")
-    public CaseView redeliver(UUID orderId, UUID caseId, Redeliver command, UUID by) {
-        Order order = lock(orderId);
-        DeliveryFailureCase failure = load(orderId, caseId);
-        Instant now = now();
-        failure.requireRedeliverable(command.failedTripFee(), command.note());
-        UUID feeItem = null;
-        if (command.failedTripFee() != null) {
-            // Orders, then installments: the order's row is locked already.
-            feeItem = payments.chargeFailedDelivery(new ChargeFailedDeliveryCommand(orderId, command.failedTripFee(),
-                    "Failed delivery " + failure.receiptNumber(), by, now)).orElse(null);
-        }
-        failure.redeliver(command.failedTripFee(), feeItem, command.note(), by, now);
-        cases.save(failure);
-        if (order.heldForDeliveryFailure() && !decisionsWait(order, cases.ofOrder(orderId))) {
-            orderService.resumeAfterDeliveryFailure(orderId, command.note(), by, now);
-        }
-        shippingWarehouses.holdReturnedGoods(orderId);
-        log.info("Order {}: the goods of receipt {} are delivered again{}", order.orderNumber(),
-                failure.receiptNumber(), command.failedTripFee() == null ? "; the failed trip is the carrier's"
-                        : "; the failed trip is charged " + command.failedTripFee().toPlainString());
-        return view(cases.find(caseId).orElseThrow());
-    }
 
     /**
      * (b) Sales decide to cancel what was not delivered (17 §4.8 step 33, 15 §4.6 step 19): the hold is lifted and the
@@ -234,8 +248,9 @@ public class DeliveryFailureService {
      * Once a pick took a carton the goods are on their way to the customer and are handed over; what they do not keep
      * comes back through a return request.</p>
      *
-     * <p>The order then shows its shipments: DELIVERED when some arrived, RETURNED when none did - from where the
-     * nightly settlement moves it on once its refunds are made ({@link #followRefunds}).</p>
+     * <p>The order then shows its shipments: PARTIALLY_FULFILLED when some arrived and the rest came back, RETURNED
+     * when none did - from where the nightly settlement moves it on once its refunds are made
+     * ({@link #followRefunds}).</p>
      *
      * @throws BusinessException {@code DELIVERY_FAILURE_CASE_NOT_FOUND}; {@code DELIVERY_FAILURE_INVALID_TRANSITION}
      *         (the case closed, or goods of a released redelivery picked already);
@@ -252,6 +267,22 @@ public class DeliveryFailureService {
             throw new BusinessException(ErrorCode.DELIVERY_FAILURE_INVALID_TRANSITION,
                     "Delivery failure case of receipt %s is %s and is not decided again".formatted(
                             failure.receiptNumber(), failure.status()));
+        }
+        if (failure.status() == DeliveryFailureCase.Status.OPEN && !order.owesUnitsOf(failure.shipmentId())) {
+            // Audit r2 lifecycle M-3: an OPEN case whose shipment the order owes nobody - opened before the legacy
+            // check looked at the closure's value (a lost shipment found and brought back), or whose units a closure
+            // of the rest took since - is a record of goods that came back, not a decision. Cancelling it closes it
+            // and nothing else: closing the order's rest here would cancel a later batch still to ship.
+            if (command.agreedFee() != null && command.agreedFee().amount().signum() > 0) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Order %s owes nothing of the shipment of "
+                        + "receipt %s; no fee is kept on it").formatted(order.orderNumber(), failure.receiptNumber()));
+            }
+            failure.cancel(command.note(), by, now());
+            cases.save(failure);
+            log.info("Order {}: the delivery failure case of receipt {} recorded goods owed to nobody; closed",
+                    order.orderNumber(), failure.receiptNumber());
+            followRefunds(orderId, by);
+            return view(cases.find(caseId).orElseThrow());
         }
         closeUndelivered(order, command, by);
         log.info("Order {}: what the failed delivery of receipt {} left undelivered is cancelled", order.orderNumber(),
@@ -369,44 +400,80 @@ public class DeliveryFailureService {
     // ------------------------------------------------------------------ after a cancellation
 
     /**
-     * An order RETURNED by a cancellation of its undelivered goods - nothing of it was delivered - moves on once
-     * everything its settlements made refundable is refunded (15 §4.5 step 17), nothing at all included: REFUNDED when
-     * money went back and it was everything the customer paid, nothing kept and nothing still owed; PARTIALLY_REFUNDED
-     * otherwise - a fee kept or owed, or nothing paid and so nothing refunded (WF-05 review F8). From there the nightly
-     * settlement closes it after
-     * {@code close-after-days}, once it no longer owes (a fee item not paid keeps it open). Called after the
-     * cancellation, after each refund recorded ({@link ReturnedGoodsListener}), and by the nightly settlement for the
-     * orders both missed.
+     * An order the carrier's returns or losses ended ({@code Order.endedByCarrier}) moves on once everything its
+     * settlements made refundable is refunded (15 §4.5 step 17): REFUNDED when money went back and it was everything
+     * the customer paid, nothing kept and nothing still owed; PARTIALLY_REFUNDED when money went back and a fee was
+     * kept or is owed. From here the nightly settlement closes it after {@code close-after-days}, once it no longer owes
+     * (a fee item not paid keeps it open). Called after the cancellation, after each refund recorded
+     * ({@link ReturnedGoodsListener}), and by the nightly settlement for the orders both missed.
+     *
+     * <p><b>Nothing made refundable, nothing moves</b> (WF-05 Q-4 / BE-45; audit r2 contract M-6). An order none of whose
+     * settlements made money refundable - nothing paid, or what was paid all owed still - was refunded nothing, and
+     * "Hoàn một phần" at 0 đồng (review F8's rule) told staff and the order's history a refund that never happened. It
+     * stays RETURNED or PARTIALLY_FULFILLED, what its shipments say, and the nightly settlement closes it from there
+     * ({@code OrderSettlementService.close}, {@code Order.closeWithoutRefund}).</p>
+     *
+     * <p>A delivery failure case still OPEN keeps the order waiting only while it is a decision - its shipment's units
+     * owed ({@code Order.owesUnitsOf}). One whose shipment the order owes nobody records goods that came back and holds
+     * nothing back (audit r2 lifecycle M-3): before, such a case kept the order from settling for good.</p>
      *
      * <p>An order with a shipment DELIVERED is not one of them (WF-05 review F2): it went RETURNED through a return
      * request after a cancelled delivery failure left it DELIVERED, and the return request moves it
      * ({@code ReturnRequestService.followRefunds}) once it is decided - not this, while it may still be open.</p>
      *
+     * <p><b>Held, nothing moves</b> (WF-05 Q-17; audit r3 LM-1): whatever the order's status, while Sales hold its
+     * completion it waits here, quietly, and the release looks again. Before, only a PARTIALLY_FULFILLED order waited;
+     * a RETURNED one went on and met {@code tg_order_completion_hold_respected}, which rolled back the refund listener,
+     * the nightly step and the return receipt's own transaction alike.</p>
+     *
      * @return whether the order moved
      */
     public boolean followRefunds(UUID orderId, UUID by) {
         Order order = orders.findByIdForUpdate(new OrderId(orderId)).orElse(null);
-        if (order == null || order.status() != OrderStatus.RETURNED) {
+        if (order == null) {
+            return false;
+        }
+        // RTM-RETURNED (owner 18-19/11): the carrier brought goods back, or lost them - the whole order (RETURNED,
+        // nothing of it delivered) or part of it (PARTIALLY_FULFILLED, the other shipments delivered,
+        // RTM-RETURNED-PARTIAL). An order RETURNED through a return request (RMA) has a shipment DELIVERED and is
+        // ReturnRequestService.followRefunds's. WF-05 Q-7: only once their units are closed and settled - every return
+        // receipt confirmed (deliveriesOver); before that nothing was made refundable, and "settled" would be a lie.
+        if (!order.endedByCarrier()) {
+            return false;
+        }
+        // WF-05 Q-17 (BE-05, L-I3): Sales hold the completion while a delivery of the order is verified, and a held
+        // order goes into the refund branch by no path - from PARTIALLY_FULFILLED or from RETURNED, to REFUNDED or to
+        // PARTIALLY_REFUNDED - as a customer's return's path refuses it too (ReturnRequestService.followReturns). The
+        // order stays; releasing the hold follows it on (OrderCompletionHolds.release), and so does the nightly run.
+        // Audit r3 LM-1: this was asked of PARTIALLY_FULFILLED only, while tg_order_completion_hold_respected refuses
+        // RETURNED -> PARTIALLY_REFUNDED as well. A held order the carrier brought back whole - its one delivery
+        // corrected to a failure, then returned - came here RETURNED, moved, and every refund event and every night
+        // failed on the trigger, the receipt's own transaction included. One rule for both statuses now, the
+        // database's (V20261224000100 states it for REFUNDED too). The hold is not lifted here: it is a decision Sales
+        // made with a reason (Q-17), and the order shows COMPLETION_HELD among its blockers until they release it.
+        if (candidates.completionHeld(orderId)) {
+            log.info("Order {}: its completion is held; it stays {} until the hold is released", order.orderNumber(),
+                    order.status());
             return false;
         }
         List<DeliveryFailureCase> ofOrder = cases.ofOrder(orderId);
-        boolean cancelled = ofOrder.stream().anyMatch(c -> c.status() == DeliveryFailureCase.Status.CANCELLED);
-        boolean delivered = order.shipments().stream()
-                .anyMatch(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED);
-        if (!cancelled || delivered || ofOrder.stream().anyMatch(c -> !c.status().isClosed())) {
-            // RETURNED through a return request (RMA): ReturnRequestService.followRefunds moves that order.
+        if (ofOrder.stream().anyMatch(c -> !c.status().isClosed()
+                && (c.status() != DeliveryFailureCase.Status.OPEN || order.owesUnitsOf(c.shipmentId())))) {
             return false;
         }
         var progress = payments.refundProgress(orderId);
+        if (progress.refundable().signum() == 0) {
+            log.debug("Order {}: its settlements made nothing refundable; it stays {} and closes from there",
+                    order.orderNumber(), order.status());
+            return false;
+        }
         if (!progress.settled()) {
             return false;
         }
-        // In full when money went back and it was everything the customer paid, with nothing still owed on the
-        // installments: a fee kept (refundable below paid) or owed (owed above paid - a closure's fee item, a failed
-        // trip's) makes it partial, and so does nothing paid - nothing was refunded.
+        // In full when it was everything the customer paid, with nothing still owed on the installments: a fee kept
+        // (refundable below paid) or owed (owed above paid - a closure's fee item) makes it partial.
         var standing = payments.installmentStanding(orderId);
-        boolean full = progress.refundable().signum() > 0
-                && progress.refundable().compareTo(standing.paid()) >= 0
+        boolean full = progress.refundable().compareTo(standing.paid()) >= 0
                 && standing.total().compareTo(standing.paid()) <= 0;
         if (!order.refunded(full, by, now(), "DELIVERY_FAILED_SETTLED")) {
             return false;
@@ -415,6 +482,17 @@ public class DeliveryFailureService {
         events.publishEventsOf(order);
         log.info("Order {}: its failed delivery is settled, now {}", order.orderNumber(), order.status());
         return true;
+    }
+
+    /**
+     * Whether Sales hold the order's completion (WF-05 Q-17 = a, BE-05): the order then does not move into the refund
+     * branch, by this path or a customer's return's ({@code ReturnRequestService.followReturns}, audit r2 lifecycle
+     * L-1) - after PARTIALLY_REFUNDED a delivery it disputes could no longer be put right - and the release follows it
+     * on ({@code OrderCompletionHolds.release}). Read in the caller's transaction, under the order's lock.
+     */
+    @Transactional(readOnly = true)
+    public boolean completionHeld(UUID orderId) {
+        return candidates.completionHeld(orderId);
     }
 
     // ------------------------------------------------------------------ reading
@@ -448,7 +526,10 @@ public class DeliveryFailureService {
         return cases.ordersReturnedByCancellation(skip, limit);
     }
 
-    /** The cases in {@code status} (any when null), oldest first, at most {@code limit}: what waits for Sales. */
+    /**
+     * The cases in {@code status} (any when null), newest first, at most {@code limit}: since WF-05 most cases are
+     * records the system closed, and the newest matter.
+     */
     @Transactional(readOnly = true)
     public List<CaseView> list(DeliveryFailureCase.Status status, int limit) {
         return list(status, null, limit);

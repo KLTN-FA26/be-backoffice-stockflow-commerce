@@ -28,8 +28,9 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * The units of measure of a SKU's inventory item: its base unit and its packing units with their factor
- * to the base unit, size and weight, and which one purchase orders start in (docs 01 §3, BR-09, BR-10).
+ * The cartons of a catalogue variant: its packing units with their factor, size and weight (docs 01 §3, BR-03,
+ * BR-09, BR-10), which every customer's SKU drawn on it is packed in (owner decision Q1). Keyed by the variant, which
+ * has no inventory item (V20270105000100); a customer's own SKU is not a variant, so its id is 404 here.
  * Same permissions as the SKU's logistics.
  */
 @RestController
@@ -46,7 +47,7 @@ class UomConversionController {
     }
 
     @GetMapping
-    @Operation(summary = "The SKU's units: the base unit first, then the packing units by code")
+    @Operation(summary = "The SKU's packing units by code: its carton specification and the retired ones")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
     public ApiResponse<PageResponse<UomConversionResponse>> list(@PathVariable UUID productId,
                                                                  @PathVariable UUID variantId,
@@ -74,12 +75,10 @@ class UomConversionController {
     }
 
     @PutMapping("/{conversionId}")
-    @Operation(summary = "Replace a unit; on the base unit only defaultPurchase changes",
-            description = "Unmarking the default purchase unit hands it back to the base unit. Marking "
-                    + "defaultShipping unmarks the item's previous default shipping unit atomically (no 409); "
-                    + "unmarking it leaves the item without one. Retiring (active=false) a unit the variant "
-                    + "sells in, or changing the factor or code of a unit a document counts in (BR-10): "
-                    + "409 UOM_CONVERSION_IN_USE. Stale version: 409 OPTIMISTIC_LOCK.")
+    @Operation(summary = "Replace a packing unit",
+            description = "active=false retires the unit; the variant's "
+                    + "sales unit follows the active carton by itself. Changing the factor or code of a unit a "
+                    + "document counts in (BR-10): 409 UOM_CONVERSION_IN_USE. Stale version: 409 OPTIMISTIC_LOCK.")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.UPDATE)
     public ApiResponse<UomConversionResponse> update(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                      @PathVariable UUID conversionId,

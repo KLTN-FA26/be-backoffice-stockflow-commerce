@@ -27,14 +27,6 @@ class TaxRateRepositoryAdapter implements TaxRates, SkuProductionHistory {
     }
 
     @Override
-    public Map<String, BigDecimal> all() {
-        Map<String, BigDecimal> rates = new HashMap<>();
-        jdbc.query("SELECT tax_class, rate FROM ordering.tax_rate",
-                row -> { rates.put(row.getString(1), row.getBigDecimal(2)); });
-        return rates;
-    }
-
-    @Override
     public Map<String, BigDecimal> onDay(LocalDate day) {
         Map<String, BigDecimal> rates = new HashMap<>();
         // At most one period covers a day (ex_tax_rate_period_overlap), so the join never doubles a class.
@@ -48,9 +40,10 @@ class TaxRateRepositoryAdapter implements TaxRates, SkuProductionHistory {
     }
 
     /**
-     * A SKU on a line of an order confirmed and not cancelled: DRAFT, PENDING_CONTRACT and PENDING_PAYMENT orders were
-     * never produced, and
-     * neither was an order held for credit, which waits for accounting before it is confirmed at all.
+     * A SKU on a line of an order confirmed and not cancelled - DRAFT, PENDING_CONTRACT and PENDING_PAYMENT orders were
+     * never produced, and neither was an order held for credit, which waits for accounting before it is confirmed at
+     * all - or on a production order that reached In Production ({@code production_started_at} set), whatever became
+     * of the order since: the plate was made then (QD4).
      */
     @Override
     public Set<String> producedBefore(Collection<String> skus) {
@@ -62,8 +55,16 @@ class TaxRateRepositoryAdapter implements TaxRates, SkuProductionHistory {
                 SELECT DISTINCT l.sku FROM ordering.order_line l
                   JOIN ordering.customer_order o ON o.id = l.order_id
                  WHERE l.sku = ANY (?) AND o.status NOT IN ('DRAFT', 'PENDING_CONTRACT', 'PENDING_PAYMENT', 'CANCELLED')
-                   AND NOT (o.status = 'ON_HOLD' AND o.hold_reason IS NOT DISTINCT FROM 'CREDIT')""",
-                ps -> ps.setArray(1, ps.getConnection().createArrayOf("varchar", skus.toArray())),
+                   AND NOT (o.status = 'ON_HOLD' AND o.hold_reason IS NOT DISTINCT FROM 'CREDIT')
+                UNION
+                SELECT pl.sku FROM ordering.production_order_line pl
+                  JOIN ordering.production_order p ON p.id = pl.production_order_id
+                 WHERE pl.sku = ANY (?) AND p.production_started_at IS NOT NULL""",
+                ps -> {
+                    java.sql.Array codes = ps.getConnection().createArrayOf("varchar", skus.toArray());
+                    ps.setArray(1, codes);
+                    ps.setArray(2, codes);
+                },
                 row -> { produced.add(row.getString(1)); });
         return produced;
     }

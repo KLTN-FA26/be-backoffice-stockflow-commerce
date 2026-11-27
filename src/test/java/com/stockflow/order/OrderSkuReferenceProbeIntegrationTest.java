@@ -2,6 +2,7 @@ package com.stockflow.order;
 
 import com.stockflow.product.api.SkuReference;
 import com.stockflow.product.api.SkuReferenceProbe;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -45,7 +46,13 @@ class OrderSkuReferenceProbeIntegrationTest {
         probe = probes.stream().filter(p -> AopUtils.getTargetClass(p).getSimpleName().equals("OrderSkuReferenceProbe"))
                 .findFirst().orElseThrow();
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
-        sku = tx.execute(s -> ReferenceRows.approvedProduct(entityManager).sku());
+        sku = customerSku();
+    }
+
+    /** A customer's own SKU on a product of its own: what an order line names (fk_order_line_customer_sku). */
+    private String customerSku() {
+        ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
+        return CustomerSkuRows.issueOn(jdbc, tx, DemoData.CUSTOMER_ID, product, 10).sku();
     }
 
     private UUID order(String status, String forSku) {
@@ -78,7 +85,7 @@ class OrderSkuReferenceProbeIntegrationTest {
     @Test
     @DisplayName("only the SKUs asked about, the most recently placed order first, at most the limit")
     void scopeAndLimit() {
-        String other = tx.execute(s -> ReferenceRows.approvedProduct(entityManager).sku());
+        String other = customerSku();
         UUID first = order("CONFIRMED", sku);
         UUID second = order("CONFIRMED", sku);
         UUID third = order("CONFIRMED", other);

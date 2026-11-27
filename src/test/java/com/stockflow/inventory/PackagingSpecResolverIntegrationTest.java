@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -47,195 +48,136 @@ class PackagingSpecResolverIntegrationTest {
     @Autowired TransactionTemplate tx;
 
     private Sku sku;
+    /** The catalogue variant the SKU is drawn on: its cartons are written by the variant's own code (Q1). */
+    private Sku blank;
     private UUID itemId;
 
     @BeforeEach
     void item() {
         String code = "PK-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         sku = new Sku(code);
+        blank = new Sku(code + "-BLANK");
         itemId = tx.execute(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, code,
                     "Packaging fixture", code.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Packaging fixture','')", Identifiers.newId(), product, code);
+            StockedSkus.customerSkuOn(jdbc, product, code, "Packaging fixture");
             return jdbc.queryForObject("select id from inventory.inventory_items where sku=?", UUID.class, code);
         });
     }
 
-    /** The item's own unit: 10 x 8 x 6 cm, 0.5 kg; box 12 x 9 x 7 cm, 0.7 kg. */
-    private void describeItem() {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6,
-                    package_weight_kg = 0.7, package_length_cm = 12, package_width_cm = 9, package_height_cm = 7
-                where id = ?""", itemId));
-    }
-
-    private static UomConversionDraft pack(String code, int factor, String weight, boolean shipping) {
+    private static UomConversionDraft pack(String code, int factor, String weight) {
         return new UomConversionDraft(code, factor, new BigDecimal(weight), new BigDecimal("50"),
-                new BigDecimal("40"), new BigDecimal("30"), false, true, shipping);
+                new BigDecimal("40"), new BigDecimal("30"), true);
     }
 
-    private List<String> flagged() {
+    private List<String> active() {
         return jdbc.queryForList("select unit_of_measure from inventory.uom_conversions"
-                + " where inventory_item_id = ? and default_shipping order by unit_of_measure", String.class, itemId);
+                + " where variant_id = (select variant_id from inventory.inventory_items where id = ?) and active"
+                + " order by unit_of_measure", String.class, itemId);
     }
 
-    private UomConversion base() {
-        return units.baseUnit(sku);
-    }
-
-    // ---- the flag ----------------------------------------------------------------------------------------------
+    // ---- the one active carton (01 BR-03) ------------------------------------------------------------------------
 
     @Test
-    void newItemsHaveNoDefaultShippingUnit() {
-        assertThat(flagged()).isEmpty();
-        assertThat(units.conversions(sku, 0, 20).items()).extracting(UomConversion::defaultShipping)
-                .containsOnly(false);
+    void newItemsHaveNoUnit() {
+        assertThat(active()).isEmpty();
+        assertThat(units.conversions(sku, 0, 20).items()).as("no packing unit until a carton is declared").isEmpty();
     }
 
     @Test
-    void markingAUnitUnmarksThePreviousOneInTheSameCall() {
-        UomConversion box = units.add(sku, pack("BOX", 10, "5", true));
-        assertThat(box.defaultShipping()).isTrue();
-        UomConversion carton = units.add(sku, pack("CARTON", 50, "26", true));
-        assertThat(carton.defaultShipping()).isTrue();
-        assertThat(flagged()).containsExactly("CARTON");
-        assertThat(units.conversion(sku, box.id()).defaultShipping()).isFalse();
-        assertThat(units.conversion(sku, box.id()).version()).isGreaterThan(box.version());
-
-        UomConversion boxAgain = units.conversion(sku, box.id());
-        UomConversion moved = units.change(sku, box.id(), boxAgain.version(), pack("BOX", 10, "5", true));
-        assertThat(moved.defaultShipping()).isTrue();
-        assertThat(flagged()).containsExactly("BOX");
+    void theOneCartonIsTheItemsOnlyUnit() {
+        // No base unit row (V20261226000200), and no shipping mark to choose a unit by (V20261229000100).
+        units.add(blank, pack("BOX", 10, "5"));
+        assertThat(active()).containsExactly("BOX");
+        assertThat(units.conversions(sku, 0, 20).items()).extracting(UomConversion::unitOfMeasure)
+                .as("the item's own unit is not listed").containsExactly("BOX");
     }
 
     @Test
-    void unmarkingLeavesTheItemWithoutOneAndKeepsThePurchaseMark() {
-        UomConversion box = units.add(sku, pack("BOX", 10, "5", true));
-        units.change(sku, box.id(), box.version(), pack("BOX", 10, "5", false));
-        assertThat(flagged()).isEmpty();
-        assertThat(base().defaultPurchase()).isTrue();
-    }
-
-    @Test
-    void theBaseUnitCanBeTheDefaultShippingUnit() {
-        UomConversion box = units.add(sku, pack("BOX", 10, "5", true));
-        UomConversion base = base();
-        UomConversion marked = units.change(sku, base.id(), base.version(),
-                new UomConversionDraft("IGNORED", 1, null, null, null, null, true, true, true));
-        assertThat(marked.defaultShipping()).isTrue();
-        assertThat(flagged()).containsExactly("EACH");
-        assertThat(units.conversion(sku, box.id()).defaultShipping()).isFalse();
-    }
-
-    @Test
-    void aRetiredUnitCannotCarryTheMark() {
-        UomConversion box = units.add(sku, pack("BOX", 10, "5", false));
-        UomConversionDraft retiredAndMarked = new UomConversionDraft("BOX", 10, new BigDecimal("5"),
-                new BigDecimal("50"), new BigDecimal("40"), new BigDecimal("30"), false, false, true);
-        assertThatThrownBy(() -> units.change(sku, box.id(), box.version(), retiredAndMarked))
-                .isInstanceOfSatisfying(BusinessException.class, e -> {
-                    assertThat(e.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-                    assertThat(e.fieldErrors()).extracting(f -> f.field()).containsExactly("defaultShipping");
-                });
-        assertThat(flagged()).isEmpty();
-    }
-
-    @Test
-    void theDatabaseRefusesASecondMarkAndAMarkedRetiredUnit() {
-        UomConversion box = units.add(sku, pack("BOX", 10, "5", true));
-        UomConversion carton = units.add(sku, pack("CARTON", 50, "26", false));
-        assertThatThrownBy(() -> jdbc.update(
-                "update inventory.uom_conversions set default_shipping = true where id = ?", carton.id()))
-                .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("uk_uom_conversions_default_shipping");
-        assertThatThrownBy(() -> jdbc.update(
-                "update inventory.uom_conversions set active = false where id = ?", box.id()))
-                .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("ck_uom_conversions_default_shipping");
-        assertThat(flagged()).containsExactly("BOX");
-    }
-
-    @Test
-    void anotherItemMayHaveItsOwnMark() {
-        units.add(sku, pack("BOX", 10, "5", true));
+    void anotherItemHasItsOwnCarton() {
+        units.add(blank, pack("BOX", 10, "5"));
         String other = "PK-O" + UUID.randomUUID().toString().substring(0, 7).toUpperCase(Locale.ROOT);
         tx.executeWithoutResult(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, other,
                     "Other", other.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Other','')", Identifiers.newId(), product, other);
+            StockedSkus.customerSkuOn(jdbc, product, other, "Other");
         });
-        assertThat(units.add(new Sku(other), pack("BOX", 10, "5", true)).defaultShipping()).isTrue();
-        assertThat(flagged()).containsExactly("BOX");
+        assertThat(units.add(new Sku(other + "-BLANK"), pack("BOX", 10, "5")).active()).isTrue();
+        assertThat(active()).containsExactly("BOX");
     }
 
     @Test
-    void twoPeopleMarkingAtOnceLeaveExactlyOneMark() throws Exception {
+    void theDatabaseRefusesASecondActiveCarton() {
+        units.add(blank, pack("BOX", 10, "5"));
+        assertThatThrownBy(() -> jdbc.update("insert into inventory.uom_conversions (id, variant_id, "
+                + "unit_of_measure, factor, active) values (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', 50, true)", Identifiers.newId(), itemId))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("uk_uom_conversions_one_carton");
+        assertThat(active()).containsExactly("BOX");
+    }
+
+    @Test
+    void twoPeopleDeclaringACartonAtOnceLeaveExactlyOneActive() throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(2);
+        List<Object> outcomes = new java.util.ArrayList<>();
         try {
             CountDownLatch go = new CountDownLatch(1);
             List<Callable<UomConversion>> calls = List.of(
-                    () -> { go.await(); return units.add(sku, pack("BOX", 10, "5", true)); },
-                    () -> { go.await(); return units.add(sku, pack("CARTON", 50, "26", true)); });
+                    () -> { go.await(); return units.add(blank, pack("BOX", 10, "5")); },
+                    () -> { go.await(); return units.add(blank, pack("CARTON", 50, "26")); });
             List<Future<UomConversion>> running = calls.stream().map(pool::submit).toList();
             go.countDown();
             for (Future<UomConversion> f : running) {
-                f.get();     // neither call may surface the unique index as an error
+                try {
+                    outcomes.add(f.get());
+                } catch (java.util.concurrent.ExecutionException e) {
+                    outcomes.add(e.getCause());
+                }
             }
         } finally {
             pool.shutdownNow();
         }
-        assertThat(flagged()).hasSize(1);
+        // 01 BR-03 under the SKU lock: the second is told to retire the first, never the unique index's bare 409.
+        assertThat(outcomes).filteredOn(o -> o instanceof UomConversion).hasSize(1);
+        assertThat(outcomes).filteredOn(o -> o instanceof BusinessException).singleElement()
+                .satisfies(e -> assertThat(((BusinessException) e).errorCode())
+                        .isEqualTo(ErrorCode.UOM_CARTON_ALREADY_DECLARED));
+        assertThat(active()).hasSize(1);
     }
 
     // ---- the resolver on real rows ---------------------------------------------------------------------------------
 
     @Test
-    void anItemWithNoDataIsMissingNotDefaulted() {
+    void anItemWithNoCartonIsMissingNotDefaulted() {
         PackagingSpec spec = resolver.resolve(sku, 5);
         assertThat(spec.status()).isEqualTo(PackagingSpec.Status.MISSING);
-        assertThat(spec.missing().fields()).containsExactly("lengthCm", "widthCm", "heightCm", "weightKg");
+        assertThat(spec.missing().fields()).isEmpty();
         assertThat(spec.inventoryItemId()).isEqualTo(itemId);
         assertThat(spec.sku()).isEqualTo(sku.code());
     }
 
     @Test
-    void theChainFollowsTheDataOfTheItem() {
-        // Only the item: its box.
-        describeItem();
-        PackagingSpec box = resolver.resolve(sku, 3);
-        assertThat(box.level()).isEqualTo(RuleLevel.ITEM_BOX);
-        assertThat(box.carton().lengthMm()).isEqualTo(120);
-        assertThat(box.fullCartons()).isEqualTo(3);
+    void theChainFollowsTheCartonOfTheItem() {
+        // The item's one active carton, with its size: level 1.
+        UomConversion pallet = units.add(blank, pack("PALLET", 100, "80"));
+        PackagingSpec spec = resolver.resolve(sku, 250);
+        assertThat(spec.level()).isEqualTo(RuleLevel.DEFAULT_SHIPPING_UNIT);
+        assertThat(spec.unitOfMeasure()).isEqualTo("PALLET");
+        assertThat(spec.fullCartons()).isEqualTo(2);
+        assertThat(spec.partialCarton().units()).isEqualTo(50);
+        assertThat(spec.partialCarton().weightKg()).isEqualByComparingTo("40.000");   // 80 * 50 / 100
 
-        // A packing unit with its size: the largest one.
-        units.add(sku, pack("BOX", 10, "5.5", false));
-        UomConversion pallet = units.add(sku, pack("PALLET", 100, "80", false));
-        PackagingSpec largest = resolver.resolve(sku, 250);
-        assertThat(largest.level()).isEqualTo(RuleLevel.LARGEST_PACKING_UNIT);
-        assertThat(largest.unitOfMeasure()).isEqualTo("PALLET");
-        assertThat(largest.fullCartons()).isEqualTo(2);
-        assertThat(largest.partialCarton().units()).isEqualTo(50);
-        assertThat(largest.partialCarton().weightKg()).isEqualByComparingTo("45.000");   // 50 * 0.7 + (80 - 100 * 0.7)
-
-        // The mark beats the largest unit.
-        units.change(sku, pallet.id(), units.conversion(sku, pallet.id()).version(), pack("PALLET", 100, "80", false));
-        UomConversion box10 = units.conversions(sku, 0, 20).items().stream()
-                .filter(u -> u.unitOfMeasure().equals("BOX")).findFirst().orElseThrow();
-        units.change(sku, box10.id(), box10.version(), pack("BOX", 10, "5.5", true));
-        PackagingSpec marked = resolver.resolve(sku, 250);
-        assertThat(marked.level()).isEqualTo(RuleLevel.DEFAULT_SHIPPING_UNIT);
-        assertThat(marked.unitOfMeasure()).isEqualTo("BOX");
-        assertThat(marked.fullCartons()).isEqualTo(25);
+        // Retired, it is no carton: the item has none.
+        units.change(blank, pallet.id(), units.conversion(blank, pallet.id()).version(), new UomConversionDraft("PALLET",
+                100, new BigDecimal("80"), new BigDecimal("50"), new BigDecimal("40"), new BigDecimal("30"), false));
+        assertThat(resolver.resolve(sku, 250).status()).isEqualTo(PackagingSpec.Status.MISSING);
     }
 
     @Test
     void sameInputSameAnswerAndByItemIdAgrees() {
-        describeItem();
-        units.add(sku, pack("BOX", 10, "5.5", true));
+        units.add(blank, pack("BOX", 10, "5.5"));
         PackagingSpec first = resolver.resolve(sku, 37);
         assertThat(resolver.resolve(sku, 37)).isEqualTo(first);
         assertThat(resolver.resolve(itemId, 37)).isEqualTo(first);
@@ -243,8 +185,7 @@ class PackagingSpecResolverIntegrationTest {
 
     @Test
     void theBatchAnswersInRequestOrderAndRepeatsASku() {
-        describeItem();
-        units.add(sku, pack("BOX", 10, "5.5", true));
+        units.add(blank, pack("BOX", 10, "5.5"));
         List<PackagingSpec> specs = resolver.resolveAll(List.of(new PackagingRequest(sku, 25),
                 new PackagingRequest(sku, 4)));
         assertThat(specs).extracting(PackagingSpec::quantity).containsExactly(25, 4);

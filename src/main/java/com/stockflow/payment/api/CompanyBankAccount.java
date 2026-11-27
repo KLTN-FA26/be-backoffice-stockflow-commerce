@@ -9,8 +9,8 @@ package com.stockflow.payment.api;
  * @param accountNumber the number to transfer to
  * @param accountName   the account holder, as the bank prints it
  * @param bankBin       the bank's six-digit NAPAS BIN, which a VietQR code names the bank by (kltn-docs 16 BR-06: the
- *                      chat's transfer card carries one); null when it is not configured - the account is then shown
- *                      without a QR code
+ *                      chat's transfer card carries one, and since R5-9 the transfer instructions, both drawn by
+ *                      {@link VietQr}); null when it is not configured - the account is then shown without a QR code
  */
 public record CompanyBankAccount(String bankName, String accountNumber, String accountName, String bankBin) {
 

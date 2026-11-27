@@ -60,8 +60,13 @@ class CartonCheckTest {
         return check;
     }
 
+    /** The spec of every carton these tests label, by LPN: each is measured as the carton it was received in. */
     private static Map<String, Spec> specs() {
-        return Map.of("SKU-A", SPEC, "SKU-B", SPEC);
+        Map<String, Spec> specs = new LinkedHashMap<>();
+        for (String lpn : List.of("LPN-1", "LPN-A1", "LPN-A2", "LPN-A3", "LPN-A9", "LPN-B1", "LPN-B9", "LPN-ELSEWHERE", "LPN-NOPE", "LPN-X1", "LPN-X2")) {
+            specs.put(lpn, SPEC);
+        }
+        return specs;
     }
 
     private static Map<UUID, Integer> wanted(int a, int b) {
@@ -300,7 +305,7 @@ class CartonCheckTest {
             CartonCheck check = started();
             check.check("LPN-A1", WORKER, NOW);
             Spec tiny = new Spec(BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, new BigDecimal("0.1"), false);
-            check.label(List.of("LPN-A1"), Map.of("SKU-A", tiny), DIVISOR, WORKER, NOW);
+            check.label(List.of("LPN-A1"), Map.of("LPN-A1", tiny), DIVISOR, WORKER, NOW);
             Carton carton = check.carton("LPN-A1").orElseThrow();
             assertThat(carton.dimWeightKg()).isEqualByComparingTo("0.001");
             assertThat(carton.rotatable()).isFalse();
@@ -324,12 +329,12 @@ class CartonCheckTest {
         }
 
         @Test
-        @DisplayName("a SKU without a spec, or an unmeasured one, stops every label and names every such SKU (BR-07)")
+        @DisplayName("a carton without a spec, or an unmeasured one, stops every label and names every such SKU (BR-07)")
         void unmeasured() {
             CartonCheck check = started();
             labelNothing(check);
             Spec noWeight = new Spec(BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, null, true);
-            assertThatThrownBy(() -> check.label(null, Map.of("SKU-A", noWeight), DIVISOR, WORKER, NOW))
+            assertThatThrownBy(() -> check.label(null, Map.of("LPN-A1", noWeight, "LPN-A2", noWeight), DIVISOR, WORKER, NOW))
                     .isInstanceOfSatisfying(BusinessException.class, e -> {
                         assertThat(e.errorCode()).isEqualTo(ErrorCode.CARTON_SPEC_UNMEASURED);
                         assertThat(e.getMessage()).contains("SKU-A").contains("SKU-B");
@@ -871,5 +876,82 @@ class CartonCheckTest {
         assertThat(check.cartons()).allSatisfy(c -> assertThat(c.stored()).isTrue());
         assertThatThrownBy(() -> check.cartons().add(null)).isInstanceOf(UnsupportedOperationException.class);
         assertThat(new ArrayList<>(check.cartons())).hasSize(3);
+    }
+
+    @Nested
+    @DisplayName("RTM-RTDCANCEL: a shipment cancelled before dispatch (09 §5.1, 08 §5.1)")
+    class CancelledShipment {
+
+        private UUID shipped(CartonCheck check) {
+            labelAll(check);
+            UUID shipment = UUID.randomUUID();
+            check.ship(check.complete(false, null, false, wanted(20, 5), skus()), shipment, WORKER, NOW);
+            check.saved();
+            return shipment;
+        }
+
+        @Test
+        @DisplayName("every carton leaves the shipment REMOVED - the marked ones DAMAGED, the others SHIPMENT_CANCELLED, "
+                + "with who and why - and a COMPLETED session is IN_PROGRESS again")
+        void cartonsLeaveAndTheSessionReopens() {
+            CartonCheck check = started();
+            UUID shipment = shipped(check);
+            assertThat(check.status()).isEqualTo(PackStatus.COMPLETED);
+            UUID damaged = check.carton("LPN-A1").orElseThrow().id();
+
+            List<Carton> removed = check.cancelShipment(shipment, java.util.Set.of(damaged), "truck damaged them",
+                    MANAGER, NOW.plusSeconds(60));
+
+            assertThat(removed).hasSize(3);
+            assertThat(check.cartons()).allSatisfy(c -> {
+                assertThat(c.status()).isEqualTo(PackageStatus.REMOVED);
+                assertThat(c.shipmentId()).isNull();
+                assertThat(c.removedBy()).isEqualTo(MANAGER);
+                assertThat(c.removalNote()).isEqualTo("truck damaged them");
+            });
+            assertThat(check.carton("LPN-A1").orElseThrow().removalReason()).isEqualTo(RemovalReason.DAMAGED);
+            assertThat(check.carton("LPN-A2").orElseThrow().removalReason()).isEqualTo(RemovalReason.SHIPMENT_CANCELLED);
+            assertThat(check.status()).isEqualTo(PackStatus.IN_PROGRESS);
+            assertThat(check.completedAt()).isNull();
+            assertThat(check.sessionChanged()).isTrue();
+            assertThat(check.changedCartons()).hasSize(3);
+        }
+
+        @Test
+        @DisplayName("the replacements are received, checked and completed in the reopened session; a carton put back "
+                + "and picked again under a new line is the live one its LPN answers")
+        void replacementsCompleteAgain() {
+            CartonCheck check = started();
+            UUID shipment = shipped(check);
+            check.cancelShipment(shipment, java.util.Set.of(), "re-plan", MANAGER, NOW);
+            List<Carton> added = check.receive(List.of(picked("LPN-A2", LINE_A, "SKU-A", 10),
+                    picked("LPN-A9", LINE_A, "SKU-A", 10), picked("LPN-B9", LINE_B, "SKU-B", 5)), UUID::randomUUID);
+            assertThat(added).hasSize(3);
+            assertThat(check.carton("LPN-A2").orElseThrow().status()).isEqualTo(PackageStatus.TO_CHECK);
+            check.check("LPN-A2", WORKER, NOW);
+            check.check("LPN-A9", WORKER, NOW);
+            check.check("LPN-B9", WORKER, NOW);
+            check.label(null, specs(), DIVISOR, WORKER, NOW);
+            Completion again = check.complete(false, null, false, wanted(20, 5), skus());
+            assertThat(again.cartons()).hasSize(3);
+            assertThat(again.partial()).isFalse();
+            check.ship(again, UUID.randomUUID(), WORKER, NOW);
+            assertThat(check.status()).isEqualTo(PackStatus.COMPLETED);
+        }
+
+        @Test
+        @DisplayName("a damaged carton not in the shipment is VALIDATION_FAILED; a shipment with no carton of the session "
+                + "is SHIPMENT_STATE_CONFLICT; nothing changes")
+        void refusals() {
+            CartonCheck check = started();
+            UUID shipment = shipped(check);
+            assertCode(() -> check.cancelShipment(shipment, java.util.Set.of(UUID.randomUUID()), "x", MANAGER, NOW),
+                    ErrorCode.VALIDATION_FAILED);
+            assertCode(() -> check.cancelShipment(UUID.randomUUID(), java.util.Set.of(), "x", MANAGER, NOW),
+                    ErrorCode.SHIPMENT_STATE_CONFLICT);
+            assertThat(check.status()).isEqualTo(PackStatus.COMPLETED);
+            assertThat(check.cartons()).extracting(Carton::status).containsOnly(PackageStatus.LABELED);
+            assertThat(check.changedCartons()).isEmpty();
+        }
     }
 }

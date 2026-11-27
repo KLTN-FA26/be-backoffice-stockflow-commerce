@@ -59,14 +59,27 @@ class CustomerEInvoiceController {
     }
 
     @GetMapping
-    @Operation(summary = "The e-invoices issued to the signed-in customer, the newest invoice date first")
+    @Operation(summary = "The e-invoices issued to the signed-in customer, the newest invoice date first; orderId "
+            + "narrows it to one of the customer's orders (another customer's order id, or an unknown one, gives an "
+            + "empty page). Each carries the invoice it replaces and the issued one that replaced it")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.READ, scope = DataScope.OWN)
     public ApiResponse<PageResponse<CustomerEInvoiceResponse>> list(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) UUID orderId,
             @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(queries.issuedTo(ownCustomerId(user), page, size == null ? Pages.DEFAULT_PAGE_SIZE : size)
+        return ApiResponse.ok(queries.issuedTo(ownCustomerId(user), orderId, page,
+                        size == null ? Pages.DEFAULT_PAGE_SIZE : size)
                 .map(InvoicingWebMapper::toCustomerResponse));
+    }
+
+    @GetMapping("/{id}")
+    @Operation(summary = "One of the signed-in customer's own issued e-invoices, as a row of the list (with the invoice "
+            + "it replaces and the issued one that replaced it); 404 EINVOICE_NOT_FOUND for another customer's, an "
+            + "unissued or an unknown one")
+    @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.READ, scope = DataScope.OWN)
+    public ApiResponse<CustomerEInvoiceResponse> get(@PathVariable UUID id, @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(InvoicingWebMapper.toCustomerResponse(queries.issuedInvoice(ownCustomerId(user), id)));
     }
 
     @GetMapping("/{id}/files/{kind}")

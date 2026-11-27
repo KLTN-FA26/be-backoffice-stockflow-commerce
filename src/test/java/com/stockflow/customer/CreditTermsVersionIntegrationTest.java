@@ -146,8 +146,14 @@ class CreditTermsVersionIntegrationTest {
         mvc.perform(put(profile).header("Authorization", approver).contentType("application/json")
                         .content(json.writeValueAsString(body)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.configured").value(true));
-        long version = json.readTree(mvc.perform(get(profile).header("Authorization", approver))
-                .andReturn().getResponse().getContentAsString()).at("/data/version").asLong();
+        var read = json.readTree(mvc.perform(get(profile).header("Authorization", approver))
+                .andReturn().getResponse().getContentAsString()).path("data");
+        long version = read.path("version").asLong();
+        // Who approved the terms, by name as well as by id.
+        UUID approvedBy = UUID.fromString(read.path("approvedBy").asText());
+        assertThat(read.path("approvedByName").asText()).isEqualTo(jdbc.queryForObject(
+                "SELECT COALESCE(NULLIF(full_name, ''), username) FROM identity.app_user WHERE id = ?", String.class,
+                approvedBy));
 
         mvc.perform(put(profile).header("Authorization", approver).contentType("application/json")
                         .content(json.writeValueAsString(body)))

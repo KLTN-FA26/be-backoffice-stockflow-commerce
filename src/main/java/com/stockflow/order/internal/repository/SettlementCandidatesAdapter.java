@@ -31,16 +31,25 @@ class SettlementCandidatesAdapter implements SettlementCandidates {
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<UUID> deliveredBy(Instant deliveredBy, int skip, int limit) {
+    public List<UUID> deliveredPastWindow(Instant now, int defaultWindowDays, int skip, int limit) {
         return entityManager.createNativeQuery("""
                         SELECT o.id FROM ordering.customer_order o
-                         WHERE o.status = 'DELIVERED' AND o.delivered_at <= :cutoff
+                         WHERE o.status = 'DELIVERED'
+                           -- The order's own window (WF-05 TH-1): what its live contract agreed, else the default.
+                           AND o.delivered_at <= CAST(:now AS timestamptz) - make_interval(days => COALESCE(
+                                   (SELECT c.return_window_days FROM ordering.sales_contract c
+                                     WHERE c.order_id = o.id AND c.status <> 'CANCELLED'
+                                     ORDER BY c.created_at DESC LIMIT 1), :days))
                            -- A return open: the aggregate would refuse; leave room in the batch. Whether the order still
                            -- owes is its installments' (payment's schema): the service asks, and the run skips it.
                            AND NOT EXISTS (SELECT 1 FROM ordering.return_request r WHERE r.order_id = o.id
                                               AND r.status IN (%s))
+                           -- Completion paused while a delivery is verified (WF-05 GH-2): refused as well.
+                           AND NOT EXISTS (SELECT 1 FROM ordering.order_completion_hold h WHERE h.order_id = o.id
+                                              AND h.released_at IS NULL)
                          ORDER BY o.delivered_at, o.id""".formatted(OPEN_RETURN))
-                .setParameter("cutoff", deliveredBy)
+                .setParameter("now", now)
+                .setParameter("days", defaultWindowDays)
                 .setFirstResult(skip)
                 .setMaxResults(limit)
                 .getResultList();
@@ -52,16 +61,56 @@ class SettlementCandidatesAdapter implements SettlementCandidates {
         return entityManager.createNativeQuery("""
                         SELECT o.id FROM ordering.customer_order o
                          WHERE ((o.status = 'COMPLETED' AND o.completed_at <= :cutoff)
-                            OR (o.status IN ('REFUNDED', 'PARTIALLY_REFUNDED') AND o.refunded_at <= :cutoff))
+                            OR (o.status IN ('REFUNDED', 'PARTIALLY_REFUNDED') AND o.refunded_at <= :cutoff)
+                            -- WF-05 BE-45 (audit r2 contract M-6): ended by the carrier with nothing made refundable -
+                            -- a shipment closed undelivered, none still on its way or to be decided, its deliveries
+                            -- ended (the latest outcome or closure) by the cutoff. Payment's side is the service's.
+                            OR (o.status IN ('RETURNED', 'PARTIALLY_FULFILLED')
+                                AND EXISTS (SELECT 1 FROM ordering.order_shipment s
+                                             WHERE s.order_id = o.id AND s.units_closed_at IS NOT NULL)
+                                AND NOT EXISTS (SELECT 1 FROM ordering.order_shipment s
+                                                 WHERE s.order_id = o.id AND s.status <> 'DELIVERED'
+                                                   AND s.units_closed_at IS NULL)
+                                AND GREATEST(o.remainder_closed_at,
+                                             (SELECT MAX(COALESCE(s.units_closed_at, s.outcome_at))
+                                                FROM ordering.order_shipment s WHERE s.order_id = o.id))
+                                    <= :cutoff))
                            -- A return still open on a settled order (a claim opened before the order completed) keeps
                            -- it from closing for good (BR-05): CLOSED is never changed again.
                            AND NOT EXISTS (SELECT 1 FROM ordering.return_request r WHERE r.order_id = o.id
                                               AND r.status IN (%s))
+                           -- WF-05 Q-17: a completion hold keeps the order from closing too; refused as well.
+                           AND NOT EXISTS (SELECT 1 FROM ordering.order_completion_hold h WHERE h.order_id = o.id
+                                              AND h.released_at IS NULL)
                          ORDER BY COALESCE(o.completed_at, o.refunded_at), o.id""".formatted(OPEN_RETURN))
                 .setParameter("cutoff", settledBy)
                 .setFirstResult(skip)
                 .setMaxResults(limit)
                 .getResultList();
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public List<UUID> cancelledWithSignedContract(int skip, int limit) {
+        return entityManager.createNativeQuery("""
+                        SELECT o.id FROM ordering.customer_order o
+                         WHERE o.status = 'CANCELLED'
+                           AND EXISTS (SELECT 1 FROM ordering.sales_contract c
+                                        WHERE c.order_id = o.id AND c.status = 'SIGNED')
+                         ORDER BY o.id""")
+                .setFirstResult(skip)
+                .setMaxResults(limit)
+                .getResultList();
+    }
+
+    @Override
+    public boolean completionHeld(UUID orderId) {
+        Object found = entityManager.createNativeQuery("""
+                        SELECT EXISTS (SELECT 1 FROM ordering.order_completion_hold
+                                        WHERE order_id = :order AND released_at IS NULL)""")
+                .setParameter("order", orderId)
+                .getSingleResult();
+        return Boolean.TRUE.equals(found);
     }
 
     @Override

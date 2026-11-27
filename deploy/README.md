@@ -9,26 +9,29 @@ Changes to the deployment itself (this directory, the workflow) go through a pul
 `develop` like any other change; the pull request runs the build but never deploys.
 
 ```
-browser ─┬─ api, s3, media ─────── DNS-only, straight to the VPS ───────┐
-         └─ jaeger, mail, logs ── Cloudflare Free ("Full (strict)") ───┤ 443, Let's Encrypt wildcard;
-                                                                       │ these three: Cloudflare ranges only
+browser ─┬─ api ────────────── DNS-only, straight to the VPS ───────────┐
+         └─ jaeger, logs ───── Cloudflare Free ("Full (strict)") ──────┤ 443, Let's Encrypt wildcard;
+                                                                       │ these two: Cloudflare ranges only
            VPS ── nginx ─┬─ api.<domain>     → app:8080        (Swagger UI for the frontend)
-                         ├─ s3.<domain>      → minio:9000      (presigned downloads, app uploads)
-                         ├─ media.<domain>   → minio:9000/<bucket>/product-images/ only
                          ├─ jaeger.<domain>  → jaeger:16686    (basic auth)
-                         ├─ mail.<domain>    → mailpit:8025    (basic auth)
                          └─ logs.<domain>    → dozzle:8080     (basic auth)
                   internal network, no public ports:
-                  app · postgres · redis · minio · jaeger · mailpit · dozzle
+                  app · postgres · redis · jaeger · dozzle
                   (postgres also on 127.0.0.1:5432 of the VPS, for SSH tunnels)
+
+         ├─ files ─────────── AWS S3 bucket (presigned links, browser uploads), section 4a
+         ├─ product images ── CloudFront → the bucket's product-images/ only
+app ─────┴─ e-mail ────────── Resend (api.resend.com); delivery reports back to api.<domain>
 ```
+
+MinIO and Mailpit were removed on 2026-11-18: files are on AWS S3 and e-mail goes out through Resend. The
+compose file at the repository root keeps both for local development.
 
 | URL | For |
 |---|---|
 | `https://api.<domain>/swagger-ui.html` | the frontend team: every endpoint, try-it-out |
 | `https://api.<domain>/api/v1/...` | the API |
 | `https://jaeger.<domain>` | traces of every request (team password) |
-| `https://mail.<domain>` | every email the application sent - none reach a real inbox (team password) |
 | `https://logs.<domain>` | live logs of every container in this stack, the application's first (team password) |
 
 | File | Purpose |
@@ -36,10 +39,11 @@ browser ─┬─ api, s3, media ─────── DNS-only, straight to the
 | `docker-compose.yml` | the whole stack; only nginx publishes public ports (Postgres: loopback only); a memory limit on everything |
 | `.env.example` | every variable; copied to `.env` on the server, never committed |
 | `nginx/nginx.conf` | real client IP from Cloudflare, origin lock, flood limits for the DNS-only hosts, per-request DNS |
-| `nginx/templates/stockflow.conf.template` | the six sites |
+| `nginx/templates/stockflow.conf.template` | the three sites |
 | `nginx/snippets/` | TLS, proxy headers, Cloudflare ranges (generated) |
 | `scripts/deploy.sh` | pull, replace, wait for health, roll back on failure |
 | `scripts/refresh-cloudflare-ips.sh` | regenerates the Cloudflare range lists |
+| `scripts/check-env.sh` | compares the server's `.env` with `.env.example` by name (never prints a value) |
 
 ## Memory budget (2 vCPU / 4 GB)
 
@@ -47,13 +51,11 @@ browser ─┬─ api, s3, media ─────── DNS-only, straight to the
 |---|---|---|
 | app | 1400 MB | heap 60% (~840 MB), the rest metaspace and stacks |
 | postgres | 768 MB | shared_buffers 256 MB |
-| minio | 512 MB | |
 | jaeger | 384 MB | in memory, at most 5,000 traces |
 | redis | 192 MB | 128 MB of cache, LRU |
 | nginx | 64 MB | |
-| mailpit | 64 MB | at most 1,000 messages, kept on a volume |
 | dozzle | 64 MB | stores nothing; reads the rotated json-file logs through the Docker socket |
-| **total** | **~3.4 GB** | leaves ~400 MB for the OS - **add the 2 GB swap below** |
+| **total** | **~2.8 GB** | leaves ~1 GB for the OS - **add the 2 GB swap below** anyway |
 
 Not here, on purpose: **ClamAV** by default (~1.2 GB; upload scanning is off and the application
 logs a warning saying so) and **Elasticsearch** (unused by the code).
@@ -65,29 +67,29 @@ every upload. The first start downloads the signatures (a few minutes) before Cl
 
 Requests run on **virtual threads** (`spring.threads.virtual.enabled` in `application.yml`, so the
 dev profile inherits it): there is no 200-thread Tomcat pool to size, and a request blocked on
-Postgres or MinIO costs a few KB rather than a platform thread's stack. The database pool
+Postgres or S3 costs a few KB rather than a platform thread's stack. The database pool
 (`DB_POOL_MAX`) is therefore what bounds concurrent database work.
 
-Mail (SCRUM-352): every e-mail - supplier purchase orders, staff notices, the portal invitation and the customer
-order mail (placed, handed to the carrier, delivered, delivery failed, cancelled, part closed, returns) - goes through
-one transport. The server keeps sending to its Mailpit (`mail.<domain>`) until you switch it to Resend: set in
-`/opt/stockflow/.env` `EMAIL_PROVIDER=resend`, `RESEND_API_KEY` (Resend dashboard, API Keys; "Sending access" is
-enough) and `RESEND_FROM` (e.g. `"StockFlow <no-reply@your-domain>"`, on a domain verified in Resend: its SPF and DKIM
-records in DNS), and `MAIL_HEALTH_ENABLED=false`. With `EMAIL_PROVIDER=resend` and either value missing the application
-refuses to start and deploy.sh rolls back, so set all of them before the deploy that switches. Optional:
-`RESEND_REPLY_TO` (Sales' mailbox), `RESEND_WEBHOOK_SECRET` with a webhook in Resend pointing at
-`https://api.<domain>/api/v1/notifications/webhooks/resend` (events `email.delivered`, `email.bounced`,
-`email.complained`, `email.delivery_delayed`, `email.failed`) for delivery reports. Customer order mail is off by
-default (`CUSTOMER_EMAIL_ENABLED=false`): the business documents leave it to a later phase. E-invoice mail to the
-buyer is not order mail and is on by default (`EINVOICE_EMAIL_ENABLED=true`): an issued invoice must reach the buyer.
-Check after switching with
-the portal invitation instead: invite a customer contact whose e-mail you own; the mail arrives and
-`notification.delivery_log` has a `SENT` row with a `provider_message_id`.
+E-mail (SCRUM-352): every e-mail - production order messages to producers, staff notices, the portal invitation, the
+customer order mail (placed, handed to the carrier, delivered, delivery failed, cancelled, part closed, returns) and
+the e-invoice - goes out through Resend; there is no SMTP server on this machine any more, so the compose file fixes
+`EMAIL_PROVIDER=resend` and switches the SMTP health check off. Set in `/opt/stockflow/.env` `RESEND_API_KEY`
+(Resend dashboard, API Keys; "Sending access" is enough) and `RESEND_FROM` (e.g. `"StockFlow <no-reply@your-domain>"`,
+on a domain verified in Resend: its SPF and DKIM records in DNS). With either missing the application refuses to
+start and deploy.sh rolls back. Optional: `RESEND_REPLY_TO` (Sales' mailbox), `RESEND_WEBHOOK_SECRET` with a webhook
+in Resend pointing at `https://api.<domain>/api/v1/notifications/webhooks/resend` for delivery reports (events
+`email.delivered`, `email.bounced`, `email.complained`, `email.delivery_delayed`, `email.failed`; any other event is
+acknowledged and ignored, so "all events" is fine). Every message reaches a real inbox: customer order mail is off by
+default (`CUSTOMER_EMAIL_ENABLED=false`, the business documents leave it to a later phase), and on a server holding
+made-up customer addresses keep it off - every bounce counts against the domain at Resend. E-invoice mail to the buyer
+is not order mail and is on by default (`EINVOICE_EMAIL_ENABLED=true`): an issued invoice must reach the buyer.
+Check with the portal invitation: invite a customer contact whose e-mail you own; the mail arrives and
+`notification.delivery_log` has a `SENT` row with a `provider_message_id` (`DELIVERED` once the webhook reports).
 
 Purchasing is gone (4A-8): the six `PO_BUYER_*` / `PO_RECEIVING_ADDRESS` values and
-`SUPPLIER_API_ALLOWED_HOSTS` are no longer read and may be removed from `/opt/stockflow/.env`. Validate with
-`docker compose config --quiet` before deploying. With `EMAIL_PROVIDER=smtp`, Mailpit captures messages for testing;
-it does not deliver them to external producer inboxes.
+`SUPPLIER_API_ALLOWED_HOSTS` are no longer read and may be removed from `/opt/stockflow/.env`; so may
+`MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `EMAIL_PROVIDER` and `MAIL_HEALTH_ENABLED` since 2026-11-18. Validate with
+`docker compose config --quiet` before deploying.
 
 Back-office login rate limit: the Next.js back-office calls the API from its own server, so without
 help every admin shares one login rate-limit bucket. Set `BFF_ORIGIN_SECRET` (`openssl rand -hex 32`,
@@ -99,8 +101,8 @@ B2B onboarding (SCRUM-429) needs `PORTAL_ACTIVATION_URL` in `/opt/stockflow/.env
 activation page, e.g. `https://portal.<domain>/portal/activate` - the invitation e-mail links to it with the token
 appended. Compose refuses a missing or empty value. Without it the application would answer 503
 `PORTAL_INVITATION_UNAVAILABLE` to every customer creation, and since self-registration is closed no customer could
-be created at all. Check after the deploy: Sales creates a test customer and gets 201, and the mail in Mailpit carries
-the portal link.
+be created at all. Check after the deploy: Sales creates a test customer with an address you own and gets 201, and the
+invitation that arrives carries the portal link.
 Bank transfer instructions (SCRUM-193): set `COMPANY_BANK_NAME`, `COMPANY_BANK_ACCOUNT_NUMBER` and
 `COMPANY_BANK_ACCOUNT_NAME` in `/opt/stockflow/.env` - the company account `GET /api/v1/orders/me/{orderId}/transfer-instructions`
 tells a customer to transfer to (the transfer content is the order number). They are not required by Compose: while any
@@ -144,7 +146,7 @@ ssh-keygen -t ed25519 -C "github-actions-deploy" -f ./stockflow_deploy -N ""
 ssh-keyscan -H <vps-ip>          # output -> secret VPS_SSH_KNOWN_HOSTS
 ```
 
-**Jaeger / Mailpit / Dozzle password** - one file guards all three (on the VPS, as `deploy`; one line per team
+**Jaeger / Dozzle password** - one file guards both (on the VPS, as `deploy`; one line per team
 member if you like):
 
 ```bash
@@ -155,10 +157,12 @@ htpasswd -cB /opt/stockflow/auth/htpasswd team      # -c only the first time
 
 1. Add the domain to Cloudflare and point its nameservers there.
 2. DNS: `A` records → VPS IPv4:
-   - `api`, `s3`, `media` → **DNS only** (grey cloud). Cloudflare Free sends Vietnamese ISPs to
+   - `api` → **DNS only** (grey cloud). Cloudflare Free sends Vietnamese ISPs to
      PoPs as far as Europe (measured: 13 of 20 requests), and back to a VPS in Vietnam - up to
-     seconds for a trivial request. These hosts have no origin lock; nginx rate-limits them.
-   - `jaeger`, `mail`, `logs` → **proxied** (orange cloud), locked to Cloudflare's ranges.
+     seconds for a trivial request. This host has no origin lock; nginx rate-limits it.
+   - `jaeger`, `logs` → **proxied** (orange cloud), locked to Cloudflare's ranges.
+   - No `s3`, `media` or `mail` any more (MinIO and Mailpit are gone): delete those records - nginx
+     answers nothing for them.
 
    **No `AAAA` records.** Docker does not publish IPv6 natively; it hands IPv6 connections to a
    userland proxy that replaces the source address, so nginx would see an internal address - every
@@ -167,8 +171,8 @@ htpasswd -cB /opt/stockflow/auth/htpasswd team      # -c only the first time
 3. SSL/TLS → Overview → **Full (strict)**.
 4. The certificate: a Let's Encrypt wildcard, see 2a. (The Cloudflare Origin Certificate this
    used before is trusted by Cloudflare only, so a DNS-only host cannot use it.)
-5. Caching → Cache Rules: `jaeger.<domain>`, `mail.<domain>`, `logs.<domain>` → **Bypass cache**.
-   The DNS-only hosts never pass through Cloudflare, so no rule applies to them.
+5. Caching → Cache Rules: `jaeger.<domain>`, `logs.<domain>` → **Bypass cache**.
+   The DNS-only host never passes through Cloudflare, so no rule applies to it.
 6. Security → Bots: leave **Bot Fight Mode off**.
 
 ## 2a. One-time: the certificate
@@ -228,7 +232,11 @@ change is needed.
    cd /opt/stockflow
    cp .env.example .env && chmod 600 .env
    nano .env          # every CHANGE_ME, DOMAIN, APP_IMAGE
+   scripts/check-env.sh   # MISSING / EMPTY / CHANGE_ME must be gone; OPTIONAL is fine
    ```
+
+   After any release that adds a variable, run `scripts/check-env.sh` again: the deploy copies the new
+   `.env.example` but never touches `.env`.
 3. Re-run the failed workflow (Actions → the run → Re-run failed jobs).
 
 The first start is the slow one - Flyway applies every migration while the JVM warms up on two
@@ -284,19 +292,18 @@ Check:
 curl -s https://api.<domain>/oauth2/jwks                     # 200, the public signing key
 curl -sI https://api.<domain>/swagger-ui.html                # 200 / 302
 curl -sI https://api.<domain>/actuator/health                # 401: needs an admin token
-curl -sI https://media.<domain>/product-images/x.jpg         # 403/404 from MinIO, Cache-Control: no-store
-curl -sI https://media.<domain>/design-renders/x             # 404 from nginx
+curl -sI <PRODUCT_MEDIA_CDN_BASE_URL>/product-images/x.jpg   # 403 from S3 through CloudFront (no such image)
+curl -sI <PRODUCT_MEDIA_CDN_BASE_URL>/design-renders/x       # 404 FunctionGeneratedResponse: only product-images/
 curl -sI https://jaeger.<domain>                             # 401 without the password
-curl -sI https://mail.<domain>                               # 401 without the password
 curl -sI https://logs.<domain>                               # 401 without the password
 curl -sI --resolve api.<domain>:443:<vps-ip> https://api.<domain>/oauth2/jwks   # 200, no -k: the certificate is public
 curl -sk --resolve jaeger.<domain>:443:<vps-ip> https://jaeger.<domain>/   # "Empty reply": origin lock works
 ```
 
-## 4a. Object storage on AWS S3 (instead of MinIO)
+## 4a. Object storage on AWS S3
 
-The application talks S3 either way; switching is configuration only. Done once, from a machine with
-the AWS CLI signed in as an account administrator:
+Files live in an AWS S3 bucket; the server has no object store of its own since 2026-11-18. Done once,
+from a machine with the AWS CLI signed in as an account administrator:
 
 1. **The bucket's own settings** (public access block, versioning, Object Lock with no default
    retention, lifecycle, CORS, encryption). Enabling Object Lock is irreversible.
@@ -304,7 +311,9 @@ the AWS CLI signed in as an account administrator:
    infra/aws/configure-existing-bucket.sh <bucket> <region> "https://<frontend-origin>"
    ```
    A bucket created by the stack below instead (`UseExistingBucket=false`) gets the same settings and
-   needs no script.
+   needs no script. **CORS** must list every origin a browser uploads from: files are PUT straight to
+   the bucket (presigned), so a deployed frontend missing from the list - the apex `https://<domain>`
+   is not matched by `https://*.<domain>` - gets every upload blocked by the browser.
 2. **Bucket policy, CloudFront, the application's IAM policy**: deploy `infra/aws/media-cloudfront.yaml`
    **in the bucket's region** with `BucketName=<bucket>` and `UseExistingBucket=true`. The bucket policy
    refuses plain HTTP, any presigned read of `incoming/` (unscanned uploads), any presigned write
@@ -313,19 +322,21 @@ the AWS CLI signed in as an account administrator:
    `ApplicationMediaPolicyArn` attached, and one access key. Never root keys. The policy includes
    `s3:ListBucket` on purpose: without it S3 answers `HEAD` on a missing key with 403, and the health
    check and image publishing both break.
-4. **`.env`**: the "object storage on AWS S3" block of `.env.example` - `S3_BUCKET`, the user's keys,
-   `S3_ENDPOINT=` (present and empty), `S3_PATH_STYLE=false`, `AWS_REGION=<bucket region>`,
-   `PRODUCT_MEDIA_CDN_BASE_URL=https://<CloudFrontDomainName>`, and `S3_OBJECT_LOCK_ENABLED=true`.
-   `AWS_REGION` must be the bucket's region: the default is `ap-southeast-1`, and a wrong region makes
-   every call and every presigned link fail with a redirect.
-5. **Existing files**: copy MinIO's bucket across with the keys unchanged (the database stores keys,
-   not URLs), e.g. `mc mirror local/<minio-bucket> aws/<bucket>`. Copied objects carry no SHA-256
-   checksum; design verification falls back to hashing them until they are backfilled.
-6. Deploy, then check `/actuator/health` (`objectStorage` UP with `endpoint: aws`) and that an image
+4. **`.env`**: `S3_BUCKET`, the user's keys in `S3_ACCESS_KEY` / `S3_SECRET_KEY`, `AWS_REGION=<bucket region>`
+   (compose refuses any of the four missing; a wrong region makes every call and every presigned link
+   fail with a redirect), `PRODUCT_MEDIA_CDN_BASE_URL=https://<CloudFrontDomainName>` (blank: the public
+   gallery answers 503), and `S3_OBJECT_LOCK_ENABLED=true` only once the bucket has Object Lock.
+   `S3_ENDPOINT` and `S3_PATH_STYLE` stay unset: empty and `false` mean AWS itself.
+5. Deploy, then check `/actuator/health` (`objectStorage` UP with `endpoint: aws`) and that an image
    upload, its `download-url` and the public gallery work.
 
-MinIO and `minio-init` keep running untouched and can be removed from the compose file once
-nothing points at them.
+**Leftovers on a server that ran MinIO and Mailpit.** The first deploy of this compose file removes
+both containers (`deploy.sh` runs `docker compose up -d --remove-orphans`) but never a volume. Files
+uploaded while MinIO was the store are not in the bucket, and the database still names them: if they
+matter, copy them across **before** that deploy, while MinIO still runs, keys unchanged
+(`mc mirror local/<minio-bucket> aws/<bucket>` from an `mc` container on the compose network; copied
+objects carry no SHA-256 checksum and design verification hashes them instead). After the deploy, drop
+the volumes: `docker volume rm stockflow_minio-data stockflow_mailpit-data`.
 
 ## 5. Operating it
 
@@ -347,13 +358,13 @@ works without a registry login. It keeps the running and the previous image and 
 ones, refuses to start while another deploy holds its lock, and fails (red CI) when the nginx
 configuration does not pass `nginx -t`, even though the application itself was updated.
 
-**What a deploy restarts:** only `app` (new image). Postgres, Redis and MinIO keep running and
-keep their data; `minio-init` re-runs for a few seconds and changes nothing; nginx restarts only
-when a file under `nginx/` changed. Every deploy has one to two minutes of downtime and **signs
+**What a deploy restarts:** only `app` (new image). Postgres and Redis keep running and keep their
+data; nginx restarts only when a file under `nginx/` changed. Every deploy has one to two minutes of downtime and **signs
 every user out** (see the limits below) - tell the frontend team, or deploy less often.
 
 **Reset the database** - wipes every row; needed to switch the demo data on or off, or to start
-clean. MinIO files, Redis and the other containers are untouched.
+clean. The files in the S3 bucket, Redis and the other containers are untouched - the bucket keeps
+files no row names any more.
 
 ```bash
 docker compose stop app
@@ -377,15 +388,12 @@ key; main tab host `localhost`, port `5432`. Use the VPS IP, not the domain - Cl
 the domain, not SSH. The publish needs Docker >= 28 (`docker version`): older releases let hosts on
 the same L2 segment reach loopback-published ports.
 
-The MinIO console (port 9001) is not published; tunnel to the container's address instead
-(`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' stockflow-minio-1`),
-which changes whenever the container is recreated.
-
 **Backups** - `scripts/deploy.sh` dumps the database to `backups/pre-deploy-*.dump` before every
 deploy of a new tag and refuses to deploy if the dump fails (the last 10 are kept): a migration
 cannot be rolled back, only restored over. Add the nightly dump below with `crontab -e` as `deploy`,
-and copy `backups/` off the machine (a backup on the same disk is not a backup). MinIO's files live in the `stockflow_minio-data` volume; back that up too if
-the uploaded files matter.
+and copy `backups/` off the machine (a backup on the same disk is not a backup). Uploaded files are
+not on this machine: they live in the S3 bucket, whose versioning (section 4a, step 1) keeps
+overwritten and deleted files.
 
 ```cron
 0 3 * * *  cd /opt/stockflow && mkdir -p backups && docker compose exec -T postgres pg_dump -U stockflow -Fc stockflow > backups/stockflow-$(date +\%F).dump && find backups -name '*.dump' -mtime +14 -delete
@@ -412,10 +420,9 @@ the uploaded files matter.
   `getRemoteAddr()`. Check after a deploy: `docker compose logs app | grep "Rate limit hit"` shows
   `identity=ip:<a client address>`, not an address inside the compose network. An empty `TRUSTED_PROXIES` trusts
   nobody and puts every client in nginx's bucket; do not set it empty.
-- The application's own uploads go out to the VPS's public address and back (`S3_ENDPOINT` must
-  be the public host for presigned links to work, and the presigner and client share it).
-- api, s3 and media have no DDoS protection or WAF in front of them - only nginx's per-address
-  limits. Acceptable for a dev server; a production deployment would want an edge again.
+- api has no DDoS protection or WAF in front of it - only nginx's per-address limits. Acceptable for
+  a dev server; a production deployment would want an edge again. Files and product images are served
+  by S3 and CloudFront, not by this machine.
 - One machine: if the VPS is lost, so is everything not in an off-site backup.
 
 ## 7. Before this becomes production

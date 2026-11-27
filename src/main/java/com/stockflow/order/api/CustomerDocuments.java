@@ -16,6 +16,14 @@ public interface CustomerDocuments {
 
     Optional<CustomerDocument> quote(UUID quoteId);
 
+    /**
+     * {@link #quote}, with the status the customer's portal shows: a revision Sales reopened after the customer asked
+     * for changes, and has not sent yet, is the quote they asked to change - {@code CHANGES_REQUESTED} - not Sales'
+     * working {@code DRAFT}, as the quote's own pages show it (kltn-docs 14 §4.1 step 4). A first draft, never sent,
+     * stays {@code DRAFT}. Staff read {@link #quote}: to them the revision is the draft they are writing.
+     */
+    Optional<CustomerDocument> quoteAsCustomerSees(UUID quoteId);
+
     Optional<CustomerDocument> order(UUID orderId);
 
     Optional<CustomerDocument> contract(UUID contractId);
@@ -33,4 +41,11 @@ public interface CustomerDocuments {
 
     /** The customer's production orders, the newest first, at most {@code limit}. */
     List<CustomerDocument> recentProductionOrders(UUID customerId, int limit);
+
+    /**
+     * The Sales account that answers for each of these sales contracts (WF-02 FLOW-1b, Q-11): who sent it, else who
+     * recorded it signed. What a module that lists installments shows as the salesperson to chase the money with (the
+     * assistant's collections list); one statement for the lot. A contract with neither, or unknown, is absent.
+     */
+    java.util.Map<UUID, UUID> contractSalespeople(java.util.Collection<UUID> contractIds);
 }

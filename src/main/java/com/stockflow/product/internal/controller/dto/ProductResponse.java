@@ -74,6 +74,23 @@ public record ProductResponse(
                 + "key: a warning, never a refusal. Filled only by create (POST), update (PUT) and detail (GET one); "
                 + "null on every other response, lists and the submit, approve, reject, suspend and resume answers "
                 + "included, and when the lookup itself failed. Ask GET /api/v1/products/duplicates to check again.")
-        List<ProductMatchResponse> possibleDuplicates
+        List<ProductMatchResponse> possibleDuplicates,
+
+        @Schema(description = "The primary category's name, read with the row so a screen needs no category list; "
+                + "null when the product has no primary category")
+        String categoryName,
+
+        @Schema(description = "Display name (full name, else username) of submittedBy; null when nobody submitted it "
+                + "or the account is unknown")
+        String submittedByName,
+
+        @Schema(description = "Display name (full name, else username) of approvedBy; null when nobody approved it "
+                + "or the account is unknown")
+        String approvedByName,
+
+        @Schema(description = "Whether the caller may approve this product now: it is PENDING_APPROVAL, the caller "
+                + "holds product-products:APPROVE, and either did not submit it or holds product-lifecycle:APPROVE "
+                + "(BR-PRD-003). The server checks again on approval; this only spares the screen comparing ids.")
+        boolean canApprove
 ) {
 }

@@ -21,6 +21,13 @@ public record DefaultPaymentSchedule(UUID customerId, boolean configured, List<I
                                      Instant setAt, UUID approvedBy, Instant approvedAt, String note, long version) {
 
     /**
+     * The days a customer has to pay the installment due on signing when no schedule says otherwise (15 §4.1 "ngày ký
+     * + N ngày"). Not 0: a deposit due the day of signing was overdue the next morning, and an overdue installment holds
+     * the customer's next contract for credit (15 BR-11) - a common "chuyển khoản trong 3 ngày kể từ ngày ký".
+     */
+    public static final int DEFAULT_ON_SIGNING_DUE_DAYS = 3;
+
+    /**
      * One installment.
      *
      * @param percent share of the total with tax, two decimals at most

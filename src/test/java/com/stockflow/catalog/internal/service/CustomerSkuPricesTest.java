@@ -31,8 +31,8 @@ import static org.mockito.Mockito.when;
 class CustomerSkuPricesTest {
 
     private static final String OWN = "LY12-ACME-01";
-    private static final String STOCK = "SOFA-3S-GREY";
-    private static final String UNPRICED = "TABLE-OAK-160";
+    private static final String STOCK = "LY-GIAY-DEMO-12OZ-XANH";
+    private static final String UNPRICED = "LY-GIAY-DEMO-12OZ-DO";
 
     private final CustomerPriceRepository prices = mock(CustomerPriceRepository.class);
     private final ListingRepository listings = mock(ListingRepository.class);
@@ -76,7 +76,8 @@ class CustomerSkuPricesTest {
     @DisplayName("the published price says what its tiers count, as the customer-prices screen does: cartons of the "
             + "customer's own SKU, units of a price kept on a stock variant")
     void thePublishedPriceSaysItsMeasure() {
-        CatalogServiceImpl catalog = new CatalogServiceImpl(resolver, customerSkus);
+        CatalogServiceImpl catalog = new CatalogServiceImpl(resolver, customerSkus,
+                mock(com.stockflow.catalog.internal.domain.StandardPriceRepository.class));
 
         assertThat(catalog.customerPrice(customer, OWN).map(PriceSchedule::measure))
                 .contains(PriceSchedule.Measure.CARTON);

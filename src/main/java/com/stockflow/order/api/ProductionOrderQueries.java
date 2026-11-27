@@ -65,6 +65,66 @@ public interface ProductionOrderQueries {
     List<ProductionOrderRow> ofSalesOrder(UUID salesOrderId);
 
     /**
+     * The statuses in which a production order is with its producer and still owes goods (17 §4.12: "Sent →
+     * Partially Received", {@code DelayAlertEvaluator.LATE_STATUSES}): the only ones a coordinator can chase.
+     */
+    List<String> WITH_PRODUCER_STATUSES = List.of("SENT", "ACCEPTED", "SAMPLE_PENDING", "IN_PRODUCTION",
+            "PARTIALLY_RECEIVED");
+
+    /**
+     * The production orders the Production Coordinator should chase today (the assistant's follow-up list, its work
+     * queue's late section): with the producer ({@link #WITH_PRODUCER_STATUSES}) and late, at risk, or - when
+     * {@code dueWithinDays} is given - due within that many days. The most urgent first: late by need-by day, then the
+     * producer's own day passed, then at risk, then due soon; within each, the earliest need-by day. Under the
+     * screen's warehouse rule, as {@link #productionOrders}. Exists because the producers are outside the system:
+     * chasing them is a phone call or a Zalo message, and the coordinator needs the list of whom to call, worked out
+     * by the same rules as the delay alerts ({@code DelayAlertEvaluator}) but on today's dates rather than on alerts
+     * last recomputed overnight.
+     *
+     * @param today         the business day the rules are read on
+     * @param dueWithinDays also the orders whose expected completion day (its need-by day while it has none) is
+     *                      within this many days from today; null for late and at risk only
+     * @param warehouseId   only those received at this warehouse; null for every warehouse the caller may see. One the
+     *                      caller may not see matches nothing
+     * @param limit         1..{@value #MAX_ORDERS}; {@code total} of the page counts every match
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for a limit out of range or a
+     *         negative {@code dueWithinDays}
+     */
+    PageResponse<FollowUp> followUps(LocalDate today, Integer dueWithinDays, UUID warehouseId, int limit);
+
+    /**
+     * One production order as the follow-up list shows it, whatever its status, under the same warehouse rule; empty
+     * when there is none the caller may see (a production order of another warehouse is not revealed to exist).
+     */
+    java.util.Optional<FollowUp> followUp(UUID productionOrderId, LocalDate today);
+
+    /**
+     * Why a production order is on the follow-up list, the most urgent reason first.
+     * {@code LATE}: its need-by day (the first day of its batch's window) has passed and it is not received in full
+     * (the PRODUCTION_LATE alert). {@code PRODUCER_OVERDUE}: the day the producer gave has passed, its need-by day not
+     * yet. {@code AT_RISK}: the producer's day is after the need-by day (the AT_RISK alert). {@code DUE_SOON}: due
+     * within the days asked. {@code NONE}: none of these (a single read of one that is not on the list).
+     */
+    enum FollowUpReason { LATE, PRODUCER_OVERDUE, AT_RISK, DUE_SOON, NONE }
+
+    /**
+     * A production order to chase, with what it holds up: one production order is drawn up per delivery batch (17
+     * §4.3 step 6), so it holds up exactly that batch of that sales order's customer.
+     *
+     * @param order            the production order as {@link #productionOrders} lists it
+     * @param customerId       the sales order's customer; null for an order without one
+     * @param batchWindowStart the first day of the batch's delivery window; null when the batch has none or is no
+     *                         longer in the schedule
+     * @param batchWindowEnd   its last day; null with {@code batchWindowStart}
+     * @param reason           why it is on the list
+     * @param daysLate         days past its need-by day for LATE, past the producer's day for PRODUCER_OVERDUE; null
+     *                         otherwise
+     */
+    record FollowUp(ProductionOrderRow order, UUID customerId, LocalDate batchWindowStart, LocalDate batchWindowEnd,
+                    FollowUpReason reason, Integer daysLate) {
+    }
+
+    /**
      * One production order.
      *
      * @param status                 one of {@link #STATUSES}

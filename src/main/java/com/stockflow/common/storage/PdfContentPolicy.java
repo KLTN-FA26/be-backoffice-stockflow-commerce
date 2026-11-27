@@ -102,15 +102,15 @@ final class PdfContentPolicy {
         try (PDDocument document = Loader.loadPDF(file.toFile(), "", null, null,
                 IOUtils.createTempFileOnlyStreamCache())) {
             if (printFile && document.isEncrypted()) {
-                refuse("A print file must not be encrypted");
+                refuse("A print file must not be encrypted", "refusal.pdf.encrypted");
             }
             var catalog = document.getDocumentCatalog();
             var names = catalog.getNames();
             if (names != null && names.getJavaScript() != null) {
-                refuse("The PDF carries JavaScript");
+                refuse("The PDF carries JavaScript", "refusal.pdf.javascript");
             }
             if (printFile && names != null && names.getEmbeddedFiles() != null) {
-                refuse("A print file must not carry attached files");
+                refuse("A print file must not carry attached files", "refusal.pdf.attachedFiles");
             }
             Actions actions = new Actions();
             COSDictionary root = catalog.getCOSObject();
@@ -119,7 +119,7 @@ final class PdfContentPolicy {
             actions.requireInertBookmarks(root.getDictionaryObject(OUTLINES));
             if (catalog.getAcroForm() != null) {
                 if (catalog.getAcroForm().hasXFA()) {
-                    refuse("The PDF is an XFA form");
+                    refuse("The PDF is an XFA form", "refusal.pdf.xfa");
                 }
                 for (PDField field : catalog.getAcroForm().getFieldTree()) {
                     actions.requireInertTriggers(field.getCOSObject());
@@ -130,10 +130,10 @@ final class PdfContentPolicy {
                 for (PDAnnotation annotation : page.getAnnotations()) {
                     String subtype = annotation.getSubtype();
                     if (subtype != null && ACTIVE_ANNOTATIONS.contains(subtype)) {
-                        refuse("The PDF carries embedded media");
+                        refuse("The PDF carries embedded media", "refusal.pdf.media");
                     }
                     if (printFile && "FileAttachment".equals(subtype)) {
-                        refuse("A print file must not carry attached files");
+                        refuse("A print file must not carry attached files", "refusal.pdf.attachedFiles");
                     }
                     actions.requireInertTriggers(annotation.getCOSObject());
                 }
@@ -141,10 +141,10 @@ final class PdfContentPolicy {
         } catch (BusinessException refused) {
             throw refused;
         } catch (InvalidPasswordException locked) {
-            refuse("The PDF needs a password to open and cannot be inspected");
+            refuse("The PDF needs a password to open and cannot be inspected", "refusal.pdf.password");
         } catch (IOException | RuntimeException | StackOverflowError unreadable) {
             // A malformed file is the client's problem, not a server fault: whatever PDFBox makes of it, it is refused.
-            refuse("The PDF cannot be read");
+            refuse("The PDF cannot be read", "refusal.pdf.unreadable");
         }
     }
 
@@ -186,7 +186,7 @@ final class PdfContentPolicy {
                     continue;
                 }
                 if (visited.size() > MAX_BOOKMARKS) {
-                    refuse("The PDF's bookmarks cannot be read");
+                    refuse("The PDF's bookmarks cannot be read", "refusal.pdf.unreadable");
                 }
                 requireInert(item.getDictionaryObject(COSName.A), Trigger.CLICK);
                 COSBase child = item.getItem(FIRST);
@@ -211,7 +211,7 @@ final class PdfContentPolicy {
                 return;
             }
             if (depth > MAX_CHAIN) {
-                refuse("The PDF chains more actions than a document has");
+                refuse("The PDF chains more actions than a document has", "refusal.pdf.action");
             }
             if (!seen.get(trigger).add(value)) {
                 return;
@@ -225,19 +225,19 @@ final class PdfContentPolicy {
             if (value instanceof COSDictionary dictionary) {
                 COSName type = dictionary.getCOSName(COSName.S);
                 if (JAVASCRIPT.equals(type) || dictionary.containsKey(COSName.JS)) {
-                    refuse("The PDF carries JavaScript");
+                    refuse("The PDF carries JavaScript", "refusal.pdf.javascript");
                 }
                 if (LAUNCH.equals(type)) {
-                    refuse("The PDF launches another file or program");
+                    refuse("The PDF launches another file or program", "refusal.pdf.action");
                 }
                 if (dictionary.containsKey(COSName.F)) {
-                    refuse("The PDF carries an action that opens another file");
+                    refuse("The PDF carries an action that opens another file", "refusal.pdf.action");
                 }
                 boolean allowed = type == null || NAVIGATION.contains(type)
                         || (NAMED.equals(type) && PAGE_TURNS.contains(dictionary.getNameAsString(COSName.N)))
                         || (URI.equals(type) && trigger == Trigger.CLICK && isWebLink(dictionary.getString(URI)));
                 if (!allowed) {
-                    refuse("The PDF carries " + describe(type) + " action, which may open, send or run something");
+                    refuse("The PDF carries " + describe(type) + " action, which may open, send or run something", "refusal.pdf.action");
                 }
                 requireInert(dictionary.getDictionaryObject(NEXT), trigger, depth + 1);
             }
@@ -263,7 +263,12 @@ final class PdfContentPolicy {
         }
     }
 
-    private static void refuse(String reason) {
-        throw new BusinessException(ErrorCode.VALIDATION_FAILED, reason);
+    /**
+     * Refused with the English reason in the log and the bundle's text, in the caller's language, on the wire: a
+     * signed contract scan or a chat file is refused by the same checks as a print file, and the person uploading it
+     * reads the answer.
+     */
+    private static void refuse(String reason, String key) {
+        throw new BusinessException(ErrorCode.VALIDATION_FAILED, reason).localized(key);
     }
 }

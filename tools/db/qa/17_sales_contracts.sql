@@ -54,15 +54,15 @@ SELECT md5('qa17:draft')::uuid, c.id, md5('qa17:product')::uuid, 'DRAFT', NOW(),
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa17:snap')::uuid, md5('qa17:draft')::uuid, repeat('a', 64), 'https://example.com/a.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-SELECT md5('qa17:own')::uuid, md5('qa17:product')::uuid, 'QA-HD-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
-       'OWNED-SKU:QA-HD-OWN', 1, 0, NOW(), c.id, md5('qa17:snap')::uuid, md5('qa17:blank')::uuid
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+SELECT md5('qa17:own')::uuid, md5('qa17:product')::uuid, 'QA-HD-OWN', 'QA ly in logo', 'ACTIVE', 0, NOW(),
+       c.id, md5('qa17:snap')::uuid, md5('qa17:blank')::uuid
   FROM customer.customer c WHERE c.id = md5('qa17:customer')::uuid;
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
-                                       version, created_at, default_shipping)
-SELECT md5('qa17:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(), TRUE
-  FROM inventory.inventory_items i WHERE i.sku = 'QA-HD-OWN';
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
+                                       version, created_at)
+SELECT md5('qa17:carton')::uuid, i.variant_id, 'CARTON', 50, TRUE, 0, NOW()
+  FROM product.customer_skus i WHERE i.sku = 'QA-HD-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 SELECT md5('qa17:order')::uuid, 'SO-QA-HD', c.id, gen_random_uuid(), 'DRAFT', 2200000, 200000, 'VND', NOW(), NOW()

@@ -17,6 +17,7 @@ import com.stockflow.fulfillment.internal.domain.LoadStatus;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
 import com.stockflow.fulfillment.internal.domain.UnloadReasonCode;
+import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanResult;
 import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadPackageJpaEntity;
@@ -46,7 +47,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -54,6 +57,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -69,6 +73,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * See {@link Dispatching}. Lock order, as everywhere in fulfillment's dispatch: the load row, then the shipments' rows
@@ -104,6 +109,8 @@ class DispatchService implements Dispatching {
     private final Waybills waybills;
     private final com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository waybillChanges;
     private final com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository carrierBookings;
+    private final VehicleRelayout relayouts;
+    private final TransactionOperations tx;
     private final Clock clock;
 
     @SuppressWarnings("java:S107")
@@ -118,7 +125,7 @@ class DispatchService implements Dispatching {
                     Waybills waybills,
                     com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository waybillChanges,
                     com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository carrierBookings,
-                    Clock clock) {
+                    VehicleRelayout relayouts, TransactionOperations tx, Clock clock) {
         this.loads = loads;
         this.members = members;
         this.loaded = loaded;
@@ -140,6 +147,8 @@ class DispatchService implements Dispatching {
         this.waybills = waybills;
         this.waybillChanges = waybillChanges;
         this.carrierBookings = carrierBookings;
+        this.relayouts = relayouts;
+        this.tx = tx;
         this.clock = clock;
     }
 
@@ -174,16 +183,20 @@ class DispatchService implements Dispatching {
                 .map(DispatchLoadJpaEntity::getCarrierId).filter(Objects::nonNull).collect(Collectors.toSet()));
         Map<UUID, PlanVehicles.VehicleRef> vehicleOf = planVehicles.describe(found.getContent().stream()
                 .map(DispatchLoadJpaEntity::getLoadPlanVehicleId).filter(Objects::nonNull).collect(Collectors.toSet()));
+        Map<UUID, com.stockflow.warehouse.api.WarehouseView> warehouseById = warehouses.findWarehouses(
+                found.getContent().stream().map(DispatchLoadJpaEntity::getWarehouseId).collect(Collectors.toSet()));
         return Pages.toResponse(found, row -> {
             PlanVehicles.VehicleRef vehicle = row.getLoadPlanVehicleId() == null ? null
                     : vehicleOf.get(row.getLoadPlanVehicleId());
+            var warehouse = warehouseById.get(row.getWarehouseId());
             return new LoadRow(row.getId(), row.getCode(), row.getWarehouseId(), row.getStatus().name(),
                     row.getCarrierId(),
                     Optional.ofNullable(carrierById.get(row.getCarrierId())).map(CarrierJpaEntity::getName).orElse(null),
                     row.getVehiclePlate(), row.getDriverName(), row.getShipmentCount(), row.getPackageCount(),
                     row.getLoadingStartedAt(), row.getDispatchedAt(), row.getVersion(),
                     vehicle == null ? null : vehicle.loadPlanId(), vehicle == null ? null : vehicle.loadPlanCode(),
-                    vehicle == null ? null : vehicle.seq(), row.getWaybillNo());
+                    vehicle == null ? null : vehicle.seq(), row.getWaybillNo(),
+                    warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
         });
     }
 
@@ -193,7 +206,31 @@ class DispatchService implements Dispatching {
         DispatchLoadJpaEntity header = loads.findById(loadId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.LOAD_NOT_FOUND));
         WarehouseScope.requireWarehouse(header.getWarehouseId());
-        return detail(header, store.load(header));
+        DispatchLoad load = store.load(header);
+        return detail(header, load).withHandoverWarnings(currentHandoverWarnings(header, load));
+    }
+
+    /**
+     * The warnings of "start loading" that still hold while the vehicle is loading (kltn-docs 09 section 4.2 step 7,
+     * owner decision WF4-A7-WARN): the same check against the orders on board, made now and never stored - money
+     * collected or a window opened since makes the warning go. As at the start of loading, only a vehicle of a load
+     * plan is checked.
+     */
+    private List<Dispatching.HandoverWarning> currentHandoverWarnings(DispatchLoadJpaEntity header, DispatchLoad load) {
+        if (load.status() != LoadStatus.LOADING || header.getLoadPlanVehicleId() == null) {
+            return List.of();
+        }
+        List<UUID> onBoard = load.activeShipments();
+        Set<UUID> orderIds = onBoard.isEmpty() ? Set.of() : shipments.findByIdIn(onBoard).stream()
+                .map(ShipmentJpaEntity::getOrderId).collect(Collectors.toCollection(java.util.TreeSet::new));
+        return orderIds.isEmpty() ? List.of() : warningsOf(orders.handoverBlocks(orderIds, clock.instant()));
+    }
+
+    private static List<Dispatching.HandoverWarning> warningsOf(List<com.stockflow.order.api.HandoverBlock> blocks) {
+        return blocks.stream().map(block -> new Dispatching.HandoverWarning(block.orderId(), block.orderNumber(),
+                block.reasonCode(), block.reasonCodes(), block.amountDue(), block.currency(), block.batchSeq(),
+                block.windowStart()))
+                .toList();
     }
 
     // ------------------------------------------------------------------ the vehicle
@@ -217,6 +254,16 @@ class DispatchService implements Dispatching {
             return detail(header, load);
         }
         PackageJpaEntity parcel = parcelScanned(code);
+        // BR-SEC-002: a parcel of a warehouse the caller is not assigned to is answered as unknown, before a refusal
+        // below names its shipment, its status or the load it is on - whether or not it is in a shipment yet, so the
+        // warehouse is its task's, which every parcel has.
+        if (WarehouseScope.restriction().isPresent()) {
+            UUID where = picks.warehouseOfPack(parcel.getPackId()).orElse(null);
+            if (where == null || !WarehouseScope.restriction().map(allowed -> allowed.ids().contains(where))
+                    .orElse(true)) {
+                throw new BusinessException(ErrorCode.PACKAGE_NOT_FOUND, "No package labelled " + code);
+            }
+        }
         DispatchLoad.ShipmentFacts shipment = null;
         if (parcel.getShipmentId() != null) {
             ShipmentJpaEntity row = shipments.findById(parcel.getShipmentId()).orElseThrow();
@@ -539,16 +586,15 @@ class DispatchService implements Dispatching {
         String reason = "The carrier cancelled order " + booking.getCarrierOrderId();
         booking.cancelled(reason, at);
         carrierBookings.saveAndFlush(booking);
-        if (load.status() == LoadStatus.LOADING) {
-            // The truck at the dock has no order any more: the load cannot be handed over on it (requireCarrierOrder).
-            log.warn("Load {}: its carrier cancelled order {} while loading", load.code(), booking.getCarrierOrderId());
-            return CarrierCancel.CANCELLED_WHILE_LOADING;
-        }
+        // 09 §4.5 (RTM-LOADCANCEL, RTM-LOADCANCEL2 19/11): back to PLANNED with the same layout; parcels already on the
+        // truck are to be scanned off back to the dispatch area before the vehicle is booked again.
+        int onBoard = load.activeParcels().size();
         String before = load.waybillNo();
-        load.cancelBooking(reason, null, at);
+        load.carrierCancelledBooking(reason, at);
         store.save(load, locked.header());
         waybills.record(load.id(), before, null, WaybillSource.WEBHOOK, null, at, reason);
-        log.info("Load {}: its carrier cancelled order {}; back to PLANNED", load.code(), booking.getCarrierOrderId());
+        log.info("Load {}: its carrier cancelled order {}; back to PLANNED{}", load.code(), booking.getCarrierOrderId(),
+                onBoard == 0 ? "" : ", " + onBoard + " parcel(s) to scan off");
         return CarrierCancel.UNBOOKED;
     }
 
@@ -676,9 +722,7 @@ class DispatchService implements Dispatching {
             blocks.forEach(block -> log.warn("Load {}: order {} may not be handed over yet ({}, {} {} due)",
                     load.code(), block.orderNumber(), block.reasonCode(),
                     block.amountDue().stripTrailingZeros().toPlainString(), block.currency()));
-            warnings = blocks.stream().map(block -> new Dispatching.HandoverWarning(block.orderId(),
-                    block.orderNumber(), block.reasonCode(), block.amountDue(), block.currency(), block.batchSeq(),
-                    block.windowStart())).toList();
+            warnings = warningsOf(blocks);
         }
         if (load.startLoading(actor.userId(), now)) {
             header = store.save(load, header);
@@ -738,8 +782,82 @@ class DispatchService implements Dispatching {
         return detail(header, load);
     }
 
+    /**
+     * What a controlled cancel taking shipments off the vehicle decided before the search ran: the shipments, the plan
+     * version it was read at, and the search's inputs (null when the vehicle keeps nothing).
+     */
+    private record Removal(Set<UUID> shipments, long planVersion, VehicleRelayout.Inputs inputs) { }
+
+    /**
+     * SOLVER-TX, as {@code LoadPlanService.recalculateVehicle}: with shipments to take off, the vehicle's kept parcels
+     * are read in a short transaction, laid out again with none held (the search takes seconds), and the cancel is
+     * written in a second transaction that checks the plan did not change meanwhile ({@code OPTIMISTIC_LOCK}).
+     */
     @Override
-    public ControlledCancelResult cancelControlled(UUID loadId, UnloadReasonCode code, String note, CurrentUser actor) {
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public ControlledCancelResult cancelControlled(UUID loadId, UnloadReasonCode code, String note,
+                                                  Collection<UUID> removedShipmentIds, CurrentUser actor) {
+        Set<UUID> removed = removedShipmentIds == null ? Set.of() : new LinkedHashSet<>(removedShipmentIds);
+        Removal removal = removed.isEmpty() ? null : tx.execute(status -> removal(loadId, removed));
+        LoadPlanResult relayout = removal == null || removal.inputs() == null ? null
+                : relayouts.solve(removal.inputs().request());
+        return tx.execute(status -> cancelControlled(loadId, code, note, removal, relayout, actor));
+    }
+
+    /**
+     * 09 §4.2 step 9, BR-09: what may come off and what the vehicle keeps. Each shipment is on this vehicle's manifest and
+     * has no parcel on another vehicle of the plan - a shipment leaves whole. A load that is not being loaded, or is no
+     * plan's vehicle, is left to the cancel's own refusal (or its replay).
+     */
+    private Removal removal(UUID loadId, Set<UUID> removed) {
+        DispatchLoadJpaEntity header = loads.findById(loadId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.LOAD_NOT_FOUND));
+        WarehouseScope.requireWarehouse(header.getWarehouseId());
+        DispatchLoad load = store.load(header);
+        if (load.status() != LoadStatus.LOADING || header.getLoadPlanVehicleId() == null) {
+            return null;
+        }
+        PlanVehicles.PlanOfLoad ctx = planVehicles.read(header);
+        if (ctx.vehicle() == null || !ctx.vehicle().active()) {
+            return null;
+        }
+        requireOnManifest(load, removed);
+        Set<UUID> here = ctx.placedHere();
+        Set<UUID> kept = new LinkedHashSet<>();
+        for (LoadPlan.Member m : ctx.plan().members()) {
+            if (!m.active() || !removed.contains(m.shipmentId())) {
+                continue;
+            }
+            if (!here.contains(m.packageId())) {
+                throw new BusinessException(ErrorCode.LOAD_REMOVAL_SPLITS_SHIPMENT, ("A shipment taken off load %s has "
+                        + "parcels on another vehicle of load plan %s: it leaves the plan whole or not at all")
+                        .formatted(load.code(), ctx.plan().code()), List.of(FieldError.of("removedShipmentIds",
+                        shipments.codeOf(m.shipmentId()).orElse(m.shipmentId().toString()))));
+            }
+        }
+        for (LoadPlan.Member m : ctx.plan().members()) {
+            if (m.active() && here.contains(m.packageId()) && !removed.contains(m.shipmentId())) {
+                kept.add(m.packageId());
+            }
+        }
+        return new Removal(Set.copyOf(removed), ctx.header().getVersion(),
+                kept.isEmpty() ? null : relayouts.inputs(ctx.vehicle(), kept));
+    }
+
+    /** Each shipment to take off is on the vehicle's manifest. */
+    private static void requireOnManifest(DispatchLoad load, Set<UUID> removed) {
+        List<UUID> onManifest = load.activeShipments();
+        List<FieldError> problems = removed.stream().filter(id -> !onManifest.contains(id))
+                .map(id -> new FieldError("removedShipmentIds", id + " is not on this vehicle's manifest",
+                        "SHIPMENT_NOT_FOR_LOAD")).toList();
+        if (!problems.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Only shipments on load %s are taken off it")
+                    .formatted(load.code()), problems);
+        }
+    }
+
+    private ControlledCancelResult cancelControlled(UUID loadId, UnloadReasonCode code, String note, Removal removal,
+                                                    LoadPlanResult relayout, CurrentUser actor) {
         Locked locked = lockForChange(loadId);
         DispatchLoad load = locked.load();
         PlanVehicles.PlanOfLoad ctx = locked.plan();
@@ -758,7 +876,15 @@ class DispatchService implements Dispatching {
             PlanVehicles.requireConfirmed(ctx);
         }
         Instant now = clock.instant();
-        List<UUID> onManifest = load.activeShipments();
+        List<UUID> onManifest = new ArrayList<>(load.activeShipments());
+        boolean takingOff = removal != null && load.status() == LoadStatus.LOADING;
+        if (takingOff) {
+            if (ctx.header().getVersion() != removal.planVersion()) {
+                throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, ("Load plan %s changed while the vehicle's "
+                        + "layout was recalculated: try again").formatted(ctx.plan().code()));
+            }
+            requireOnManifest(load, removal.shipments());
+        }
         if (!load.cancelControlled(code, note, actor.userId(), now)) {
             // Called off before: answered as it is, with the vehicle's live load when another took its place.
             DispatchLoadJpaEntity live = ctx.vehicle() == null ? null : planVehicles.liveLoads(ctx.plan())
@@ -770,6 +896,15 @@ class DispatchService implements Dispatching {
         log.info("Load {} (vehicle {} of plan {}) cancelled under control ({}: {}): {} parcel(s) to scan off",
                 load.code(), ctx.vehicle() == null ? null : ctx.vehicle().seq(), ctx.plan().code(), code,
                 LogSafe.text(note.trim()), load.pendingUnloads().size());
+        if (takingOff) {
+            // 09 §4.2 step 9, BR-14 (decided 2026-11-05): the shipments taken off leave the plan (REMOVED_FROM_VEHICLE)
+            // and wait at the dispatch area, their parcels locked until scanned off like every other; the vehicle's new
+            // load carries the rest on the recalculated layout, or there is none when nothing is left.
+            planVehicles.removeFromVehicle(ctx, removal.shipments(), relayout,
+                    removal.inputs() == null ? Map.of() : removal.inputs().cartons(), now);
+            onManifest.removeAll(removal.shipments());
+            requireRestOfOrdersCarried(ctx.plan(), removal.shipments());
+        }
         if (onManifest.isEmpty()) {
             // Nothing left to carry (every order on it was cancelled; only parcels to scan off remain): no replacement,
             // as when the system calls an emptied vehicle off. It must not hold the plan back (BR-15): the plan is
@@ -782,6 +917,25 @@ class DispatchService implements Dispatching {
         DispatchLoadJpaEntity replacementHeader = openReplacement(ctx, load, onManifest, actor.userId(), now);
         return new ControlledCancelResult(detail(header, load), detail(replacementHeader,
                 store.load(replacementHeader)));
+    }
+
+    /**
+     * BR-13, as at the start of loading: an order that may not ship in parts, a shipment of which was taken off while
+     * another stays in the plan, would leave in part - refused ({@code ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED}): take off
+     * every shipment of it.
+     */
+    private void requireRestOfOrdersCarried(LoadPlan plan, Set<UUID> removed) {
+        Map<UUID, ShipmentJpaEntity> rows = shipments.findByIdIn(planShipments(plan, List.copyOf(removed))).stream()
+                .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
+        Map<UUID, List<ShipmentHandover.Line>> inPlan = unitsInPlan(plan, rows);
+        removed.stream().map(rows::get).filter(Objects::nonNull)
+                .collect(Collectors.toMap(ShipmentJpaEntity::getOrderId, Function.identity(), (a, b) -> a,
+                        java.util.TreeMap::new))
+                .forEach((orderId, row) -> {
+                    if (inPlan.containsKey(orderId)) {
+                        named(row, () -> orders.requirePlanCarriesTheRest(orderId, inPlan.get(orderId)));
+                    }
+                });
     }
 
     @Override
@@ -927,6 +1081,7 @@ class DispatchService implements Dispatching {
             row.put("orderId", block.orderId().toString());
             row.put("orderNumber", block.orderNumber());
             row.put("reasonCode", block.reasonCode());
+            row.put("reasonCodes", block.reasonCodes());
             row.put("amountDue", block.amountDue().stripTrailingZeros().toPlainString());
             row.put("currency", block.currency());
             if (block.batchSeq() != null) {
@@ -1248,13 +1403,20 @@ class DispatchService implements Dispatching {
                 .collect(Collectors.toMap(PickJpaEntity::getOrderId, PickJpaEntity::getOrderNumber, (a, b) -> a));
         List<LoadShipment> lines = new ArrayList<>();
         Map<UUID, UUID> tasks = context.tasks(rows.values());
+        // Every person the load names - who started loading, booked, dispatched, scanned each parcel on - in one call.
+        Set<UUID> people = new HashSet<>();
+        Stream.of(header.getDispatchedBy(), header.getLoadingStartedBy(), header.getBookedBy())
+                .filter(Objects::nonNull).forEach(people::add);
+        onVehicle.values().stream().map(DispatchLoad.Loaded::loadedBy).filter(Objects::nonNull).forEach(people::add);
+        Map<UUID, String> names = people.isEmpty() ? new HashMap<>() : new HashMap<>(identities.displayNames(people));
         int expected = 0;
         for (DispatchLoad.Member member : active) {
             ShipmentJpaEntity row = rows.get(member.shipmentId());
             List<LoadParcel> own = parcels.getOrDefault(member.shipmentId(), List.of()).stream().map(p -> {
                 DispatchLoad.Loaded l = onVehicle.get(p.getId());
-                return new LoadParcel(p.getId(), p.getLabelCode(), p.getWeightKg(), l != null,
-                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy());
+                return new LoadParcel(p.getId(), p.getLabelCode(), p.getLpn(), p.getWeightKg(), l != null,
+                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy(),
+                        l == null || l.loadedBy() == null ? null : names.get(l.loadedBy()));
             }).toList();
             expected += own.size();
             lines.add(new LoadShipment(row.getId(), row.getCode(), row.getOrderId(),
@@ -1263,13 +1425,11 @@ class DispatchService implements Dispatching {
         }
         CarrierJpaEntity carrier = header.getCarrierId() == null ? null
                 : carriers.findById(header.getCarrierId()).orElse(null);
-        Set<UUID> people = new HashSet<>();
-        if (header.getDispatchedBy() != null) {
-            people.add(header.getDispatchedBy());
-        }
-        Map<UUID, String> names = people.isEmpty() ? new HashMap<>() : new HashMap<>(identities.displayNames(people));
         DispatchLoadJpaEntity replacement = replacementOf(header, ctx);
-        return new LoadDetail(header.getId(), header.getCode(), header.getWarehouseId(), header.getStatus().name(),
+        var warehouse = warehouses.findWarehouse(header.getWarehouseId()).orElse(null);
+        String warehouseName = warehouse == null ? null : warehouse.name();
+        return new LoadDetail(header.getId(), header.getCode(), header.getWarehouseId(), warehouseName,
+                header.getStatus().name(),
                 header.getCarrierId(), carrier == null ? null : carrier.getCode(),
                 carrier == null ? null : carrier.getName(), header.getVehiclePlate(), header.getDriverName(),
                 header.getDriverPhone(), header.getLoadingStartedAt(), header.getLoadingStartedBy(),
@@ -1286,7 +1446,9 @@ class DispatchService implements Dispatching {
                 header.getWaybillNo(), carrier == null ? null : carrier.getConnectionType(),
                 carrierBookings.findByLoads(List.of(header.getId())).stream().findFirst()
                         .map(b -> new CarrierBookingView(b.getStatus(), b.getCarrierOrderId(), b.getTrackingLink(),
-                                b.getRequestedAt(), b.getBookedAt(), b.getLastError())).orElse(null));
+                                b.getRequestedAt(), b.getBookedAt(), b.getLastError())).orElse(null),
+                List.of(), names.get(header.getLoadingStartedBy()), names.get(header.getBookedBy()),
+                warehouse == null ? null : warehouse.prefix());
     }
 
     /**

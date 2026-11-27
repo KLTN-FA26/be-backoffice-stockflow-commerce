@@ -19,8 +19,10 @@ class FulfillmentWebMapperTest {
     private final FulfillmentWebMapper mapper = new FulfillmentWebMapper();
 
     private static PickLists.PutBackRow row(boolean quarantine) {
-        return new PickLists.PutBackRow(UUID.randomUUID(), "SO-1", UUID.randomUUID(), UUID.randomUUID(), "SOFA", "LOT-1",
-                "LPN-1", 1, "HCM-A01-2-B", Instant.parse("2026-11-13T08:00:00Z"), quarantine);
+        return new PickLists.PutBackRow(UUID.randomUUID(), "SO-1", UUID.randomUUID(), UUID.randomUUID(),
+                "LY-GIAY-DEMO-12OZ-XANH", "LOT-1", "LPN-1", 1, "HCM-A01-2-B", Instant.parse("2026-11-13T08:00:00Z"),
+                quarantine, quarantine ? java.util.List.of() : java.util.List.of("HCM-OVF01"), "PK-20261113-0001",
+                "HCM", "Kho Ho Chi Minh");
     }
 
     @Test
@@ -33,5 +35,12 @@ class FulfillmentWebMapperTest {
         assertThat(cancelled.quarantine()).isFalse();
         assertThat(damaged.lpn()).isEqualTo("LPN-1");
         assertThat(damaged.fromLocationCode()).isEqualTo("HCM-A01-2-B");
+        assertThat(damaged.overflowLocationCodes()).isEmpty();
+        assertThat(cancelled.overflowLocationCodes()).as("07 BR-12: the OVERFLOW areas reach the screen")
+                .containsExactly("HCM-OVF01");
+        assertThat(damaged.taskNumber()).as("the task's human number, not a slice of its UUID")
+                .isEqualTo("PK-20261113-0001");
+        assertThat(damaged.warehouseCode()).isEqualTo("HCM");
+        assertThat(damaged.warehouseName()).as("the screen needs no warehouse list").isEqualTo("Kho Ho Chi Minh");
     }
 }

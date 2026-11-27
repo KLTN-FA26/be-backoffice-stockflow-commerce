@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.controller;
 
 import com.stockflow.order.api.ListOrdersQuery;
+import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
@@ -77,13 +78,25 @@ class OrderController {
     private final com.stockflow.identity.api.IdentityService identities;
 
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
+    private final com.stockflow.order.internal.service.ShippingAddressChanges addressChanges;
     private final com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility;
+    private final com.stockflow.order.internal.service.OrderSources sources;
+    private final com.stockflow.order.internal.service.OrderSettlementService settlements;
+    private final com.stockflow.warehouse.api.WarehouseService warehouses;
 
     OrderController(OrderService orderService, CustomerService customerService,
                     CustomerOrders customerOrders,
                     com.stockflow.identity.api.IdentityService identities,
                     com.stockflow.order.internal.service.PartialShipments partialShipments,
-                    com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility) {
+                    com.stockflow.order.internal.service.ShippingAddressChanges addressChanges,
+                    com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility,
+                    com.stockflow.order.internal.service.OrderSources sources,
+                    com.stockflow.order.internal.service.OrderSettlementService settlements,
+                    com.stockflow.warehouse.api.WarehouseService warehouses) {
+        this.warehouses = warehouses;
+        this.sources = sources;
+        this.settlements = settlements;
+        this.addressChanges = addressChanges;
         this.warehouseVisibility = warehouseVisibility;
         this.partialShipments = partialShipments;
         this.identities = identities;
@@ -107,7 +120,12 @@ class OrderController {
                 .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
                 // A warehouse manager reads the orders of their warehouses only (5-7 review M1); 404 like any other.
                 .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
-                .map(order -> OrderWebMapper.toResponse(order, ownCustomerId == null))
+                .map(order -> ownCustomerId == null
+                        // Staff read the customer's name on the order; a customer reads their own order as before.
+                        ? withWarehouse(withSettlement(OrderWebMapper.toResponse(order, true, OrderWebMapper.labelOf(
+                                customerService.labels(java.util.List.of(order.customerId())), order.customerId()),
+                                extras(order))))
+                        : OrderWebMapper.toResponse(order, false, null, extras(order)))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
@@ -236,12 +254,18 @@ class OrderController {
             @RequestParam(required = false) String sort) {
         // Customers hold sales-orders:READ for their own orders; this list is every customer's.
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(orderService.list(new ListOrdersQuery(page,
+        var found = orderService.list(new ListOrdersQuery(page,
                         size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, OrderStatusFilter.parse(statuses),
                         customerId,
                         placedFrom, placedTo, sort,
-                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)))
-                .map(OrderWebMapper::toResponse));
+                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)));
+        // One query for the names of the whole page - not one per row.
+        var labels = customerService.labels(found.items().stream().map(OrderSummary::customerId).toList());
+        // And one for their warehouses.
+        var sites = warehouses.findWarehouses(found.items().stream().map(OrderSummary::warehouseId)
+                .filter(java.util.Objects::nonNull).distinct().toList());
+        return ApiResponse.ok(found.map(order -> OrderWebMapper.withWarehouse(OrderWebMapper.toResponse(order,
+                OrderWebMapper.labelOf(labels, order.customerId())), sites)));
     }
 
     @GetMapping("/{orderId}/history")
@@ -268,18 +292,40 @@ class OrderController {
         // PACK-PARTIAL: Sales' decisions on shipping in parts are part of the order's history for staff - entries of
         // their own type (PARTIAL_SHIPMENT_DECISION), not status changes.
         List<com.stockflow.order.api.PartialShipmentDecision> decisions = partialShipments.decisions(orderId);
+        // WF4-CLOSE-HIST-SCHEMA: so are the closures of the rest (REMAINDER_CLOSURE), whether or not one moved the status.
+        List<com.stockflow.order.api.RemainderClosure> closures = orderService.remainderClosures(orderId);
+        // WF-05 BE-52: and so are refund records voided while a claim was open, which moved no status (REFUND_VOIDED).
+        List<com.stockflow.order.internal.service.OrderSettlementService.RefundVoid> voids =
+                settlements.refundVoids(orderId);
+        // WF04 G2: and so are Sales' changes of the delivery address (ADDRESS_CHANGE), before the first label.
+        List<com.stockflow.order.internal.service.ShippingAddressChanges.Change> addresses =
+                addressChanges.changes(orderId);
         java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.of(
                         changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
-                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy))
+                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy),
+                        closures.stream().map(com.stockflow.order.api.RemainderClosure::closedBy),
+                        addresses.stream().map(com.stockflow.order.internal.service.ShippingAddressChanges.Change::changedBy),
+                        voids.stream().map(com.stockflow.order.internal.service.OrderSettlementService.RefundVoid::voidedBy))
                 .flatMap(stream -> stream)
                 .filter(java.util.Objects::nonNull).distinct().toList());
-        return ApiResponse.ok(java.util.stream.Stream.of(changes.stream()
+        // Listed first so that a closure and the status change it caused, stamped alike, read closure first.
+        return ApiResponse.ok(java.util.stream.Stream.of(
+                closures.stream().map(closure -> OrderStatusChangeResponse.remainderClosure(closure.reasonCode().name(),
+                        closure.note(), closure.closedAt(), closure.closedBy(),
+                        closure.closedBy() == null ? null : names.get(closure.closedBy()))),
+                changes.stream()
                         .map(change -> new OrderStatusChangeResponse(change.from(), change.to(), change.reason(),
                                 change.occurredAt(), change.actorId(),
                                 change.actorId() == null ? null : names.get(change.actorId()))),
                 decisions.stream().map(decision -> OrderStatusChangeResponse.partialShipmentDecision(
                         decision.allowed(), decision.note(), decision.decidedAt(), decision.decidedBy(),
-                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()))))
+                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()))),
+                addresses.stream().map(change -> OrderStatusChangeResponse.addressChange(
+                        OrderWebMapper.toAddress(change.previous()), OrderWebMapper.toAddress(change.next()),
+                        change.changedAt(), change.changedBy(), names.get(change.changedBy()))),
+                voids.stream().map(voided -> OrderStatusChangeResponse.refundVoided(voided.reason(),
+                        voided.voidedAt(), voided.voidedBy(),
+                        voided.voidedBy() == null ? null : names.get(voided.voidedBy()))))
                 .flatMap(stream -> stream)
                 .sorted(java.util.Comparator.comparing(OrderStatusChangeResponse::occurredAt))
                 .toList());
@@ -328,8 +374,15 @@ class OrderController {
             action = Action.READ, scope = DataScope.OWN)
     public ApiResponse<CustomerOrderDetailResponse> myOrder(@PathVariable UUID orderId,
                                                             @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(CustomerOrderWebMapper.toResponse(
-                customerOrders.myOrder(requiredOwnCustomerId(user), orderId)));
+        CustomerOrders.Detail detail = customerOrders.myOrder(requiredOwnCustomerId(user), orderId);
+        return ApiResponse.ok(CustomerOrderWebMapper.toResponse(detail, sources.of(detail.orderId(),
+                detail.lines().stream().map(CustomerOrders.Line::sku).toList())));
+    }
+
+    /** The quote an order came from and its lines' designs (R5-3, R5-7), for the one order a detail page shows. */
+    private com.stockflow.order.internal.service.OrderSources.Extras extras(com.stockflow.order.api.OrderSummary order) {
+        return sources.of(order.orderId(), order.lines().stream().map(com.stockflow.order.api.OrderSummary.LineSummary::sku)
+                .toList());
     }
 
     /**
@@ -353,5 +406,18 @@ class OrderController {
         return customerService.findByUserId(user.userId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND))
                 .customerId();
+    }
+
+    /** The staff detail names the warehouse it was released from (null until released). */
+    private OrderResponse withWarehouse(OrderResponse response) {
+        return response.warehouseId() == null ? response : OrderWebMapper.withWarehouse(response,
+                warehouses.findWarehouses(java.util.List.of(response.warehouseId())));
+    }
+
+    /** F-1 (BE-34): the order's detail for staff carries when it was refunded and what it still waits for. */
+    private OrderResponse withSettlement(OrderResponse response) {
+        return settlements.readiness(response.orderId())
+                .map(found -> response.withSettlement(found.refundedAt(), OrderWebMapper.toSettlement(found.view())))
+                .orElse(response);
     }
 }

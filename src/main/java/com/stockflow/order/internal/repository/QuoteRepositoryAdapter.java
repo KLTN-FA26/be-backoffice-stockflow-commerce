@@ -50,7 +50,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     }
 
     /**
-     * Takes the row lock <i>before</i> loading, as {@code StockItemRepositoryAdapter} does. Loading first and
+     * Takes the row lock <i>before</i> loading, as {@code StockPackageRepositoryAdapter} does. Loading first and
      * locking with {@code refresh(PESSIMISTIC_WRITE)} fails under contention: the waiting caller holds the
      * version it read before the winner committed, and Hibernate's versioned lock refuses it with an
      * optimistic-lock error instead of letting it see the winner's result — two concurrent conversions
@@ -67,6 +67,15 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
             entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE, LOCK_TIMEOUT);
             return toDomain(entity);
         });
+    }
+
+    @Override
+    public List<Quote> findAllById(java.util.Collection<UUID> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        // The lines are fetched with the quotes; their tiers and the fee lines load in batches (batch_size).
+        return jpa.findAllByIdWithLines(ids).stream().map(QuoteRepositoryAdapter::toDomain).toList();
     }
 
     @Override
@@ -89,6 +98,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         entity.apply(quote.status(), quote.revision(), offer.validUntil(), offer.terms(), quote.sentAt(), quote.sentBy(), quote.respondedAt(),
                 quote.respondedBy(), quote.customerFeedback(), quote.cancellationReason(), quote.convertedOrderId(),
                 quote.convertedAt(), offer.requestedDeliveryDate());
+        entity.priceReview(quote.priceReviewPending());
         Map<UUID, QuoteLineJpaEntity> existing = entity.getLines().stream()
                 .collect(Collectors.toMap(QuoteLineJpaEntity::getId, Function.identity()));
         // A revised draft may drop lines: they go (orphan removal), the others are written in place.
@@ -185,9 +195,14 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                 .and(criteria.seenByCustomerOnly()
                         ? Specification.<QuoteJpaEntity>anyOf(Specs.in("status", java.util.Arrays.stream(QuoteStatus.values())
                                         .filter(QuoteStatus::seenByCustomer).toList()),
-                                (root, query, cb) -> cb.and(cb.equal(root.get("status"), QuoteStatus.CANCELLED),
-                                        cb.isNotNull(root.get("sentAt"))))
-                        : null);
+                                // Cancelled after it was sent, or a revision being written after it was sent
+                                // (Quote#seenByCustomer).
+                                (root, query, cb) -> cb.and(root.get("status").in(QuoteStatus.CANCELLED,
+                                        QuoteStatus.DRAFT), cb.isNotNull(root.get("sentAt"))))
+                        : null)
+                // 14 BR-10: the Sales Manager's queue - drafts waiting for their prices to be approved.
+                .and(criteria.priceReviewPendingOnly()
+                        ? (root, query, cb) -> cb.equal(root.get("priceReview"), "PENDING") : null);
         return jpa.findAll(spec, pageable).map(QuoteRepositoryAdapter::toRow);
     }
 
@@ -225,14 +240,96 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                           FROM ordering.quote_status_history WHERE quote_id = :quote ORDER BY changed_at, id""")
                 .setParameter("quote", quoteId)
                 .getResultList();
-        return rows.stream().map(r -> new Transition(((Number) r[0]).intValue(),
+        return rows.stream().map(QuoteRepositoryAdapter::toTransition).toList();
+    }
+
+    @Override
+    public Map<UUID, List<Transition>> histories(java.util.Collection<UUID> quoteIds) {
+        if (quoteIds == null || quoteIds.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT revision, from_status, to_status, reason, CAST(offer AS text), changed_at, changed_by,
+                               quote_id
+                          FROM ordering.quote_status_history WHERE quote_id IN (:quotes)
+                         ORDER BY quote_id, changed_at, id""")
+                .setParameter("quotes", List.copyOf(quoteIds))
+                .getResultList();
+        Map<UUID, List<Transition>> histories = new java.util.LinkedHashMap<>();
+        rows.forEach(r -> histories.computeIfAbsent((UUID) r[7], id -> new java.util.ArrayList<>()).add(toTransition(r)));
+        return histories;
+    }
+
+    private static Transition toTransition(Object[] r) {
+        return new Transition(((Number) r[0]).intValue(),
                 r[1] == null ? null : QuoteStatus.valueOf((String) r[1]), QuoteStatus.valueOf((String) r[2]),
-                (String) r[3], (String) r[4], toInstant(r[5]), (UUID) r[6])).toList();
+                (String) r[3], (String) r[4], toInstant(r[5]), (UUID) r[6]);
     }
 
     @Override
     public Optional<Row> findRow(UUID quoteId) {
         return jpa.findById(quoteId).map(QuoteRepositoryAdapter::toRow);
+    }
+
+    @Override
+    public Map<UUID, Instant> lastSentValidUntil(java.util.Collection<UUID> quoteIds) {
+        if (quoteIds == null || quoteIds.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT DISTINCT ON (quote_id) quote_id, offer ->> 'validUntil'
+                          FROM ordering.quote_status_history
+                         WHERE quote_id IN (:quotes) AND to_status = 'SENT' AND offer IS NOT NULL
+                         ORDER BY quote_id, changed_at DESC, id DESC""")
+                .setParameter("quotes", List.copyOf(quoteIds))
+                .getResultList();
+        Map<UUID, Instant> validity = new java.util.HashMap<>();
+        rows.stream().filter(r -> r[1] != null).forEach(r -> validity.put((UUID) r[0], Instant.parse((String) r[1])));
+        return validity;
+    }
+
+    @Override
+    public Map<UUID, ConvertedOrderRef> convertedOrders(java.util.Collection<UUID> orderIds) {
+        if (orderIds == null || orderIds.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT id, order_number, status FROM ordering.customer_order WHERE id IN (:orders)""")
+                .setParameter("orders", List.copyOf(new java.util.HashSet<>(orderIds)))
+                .getResultList();
+        Map<UUID, ConvertedOrderRef> orders = new java.util.HashMap<>();
+        rows.forEach(r -> orders.put((UUID) r[0], new ConvertedOrderRef((UUID) r[0], (String) r[1], (String) r[2])));
+        return orders;
+    }
+
+    @Override
+    public Optional<UUID> quoteConvertedInto(UUID orderId) {
+        @SuppressWarnings("unchecked")
+        List<UUID> ids = entityManager.createNativeQuery("""
+                        SELECT id FROM ordering.quote WHERE converted_order_id = :order
+                         ORDER BY converted_at DESC NULLS LAST LIMIT 1""")
+                .setParameter("order", orderId)
+                .getResultList();
+        return ids.stream().findFirst();
+    }
+
+    @Override
+    public List<ByRequest> byRequestIds(java.util.Collection<UUID> requestIds) {
+        if (requestIds == null || requestIds.isEmpty()) {
+            return List.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT request_id, id, quote_number, sent_at, status::text FROM ordering.quote
+                         WHERE request_id IN (:requests)""")
+                .setParameter("requests", List.copyOf(requestIds))
+                .getResultList();
+        // sent_at is cleared by nothing: a quote reopened for a revision keeps it (Quote#revisingSentQuote).
+        return rows.stream().map(r -> new ByRequest((UUID) r[0], (UUID) r[1], (String) r[2],
+                r[3] == null ? null : toInstant(r[3]), (String) r[4])).toList();
     }
 
     private static Instant toInstant(Object value) {
@@ -247,7 +344,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     private static Row toRow(QuoteJpaEntity e) {
         return new Row(e.getId(), e.getQuoteNumber(), e.getCustomerId(), e.getStatus(), e.getRevision(),
                 e.getValidUntil(), e.getSentAt(), e.getConvertedOrderId(), e.getCreatedAt(),
-                e.getCreatedBy(), e.getVersion());
+                e.getCreatedBy(), e.getVersion(), e.isPriceReviewPending());
     }
 
     static Quote toDomain(QuoteJpaEntity e) {
@@ -262,7 +359,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         return Quote.restore(e.getId(), e.getQuoteNumber(), e.getRequestId(), e.getCustomerId(), e.getStatus(),
                 e.getRevision(), new Quote.Offer(e.getValidUntil(), e.getTerms(), e.getRequestedDeliveryDate(), lines, fees),
                 e.getSentAt(), e.getSentBy(), e.getRespondedAt(), e.getRespondedBy(), e.getCustomerFeedback(),
-                e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt());
+                e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt(), e.isPriceReviewPending());
     }
 
     private static QuoteLine toDomain(QuoteLineJpaEntity l) {

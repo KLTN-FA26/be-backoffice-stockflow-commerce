@@ -51,15 +51,15 @@ SELECT md5('qa91:draft')::uuid, c.id, md5('qa91:product')::uuid, 'DRAFT', NOW(),
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa91:snap')::uuid, md5('qa91:draft')::uuid, repeat('e', 64), 'https://example.com/e.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-SELECT md5('qa91:own')::uuid, md5('qa91:product')::uuid, 'QA-EI-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
-       'OWNED-SKU:QA-EI-OWN', 1, 0, NOW(), c.id, md5('qa91:snap')::uuid, md5('qa91:blank')::uuid
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+SELECT md5('qa91:own')::uuid, md5('qa91:product')::uuid, 'QA-EI-OWN', 'QA ly in logo', 'ACTIVE', 0, NOW(),
+       c.id, md5('qa91:snap')::uuid, md5('qa91:blank')::uuid
   FROM customer.customer c ORDER BY c.id LIMIT 1;
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
-                                       version, created_at, default_shipping)
-SELECT md5('qa91:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(), TRUE
-  FROM inventory.inventory_items i WHERE i.sku = 'QA-EI-OWN';
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
+                                       version, created_at)
+SELECT md5('qa91:carton')::uuid, i.variant_id, 'CARTON', 50, TRUE, 0, NOW()
+  FROM product.customer_skus i WHERE i.sku = 'QA-EI-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 SELECT md5('qa91:order')::uuid, 'SO-QA-EI', c.id, gen_random_uuid(), 'DRAFT', 2200000, 200000, 'VND', NOW(), NOW()
@@ -359,7 +359,7 @@ SELECT pg_temp.expect_ok('G4 its shipment is drawn up again', $q$
     SELECT pg_temp.draft('d', 's3', 1000000, 100000);
     SELECT pg_temp.goods('d', 1, 10) $q$);
 
-\echo '--- K. the rest of the shipping fee: an original with no shipment, the fee line only, one per order (V20261120000700)'
+\echo '--- K. the rest of the fees of an order: an original with no shipment, fee lines only, one per order (V20261120000700, V20261219000500)'
 CREATE FUNCTION pg_temp.shipping_fee(tag TEXT, line_no INT) RETURNS void LANGUAGE sql AS $$
     INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, fee_kind, sku, item_name, unit, quantity,
                                          unit_price, tax_rate, amount, tax_amount)
@@ -373,8 +373,11 @@ SELECT pg_temp.expect_fail('K2 ... with a goods line on it', $q$
     UPDATE invoicing.einvoice SET subtotal = subtotal + 1000000, tax_total = tax_total + 100000,
            grand_total = grand_total + 1100000 WHERE id = md5('qa91:fee')::uuid;
     SELECT pg_temp.goods('fee', 2, 10) $q$);
-SELECT pg_temp.expect_fail('K3 ... or another fee than the shipping fee', $q$
-    UPDATE invoicing.einvoice_line SET fee_kind = 'PLATE_FEE' WHERE id = md5('qa91:fee:1')::uuid $q$);
+-- WF-05 BE-62 (Q-19): a plate fee no delivery's invoice carried goes on the invoice of the order's fees too
+-- (V20261219000500); set back at once, the checks below read the shipping fee.
+SELECT pg_temp.expect_ok('K3 ... and a plate fee no delivery carried (BE-62)', $q$
+    UPDATE invoicing.einvoice_line SET fee_kind = 'PLATE_FEE' WHERE id = md5('qa91:fee:1')::uuid;
+    UPDATE invoicing.einvoice_line SET fee_kind = 'SHIPPING_FEE' WHERE id = md5('qa91:fee:1')::uuid $q$);
 SELECT pg_temp.expect_fail('K4 a second rest of the same order''s shipping fee', $q$
     SELECT pg_temp.draft('fee2', NULL, 300000, 24000);
     SELECT pg_temp.shipping_fee('fee2', 1) $q$);
@@ -435,15 +438,27 @@ SELECT pg_temp.expect_fail('H15 the sandbox''s numbers stop at 8 digits', $q$
     INSERT INTO invoicing.sandbox_number (template_code, symbol, last_number) VALUES ('1', 'C26TZZ', 100000000) $q$);
 
 \echo '--- VAT rates of a period'
+-- V20261201000200 seeds the reduction of NĐ 174/2025: STANDARD at 8% from 2025-07-01 to 2026-12-31. The periods
+-- below are in years it does not touch.
+SELECT pg_temp.expect_true('I0 the seeded reduction: 8% through 2026, 10% from 2027',
+    (SELECT COALESCE(p.rate, r.rate) = 8 FROM ordering.tax_rate r LEFT JOIN ordering.tax_rate_period p
+        ON p.tax_class = r.tax_class AND DATE '2026-12-31' BETWEEN p.valid_from AND p.valid_to
+      WHERE r.tax_class = 'STANDARD')
+    AND (SELECT COALESCE(p.rate, r.rate) = 10 FROM ordering.tax_rate r LEFT JOIN ordering.tax_rate_period p
+        ON p.tax_class = r.tax_class AND DATE '2027-01-01' BETWEEN p.valid_from AND p.valid_to
+      WHERE r.tax_class = 'STANDARD'));
+SELECT pg_temp.expect_fail('I0b a second rate for a day of the seeded reduction', $q$
+    INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to)
+    VALUES (gen_random_uuid(), 'STANDARD', 9, DATE '2026-12-31', DATE '2027-01-31') $q$);
 SELECT pg_temp.expect_ok('I1 a reduction of the standard rate for a period', $q$
     INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to, note)
-    VALUES (md5('qa91:period')::uuid, 'STANDARD', 8, DATE '2026-07-01', DATE '2026-12-31', 'QA reduction') $q$);
+    VALUES (md5('qa91:period')::uuid, 'STANDARD', 8, DATE '2028-07-01', DATE '2028-12-31', 'QA reduction') $q$);
 SELECT pg_temp.expect_fail('I2 a second rate for a day of that period', $q$
     INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to)
-    VALUES (gen_random_uuid(), 'STANDARD', 9, DATE '2026-12-31', DATE '2027-06-30') $q$);
+    VALUES (gen_random_uuid(), 'STANDARD', 9, DATE '2028-12-31', DATE '2029-06-30') $q$);
 SELECT pg_temp.expect_ok('I3 the next period starts the day after', $q$
     INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to)
-    VALUES (gen_random_uuid(), 'STANDARD', 9, DATE '2027-01-01', DATE '2027-06-30') $q$);
+    VALUES (gen_random_uuid(), 'STANDARD', 9, DATE '2029-01-01', DATE '2029-06-30') $q$);
 SELECT pg_temp.expect_ok('I4 another class has its own periods', $q$
     INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to)
     VALUES (gen_random_uuid(), 'REDUCED', 4, DATE '2026-07-01', DATE '2026-12-31') $q$);
@@ -455,10 +470,10 @@ SELECT pg_temp.expect_fail('I6 a class nobody knows', $q$
     VALUES (gen_random_uuid(), 'LUXURY', 20, DATE '2028-01-01', DATE '2028-02-01') $q$);
 SELECT pg_temp.expect_true('I7 the rate of a day: the period''s inside it, the class''s own outside',
     (SELECT COALESCE(p.rate, r.rate) = 8 FROM ordering.tax_rate r LEFT JOIN ordering.tax_rate_period p
-        ON p.tax_class = r.tax_class AND DATE '2026-11-12' BETWEEN p.valid_from AND p.valid_to
+        ON p.tax_class = r.tax_class AND DATE '2028-11-12' BETWEEN p.valid_from AND p.valid_to
       WHERE r.tax_class = 'STANDARD')
     AND (SELECT COALESCE(p.rate, r.rate) = 10 FROM ordering.tax_rate r LEFT JOIN ordering.tax_rate_period p
-        ON p.tax_class = r.tax_class AND DATE '2026-06-30' BETWEEN p.valid_from AND p.valid_to
+        ON p.tax_class = r.tax_class AND DATE '2028-06-30' BETWEEN p.valid_from AND p.valid_to
       WHERE r.tax_class = 'STANDARD'));
 
 \echo '--- grants'

@@ -41,6 +41,8 @@ class FulfillmentModuleTest {
     com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.payment.api.PaymentService paymentServiceMock;
+    // The contract liquidation reads payment's books for the order's papers (business documents).
+    @MockitoBean com.stockflow.payment.api.ContractLedger contractLedgerMock;
     @MockitoBean com.stockflow.catalog.api.CatalogService catalogServiceMock;
     @MockitoBean com.stockflow.customer.api.CustomerService customerServiceMock;
     // order's SalesFollowUpService posts inbox notices (WF-02 A10)
@@ -56,6 +58,14 @@ class FulfillmentModuleTest {
     @MockitoBean com.stockflow.product.api.CustomerSkus customerSkusMock;
     // Order's, not fulfillment's, since packing no longer checks designs (V20261108000500).
     @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
+    // order draws quotes from design quote requests (FE request, decision 2); design is not booted here.
+    @MockitoBean com.stockflow.design.api.QuoteRequests quoteRequestsMock;
+    // R5-3: order names each line's design through design :: api, and reads a contract's installment due days
+    // through payment :: api; neither module is booted here.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.design.api.SkuDesigns skuDesignsMock;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.payment.api.CustomerInstallments customerInstallmentsMock;
     // R4 (4B-8): order's own port for the customer's chat consent, implemented by chat, which is not booted here.
     @MockitoBean com.stockflow.order.api.ConsentMessages consentMessagesMock;
 

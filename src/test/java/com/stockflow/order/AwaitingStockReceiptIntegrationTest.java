@@ -123,7 +123,6 @@ class AwaitingStockReceiptIntegrationTest {
 
     private CurrentUser sales;
     private UUID coordinator;
-    private UUID manager;
     private UUID clerk;
     private UUID customerId;
     private IssuedSku sku;
@@ -139,7 +138,6 @@ class AwaitingStockReceiptIntegrationTest {
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        manager = tx.execute(s -> ReferenceRows.user(entityManager));
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = Identifiers.newId();
         tx.executeWithoutResult(s -> {
@@ -227,21 +225,17 @@ class AwaitingStockReceiptIntegrationTest {
             UUID variant = Identifiers.newId();
             String code = product.sku() + "-R" + variant.toString().substring(24, 28).toUpperCase(Locale.ROOT);
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Printed cup', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), code, "OWNED-SKU:" + code, customerId, design.snapshotId(),
-                    product.variantId());
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
-            jdbc.update("""
-                    UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12
-                           WHERE id = ?""", item);
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Printed cup', 'ACTIVE', 0, NOW())""",
+                    variant, product.productId(), product.variantId(), customerId, design.snapshotId(), code);
+            // The order of the SKU made its inventory item (owner decision Q5); the test stocks or receives it.
+            UUID item = com.stockflow.support.CartonRows.item(jdbc, code);
             UUID carton = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, version, created_at,
-                        default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 1.2, 60, 40, 35, FALSE, TRUE, 0, NOW(), TRUE)""",
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
+                    VALUES (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', ?, 1.2, 60, 40, 35, TRUE, 0, NOW())""",
                     carton, item, PER_CARTON);
             return new IssuedSku(code, item, carton);
         });
@@ -292,19 +286,19 @@ class AwaitingStockReceiptIntegrationTest {
         return orderId;
     }
 
-    /** Drawn up, the sample waived with a reason (goods can be received while SENT), submitted: PENDING_APPROVAL. */
-    private ProductionOrder pendingWithoutSample(UUID orderId, int batch) {
+    /** Drawn up, the sample waived with a reason (goods can be received while SENT): still a DRAFT. */
+    private ProductionOrder draftWithoutSample(UUID orderId, int batch) {
         ProductionOrder draft = productionOrders.drawUp(orderId, batch, producer.id(), coordinator);
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
-                draft.producerId(), draft.needByDate(), draft.unitPrice(), draft.note(), false,
+                draft.producerId(), draft.needByDate(), draft.note(), false,
                 "The customer approved the same print on paper", null));
-        return productionOrders.submit(waived.id(), waived.version(), coordinator);
+        return waived;
     }
 
-    /** As {@link #pendingWithoutSample}, approved by the manager: SENT. */
+    /** As {@link #draftWithoutSample}, sent by the coordinator: SENT. */
     private ProductionOrder sentWithoutSample(UUID orderId, int batch) {
-        ProductionOrder pending = pendingWithoutSample(orderId, batch);
-        ProductionOrder sent = productionOrders.approve(pending.id(), pending.version(), manager);
+        ProductionOrder draft = draftWithoutSample(orderId, batch);
+        ProductionOrder sent = productionOrders.send(draft.id(), draft.version(), coordinator);
         assertThat(sent.status()).isEqualTo(ProductionOrderStatus.SENT);
         assertThat(sent.sampleApprovalRequired()).isFalse();
         return sent;
@@ -318,7 +312,7 @@ class AwaitingStockReceiptIntegrationTest {
     private static List<NewPackage> cartons(int n) {
         List<NewPackage> cartons = new ArrayList<>();
         for (int i = 0; i < n; i++) {
-            cartons.add(new NewPackage(null, 0));
+            cartons.add(new NewPackage(null));
         }
         return cartons;
     }
@@ -476,11 +470,11 @@ class AwaitingStockReceiptIntegrationTest {
         assertThat(history(orderId)).last().asString().startsWith("AWAITING_STOCK>READY_TO_FULFILL");
         assertThat(history(orderId)).filteredOn(row -> row.contains(">AWAITING_STOCK ")).hasSize(1);
         assertThat(jdbc.queryForObject("""
-                SELECT COALESCE(sum(quantity), 0) FROM inventory.stock_reservation
+                SELECT COALESCE(sum(cartons * units_per_carton), 0) FROM inventory.stock_reservation
                  WHERE order_id = ? AND allocated_from_id IS NOT NULL AND status = 'HELD'""", Long.class, orderId))
                 .as("4B-8 (17 BR-29): the release is batch 1's - its 12 cartons allocated").isEqualTo(12L * PER_CARTON);
         assertThat(jdbc.queryForObject("""
-                SELECT COALESCE(sum(quantity), 0) FROM inventory.stock_reservation
+                SELECT COALESCE(sum(cartons * units_per_carton), 0) FROM inventory.stock_reservation
                  WHERE order_id = ? AND allocated_from_id IS NULL AND status = 'HELD'""", Long.class, orderId))
                 .as("batch 2's 8 cartons stay held for it, on no bin yet").isEqualTo(8L * PER_CARTON);
         assertThat(counted.lines()).isNotEmpty();
@@ -537,12 +531,12 @@ class AwaitingStockReceiptIntegrationTest {
     @DisplayName("17 5.1: an order on hold stays on hold when its production order is sent, and returns to AWAITING_STOCK")
     void onHoldOrderRemembersAwaitingStock() {
         UUID orderId = confirmedOrderAtA();
-        // Drawn up and submitted while CONFIRMED (drawing up wants CONFIRMED); the hold comes before the approval.
-        ProductionOrder pending = pendingWithoutSample(orderId, 1);
+        // Drawn up while CONFIRMED (drawing up wants CONFIRMED); the hold comes before it is sent.
+        ProductionOrder draft = draftWithoutSample(orderId, 1);
         orders.putOnHold(orderId, HoldReason.ADDRESS, "Wrong address", coordinator);
         assertThat(status(orderId)).isEqualTo(OrderStatus.ON_HOLD);
 
-        assertThat(productionOrders.approve(pending.id(), pending.version(), manager).status())
+        assertThat(productionOrders.send(draft.id(), draft.version(), coordinator).status())
                 .isEqualTo(ProductionOrderStatus.SENT);
 
         assertThat(status(orderId)).as("a hold is not lifted by sending a production order")

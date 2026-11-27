@@ -37,6 +37,10 @@ public interface OrderRepository {
      * OrderJpaRepository}'s own javadoc), because most of its callers already hold a trusted id
      * from outside a request (background listeners). Use this one from any endpoint whose
      * {@code @RequiresPermission} declares a scope narrower than {@code ALL}.</p>
+     *
+     * <p>It locks the row, so it is for a change only: Postgres refuses {@code SELECT ... FOR UPDATE} in a read-only
+     * transaction, and a read takes {@link #findByIdInScopeForReading} (an upload slot answering 500 on every call
+     * was this mistake, demo run 24/11 D-1).</p>
      */
     Optional<Order> findByIdInScope(OrderId id);
 
@@ -51,6 +55,19 @@ public interface OrderRepository {
     Optional<Order> findByRequestId(UUID requestId);
 
     List<Order> findByCustomerId(UUID customerId);
+
+    /**
+     * When the order first became CONFIRMED, from its status history; empty for an order that never was (or one whose
+     * history was not recorded).
+     */
+    Optional<java.time.Instant> confirmedAt(UUID orderId);
+
+    /**
+     * Whether a return request against the shipment is open or resolved - anything but REJECTED, CANCELLED and EXPIRED
+     * (WF-05 TH-1: a return names the delivered shipment it is against). Such a delivery is not corrected to a failure
+     * ({@code ORDER_DELIVERY_HAS_RETURN}). Read under the order's lock: opening a return takes the same lock.
+     */
+    boolean hasReturnAgainst(UUID orderId, UUID shipmentId);
 
     /** The status and hold reason of each order among {@code ids} that exists, in one query, without its lines. */
     List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> ids);

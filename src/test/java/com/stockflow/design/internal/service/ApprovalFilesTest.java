@@ -2,14 +2,14 @@ package com.stockflow.design.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.label.LabelFonts;
+import com.stockflow.common.document.DocumentFonts;
+import com.stockflow.common.document.DocumentSamples;
 import com.stockflow.design.api.DesignArtifactRole;
 import com.stockflow.design.internal.domain.DesignSnapshotArtifact;
 import com.stockflow.design.internal.domain.DesignSnapshotAsset;
 import com.stockflow.design.internal.domain.PrintSurface;
 import com.stockflow.design.internal.entity.DesignSnapshotJpaEntity;
 import com.stockflow.inventory.api.UomConversion;
-import com.stockflow.product.api.BagModel;
 import com.stockflow.product.api.CupModel;
 import com.stockflow.product.api.PrintArea;
 import com.stockflow.product.api.PrintAreaShape;
@@ -47,11 +47,15 @@ class ApprovalFilesTest {
                 "Ly 12oz", 300, "CMYK", List.of("image/png"), 20, null, null, true, model, areas, null, null, 3);
     }
 
+    /** The request's bag (W 260, g 120, H 320, T 40, G 20, B 72, bleed 3): its sheet 786 x 398, trim 780 x 392. */
     private static PrintConfig bag() {
-        BagModel model = new BagModel(200, 80, 300, 40, "twisted", "kraft-brown");
-        return template(model, List.of(
-                new PrintArea("FRONT", "Mặt trước", 0, 0, 200, 300, 5, 3, new PrintAreaShape.Rect(), "front"),
-                new PrintArea("BACK", "Mặt sau", 0, 0, 200, 300, 5, 3, new PrintAreaShape.Rect(), "back")));
+        return PrintFileGeometryTest.bag();
+    }
+
+    /** A bag's file of one page per side, as the studio rendered it before the flat sheet: FRONT, BACK, LEFT, RIGHT. */
+    private static byte[] bagSides() throws Exception {
+        return pdf(new double[] {266, 286}, new double[] {266, 286}, new double[] {126, 286},
+                new double[] {126, 286});
     }
 
     private static PrintConfig cup() {
@@ -83,17 +87,20 @@ class ApprovalFilesTest {
 
     @Test
     void aPrintFileThatFitsIsStampedWithItsBoxesAndThePdfxIdentification() throws Exception {
-        byte[] stamped = stamped(pdf(new double[] {206, 306}, new double[] {206, 306}), bag(),
-                "Print file CUP12-BODY");
+        byte[] stamped = stamped(bagSides(), bag(), "Print file CUP12-BODY");
 
         try (PDDocument document = Loader.loadPDF(stamped)) {
-            for (PDPage page : document.getPages()) {
+            double[] widths = {260, 260, 120, 120};
+            for (int i = 0; i < 4; i++) {
+                PDPage page = document.getPage(i);
                 PDRectangle trim = page.getTrimBox();
                 assertThat((double) trim.getLowerLeftX()).isCloseTo(3 * PT, within(0.01));
                 assertThat((double) trim.getLowerLeftY()).isCloseTo(3 * PT, within(0.01));
-                assertThat((double) trim.getWidth()).isCloseTo(200 * PT, within(0.01));
-                assertThat((double) trim.getHeight()).isCloseTo(300 * PT, within(0.01));
-                assertThat((double) page.getBleedBox().getWidth()).isCloseTo(206 * PT, within(0.01));
+                assertThat((double) trim.getWidth()).isCloseTo(widths[i] * PT, within(0.01));
+                assertThat((double) trim.getHeight()).isCloseTo(280 * PT, within(0.01));
+                // A page without a BleedBox is given the MediaBox it was measured by.
+                assertThat(page.getCOSObject().containsKey(COSName.BLEED_BOX)).isTrue();
+                assertThat((double) page.getBleedBox().getWidth()).isCloseTo((widths[i] + 6) * PT, within(0.01));
             }
             assertThat(document.getDocumentInformation().getCustomMetadataValue("GTS_PDFXVersion")).isEqualTo("PDF/X-4");
             assertThat(document.getDocumentInformation().getTrapped()).isEqualTo("False");
@@ -131,9 +138,9 @@ class ApprovalFilesTest {
     void aCropBoxTighterThanThePageAndAnArtBoxDoNotSurviveTheStamp() throws Exception {
         byte[] original;
         try (var document = new PDDocument()) {
-            for (int i = 0; i < 2; i++) {
-                var page = new PDPage(new PDRectangle(206 * PT, 306 * PT));
-                page.setCropBox(new PDRectangle(3 * PT, 3 * PT, 200 * PT, 300 * PT));
+            for (double width : new double[] {266, 266, 126, 126}) {
+                var page = new PDPage(new PDRectangle((float) width * PT, 286 * PT));
+                page.setCropBox(new PDRectangle(3 * PT, 3 * PT, 100 * PT, 280 * PT));
                 page.setArtBox(new PDRectangle(10 * PT, 10 * PT, 100 * PT, 100 * PT));
                 document.addPage(page);
             }
@@ -144,10 +151,61 @@ class ApprovalFilesTest {
 
         try (PDDocument document = Loader.loadPDF(stamped(original, bag(), "x"))) {
             for (PDPage page : document.getPages()) {
-                assertThat((double) page.getCropBox().getWidth()).isCloseTo(206 * PT, within(0.01));
-                assertThat((double) page.getCropBox().getHeight()).isCloseTo(306 * PT, within(0.01));
+                assertThat((double) page.getCropBox().getWidth()).isCloseTo(page.getMediaBox().getWidth(),
+                        within(0.01));
+                assertThat((double) page.getCropBox().getHeight()).isCloseTo(286 * PT, within(0.01));
                 assertThat(page.getCOSObject().containsKey(COSName.ART_BOX)).isFalse();
             }
+        }
+    }
+
+    /**
+     * BE-2: the studio's page is larger than its artwork - 5 mm of blank paper and a 14 mm slug strip - so the TrimBox
+     * is placed from the BleedBox's origin, the BleedBox kept as declared and the CropBox the whole page, slug included.
+     */
+    @Test
+    void aStudioPageIsStampedFromItsBleedBoxNotItsMediaBox() throws Exception {
+        PrintConfig cup = cup();
+        PrintSurface wall = PrintSurface.of(cup.model(), cup.printAreas().get(0));
+        PrintSurface.Box box = wall.trimBounds();
+        // A studio page with its TrimBox left out: the stamp alone places it.
+        byte[] studio = PrintFileGeometryTest.pdf(new PrintFileGeometryTest.Page(
+                new PrintFileGeometryTest.Mm(-5, -14, wall.flatWidth() + 10, wall.flatHeight() + 19),
+                new PrintFileGeometryTest.Mm(0, 0, wall.flatWidth(), wall.flatHeight()), null));
+
+        try (PDDocument document = Loader.loadPDF(stamped(studio, cup, "Print file"))) {
+            PDPage page = document.getPage(0);
+            PDRectangle trim = page.getTrimBox();
+            assertThat((double) trim.getLowerLeftX()).isCloseTo(box.x() * PT, within(0.01));
+            assertThat((double) trim.getLowerLeftY())
+                    .isCloseTo((wall.flatHeight() - box.y() - box.height()) * PT, within(0.01));
+            assertThat((double) trim.getWidth()).isCloseTo(box.width() * PT, within(0.01));
+            assertThat((double) trim.getHeight()).isCloseTo(box.height() * PT, within(0.01));
+            PDRectangle bleed = page.getBleedBox();
+            assertThat((double) bleed.getLowerLeftX()).isCloseTo(0, within(0.01));
+            assertThat((double) bleed.getLowerLeftY()).isCloseTo(0, within(0.01));
+            assertThat((double) bleed.getWidth()).isCloseTo(wall.flatWidth() * PT, within(0.01));
+            PDRectangle crop = page.getCropBox();
+            assertThat((double) crop.getLowerLeftX()).isCloseTo(-5 * PT, within(0.01));
+            assertThat((double) crop.getLowerLeftY()).isCloseTo(-14 * PT, within(0.01));
+            assertThat((double) crop.getHeight()).isCloseTo((wall.flatHeight() + 19) * PT, within(0.01));
+        }
+    }
+
+    /** BE-10: a bag's file is its flat sheet, and the stamp's TrimBox is the die-cut 780 x 392 mm at (b, b). */
+    @Test
+    void aBagsFlatSheetIsStampedWithTheSheetsTrim() throws Exception {
+        byte[] sheet = PrintFileGeometryTest.pdf(new PrintFileGeometryTest.Page(
+                new PrintFileGeometryTest.Mm(-5, -14, 796, 417), new PrintFileGeometryTest.Mm(0, 0, 786, 398), null));
+
+        try (PDDocument document = Loader.loadPDF(stamped(sheet, bag(), "Print file BAG-M"))) {
+            assertThat(document.getNumberOfPages()).isEqualTo(1);
+            PDRectangle trim = document.getPage(0).getTrimBox();
+            assertThat((double) trim.getLowerLeftX()).isCloseTo(3 * PT, within(0.01));
+            assertThat((double) trim.getLowerLeftY()).isCloseTo(3 * PT, within(0.01));
+            assertThat((double) trim.getWidth()).isCloseTo(780 * PT, within(0.01));
+            assertThat((double) trim.getHeight()).isCloseTo(392 * PT, within(0.01));
+            assertThat((double) document.getPage(0).getBleedBox().getWidth()).isCloseTo(786 * PT, within(0.01));
         }
     }
 
@@ -174,16 +232,47 @@ class ApprovalFilesTest {
 
     @Test
     void theProductionInstructionStatesTheJobInVietnamese() throws Exception {
-        var carton = new UomConversion(UUID.randomUUID(), "CUP-12", "CARTON", 50, false, new BigDecimal("4.2"),
-                new BigDecimal("60"), new BigDecimal("40"), new BigDecimal("35"), false, true, 0);
-        byte[] sheet = new ProductionInstructionSheet(new LabelFonts(), INTERIM).render(new ProductionInstructionSheet.Facts(
+        var carton = new UomConversion(UUID.randomUUID(), "CUP-12", "CARTON", 50, new BigDecimal("4.2"),
+                new BigDecimal("60"), new BigDecimal("40"), new BigDecimal("35"), true, 0);
+        byte[] sheet = new ProductionInstructionSheet(new DocumentFonts(), DocumentSamples.seller(), INTERIM).render(new ProductionInstructionSheet.Facts(
                 "CUP12-0312345678-01", "Ly giấy 12oz", "CUP-12", cup(), carton, "a".repeat(64), "b".repeat(64),
-                UUID.randomUUID(), Instant.parse("2026-11-08T03:00:00Z")));
+                UUID.randomUUID(), Instant.parse("2026-11-08T03:00:00Z"), 1));
 
         try (PDDocument document = Loader.loadPDF(sheet)) {
             String text = new PDFTextStripper().getText(document);
-            assertThat(text).contains("Lệnh sản xuất in", "CUP12-0312345678-01", "Ly giấy 12oz", "CARTON 50",
-                    "Thân ly", "PDF/X-4", "IEC61966-2.1", "10:00");
+            assertThat(text).contains("LỆNH SẢN XUẤT IN", "CUP12-0312345678-01", "Ly giấy 12oz", "CARTON 50",
+                    "Thân ly", "PDF/X-4", "IEC61966-2.1", "10:00", "CÔNG TY TNHH SẢN XUẤT BAO BÌ AN PHÁT",
+                    "NGƯỜI LẬP", "BỘ PHẬN SẢN XUẤT", "NGƯỜI DUYỆT");
+            DocumentSamples.keep("production-instruction-sample", sheet);
+        }
+    }
+
+    /** BE-10: for a bag, the producer reads the flat sheet's die-cut size and the folds the sides do not show. */
+    @Test
+    void theProductionInstructionOfABagSubmittedSideBySideStatesNoFlatSheet() throws Exception {
+        byte[] sheet = new ProductionInstructionSheet(new DocumentFonts(), DocumentSamples.seller(), INTERIM).render(new ProductionInstructionSheet.Facts(
+                "BAG-0312345678-01", "Túi giấy M", "BAG-M", bag(), null, "a".repeat(64), "b".repeat(64),
+                UUID.randomUUID(), Instant.parse("2026-11-18T03:00:00Z"), 4));
+
+        try (PDDocument document = Loader.loadPDF(sheet)) {
+            String text = new PDFTextStripper().getText(document).replaceAll("\\s+", " ");
+            // A bag submitted side by side before the flat sheet is printed as it was drawn.
+            assertThat(text).doesNotContain("Tấm trải phẳng");
+        }
+    }
+
+    /** BE-10: for a bag, the producer reads the flat sheet's die-cut size and the folds the sides do not show. */
+    @Test
+    void theProductionInstructionOfABagStatesItsFlatSheet() throws Exception {
+        byte[] sheet = new ProductionInstructionSheet(new DocumentFonts(), DocumentSamples.seller(), INTERIM).render(new ProductionInstructionSheet.Facts(
+                "BAG-0312345678-01", "Túi giấy M", "BAG-M", bag(), null, "a".repeat(64), "b".repeat(64),
+                UUID.randomUUID(), Instant.parse("2026-11-18T03:00:00Z"), 1));
+
+        try (PDDocument document = Loader.loadPDF(sheet)) {
+            String text = new PDFTextStripper().getText(document).replaceAll("\\s+", " ");
+            assertThat(text).contains("Tấm trải phẳng", "đường bế", "mép dán", "gấp miệng", "gấp đáy");
+            assertThat(text).containsPattern("780[.,]0 x 392[.,]0 mm");
+            assertThat(text).containsPattern("mép dán 20[.,]0 mm, gấp miệng 40[.,]0 mm, gấp đáy 72[.,]0 mm");
         }
     }
 

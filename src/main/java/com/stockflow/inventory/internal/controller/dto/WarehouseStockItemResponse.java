@@ -5,17 +5,29 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.Instant;
 import java.util.UUID;
 
+/**
+ * Quantities are in pieces and again in cartons (kltn-docs 01 BR-09). A row is one carton: {@code stockItemId} carries
+ * its id and the quantities are its count, derived (ADR-0011). {@code status} is null for a carton out of stock.
+ */
 @Schema(name = "WarehouseStockItem", description = "One stock row of a warehouse, in any status (SCRUM-462)")
 public record WarehouseStockItemResponse(
         UUID stockItemId,
         String sku,
         @Schema(example = "HCM-A01-2-B") String locationCode,
         String lotNumber,
+        @Schema(description = "Pieces in one carton of this SKU; null when it has no carton unit", nullable = true,
+                example = "1000") Integer unitsPerCarton,
         @Schema(description = "Physical units present, including reserved ones; null while hiddenDuringCount",
                 nullable = true) Integer onHand,
         @Schema(description = "Units held for orders; null while hiddenDuringCount", nullable = true) Integer reserved,
         @Schema(description = "onHand minus reserved; zero unless AVAILABLE; null while "
                 + "hiddenDuringCount", nullable = true) Integer available,
+        @Schema(description = "The row's carton: 1 while it is in stock, 0 once it is not; null while "
+                + "hiddenDuringCount", nullable = true) Integer onHandCartons,
+        @Schema(description = "1 while an order holds the carton, else 0; null while hiddenDuringCount", nullable = true)
+        Integer reservedCartons,
+        @Schema(description = "1 while the carton may still be promised, else 0; null while hiddenDuringCount", nullable = true)
+        Integer availableCartons,
         @Schema(description = "INBOUND, AVAILABLE, QUARANTINE, BLOCKED, DAMAGED or EXPIRED") String status,
         Instant receivedAt,
         @Schema(description = "A cycle count holds this slot and the caller lacks inventory-cycle-counts:APPROVE: the "

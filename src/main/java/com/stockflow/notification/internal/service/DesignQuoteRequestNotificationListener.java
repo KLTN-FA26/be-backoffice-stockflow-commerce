@@ -1,6 +1,7 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
+import com.stockflow.contracts.DesignProjectQuoteRequestReady;
 import com.stockflow.contracts.DesignProjectQuoteRequested;
 import com.stockflow.contracts.DesignQuoteRequested;
 import com.stockflow.contracts.DesignReviewed;
@@ -18,7 +19,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Tells the sales staff of a customer's quote request on a design (kltn-docs 12 §4.8; 16 §4.2 step 5), and again when
- * the Sales Manager decides a design one is open on (12 §4.5 step 17: approved, it can be quoted now; returned, the
+ * the coordinator decides a design one is open on (12 §4.5 step 17: approved, it can be quoted now; returned, the
  * request stays open and follows the design - B40). The recipients are the holders of {@value #SALES}, system-wide:
  * the chat's routing to the responsible salesperson (16 §4.1) comes with the chat module; until then every one of them
  * hears, as the general queue would.
@@ -30,6 +31,9 @@ import org.springframework.stereotype.Component;
  *
  * <p>Every holder of the right hears and may read the design while the request is open (plan D7 says "the salesperson
  * with the card"): with no chat to route a request to one salesperson yet, the right is the general queue's.</p>
+ *
+ * <p>A project's request may name designs not approved yet (12 BR-25): its notice says how many are, and a second one
+ * tells the staff when the last is - the request can be quoted now ({@link DesignProjectQuoteRequestReady}).</p>
  */
 @Component
 class DesignQuoteRequestNotificationListener {
@@ -42,6 +46,8 @@ class DesignQuoteRequestNotificationListener {
     static final String SALES = "design-quote-requests:READ";
     static final String LINK = "/admin/design-quote-requests";
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+    static final String PROJECT_LINK = "/admin/design-project-quote-requests";
+    static final String PROJECT_SOURCE_TYPE = "DESIGN_PROJECT";
 
     private final NotificationSender sender;
     private final StaffDirectory staff;
@@ -66,10 +72,16 @@ class DesignQuoteRequestNotificationListener {
         tell(message(event), "Decision on design " + event.designId());
     }
 
-    /** One quote asked over approved designs of a project (kltn-docs 12 §4.11): one notice, every line in it. */
+    /** One quote asked over designs of a project (kltn-docs 12 §4.11, BR-25): one notice, every line in it. */
     @ApplicationModuleListener
     public void on(DesignProjectQuoteRequested event) {
         tell(message(event), "Project quote request " + event.requestId());
+    }
+
+    /** Every design of a project's open request is approved now (12 BR-25.2): it can be quoted. */
+    @ApplicationModuleListener
+    public void on(DesignProjectQuoteRequestReady event) {
+        tell(message(event), "Project quote request " + event.requestId() + " ready");
     }
 
     private void tell(InboxMessage message, String what) {
@@ -100,19 +112,39 @@ class DesignQuoteRequestNotificationListener {
 
     static InboxMessage message(DesignProjectQuoteRequested event) {
         ResourceBundle texts = texts();
-        String lines = event.lines().stream().map(line -> LogSafe.text(line.customerSku()) + " x" + line.cartons())
+        // A design not approved yet has no SKU of its own: it reads as waiting (BR-25).
+        String pending = texts.getString("inbox.design.projectQuote.pending");
+        String lines = event.lines().stream().map(line -> (line.customerSku() == null ? pending
+                        : LogSafe.text(line.customerSku())) + " x" + line.cartons())
                 .collect(java.util.stream.Collectors.joining(", "));
-        String body = texts.getString("inbox.design.projectQuote.body").formatted(event.lines().size(), lines);
+        long approved = event.lines().stream().filter(line -> line.customerSku() != null).count();
+        String body = texts.getString("inbox.design.projectQuote.body").formatted(event.lines().size(), lines,
+                approved);
         if (event.desiredDeliveryDate() != null) {
             body += " " + texts.getString("inbox.design.quote.delivery")
                     .formatted(DATE.format(event.desiredDeliveryDate()));
         }
         return new InboxMessage(CATEGORY, InboxSeverity.INFO, texts.getString("inbox.design.projectQuote.title")
-                .formatted(event.lines().size()), body, "/admin/design-project-quote-requests", "DESIGN_PROJECT",
+                .formatted(event.lines().size()), body, PROJECT_LINK, PROJECT_SOURCE_TYPE,
                 // Keyed by the ask, not the request: an open request asked again differently tells the staff what it
                 // asks now, as a design's does; the same ask clicked twice publishes nothing the second time.
                 event.projectId().toString(), "design-project-quote:%s:%d".formatted(event.requestId(),
                 event.requestedAt().toEpochMilli()));
+    }
+
+    static InboxMessage message(DesignProjectQuoteRequestReady event) {
+        ResourceBundle texts = texts();
+        return new InboxMessage(CATEGORY, InboxSeverity.INFO, texts.getString("inbox.design.projectQuote.ready.title")
+                .formatted(label(event.requestId())), texts.getString("inbox.design.projectQuote.ready.body")
+                .formatted(event.lines()), PROJECT_LINK, PROJECT_SOURCE_TYPE, event.projectId().toString(),
+                // Once per request and moment: a redelivered event tells nobody twice; a request ready again after a
+                // design was returned and approved anew is a new notice.
+                "design-project-quote-ready:%s:%d".formatted(event.requestId(), event.readyAt().toEpochMilli()));
+    }
+
+    /** The short name staff read a request by: "YC-" and the first eight hex digits of its id. */
+    static String label(java.util.UUID requestId) {
+        return requestId.toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
     }
 
     static InboxMessage message(DesignReviewed event) {

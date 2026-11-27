@@ -31,7 +31,8 @@ final class UnderCountSpecs {
      * Rows that do not lie in a held slot.
      *
      * @param locations the row's location attributes, any of which may name the slot's bin (a ledger line has two)
-     * @param packages  the row's carton attributes, any of which may name the slot's carton
+     * @param packages  the row's carton attributes, any of which may name the slot's carton (one, on every row there
+     *                  is today; a list because the locations are one)
      */
     static <T> Specification<T> notUnderCount(String sku, String lotNumber, List<String> locations,
                                               List<String> packages) {
@@ -76,9 +77,9 @@ final class UnderCountSpecs {
         return notUnderCount("sku", "lotNumber", List.of("locationCode"), List.of("stockPackageId"));
     }
 
-    /** Ledger lines: a bin and a carton on each side. */
+    /** Ledger lines: a bin on each side, one carton (V20261231000200). */
     static <T> Specification<T> movementsOutsideCountedSlots() {
         return notUnderCount("sku", "lotNumber", List.of("fromLocationCode", "toLocationCode"),
-                List.of("fromStockPackageId", "toStockPackageId"));
+                List.of("stockPackageId"));
     }
 }

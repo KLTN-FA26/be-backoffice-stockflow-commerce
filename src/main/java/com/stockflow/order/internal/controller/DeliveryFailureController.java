@@ -30,8 +30,9 @@ import java.util.UUID;
 
 /**
  * Delivery failure cases for Sales (WF-05 fix plan, sections 2-3; kltn-docs 09 §4.3, 17 §4.8): the shipments the
- * carrier brought back, once their goods are received, and the decision on each - deliver again, or cancel what was
- * not delivered.
+ * carrier brought back, once their goods are received. Since RTM-RETURNED and WF-05 Q-7 a case is a record of what came
+ * back, closed by the system when the receipt settled the shipment ({@code closure} RECORDED_ON_RETURN); only an order
+ * from before RTM-RETURNED still owing the shipment's units waits for Sales to cancel what was not delivered.
  *
  * <p>No resource of its own. Reading is reading orders ({@code sales-orders:READ}, back office only - the portal
  * customer holds it for their own orders), limited for a warehouse manager as the order endpoints are
@@ -51,15 +52,25 @@ class DeliveryFailureController {
 
     private final DeliveryFailureService failures;
     private final OrderWarehouseVisibility warehouseVisibility;
+    private final com.stockflow.identity.api.IdentityService identities;
+    private final com.stockflow.customer.api.CustomerService customers;
+    private final com.stockflow.warehouse.api.WarehouseService warehouses;
 
-    DeliveryFailureController(DeliveryFailureService failures, OrderWarehouseVisibility warehouseVisibility) {
+    DeliveryFailureController(DeliveryFailureService failures, OrderWarehouseVisibility warehouseVisibility,
+                              com.stockflow.identity.api.IdentityService identities,
+                              com.stockflow.customer.api.CustomerService customers,
+                              com.stockflow.warehouse.api.WarehouseService warehouses) {
         this.failures = failures;
         this.warehouseVisibility = warehouseVisibility;
+        this.identities = identities;
+        this.customers = customers;
+        this.warehouses = warehouses;
     }
 
     @GetMapping("/delivery-failures")
-    @Operation(summary = "Delivery failure cases, oldest first: shipments the carrier brought back whose goods were "
-            + "received. status=OPEN is what waits for Sales to deliver again or cancel what was not delivered")
+    @Operation(summary = "Delivery failure cases, newest first (at most 200): shipments the carrier brought back "
+            + "whose goods were received. status=OPEN is what waits for Sales to cancel what was not delivered (orders from before "
+            + "RTM-RETURNED only)")
     @RequiresPermission(resource = OrderResources.ORDERS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<List<DeliveryFailureCaseResponse>> list(
             @RequestParam(required = false) DeliveryFailureCase.Status status,
@@ -67,8 +78,7 @@ class DeliveryFailureController {
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         // A warehouse manager reads the cases of goods that came back to their warehouses only (5-7 review M1).
-        return ApiResponse.ok(failures.list(status, OrderWarehouseVisibility.limitOf(user), limit).stream()
-                .map(DeliveryFailureController::toResponse).toList());
+        return ApiResponse.ok(toResponses(failures.list(status, OrderWarehouseVisibility.limitOf(user), limit)));
     }
 
     @GetMapping("/{orderId}/delivery-failures")
@@ -85,20 +95,7 @@ class DeliveryFailureController {
             // As GET /orders/{id}: an order of another warehouse, with nothing of it back at theirs, is not found.
             throw new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId);
         }
-        return ApiResponse.ok(cases.stream().map(DeliveryFailureController::toResponse).toList());
-    }
-
-    @PostMapping("/{orderId}/delivery-failures/{caseId}/redelivery")
-    @Operation(summary = "Deliver again the goods of a shipment that came back (Sales): the order leaves its hold, the "
-            + "goods are held for it as they are put away and the warehouse manager releases them. A trip the "
-            + "customer made fail (REFUSED, WRONG_ADDRESS) is charged with failedTripFee on a fee item; any other "
-            + "reason charges nothing. 409 DELIVERY_FAILURE_INVALID_TRANSITION when the case is not OPEN")
-    @RequiresPermission(resource = OrderResources.HOLDS, action = Action.UPDATE, scope = DataScope.ALL)
-    public ApiResponse<DeliveryFailureCaseResponse> redeliver(@PathVariable UUID orderId, @PathVariable UUID caseId,
-            @Valid @RequestBody DeliveryFailureCaseRequests.Redelivery request, @AuthenticatedUser CurrentUser user) {
-        ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(toResponse(failures.redeliver(orderId, caseId,
-                new DeliveryFailureService.Redeliver(request.note(), request.failedTripFee()), user.userId())));
+        return ApiResponse.ok(toResponses(cases));
     }
 
     @PostMapping("/{orderId}/delivery-failures/{caseId}/cancellation")
@@ -113,9 +110,9 @@ class DeliveryFailureController {
     public ApiResponse<DeliveryFailureCaseResponse> cancel(@PathVariable UUID orderId, @PathVariable UUID caseId,
             @Valid @RequestBody DeliveryFailureCaseRequests.Cancellation request, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(toResponse(failures.cancelUndelivered(orderId, caseId,
+        return ApiResponse.ok(toResponses(List.of(failures.cancelUndelivered(orderId, caseId,
                 new DeliveryFailureService.Cancel(request.note(), OrderWebMapper.toFee(request.agreedFee())),
-                user.userId())));
+                user.userId()))).getFirst());
     }
 
     @PostMapping("/{orderId}/delivery-failures/cancellation")
@@ -128,23 +125,53 @@ class DeliveryFailureController {
     public ApiResponse<List<DeliveryFailureCaseResponse>> cancelWithoutCase(@PathVariable UUID orderId,
             @Valid @RequestBody DeliveryFailureCaseRequests.Cancellation request, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(failures.cancelWithoutCase(orderId,
+        return ApiResponse.ok(toResponses(failures.cancelWithoutCase(orderId,
                 new DeliveryFailureService.Cancel(request.note(), OrderWebMapper.toFee(request.agreedFee())),
-                user.userId()).stream().map(DeliveryFailureController::toResponse).toList());
+                user.userId())));
     }
 
-    private static DeliveryFailureCaseResponse toResponse(DeliveryFailureService.CaseView view) {
+    /**
+     * The cases with the names beside their ids: one lookup each for the people, the customers and the warehouses of
+     * the whole answer - not one per case.
+     */
+    private List<DeliveryFailureCaseResponse> toResponses(List<DeliveryFailureService.CaseView> views) {
+        java.util.Map<UUID, String> people = identities.displayNames(views.stream()
+                .flatMap(v -> java.util.stream.Stream.of(v.failure().decidedBy(), v.failure().releasedBy()))
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet()));
+        java.util.Map<UUID, com.stockflow.customer.api.CustomerLabel> labels = customers.labels(views.stream()
+                .map(DeliveryFailureService.CaseView::customerId).filter(java.util.Objects::nonNull).distinct()
+                .toList());
+        java.util.Map<UUID, com.stockflow.warehouse.api.WarehouseView> sites = warehouses.findWarehouses(views.stream()
+                .map(v -> v.failure().warehouseId()).filter(java.util.Objects::nonNull).distinct().toList());
+        return views.stream().map(view -> toResponse(view, people, labels, sites)).toList();
+    }
+
+    private static DeliveryFailureCaseResponse toResponse(DeliveryFailureService.CaseView view,
+            java.util.Map<UUID, String> people,
+            java.util.Map<UUID, com.stockflow.customer.api.CustomerLabel> labels,
+            java.util.Map<UUID, com.stockflow.warehouse.api.WarehouseView> sites) {
         DeliveryFailureCase c = view.failure();
+        // WF-05 F-4 (BE-42): a case the system closed carries its English note, which the back office showed as it is;
+        // the machine-readable closure says it, and the note is not passed on.
+        String closure = DeliveryFailureCaseResponse.closureOf(c.status().name(), c.decisionNote(),
+                DeliveryFailureService.systemClosureNote());
+        String decisionNote = "RECORDED_ON_RETURN".equals(closure) ? null : c.decisionNote();
+        com.stockflow.customer.api.CustomerLabel label = view.customerId() == null ? null
+                : labels.get(view.customerId());
+        com.stockflow.warehouse.api.WarehouseView site = c.warehouseId() == null ? null : sites.get(c.warehouseId());
         return new DeliveryFailureCaseResponse(c.id(), c.orderId(), view.orderNumber(), view.customerId(),
                 view.orderStatus().name(), c.shipmentId(), c.deliveryBatchId(), c.receiptId(), c.receiptNumber(),
                 c.warehouseId(), c.failureReason().name(), c.failureNote(), c.customerPaysFailedTrip(),
-                c.status().name(), c.openedAt(), c.decidedBy(), c.decidedAt(), c.decisionNote(), c.failedTripFee(),
+                c.status().name(), closure, c.openedAt(), c.decidedBy(), c.decidedAt(), decisionNote, c.failedTripFee(),
                 c.feeInstallmentId(), c.carrierClaim(), view.readyForRelease(), c.releasedAt(), c.releasedBy(),
                 c.redeliveryShipmentId(), c.redeliveredAt(), c.closedAt(),
                 c.units().entrySet().stream().map(line -> new DeliveryFailureCaseResponse.Line(line.getKey(),
                         line.getValue(), view.heldUnits().getOrDefault(line.getKey(), 0))).toList(),
                 c.cartons().stream().map(carton -> new DeliveryFailureCaseResponse.Carton(carton.lpn(), carton.sku(),
                         carton.lotNumber(), carton.quantity(), carton.condition())).toList(),
-                c.version());
+                c.version(), c.decidedBy() == null ? null : people.get(c.decidedBy()),
+                c.releasedBy() == null ? null : people.get(c.releasedBy()),
+                label == null ? null : label.name(), label == null ? null : label.code(),
+                site == null ? null : site.prefix(), site == null ? null : site.name());
     }
 }

@@ -5,6 +5,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.order.internal.domain.ProductionOrder;
+import com.stockflow.order.internal.domain.ProductionOrderKind;
 import com.stockflow.order.internal.domain.ProductionOrderRepository;
 import com.stockflow.order.internal.domain.ProductionOrderSaved;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
@@ -64,7 +65,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
 
     @Override
     public Optional<ProductionOrder> findById(UUID id) {
-        return jpa.findById(id).map(entity -> toDomain(entity, linesOf(List.of(id)).getOrDefault(id, List.of())));
+        return jpa.findById(id).map(entity -> restore(List.of(entity)).getFirst());
     }
 
     @Override
@@ -74,7 +75,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
             return Optional.empty();
         }
         entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE);
-        return Optional.of(toDomain(entity, linesOf(List.of(id)).getOrDefault(id, List.of())));
+        return Optional.of(restore(List.of(entity)).getFirst());
     }
 
     @Override
@@ -82,18 +83,29 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
         if (ids.isEmpty()) {
             return List.of();
         }
-        List<ProductionOrderJpaEntity> entities = jpa.findAllById(Set.copyOf(ids));
-        Map<UUID, List<ProductionOrder.Line>> lines = linesOf(entities.stream().map(ProductionOrderJpaEntity::getId)
-                .toList());
-        return entities.stream().map(e -> toDomain(e, lines.getOrDefault(e.getId(), List.of()))).toList();
+        return restore(jpa.findAllById(Set.copyOf(ids)));
     }
 
     @Override
     public List<ProductionOrder> ofSalesOrder(UUID salesOrderId) {
-        List<ProductionOrderJpaEntity> entities = jpa.findBySalesOrderIdOrderByCreatedAtAscIdAsc(salesOrderId);
-        Map<UUID, List<ProductionOrder.Line>> lines = linesOf(entities.stream().map(ProductionOrderJpaEntity::getId)
-                .toList());
-        return entities.stream().map(e -> toDomain(e, lines.getOrDefault(e.getId(), List.of()))).toList();
+        return restore(jpa.findBySalesOrderIdOrderByCreatedAtAscIdAsc(salesOrderId));
+    }
+
+    @Override
+    public Map<UUID, String> madeUpBy(Collection<UUID> adjustmentIds) {
+        if (adjustmentIds.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT w.stock_adjustment_id, p.code FROM ordering.production_order_write_off w
+                          JOIN ordering.production_order p ON p.id = w.production_order_id
+                         WHERE w.stock_adjustment_id IN (:ids) AND p.status <> 'CANCELLED'""")
+                .setParameter("ids", Set.copyOf(adjustmentIds))
+                .getResultList();
+        Map<UUID, String> madeUp = new java.util.LinkedHashMap<>();
+        rows.forEach(row -> madeUp.put((UUID) row[0], (String) row[1]));
+        return madeUp;
     }
 
     @Override
@@ -130,8 +142,11 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
         boolean created = entity == null;
         if (created) {
             entity = new ProductionOrderJpaEntity(order.id(), order.code(), order.salesOrderId(),
-                    order.deliveryBatchId(), order.customerId(), order.sampleRequiredByDefault(), order.currency(),
+                    order.deliveryBatchId(), order.customerId(), order.sampleRequiredByDefault(),
                     order.drawnUpBy());
+            if (order.replacement().isPresent()) {
+                entity.replacing(order.replacement().get().replacesId());
+            }
         } else if (entity.getVersion() != order.version()) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
                     "Production order %s changed since it was read".formatted(order.code()));
@@ -141,11 +156,11 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
             writeStatusesPassed(order, changes);
         }
         entity.apply(order.producerId(), order.receivingWarehouseId(), order.needByDate(), order.status(),
-                order.sampleApprovalRequired(), order.sampleWaiverReason(), order.unitPrice(), order.note(),
+                order.sampleApprovalRequired(), order.sampleWaiverReason(), order.note(),
                 order.submittedAt(), order.approvedBy(), order.approvedAt(), order.returnedReason(), order.sentAt(),
-                order.productionStartedAt(), order.cancelledBy(), order.cancelledAt(), order.cancellationReason(),
-                order.closedBy(), order.closedAt(), order.closingReason());
-        entity.expectCompletion(order.expectedCompletionDate());
+                order.sentBy(), order.productionStartedAt(), order.cancelledBy(), order.cancelledAt(),
+                order.cancellationReason(), order.closedBy(), order.closedAt(), order.closingReason());
+        entity.expectCompletion(order.expectedCompletionDate(), order.acceptanceNote());
         long readAt = entity.getVersion();
         ProductionOrderJpaEntity saved = jpa.saveAndFlush(entity);
         if (!created && saved.getVersion() == readAt) {
@@ -156,6 +171,9 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
             entityManager.lock(saved, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
         }
         writeLines(order, created);
+        if (created) {
+            writeWriteOffs(order);
+        }
         for (ProductionOrder.Change change : changes) {
             entityManager.createNativeQuery("""
                             INSERT INTO ordering.production_order_status_history (id, production_order_id, from_status,
@@ -178,7 +196,21 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                     order.deliveryBatchId(), change.from(), change.to(), change.by(), change.at()));
         }
         events.publishEvent(new ProductionOrderSaved(order.id(), order.salesOrderId()));
-        return toDomain(saved, linesOf(List.of(order.id())).getOrDefault(order.id(), List.of()));
+        return restore(List.of(saved)).getFirst();
+    }
+
+    /** A replacement's write-offs are written with the draft and kept ({@code tg_production_order_write_off}). */
+    private void writeWriteOffs(ProductionOrder order) {
+        order.replacement().ifPresent(replacement -> replacement.writeOffs().forEach(writeOff ->
+                entityManager.createNativeQuery("""
+                                INSERT INTO ordering.production_order_write_off (id, production_order_id,
+                                                                                 stock_adjustment_id, sku)
+                                VALUES (:id, :order, :adjustment, :sku)""")
+                        .setParameter("id", Identifiers.newId())
+                        .setParameter("order", order.id())
+                        .setParameter("adjustment", writeOff.adjustmentId())
+                        .setParameter("sku", writeOff.sku())
+                        .executeUpdate()));
     }
 
     /**
@@ -278,8 +310,8 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                         ? (root, query, cb) -> cb.disjunction()
                         : (root, query, cb) -> root.get("receivingWarehouseId").in(warehouses));
         Page<ProductionOrderJpaEntity> page = jpa.findAll(spec, pageable);
-        Map<UUID, List<ProductionOrder.Line>> lines = linesOf(page.map(ProductionOrderJpaEntity::getId).getContent());
-        return page.map(e -> toDomain(e, lines.getOrDefault(e.getId(), List.of())));
+        List<ProductionOrder> restored = restore(page.getContent());
+        return new org.springframework.data.domain.PageImpl<>(restored, pageable, page.getTotalElements());
     }
 
     private Map<UUID, List<ProductionOrder.Line>> linesOf(List<UUID> ids) {
@@ -299,15 +331,44 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                         (String) row[8], ((Number) row[9]).intValue()), Collectors.toList())));
     }
 
-    private static ProductionOrder toDomain(ProductionOrderJpaEntity e, List<ProductionOrder.Line> lines) {
+    /** The entities as production orders, in their order: their lines and write-offs read once for all of them. */
+    private List<ProductionOrder> restore(List<ProductionOrderJpaEntity> entities) {
+        List<UUID> ids = entities.stream().map(ProductionOrderJpaEntity::getId).toList();
+        Map<UUID, List<ProductionOrder.Line>> lines = linesOf(ids);
+        Map<UUID, List<ProductionOrder.WriteOff>> writeOffs = writeOffsOf(entities.stream()
+                .filter(e -> e.getKind() == ProductionOrderKind.REPLACEMENT).map(ProductionOrderJpaEntity::getId)
+                .toList());
+        return entities.stream().map(e -> toDomain(e, lines.getOrDefault(e.getId(), List.of()),
+                e.getKind() == ProductionOrderKind.REPLACEMENT ? new ProductionOrder.Replacement(
+                        e.getReplacesProductionOrderId(), writeOffs.getOrDefault(e.getId(), List.of())) : null))
+                .toList();
+    }
+
+    private Map<UUID, List<ProductionOrder.WriteOff>> writeOffsOf(List<UUID> ids) {
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT production_order_id, stock_adjustment_id, sku FROM ordering.production_order_write_off
+                         WHERE production_order_id IN (:ids) ORDER BY created_at, id""")
+                .setParameter("ids", ids)
+                .getResultList();
+        return rows.stream().collect(Collectors.groupingBy(row -> (UUID) row[0], Collectors.mapping(
+                row -> new ProductionOrder.WriteOff((UUID) row[1], (String) row[2]), Collectors.toList())));
+    }
+
+    private static ProductionOrder toDomain(ProductionOrderJpaEntity e, List<ProductionOrder.Line> lines,
+                                            ProductionOrder.Replacement replacement) {
         return new ProductionOrder(e.getId(), e.getCode(), e.getSalesOrderId(), e.getDeliveryBatchId(),
                 e.getCustomerId(), e.getProducerId(), e.getReceivingWarehouseId(), e.getNeedByDate(), e.getStatus(),
                 e.isSampleApprovalRequired(), e.isSampleRequiredByDefault(), e.getSampleWaiverReason(),
-                e.getUnitPrice(), e.getCurrency(), e.getNote(), e.getDrawnUpBy(), e.getSubmittedAt(),
-                e.getApprovedBy(), e.getApprovedAt(), e.getReturnedReason(), e.getSentAt(),
-                e.getProductionStartedAt(), e.getExpectedCompletionDate(), e.getCancelledBy(), e.getCancelledAt(),
+                e.getNote(), e.getDrawnUpBy(), e.getSubmittedAt(),
+                e.getApprovedBy(), e.getApprovedAt(), e.getReturnedReason(), e.getSentAt(), e.getSentBy(),
+                e.getProductionStartedAt(), e.getExpectedCompletionDate(), e.getAcceptanceNote(),
+                e.getCancelledBy(), e.getCancelledAt(),
                 e.getCancellationReason(),
-                e.getClosedBy(), e.getClosedAt(), e.getClosingReason(), lines, e.getVersion());
+                e.getClosedBy(), e.getClosedAt(), e.getClosingReason(), lines, replacement, e.getVersion());
     }
 
     private static Instant instant(Object value) {

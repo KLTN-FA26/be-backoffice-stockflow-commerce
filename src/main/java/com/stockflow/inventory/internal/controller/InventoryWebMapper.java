@@ -8,7 +8,6 @@ import com.stockflow.inventory.internal.controller.dto.StockItemResponse;
 import com.stockflow.inventory.internal.controller.dto.WarehouseStockItemResponse;
 import com.stockflow.inventory.internal.service.StockBrowsing;
 import org.mapstruct.Mapper;
-import org.mapstruct.Mapping;
 import org.mapstruct.ReportingPolicy;
 
 import java.util.List;
@@ -27,18 +26,37 @@ import java.util.List;
 @Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.ERROR)
 interface InventoryWebMapper {
 
-    @Mapping(target = "id", source = "stockItemId")
-    @Mapping(target = "status", constant = "AVAILABLE")
-    @Mapping(target = "hiddenDuringCount", constant = "false")
-    StockItemResponse toResponse(StockAvailability availability);
-
-    List<StockItemResponse> toResponses(List<StockAvailability> availabilities);
-
-    StockLevelResponse toResponse(StockLevel level);
-
-    List<StockLevelResponse> toLevelResponses(List<StockLevel> levels);
-
     ReservationRowResponse toResponse(StockBrowsing.Reservation reservation);
 
-    WarehouseStockItemResponse toResponse(StockBrowsing.StockRow row);
+    // The stock responses below are written by hand: each quantity goes out in pieces and again in cartons
+    // (kltn-docs 01 BR-09), counted from the cartons (ADR-0011, step 3e), not divided out of the pieces.
+
+    /** A row of {@code availabilityOf}, one carton; its SKU's carton unit holds {@code unitsPerCarton} pieces. */
+    default StockItemResponse toResponse(StockAvailability row, Integer unitsPerCarton) {
+        return new StockItemResponse(row.stockPackageId(), row.sku(), row.locationCode(), row.lotNumber(), unitsPerCarton,
+                row.onHand(), row.reserved(), row.available(),
+                CartonCount.ofOneCarton(row.onHand()), CartonCount.ofOneCarton(row.reserved()),
+                CartonCount.ofOneCarton(row.available()), "AVAILABLE", false);
+    }
+
+    default StockLevelResponse toResponse(StockLevel level, Integer unitsPerCarton) {
+        return new StockLevelResponse(level.sku(), level.warehouseCode(), unitsPerCarton,
+                level.onHand(), level.available(), level.reserved(), level.allocated(), level.atp(),
+                level.onHandCartons(), level.availableCartons(), level.reservedCartons(), level.allocatedCartons(),
+                level.atpCartons());
+    }
+
+    default List<StockLevelResponse> toLevelResponses(List<StockLevel> levels, Integer unitsPerCarton) {
+        return levels.stream().map(level -> toResponse(level, unitsPerCarton)).toList();
+    }
+
+    /** A row withheld from a blind counter has null quantities, so its cartons are null as well. */
+    default WarehouseStockItemResponse toResponse(StockBrowsing.StockRow row) {
+        Integer per = row.unitsPerCarton();
+        return new WarehouseStockItemResponse(row.stockItemId(), row.sku(), row.locationCode(), row.lotNumber(), per,
+                row.onHand(), row.reserved(), row.available(),
+                CartonCount.ofOneCarton(row.onHand()), CartonCount.ofOneCarton(row.reserved()),
+                CartonCount.ofOneCarton(row.available()),
+                row.status() == null ? null : row.status().name(), row.receivedAt(), row.hiddenDuringCount());
+    }
 }

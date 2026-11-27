@@ -125,13 +125,22 @@ public class GlobalExceptionHandler {
         } else {
             log.warn("{} - {}", ex.errorCode(), ex.getMessage());
         }
-        String message = serverFault || ex.getMessage() == null || ex.getMessage().isBlank()
+        // Nothing specific - no message, or only the code's own English default ({@code new BusinessException(code)}):
+        // the code's translation, which says the same in the caller's language.
+        boolean generic = ex.getMessage() == null || ex.getMessage().isBlank()
+                || ex.getMessage().equals(ex.errorCode().defaultMessage());
+        String message = serverFault || (generic && ex.messageKey() == null)
                 ? messages.forCode(ex.errorCode())
+                // A refusal written for people names its bundle key: answered in the caller's language, the English
+                // message the fallback (BusinessException, "The message, in the caller's language").
+                : ex.messageKey() != null ? messages.refusal(ex.messageKey(), ex.getMessage(), ex.messageArguments())
                 : ex.getMessage();
-        // Fields a business rule pointed at (SCRUM-464): each message translated by its own code.
+        // Fields a business rule pointed at (SCRUM-464): each message translated by its own key, else by its code. What
+        // is answered is the three wire fields only.
         List<FieldError> fields = ex.fieldErrors().isEmpty() ? null : ex.fieldErrors().stream()
-                .map(f -> new FieldError(f.field(),
-                        f.code() == null ? f.message() : messages.get("error." + f.code(), f.message()), f.code()))
+                .map(f -> new FieldError(f.field(), f.messageKey() != null
+                        ? messages.refusal(f.messageKey(), f.message(), f.messageArguments().toArray())
+                        : f.code() == null ? f.message() : messages.get("error." + f.code(), f.message()), f.code()))
                 .toList();
         return respond(ex.errorCode(), message, fields, ex.details());
     }

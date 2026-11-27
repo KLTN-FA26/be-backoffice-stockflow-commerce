@@ -44,6 +44,19 @@ public class ReturnRequestEvidenceJpaEntity {
     @Column(name = "uploaded_at", nullable = false, updatable = false)
     private Instant uploadedAt;
 
+    /** CUSTODY only (WF-05 Q-11): what is kept for the customer; null on every other stage. */
+    @Column(name = "custody_sku", length = 64, updatable = false)
+    private String custodySku;
+
+    @Column(name = "custody_lpn", length = 40, updatable = false)
+    private String custodyLpn;
+
+    @Column(name = "custody_quantity", updatable = false)
+    private Integer custodyQuantity;
+
+    @Column(name = "custody_note", length = 1000, updatable = false)
+    private String custodyNote;
+
     protected ReturnRequestEvidenceJpaEntity() {
     }
 
@@ -70,4 +83,17 @@ public class ReturnRequestEvidenceJpaEntity {
     public long getSizeBytes() { return sizeBytes; }
     public UUID getUploadedBy() { return uploadedBy; }
     public Instant getUploadedAt() { return uploadedAt; }
+    public String getCustodySku() { return custodySku; }
+    public String getCustodyLpn() { return custodyLpn; }
+    public Integer getCustodyQuantity() { return custodyQuantity; }
+    public String getCustodyNote() { return custodyNote; }
+
+    /** The custody note's facts, on a CUSTODY photo being inserted (WF-05 Q-11). */
+    public ReturnRequestEvidenceJpaEntity withCustody(String sku, String lpn, Integer quantity, String note) {
+        this.custodySku = sku;
+        this.custodyLpn = lpn;
+        this.custodyQuantity = quantity;
+        this.custodyNote = note;
+        return this;
+    }
 }

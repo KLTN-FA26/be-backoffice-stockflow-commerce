@@ -72,13 +72,8 @@ class AssistantShortPickIntegrationTest {
         lot = "ASP-LOT-" + suffix;
         UUID releasedBy = tx.execute(s -> ReferenceRows.user(entityManager));
         UUID picker = tx.execute(s -> ReferenceRows.user(entityManager));
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Short pick fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Short pick fixture");
-        });
+        // Only a customer's SKU is ordered and stocked (fk_order_line_customer_sku): the demo customer's.
+        new AssistantStock(jdbc, tx, entityManager).sku(sku);
         tx.executeWithoutResult(s -> {
             UUID order = ReferenceRows.orderWithLine(entityManager, sku, "READY_TO_FULFILL", DemoData.CUSTOMER_ID,
                     releasedBy, DemoData.WAREHOUSE_HCM);

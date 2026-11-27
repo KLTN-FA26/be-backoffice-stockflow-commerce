@@ -2,6 +2,7 @@ package com.stockflow.warehouse.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -40,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Reading the map (issue #25) on Postgres with the demo seed: warehouse {@code HCM}, map 60 x 40,
- * zones "Khu A - Sofa" and "Khu B - Bàn", shelves A01, A02 (OVERSIZE) and B01 (NORMAL) with levels
+ * zones "Khu A - Ly giấy xanh" and "Khu B - Ly giấy đỏ", shelves A01, A02 (OVERSIZE) and B01 (NORMAL) with levels
  * 1-2 and bins A and B on each, storage areas RCV01, QC01 (QUARANTINE), PACK01 and DSP01, the
  * {@code NON_STORAGE} area OFFICE, a wall and a door. Every test rolls back.
  */
@@ -89,7 +90,8 @@ class LayoutReadIntegrationTest {
 
             assertThat(layout.warehouse().prefix()).isEqualTo("HCM");
             assertThat(layout.warehouse().mapWidth()).isEqualByComparingTo("60");
-            assertThat(layout.zones()).extracting(ZoneSummary::name).containsExactly("Khu A - Sofa", "Khu B - Bàn");
+            assertThat(layout.zones()).extracting(ZoneSummary::name)
+                    .containsExactly("Khu A - Ly giấy xanh", "Khu B - Ly giấy đỏ");
             assertThat(layout.shelves()).extracting(WarehouseLayout.Shelf::code).containsExactly("A01", "A02", "B01");
             WarehouseLayout.Shelf a01 = shelf(layout, "A01");
             assertThat(a01.levels()).extracting(WarehouseLayout.Level::levelIndex).containsExactly(1, 2);
@@ -215,7 +217,9 @@ class LayoutReadIntegrationTest {
         @Test
         @DisplayName("an INACTIVE warehouse makes every location INACTIVE and unusable")
         void inactiveWarehouse() {
-            warehouses.deactivate(WAREHOUSE_HCM);
+            // By SQL: the subject is how the layout reads an inactive warehouse, and the demo warehouse holds cartons
+            // the service would refuse it for (06 BR-04, PlaceDeactivationIntegrationTest).
+            jdbc.update("UPDATE warehouse.warehouse SET status = 'INACTIVE' WHERE id = ?", WAREHOUSE_HCM);
             flushAndClear();
 
             WarehouseLayout layout = warehouses.layoutOf(WAREHOUSE_HCM);
@@ -233,6 +237,7 @@ class LayoutReadIntegrationTest {
         @Test
         @DisplayName("an INACTIVE shelf is still on the layout, marked so")
         void inactiveShelvesAreIncluded() {
+            CartonRows.moveOut(jdbc, "HCM-B01-", "HCM-OVF01");     // 06 BR-04: emptied before it goes off the layout
             shelves.changeShelfStatus(DemoData.shelf("B01"), LocationStatus.INACTIVE);
             flushAndClear();
 

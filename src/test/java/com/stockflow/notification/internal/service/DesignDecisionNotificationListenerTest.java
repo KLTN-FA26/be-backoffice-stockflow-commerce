@@ -17,7 +17,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
-/** The customer hears of the Sales Manager's decision on their design, in the app, once per decision. */
+/** The customer hears of the coordinator's decision on their design, in the app, once per decision. */
 class DesignDecisionNotificationListenerTest {
 
     private final Inbox inbox = mock(Inbox.class);
@@ -35,6 +35,8 @@ class DesignDecisionNotificationListenerTest {
         verify(inbox).post(eq(List.of(owner)), message.capture());
         assertThat(message.getValue().title()).contains("CUP12-0312345678-01");
         assertThat(message.getValue().severity()).isEqualTo(InboxSeverity.INFO);
+        // the storefront's design page is /design/{id}; /designs/{id} has no route there (BE-R5-1)
+        assertThat(message.getValue().link()).isEqualTo("/design/" + event.designId());
         assertThat(message.getValue().dedupeKey())
                 .isEqualTo("design-decision:" + event.designId() + ":" + event.decidedAt().toEpochMilli());
     }

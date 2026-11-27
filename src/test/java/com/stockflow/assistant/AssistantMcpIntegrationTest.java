@@ -74,7 +74,7 @@ class AssistantMcpIntegrationTest {
     @BeforeEach
     void setUp() {
         http = new SecuredMvc(mockMvc, decoder);
-        // Opt-in (V20261125001100): the roles these cases sign in with, as an administrator would grant them.
+        // Opt-in (V20270106001100): the roles these cases sign in with, as an administrator would grant them.
         RoleGrants.grant(jdbc, tx, "assistant-mcp:CREATE", "SALES_STAFF", "SYSTEM_ADMIN", "WAREHOUSE_MANAGER",
                 "WAREHOUSE_STAFF");
         // One whole carton of 10 at an HCM bin: stock is LPN cartons only since the rescope.

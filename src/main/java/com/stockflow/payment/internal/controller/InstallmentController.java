@@ -1,6 +1,7 @@
 package com.stockflow.payment.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -12,6 +13,7 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
+import com.stockflow.customer.api.CustomerSearch;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.payment.internal.controller.dto.InstallmentResponse;
 import com.stockflow.payment.internal.controller.dto.InstallmentTransferResponse;
@@ -40,7 +42,8 @@ import java.util.UUID;
  * customer's own installments and how to pay each.
  *
  * <p>What the customer owes after delivery (15 §4.3 step 8, "công nợ phải thu") is
- * {@code ?milestone=AFTER_DELIVERY&reached=true}, next to the money ledger's {@code /receivables} until 4B-10.</p>
+ * {@code ?milestone=AFTER_DELIVERY&reached=true}, next to the money ledger's {@code /receivables} until 4B-10. The
+ * receivables screen's "due and still owed", every milestone and the fee items with it, is {@code ?owing=true}.</p>
  */
 @RestController
 @RequestMapping("/api/v1/installments")
@@ -50,28 +53,40 @@ import java.util.UUID;
         actions = {Action.VIEW_PAGE, Action.READ})
 class InstallmentController {
 
+    /**
+     * At most this many customers a {@code search} may match: their ids go into one {@code IN} list. A search broader
+     * than that is refused rather than cut short, which would drop some customers' installments without a word.
+     */
+    static final int SEARCH_MAX_CUSTOMERS = 1_000;
+
     private final InstallmentService installments;
     private final CustomerService customers;
+    private final CustomerSearch customerSearch;
 
-    InstallmentController(InstallmentService installments, CustomerService customers) {
+    InstallmentController(InstallmentService installments, CustomerService customers, CustomerSearch customerSearch) {
         this.installments = installments;
         this.customers = customers;
+        this.customerSearch = customerSearch;
     }
 
     @GetMapping
-    @Operation(summary = "Installments, earliest due first; filter by customer, order, status, milestone, due day, "
-            + "whether their milestone came and whether they are overdue (the aged-receivables reading: overdue is a "
-            + "flag worked out from the due day, not a status: status=OVERDUE is refused with 400 "
-            + "INSTALLMENT_OVERDUE_IS_A_FLAG)")
+    @Operation(summary = "Installments, earliest due first; filter by customer (its id, or search: a part of its name "
+            + "or tax code, case and accents aside), order, status, milestone, due day, whether their milestone came, "
+            + "whether they are overdue (the aged-receivables reading: overdue is a flag worked out from the due day, "
+            + "not a status: status=OVERDUE is refused with 400 INSTALLMENT_OVERDUE_IS_A_FLAG) and whether they are "
+            + "owing: owing=true keeps what is due and still owed - the milestone came and it is DUE or PARTIALLY_PAID, "
+            + "fee items and overdue ones included; owing=false or absent filters nothing")
     @RequiresPermission(resource = PaymentResources.INSTALLMENTS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<PageResponse<InstallmentResponse>> list(
             @RequestParam(required = false) UUID customerId,
+            @RequestParam(required = false) String search,
             @RequestParam(required = false) UUID orderId,
             @RequestParam(required = false) InstallmentStatus status,
             @RequestParam(required = false) InstallmentMilestone milestone,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate dueBefore,
             @RequestParam(required = false) Boolean reached,
             @RequestParam(required = false) Boolean overdue,
+            @RequestParam(required = false) Boolean owing,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort,
@@ -79,9 +94,11 @@ class InstallmentController {
         // Customers hold payment-installments:READ for /me; this list is every customer's.
         ScopeGuards.requireBackOffice(user);
         LocalDate today = installments.today();
-        return ApiResponse.ok(installments.installments(customerId, orderId, status, milestone, dueBefore, reached,
-                overdue, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)
-                .map(i -> PaymentWebMapper.toResponse(i, null, today)));
+        var found = installments.installments(customerId, customersMatching(search), orderId, status, milestone,
+                dueBefore, reached, overdue, owing, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
+        // One query for the names of the whole page - not one per row.
+        var labels = customers.labels(found.items().stream().map(i -> i.customerId()).toList());
+        return ApiResponse.ok(found.map(i -> PaymentWebMapper.toResponse(i, null, today, labels)));
     }
 
     @GetMapping("/me")
@@ -96,7 +113,7 @@ class InstallmentController {
         LocalDate today = installments.today();
         return ApiResponse.ok(installments.installments(customerOf(user), orderId, status, null, null, null, null,
                 page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, null)
-                .map(i -> PaymentWebMapper.toResponse(i, null, today)));
+                .map(i -> PaymentWebMapper.toResponse(i, null, today, null)));
     }
 
     @GetMapping("/me/orders/{orderId}")
@@ -105,7 +122,7 @@ class InstallmentController {
     public ApiResponse<OrderInstallmentsResponse> myOrder(@PathVariable UUID orderId,
                                                           @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(PaymentWebMapper.toResponse(installments.ofOrder(orderId, customerOf(user)),
-                installments.today()));
+                installments.today(), null));
     }
 
     @GetMapping("/me/{installmentId}")
@@ -117,7 +134,7 @@ class InstallmentController {
         // A voided receipt is the accountant's correction, not the customer's payment.
         List<InstallmentBook.ReceiptOfInstallment> live = detail.receipts().stream()
                 .filter(r -> r.status() == PaymentReceiptStatus.RECORDED).toList();
-        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.installment(), live, installments.today()));
+        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.installment(), live, installments.today(), null));
     }
 
     @GetMapping("/me/{installmentId}/transfer-instructions")
@@ -135,8 +152,9 @@ class InstallmentController {
     public ApiResponse<OrderInstallmentsResponse> ofOrder(@PathVariable UUID orderId,
                                                           @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(PaymentWebMapper.toResponse(installments.ofOrder(orderId, null),
-                installments.today()));
+        var order = installments.ofOrder(orderId, null);
+        var labels = customers.labels(order.installments().stream().map(i -> i.customerId()).toList());
+        return ApiResponse.ok(PaymentWebMapper.toResponse(order, installments.today(), labels));
     }
 
     @GetMapping("/{installmentId}")
@@ -146,8 +164,9 @@ class InstallmentController {
                                                 @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         var detail = installments.detail(installmentId, null);
+        var labels = customers.labels(java.util.List.of(detail.installment().customerId()));
         return ApiResponse.ok(PaymentWebMapper.toResponse(detail.installment(), detail.receipts(),
-                installments.today()));
+                installments.today(), labels));
     }
 
     /** 15 §2, 16: the transfer details Sales sends the customer for one installment. */
@@ -158,6 +177,27 @@ class InstallmentController {
                                                                          @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(PaymentWebMapper.toResponse(installments.transferInstructions(installmentId, null)));
+    }
+
+    /**
+     * The customers {@code search} means, read through {@code customer :: api} - the accountant holds no customer
+     * permission, so the back office cannot pick one from the customer list (FE BE-16), and this schema is not JOINed
+     * (ADR-0007). Null for no search; empty when it matched nobody, which then finds no installment.
+     *
+     * @throws BusinessException {@code VALIDATION_FAILED} when it matches more than {@link #SEARCH_MAX_CUSTOMERS}
+     */
+    private List<UUID> customersMatching(String search) {
+        if (search == null || search.isBlank()) {
+            return null;
+        }
+        List<UUID> matching = customerSearch.idsMatching(search, SEARCH_MAX_CUSTOMERS + 1);
+        if (matching.size() > SEARCH_MAX_CUSTOMERS) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The search matches more than %d customers"
+                    .formatted(SEARCH_MAX_CUSTOMERS), List.of(FieldError.localized("search",
+                    "matches too many customers", "TooBroad", "refusal.payment.searchTooBroad",
+                    SEARCH_MAX_CUSTOMERS))).localized("refusal.payment.searchTooBroad", SEARCH_MAX_CUSTOMERS);
+        }
+        return matching;
     }
 
     private UUID customerOf(CurrentUser user) {

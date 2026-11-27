@@ -17,6 +17,7 @@ import com.stockflow.warehouse.internal.domain.WarehouseRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -35,15 +36,19 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
 
     private final AreaRepository areas;
     private final WarehouseRepository warehouses;
+    private final EmptyBeforeInactive emptyBeforeInactive;
 
-    AreaLayoutServiceImpl(AreaRepository areas, WarehouseRepository warehouses) {
+    AreaLayoutServiceImpl(AreaRepository areas, WarehouseRepository warehouses,
+                          EmptyBeforeInactive emptyBeforeInactive) {
         this.areas = areas;
         this.warehouses = warehouses;
+        this.emptyBeforeInactive = emptyBeforeInactive;
     }
 
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "area",
-            resourceId = "#command.warehouseId()", includeFailures = false)
+            resourceId = "#command.warehouseId()", includeFailures = false,
+            details = "{locationCode: #result?.locationCode(), code: #command.code(), details: #command.details()}")
     public AreaSummary createArea(AreaCommands.CreateArea command) {
         Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         String code = CodePart.of(command.code(), CodePart.CODE_MAX_LENGTH).value();
@@ -59,7 +64,8 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
 
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "area",
-            resourceId = "#command.areaId()", includeFailures = false)
+            resourceId = "#command.areaId()", includeFailures = false,
+            details = "{locationCode: #result?.locationCode(), details: #command.details()}")
     public AreaSummary updateArea(AreaCommands.UpdateArea command) {
         Warehouse warehouse = lockWarehouseOf(command.areaId());
         Area area = require(command.areaId());
@@ -71,12 +77,18 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "area", resourceId = "#areaId")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "area", resourceId = "#areaId",
+            details = "{locationCode: #result?.locationCode(), status: #status}")
     public AreaSummary changeAreaStatus(UUID areaId, LocationStatus status) {
         Warehouse warehouse = lockWarehouseOf(areaId);
         Area area = require(areaId);
         if (!area.holdsPlace() && status != null && status != LocationStatus.INACTIVE) {
             requirePlaceable(warehouse, area.id(), area.footprint());
+        }
+        // A NON_STORAGE area has no location, so nothing can stand in it.
+        if (status == LocationStatus.INACTIVE && area.holdsPlace() && area.location() != null) {
+            emptyBeforeInactive.require(List.of(area.location().locationCode()),
+                    "area " + area.location().locationCode());
         }
         area.changeStatus(status);
         return AreaSummary.of(areas.save(area));

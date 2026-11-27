@@ -12,12 +12,12 @@ import java.util.UUID;
  * THE public API of the inventory module. Every other module talks to inventory through this
  * interface and nothing else.
  *
- * <p>What other modules deliberately cannot reach: {@code StockItem}, {@code StockItemRepository},
+ * <p>What other modules deliberately cannot reach: {@code StockPackage}, {@code StockPackageRepository},
  * the JPA entities, the controller. They all live under {@code inventory.internal}, and
  * {@code ModularityTest} fails the build if anyone imports them.</p>
  *
  * <p>The parameters and return types are records declared in this same package, never domain
- * objects. Handing another module a {@code StockItem} would let it call {@code allocate()} on the
+ * objects. Handing another module a {@code StockPackage} would let it call {@code allocate()} on the
  * aggregate directly, outside a transaction and outside the invariants.</p>
  */
 public interface InventoryService {
@@ -25,7 +25,7 @@ public interface InventoryService {
     /**
      * Available to promise for one SKU (docs 01): sellable units on hand — AVAILABLE — minus
      * every hold on them (allocations) minus the live SKU reservations (the holds Sales takes at a
-     * shipping warehouse), which sit on no stock item. Never negative.
+     * shipping warehouse), which sit on no carton. Never negative.
      */
     int availableToPromise(Sku sku);
 
@@ -86,8 +86,9 @@ public interface InventoryService {
     /**
      * 4B-7 (17 §4.2 step 3, BR-21; 20 §5.6, BR-17): hold, for an order of a contract, as many whole cartons of the SKU
      * as its shipping warehouse has available to promise, up to {@code cartons} - a SKU reservation at that warehouse,
-     * on no bin, with no deadline. What is not available is held later, when stock arrives; nothing is refused for a
-     * shortage. Joins the caller's transaction, under the SKU's advisory lock (take {@link #prepareReservation} first
+     * on no bin, with no deadline. Cartons of the command's {@code unitsPerCarton} only (ADR-0011): the hold counts
+     * cartons of that count, and a free carton of another count is neither promised to it nor taken by it. What is
+     * not available is held later, when stock arrives; nothing is refused for a shortage. Joins the caller's transaction, under the SKU's advisory lock (take {@link #prepareReservation} first
      * for several SKUs). Idempotent on the command's request id.
      */
     HoldStockResult holdAtWarehouse(HoldStockCommand command);
@@ -99,6 +100,31 @@ public interface InventoryService {
      * not a view of a warehouse.
      */
     Map<String, Integer> availableToPromiseByWarehouse(Sku sku);
+
+    /**
+     * ADR-0011: what each warehouse can still promise a line quoted in cartons of {@code unitsPerCarton}, in such
+     * cartons, by warehouse code - the free cartons of exactly that count a release there could allocate, less the
+     * holds of that count at it, never more than is left of that count system-wide. The figure
+     * {@link #holdAtWarehouse} holds against, so a warehouse shown as covering a line can hold it. Unlike
+     * {@link #availableToPromiseByWarehouse}, cartons of another count are not in it: they never serve the line, and
+     * their units divided by the line's count would promise cartons that do not exist. A warehouse with none is
+     * absent; every warehouse is listed whatever the caller's scope, as there.
+     *
+     * @throws IllegalArgumentException for a count below 1
+     */
+    Map<String, Integer> cartonsToPromiseByWarehouse(Sku sku, int unitsPerCarton);
+
+    /**
+     * ADR-0011: for each SKU, the cartons of the count given for it still to promise over every warehouse - the free
+     * cartons of exactly that count a release could allocate, less the live holds of that count. Every SKU asked for
+     * is a key, {@code 0} for none, in the order asked; one read for the whole page. For a figure shown in cartons of
+     * the count a SKU is sold in, where {@link #availableToPromise(Collection)} divided by that count would count the
+     * units of cartons of other counts too.
+     *
+     * @param unitsPerCarton the count each SKU is sold in, at least 1
+     * @throws IllegalArgumentException for a count missing or below 1
+     */
+    Map<Sku, Integer> cartonsToPromise(Map<Sku, Integer> unitsPerCarton);
 
     /**
      * WF4-COUNT-EDGE (a): the live SKU reservations of {@code sku} held at {@code warehouseCode} and the whole free
@@ -113,11 +139,14 @@ public interface InventoryService {
      * {@code keepUnits} is above zero, a new one of {@code keepUnits} is held at the same warehouse for the same order -
      * not checked against what is available, as it holds less than the one it replaces. Joins the caller's transaction,
      * under the SKU's advisory lock. Idempotent: called again for the same hold and size it answers the same.
+     * Units, because the caller counts in them; the hold counts cartons of one count (ADR-0011), so {@code keepUnits}
+     * must be a whole number of them.
      *
      * @return the new hold's id; empty when {@code keepUnits} is zero
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} (not a SKU reservation at a
      *         warehouse), {@code RESERVATION_NOT_ACTIVE} (already closed, and not by this call),
-     *         {@code VALIDATION_FAILED} ({@code keepUnits} negative or not below the hold)
+     *         {@code VALIDATION_FAILED} ({@code keepUnits} negative, not below the hold, or not a whole number of
+     *         the hold's cartons)
      */
     Optional<UUID> shrinkHold(UUID reservationId, int keepUnits);
 
@@ -132,9 +161,10 @@ public interface InventoryService {
      * HELD → ALLOCATED (docs 03 §6, 04c F-FUL step 02): the order was released to a warehouse; each live SKU
      * reservation of the order becomes allocations of whole LPN cartons on pickable bins of that warehouse, one
      * allocation per carton, in the SKU's removal order - the earliest receipt first (FIFO, kltn-docs 07 BR-03) - and
-     * never on loose units, on a carton another order holds part of, or on blocked or non-pickable stock.
-     * Allocations are pinned (X-RESV: they do not expire). All or nothing: when the warehouse has too few whole
-     * cartons for every line, nothing is allocated (k &lt; N waits for {@code AWAITING_STOCK}, team plan 4A-6). Idempotent: an order with no SKU reservation left
+     * never on loose units, on a carton another order holds part of, or on blocked or non-pickable stock. A
+     * reservation takes cartons of its own count only (ADR-0011): one held in cartons of 1000 is never given a carton
+     * of another count, older or not. All or nothing: when the warehouse has too few whole
+     * cartons of that count for every line, nothing is allocated (k &lt; N waits for {@code AWAITING_STOCK}, team plan 4A-6). Idempotent: an order with no SKU reservation left
      * gets an empty result. Joins the caller's transaction; locks the SKUs, then the reservations, then the stock
      * rows in id order.
      *
@@ -227,7 +257,7 @@ public interface InventoryService {
 
     /**
      * Move labelled cartons whole (SCRUM-473; kltn-docs 11 BR-04): each carton and its rows change location together,
-     * keeping their ids, holds and sealed state; one MOVE ledger line per row names the carton on both sides. Only an
+     * keeping their ids, holds and sealed state; one MOVE ledger line per row names the carton. Only an
      * IN_STOCK carton moves, and all or none of them do (11 BR-07). A move a person asks for ({@link
      * MoveReference#MOVE_TASK}) never takes a carton held for an order (11 BR-05: the picker would find its bin empty)
      * nor one a cycle count holds, and is answered again, not repeated, for the same reference id. Locks, once for the
@@ -248,10 +278,26 @@ public interface InventoryService {
      */
     List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command);
 
+    /**
+     * Opens the inventory item of each customer SKU an order names, in the caller's transaction (owner decision Q5 of
+     * 2026-11-26): a customer's SKU has an item - and so can be received, held, counted and shipped - only once Sales
+     * converts a quote naming it into an order, and a catalogue variant never has one. The item records the catalogue
+     * variant whose cartons it is packed in, for good. An item that exists already is kept as it is, so a reorder, a
+     * retried conversion and two orders converted at once all end with the one item.
+     *
+     * <p>{@code tg_inventory_items_customer_sku} refuses an item whose SKU is not a customer's SKU drawn on that
+     * variant; the caller (order placement) passes what {@code CustomerSkus} says.</p>
+     *
+     * @return the item id of every SKU of the command
+     * @throws com.stockflow.common.error.BusinessException {@code CONFLICT} when a SKU's existing item records another
+     *         variant, or one SKU is named with two variants
+     */
+    Map<String, UUID> openItems(OpenInventoryItemsCommand command);
+
     /** The inventory item with this id, empty when no such item exists. */
     Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId);
 
-    /** The same, by SKU: the inventory item a variant has, empty when it has none yet. */
+    /** The same, by SKU: the inventory item a customer's SKU has, empty when no order has named it yet. */
     Optional<InventoryItemPolicy> itemPolicy(Sku sku);
 
     /** Each inventory item that exists, in one query (SCRUM-464). */
@@ -262,10 +308,11 @@ public interface InventoryService {
 
     /**
      * Deletes the inventory item of each SKU, for a product that is deleted before anything happened to
-     * it (SCRUM-461): the item exists only because its variant was created (docs 01 BR-07), and the
-     * variant cannot go while it stands. A SKU with no item is skipped.
+     * it (SCRUM-461). Since V20270105000100 only a customer's SKU that an order named has an item, so a product
+     * nothing happened to has none and this deletes nothing; kept for the product deletion's last check. A SKU with
+     * no item is skipped.
      *
-     * <p>The caller asks {@link #skusInUse} first; this is the last line of defence: stock rows, movements,
+     * <p>The caller asks {@link #skusInUse} first; this is the last line of defence: cartons, movements,
      * adjustments, counts, purchase order and receipt lines, pick lines and putaway or move tasks
      * all point at an item through foreign keys, and any of them refuses the delete.</p>
      *
@@ -277,8 +324,9 @@ public interface InventoryService {
     /**
      * The SKUs among {@code skus} whose inventory item a document uses — stock, a movement, an adjustment, a count,
      * a putaway, move or pick task, a selling price, a supplier item or a procurement line — in SKU
-     * order; empty when none is. Such an item can be neither deleted nor renamed (kltn-docs 01 BR-01, BR-02); the
-     * SKU rename guard asks the same question in the database ({@code inventory.item_in_use}).
+     * order; empty when none is. Such an item cannot be deleted (kltn-docs 01 BR-01, BR-02); since V20270105000100 an
+     * item's SKU never changes at all ({@code tg_inventory_items_immutable}), so this no longer guards a rename. A SKU
+     * without an item - a catalogue variant, or a customer's SKU never ordered - is never in use.
      */
     java.util.List<String> skusInUse(java.util.Collection<String> skus);
 

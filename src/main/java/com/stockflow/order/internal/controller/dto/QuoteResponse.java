@@ -17,6 +17,12 @@ import java.util.UUID;
  * @param proposedTotal {@code proposed.total}, the total with tax
  * @param version       to send back with the next change
  * @param acceptedTotal VND, once accepted
+ * @param customerName  whose quote it is, so the page needs no customer lookup; null for an unknown customer
+ * @param customerCode  that customer's code
+ * @param sentByName    who sent the quote, by name; null on the customer's copy, which names no account of the shop (as
+ *                      {@link Transition#changedByName}), and before it is sent
+ * @param respondedByName who answered it (accepted or asked for changes), by name; null on the customer's copy, and
+ *                      before an answer
  */
 public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String status, int revision,
                             Instant validUntil, String terms,
@@ -27,7 +33,9 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
                             UUID sentBy,
                             Instant respondedAt, UUID respondedBy, String customerFeedback, String cancellationReason,
                             Order convertedOrder, Instant convertedAt, List<Transition> history, Instant createdAt,
-                            String createdBy, long version) {
+                            String createdBy, long version, String customerName, String customerCode,
+                            String sentByName, String respondedByName, boolean priceReviewPending,
+                            PriceReview priceReview, PriceCheck priceCheck) {
 
     /**
      * A line: cartons of the customer's own SKU, priced per piece (kltn-docs 14 BR-08). Ordered by the carton, shown
@@ -37,13 +45,23 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
      *                         design and print specification, and counts units
      * @param moq              where the lowest tier starts, in the line's measure
      * @param proposedUnitPrice VND per piece at the proposed cartons
+     * @param purchasability   whether the SKU may go on a new quote or order now ({@code PURCHASABLE},
+     *                         {@code PRODUCT_INACTIVE}, {@code PRODUCT_DISCONTINUED}, {@code PRODUCT_NOT_APPROVED},
+     *                         {@code VARIANT_NOT_ACTIVE}): an accepted quote may be cancelled only when a line is not
+     *                         {@code PURCHASABLE}; null on a legacy line
+     * @param designName       R5-3: the name of the design the customer's SKU was made to; null when it has none
+     * @param previewUrl       R5-3: a short-lived link showing the design's preview; null when there is none
+     * @param productName      the name of the product the SKU belongs to, so a line reads as more than a code; null
+     *                         for a SKU the product module does not know
+     * @param variantName      the SKU's own (variant) name; null for an unknown SKU
      */
     public record Line(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
                        int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq,
                        List<Tier> tiers, BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal,
                        Integer acceptedCartons, Integer acceptedUnits, BigDecimal acceptedUnitPrice,
                        BigDecimal acceptedLineTotal, String taxClass, BigDecimal taxRate, BigDecimal proposedTax,
-                       BigDecimal acceptedTax) {
+                       BigDecimal acceptedTax, String purchasability, String designName, String previewUrl,
+                       String productName, String variantName) {
     }
 
     /** A fee line with its VAT (14 BR-17, BR-20, BR-21); {@code amount} null for a plate fee not priced yet. */
@@ -56,13 +74,41 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
     }
 
     /** From {@code minQuantity} cartons (units on a legacy line) up, {@code unitPrice} VND per piece. */
+    /**
+     * 14 BR-10: one price break measured against its reference.
+     *
+     * @param source {@code CUSTOMER_PRICE} or {@code STANDARD_PRICE}; null with no reference
+     */
+    public record PriceCheckTier(int minQuantity, BigDecimal unitPrice, BigDecimal referencePrice, String source,
+                                 BigDecimal discountPercent, boolean needsApproval) {
+    }
+
+    public record PriceCheckLine(int lineNo, String sku, int cartons, boolean needsApproval,
+                                 List<PriceCheckTier> tiers) {
+    }
+
+    /** 14 BR-10: a draft's prices as they stand; null once sent and on the customer's copy. */
+    public record PriceCheck(BigDecimal thresholdPercent, boolean needsApproval, List<PriceCheckLine> lines) {
+    }
+
+    /**
+     * 14 BR-10: the latest submission of the prices to the Sales Manager; null when none and on the customer's copy.
+     *
+     * @param outcome {@code PENDING}, {@code APPROVED}, {@code REJECTED} or {@code WITHDRAWN}
+     */
+    public record PriceReview(UUID id, int revision, String outcome, BigDecimal thresholdPercent, Instant submittedAt,
+                              UUID submittedBy, String submittedByName, Instant decidedAt, UUID decidedBy,
+                              String decidedByName, String reason, List<PriceCheckLine> lines) {
+    }
+
     public record Tier(int minQuantity, BigDecimal unitPrice) {
     }
 
     public record Order(UUID orderId, String orderNumber, String status, BigDecimal total) {
     }
 
+    /** @param changedByName R5-8: who made the step, by name; null on the customer's copy, as {@code changedBy} is */
     public record Transition(int revision, String fromStatus, String toStatus, String reason, Instant changedAt,
-                             UUID changedBy) {
+                             UUID changedBy, String changedByName) {
     }
 }

@@ -3,6 +3,7 @@ package com.stockflow.procurement.internal.repository;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.procurement.internal.domain.GoodsReceipt;
 import com.stockflow.procurement.internal.domain.GoodsReceiptRepository;
+import com.stockflow.procurement.internal.domain.GoodsReceiptType;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
 import com.stockflow.procurement.internal.domain.ReceiptLine;
 import com.stockflow.procurement.internal.entity.GoodsReceiptJpaEntity;
@@ -47,7 +48,7 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
      * The row is locked first with a native {@code FOR UPDATE} and the aggregate read afterwards, then refreshed: a
      * caller that queued behind another transaction must see what that transaction committed, and an entity already
      * in the persistence context would otherwise be returned as it was before the wait (the same reasoning as
-     * {@code StockItemRepositoryAdapter.findByIdForUpdate}).
+     * {@code StockPackageRepositoryAdapter.findAllByIdForUpdate}).
      */
     @Override
     public Optional<GoodsReceipt> findByIdForUpdate(UUID receiptId) {
@@ -86,16 +87,15 @@ class GoodsReceiptRepositoryAdapter implements GoodsReceiptRepository, GoodsRece
      * IMMEDIATE once the receipt is flushed runs it here, and a refusal is a {@code DataIntegrityViolationException}
      * from this call (a 409) rather than a failed commit (a 500). The check that a production receipt is registered
      * with its production order ({@code tg_goods_receipts_production_registered}) stays deferred: the registration
-     * follows the save in the same transaction. There is no tolerance trigger to name: the purchase receipts' went with
-     * purchasing ({@code V20261113000200}).</p>
+     * follows the save in the same transaction.</p>
      *
      * <p>The lines of a draft are recounted in place; those of a posted one are not touched here (BR-05).</p>
      */
     @Override
     public GoodsReceipt save(GoodsReceipt receipt) {
         GoodsReceiptJpaEntity entity = jpa.findByIdWithLines(receipt.id()).orElseGet(() ->
-                new GoodsReceiptJpaEntity(receipt.id(), receipt.number(), receipt.type(), receipt.productionOrderId(),
-                        receipt.warehouseId(), receipt.receivedAt(), receipt.receivedBy(), receipt.deliveryNote(),
+                new GoodsReceiptJpaEntity(receipt.id(), receipt.number(), GoodsReceiptType.PRODUCTION,
+                        receipt.productionOrderId(), receipt.warehouseId(), receipt.receivedAt(), receipt.receivedBy(), receipt.deliveryNote(),
                         receipt.note()));
 
         Set<UUID> wanted = receipt.lines().stream().map(ReceiptLine::id).collect(Collectors.toSet());

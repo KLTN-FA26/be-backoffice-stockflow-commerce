@@ -424,6 +424,9 @@ stockflow:
   storage:
     provider: s3
     bucket: stockflow
+    # Made at startup when missing (StorageBucketInitializer): a fresh MinIO has no bucket, and the first stored file
+    # (an issued e-invoice's XML) would fail on it. Off where the bucket is infrastructure's (dev and prod: AWS).
+    create-missing-bucket: true
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
     region: ap-southeast-1
     # MinIO needs path-style addressing; real S3 uses virtual-host style. Wrong value produces a
@@ -473,13 +476,14 @@ stockflow:
     max-concurrent: 4
     acquire-timeout: PT15S
 
-  # The PDF/X output intent stamped into an approved print file (PrintOutputIntentProperties). Blank profile =
-  # the interim sRGB intent until the printer's ICC profile is chosen (open question B35); then e.g.
-  # profile: file:/etc/stockflow/ISOcoated_v2_eci.icc, output-condition-identifier: FOGRA39.
+  # The PDF/X output intent stamped into an approved print file (PrintOutputIntentProperties). By default the bundled
+  # ISO Coated v2 (ECI) profile, FOGRA39 - the one the storefront embeds (print/icc/README.md), so a laptop and the VPS
+  # need nothing installed. A printer's own profile: a classpath:/file: location or a plain path, with its condition
+  # identifier (required then). A blank profile falls back to the interim sRGB intent.
   design:
     print:
       output-intent:
-        profile: ${DESIGN_PRINT_ICC_PROFILE:}
+        profile: ${DESIGN_PRINT_ICC_PROFILE:classpath:print/icc/ISOcoated_v2_eci.icc}
         output-condition-identifier: ${DESIGN_PRINT_OUTPUT_CONDITION:}
         info: ${DESIGN_PRINT_OUTPUT_INFO:}
 
@@ -491,15 +495,14 @@ stockflow:
       # SKUs one availability call may ask about: a page's worth, not the whole catalogue.
       max-skus-per-request: 50
     search:
-      # Ranking weights (SCRUM-182): score = text-rank*w1 + title-similarity*w2 + exact-SKU*w3 + in-stock*w4.
-      # Text rank and similarity are 0..1, so an exact SKU always wins and stock only breaks near ties.
+      # Ranking weights (SCRUM-182): score = text-rank*w1 + title-similarity*w2 + exact-SKU*w3.
+      # Text rank and similarity are 0..1, so an exact SKU always wins. Blanks are never stocked: no stock weight.
       text-rank-weight: 1.0
       similarity-weight: 1.0
       exact-sku-weight: 10.0
-      in-stock-weight: 0.25
       # Typo fallback when nothing matches exactly: minimum trigram similarity with the title.
       fallback-similarity: 0.2
-      # Best matches that are ranked and pageable (stock is ranked in memory, over this many).
+      # Best matches that are ranked and pageable.
       ranking-window: 500
 
   product-media:
@@ -546,8 +549,6 @@ stockflow:
     edit-window: ${CHAT_EDIT_WINDOW:PT5M}
     # An offline customer is told of Sales' replies at most once per conversation per period.
     customer-notice-period: ${CHAT_CUSTOMER_NOTICE_PERIOD:PT1H}
-    # How long a quote drawn up from a quote request card is valid until Sales change it.
-    draft-quote-validity: ${CHAT_DRAFT_QUOTE_VALIDITY:P14D}
     # How often the SLA, auto-close and close jobs run.
     sla-job-interval: ${CHAT_SLA_JOB_INTERVAL:PT1M}
 
@@ -655,6 +656,11 @@ stockflow:
       model: ${ASSISTANT_VOICE_MODEL:}
       # Recordings one user may have written down a day, beside the 10 a minute questions share.
       daily-limit: ${ASSISTANT_VOICE_DAILY_LIMIT:100}
+    # The work queue's morning digest (FE contract 3.1): one inbox message per staff user with the counts of their
+    # sections, read as that user (RunAs). Off unless asked for; never with security off.
+    digest:
+      enabled: ${ASSISTANT_DIGEST_ENABLED:false}
+      cron: ${ASSISTANT_DIGEST_CRON:0 30 7 * * MON-SAT}
     # The watch (design §9.1, ADR-0013): every few minutes it reads, AS EACH back-office USER (their roles, scope and
     # warehouses now), the lists below that are theirs to act on, and posts what is new to their inbox. Off unless asked
     # for; never with security off. post: lists whose news is posted (heldOrders, the one list since the rescope,
@@ -686,16 +692,53 @@ stockflow:
       # The bank's six-digit NAPAS BIN: the chat's transfer card (kltn-docs 16 BR-06) draws a VietQR code with it. Without
       # it the card shows the account, with no QR code.
       bank-bin: ${COMPANY_BANK_BIN:}
+    # What the review of a credit request warns the accountant about (QĐ-A, owner decision 2026-11-26): warnings only,
+    # nothing is refused. Fewer settled contracts than min-settled-contracts: too little history. The suggested limit is
+    # suggested-months months of what the customer paid a month on average over the last twelve.
+    credit:
+      min-settled-contracts: ${CREDIT_MIN_SETTLED_CONTRACTS:2}
+      suggested-months: ${CREDIT_SUGGESTED_MONTHS:1}
+    # The bank feed (credit plan 2026-11-26 part C; kltn-docs 15 BR-02): SePay reads the company account and calls
+    # POST /api/v1/bank-transactions/webhooks/sepay for each incoming transfer; a transfer whose content names one
+    # installment becomes a receipt by itself, anything else waits in the Accountant's queue. Off unless
+    # BANK_FEED_ENABLED=true; then the webhook needs one credential, as configured on my.sepay.vn: the HMAC secret
+    # (recommended) or the API key. docs/bank-feed-sepay.md says how to set it up and demo it.
+    bank-feed:
+      enabled: ${BANK_FEED_ENABLED:false}
+      # The account customers pay into; a transfer into another account waits for the Accountant. Blank: any account.
+      account-number: ${BANK_FEED_ACCOUNT_NUMBER:${stockflow.payment.company-bank.account-number:}}
+      webhook:
+        hmac-secret: ${BANK_FEED_WEBHOOK_HMAC_SECRET:}
+        api-key: ${BANK_FEED_WEBHOOK_API_KEY:}
+        max-skew: ${BANK_FEED_WEBHOOK_MAX_SKEW:PT5M}
+      # SePay's API v2, read every night for transfers the webhook missed. A Test-mode token works only on
+      # https://userapi-sandbox.sepay.vn/v2. No token: the catch-up only retries transfers a failure left unhandled.
+      api:
+        base-url: ${BANK_FEED_API_BASE_URL:https://userapi.sepay.vn/v2}
+        token: ${BANK_FEED_API_TOKEN:}
+        lookback: ${BANK_FEED_API_LOOKBACK:P3D}
+      catch-up-cron: ${BANK_FEED_CATCH_UP_CRON:0 40 1 * * *}
 
   # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11) and an e-invoice is issued by (WF-05 E1/E2).
   # Blank here on purpose: local, dev and test carry a demo one, and in the prod profile the application refuses
-  # to start until all five are set (SellerProfileRequirement), so no contract or invoice names a made-up company.
+  # to start until the five legal fields are set (SellerProfileRequirement), so no contract or invoice names a made-up company.
   seller:
     name: ${SELLER_NAME:}
     tax-code: ${SELLER_TAX_CODE:}
     address: ${SELLER_ADDRESS:}
     representative: ${SELLER_REPRESENTATIVE:}
     representative-title: ${SELLER_REPRESENTATIVE_TITLE:}
+    # The letterhead of business documents (quotation, contract): optional, each left out of the paper when blank. The
+    # account is the one customers pay into, so it follows payment.company-bank unless set apart. logo is a Spring
+    # resource location of a PNG (classpath:..., file:/...); the application refuses to start on one it cannot read.
+    phone: ${SELLER_PHONE:}
+    email: ${SELLER_EMAIL:}
+    website: ${SELLER_WEBSITE:}
+    bank-account-number: ${SELLER_BANK_ACCOUNT_NUMBER:${COMPANY_BANK_ACCOUNT_NUMBER:}}
+    bank-name: ${SELLER_BANK_NAME:${COMPANY_BANK_NAME:}}
+    bank-branch: ${SELLER_BANK_BRANCH:}
+    city: ${SELLER_CITY:}
+    logo: ${SELLER_LOGO:}
   invoicing:
     # E-invoices (WF-05 E2). Which provider issues and whether complete drafts are issued automatically are data
     # (invoicing.einvoice_provider_config), changed at runtime by the administrator - not here.
@@ -703,12 +746,29 @@ stockflow:
     # issuing is on.
     reconcile-interval: ${EINVOICE_RECONCILE_INTERVAL:PT30S}
     # How often drafts close to their deadline are looked for, and how long before it the accountants are told. An
-    # invoice is signed and sent no later than the working day after its date (ND 254/2026 Phu luc diem 7).
+    # invoice is issued by the end of its date (ND 254/2026 Dieu 9 khoan 1; WF-05 Q-1: the next working day of Phu luc
+    # diem 7 is for night sales without automatic issuing, not this system), so the warning comes within the day: four
+    # hours ahead.
     deadline-sweep-interval: ${EINVOICE_DEADLINE_SWEEP_INTERVAL:PT15M}
-    due-warning-lead: ${EINVOICE_DUE_WARNING_LEAD:P1D}
+    due-warning-lead: ${EINVOICE_DUE_WARNING_LEAD:PT4H}
     # How long an invoice may wait for the provider's answer before the accountants are told it is stuck (the same
     # sweep). The reconciliation keeps asking either way.
     stuck-after: ${EINVOICE_STUCK_AFTER:PT30M}
+    # How long after it was last sent an invoice the provider has no record of may be taken back from it by the
+    # accountant (POST /api/v1/einvoices/{id}/withdrawal). Longer than two hours: SePay retries a request it took in for
+    # up to two hours, and the application refuses to start with less.
+    withdraw-after: ${EINVOICE_WITHDRAW_AFTER:PT3H}
+    # How long after an invoice was submitted the reconciliation may still send it again by itself while the provider
+    # has no record of it. Past it the invoice is only asked about, so its last send ages and the accountant can take
+    # it back withdraw-after later: sent again every quiet period for ever, it never could (HD-1).
+    auto-resend-for: ${EINVOICE_AUTO_RESEND_FOR:PT1H}
+    # How long after its last send an invoice the provider still "cannot say" anything about may be taken back by the
+    # accountant, after checking with the provider (HD-1). At least withdraw-after; without it such an invoice, and
+    # every later-dated one of its series, would wait for good.
+    withdraw-unknown-after: ${EINVOICE_WITHDRAW_UNKNOWN_AFTER:P1D}
+    # The provider's remaining invoices under which the accountants are warned, once a day (kltn-docs 21 BR-09). Only a
+    # provider that tells its quota (SePay: GET /v1/usage) is asked; 0 turns the warning off.
+    quota-warning-below: ${EINVOICE_QUOTA_WARNING_BELOW:50}
     sandbox:
       # How long the sandbox provider takes to "sign and get the tax authority's code" before a result is there.
       processing-delay: ${EINVOICE_SANDBOX_PROCESSING_DELAY:PT5S}
@@ -732,6 +792,22 @@ stockflow:
       resubmit-window: ${EINVOICE_VIETTEL_RESUBMIT_WINDOW:P3D}
       file-pause: ${EINVOICE_VIETTEL_FILE_PAUSE:PT2S}
       payment-status-paid: ${EINVOICE_VIETTEL_PAYMENT_STATUS_PAID:true}
+    sepay:
+      # SePay eInvoice. Its key is configuration, unlike Viettel's account: a client id and secret from SePay's portal
+      # ("API xuat hoa don dien tu"), issued per environment - a SANDBOX key signs in only to the sandbox host. Not in
+      # use until an administrator switches to it (POST /api/v1/einvoice-settings/providers/SEPAY_EINVOICE/activation),
+      # which is refused while either value is blank.
+      environment: ${EINVOICE_SEPAY_ENVIRONMENT:SANDBOX}
+      client-id: ${EINVOICE_SEPAY_CLIENT_ID:}
+      client-secret: ${EINVOICE_SEPAY_CLIENT_SECRET:}
+      # Which of the account's invoicing registrations (GET /v1/provider-accounts) issues; blank takes the first active.
+      provider-account-id: ${EINVOICE_SEPAY_PROVIDER_ACCOUNT_ID:}
+      sandbox-url: ${EINVOICE_SEPAY_SANDBOX_URL:https://einvoice-api-sandbox.sepay.vn}
+      production-url: ${EINVOICE_SEPAY_PRODUCTION_URL:https://einvoice-api.sepay.vn}
+      read-timeout: ${EINVOICE_SEPAY_READ_TIMEOUT:PT30S}
+      # A transaction a look-up does not find is sent again only this long after it was last sent. 4 x (connect-timeout
+      # + read-timeout) must stay below it and the 15-minute provider lease, or the application does not start.
+      resubmit-quiet-period: ${EINVOICE_SEPAY_RESUBMIT_QUIET_PERIOD:PT10M}
     corrections:
       # Whether a 04/SS-HDDT notice may also be recorded for an invoice that was adjusted or replaced. TT 91/2026
       # Dieu 10 khoan 1 diem b does not ask for one and it is not verified whether a provider sends it by itself
@@ -739,9 +815,23 @@ stockflow:
       # (diem a) is always notified, whatever this says.
       error-notice-with-correction: ${EINVOICE_ERROR_NOTICE_WITH_CORRECTION:false}
   order:
+    quote:
+      # How long a quote drawn up from a customer's quote request - on the chat's card or in the request inbox - is
+      # valid until Sales change it.
+      draft-from-request-validity: ${QUOTE_DRAFT_FROM_REQUEST_VALIDITY:P14D}
+      # kltn-docs 14 BR-10 (2026-11-26, replacing decision D-1's alert after the send): a quote with a price break more
+      # than this percent below its reference - the customer's own price, else the variant's standard price - or with no
+      # reference, waits for the Sales Manager (sales-quote-price-approvals:APPROVE) to approve it before it is sent.
+      price-approval-percent: ${QUOTE_PRICE_APPROVAL_PERCENT:10}
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
       free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}
+      # Standing terms printed on a quotation and a contract. The tolerance of a printed run's quantity, either way
+      # (0 prints no clause, at most 10); the warranty of the print after delivery, in months (0 prints none); the
+      # penalty for a breach, which Luat Thuong mai 2005 Dieu 301 caps at 8% - more is refused at startup.
+      quantity-tolerance-percent: ${CONTRACT_QUANTITY_TOLERANCE_PERCENT:5}
+      warranty-months: ${CONTRACT_WARRANTY_MONTHS:6}
+      penalty-percent: ${CONTRACT_PENALTY_PERCENT:8}
     production-order:
       # How long the links e-mailed to a producer - its production order slip and print files - work (4A-3). Every use
       # is checked again (the production order still open, the file still the approved one) and gets a presigned URL
@@ -780,6 +870,10 @@ stockflow:
       # budgetExhausted (LoadPlanRequest.wallLimit).
       solver-wall-limit: PT12S
     ahamove:
+      # live: Ahamove's real API. fake: an in-memory Ahamove that makes no network call, for demos (FakeAhamoveGateway);
+      # it needs no STOCKFLOW_SECRETS_KEY, adds a remote control under /api/v1/fulfillment/dev/fake-ahamove, and the
+      # application refuses to start with it under the prod profile. Only the local profile sets it, never a server.
+      mode: ${AHAMOVE_MODE:live}
       # Ahamove's partner API v3 (3-4). Which one a carrier calls is its own setting (STAGING / PRODUCTION), as are its
       # account and key (sealed on the carrier).
       staging-url: ${AHAMOVE_STAGING_URL:https://partner-apistg.ahamove.com}

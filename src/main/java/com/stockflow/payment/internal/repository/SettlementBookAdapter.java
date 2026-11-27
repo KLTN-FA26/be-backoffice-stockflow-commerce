@@ -36,11 +36,12 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
             id, order_id, contract_id, customer_id, order_number, contract_number, kind, source_id, currency,
             collected_amount, closed_amount, reduced_amount, surplus_amount, fee_amount, fee_percent, fee_reason,
             fee_detail, fee_covered_amount, refundable_amount, fee_owed_amount, fee_installment_id, settled_by,
-            settled_at""";
+            settled_at, shipment_id, shipping_fee_waived_amount, carried_to_fee_amount""";
 
     private static final String RECORD_COLUMNS = """
             id, order_id, customer_id, order_number, amount, currency, refunded_on, reference, note, status, recorded_by,
-            recorded_at, voided_by, voided_at, void_reason""";
+            recorded_at, voided_by, voided_at, void_reason, payee_account_number, payee_bank_name,
+            payee_account_holder""";
 
     private final NamedParameterJdbcTemplate jdbc;
 
@@ -58,6 +59,12 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
     }
 
     @Override
+    public Optional<OrderSettlement> findOfShipment(UUID shipmentId) {
+        return settlements("kind = 'SHIPMENT_RETURNED' AND shipment_id = :shipment",
+                new MapSqlParameterSource("shipment", shipmentId)).stream().findFirst();
+    }
+
+    @Override
     public List<OrderSettlement> ofOrder(UUID orderId) {
         return settlements("order_id = :order", new MapSqlParameterSource("order", orderId));
     }
@@ -65,7 +72,7 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
     private List<OrderSettlement> settlements(String where, MapSqlParameterSource params) {
         List<Object[]> rows = jdbc.query("SELECT " + SETTLEMENT_COLUMNS + " FROM payment.order_settlement WHERE "
                 + where + " ORDER BY settled_at, id", params, (rs, n) -> {
-            Object[] row = new Object[23];
+            Object[] row = new Object[26];
             for (int i = 0; i < row.length; i++) {
                 row[i] = rs.getObject(i + 1);
             }
@@ -90,7 +97,8 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                     (BigDecimal) r[9], (BigDecimal) r[10], (BigDecimal) r[11], (BigDecimal) r[12], (BigDecimal) r[13],
                     terms((BigDecimal) r[14], (BigDecimal) r[13], (String) r[15], (String) r[16]),
                     (BigDecimal) r[17], (BigDecimal) r[18], (BigDecimal) r[19], (UUID) r[20], (UUID) r[21],
-                    instant(r[22]), reductions.getOrDefault(id, List.of())));
+                    instant(r[22]), reductions.getOrDefault(id, List.of()), (UUID) r[23], (BigDecimal) r[24],
+                    (BigDecimal) r[25]));
         }
         return settlements;
     }
@@ -110,7 +118,8 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                         , version, created_at, created_by)
                         VALUES (:id, :order, :contract, :customer, :orderNumber, :contractNumber, :kind, :source,
                                 :currency, :collected, :closed, :reduced, :surplus, :fee, :percent, :reason, :detail,
-                                :covered, :refundable, :owed, :feeItem, :by, :at, 0, NOW(), :createdBy)""",
+                                :covered, :refundable, :owed, :feeItem, :by, :at, :shipment, :waived, :carried, 0, NOW(),
+                                :createdBy)""",
                 new MapSqlParameterSource("id", s.id())
                         .addValue("order", s.orderId())
                         .addValue("contract", s.contractId())
@@ -134,6 +143,9 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                         .addValue("feeItem", s.feeItemId())
                         .addValue("by", s.settledBy())
                         .addValue("at", utc(s.settledAt()))
+                        .addValue("shipment", s.shipmentId())
+                        .addValue("waived", s.shippingFeeWaived())
+                        .addValue("carried", s.carriedToFee())
                         .addValue("createdBy", s.settledBy() == null ? "system" : s.settledBy().toString()));
         for (OrderSettlement.Reduction reduction : s.reductions()) {
             jdbc.update("""
@@ -152,14 +164,16 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
             rs.getObject(2, UUID.class), rs.getObject(3, UUID.class), rs.getString(4), rs.getBigDecimal(5),
             rs.getString(6), rs.getObject(7, java.time.LocalDate.class), rs.getString(8), rs.getString(9),
             RefundRecord.Status.valueOf(rs.getString(10)), rs.getObject(11, UUID.class), instant(rs.getTimestamp(12)),
-            rs.getObject(13, UUID.class), instant(rs.getTimestamp(14)), rs.getString(15));
+            rs.getObject(13, UUID.class), instant(rs.getTimestamp(14)), rs.getString(15),
+            RefundRecord.PayeeAccount.of(rs.getString(16), rs.getString(17), rs.getString(18)));
 
     @Override
     public RefundRecord record(RefundRecord r) {
         jdbc.update("INSERT INTO payment.refund_record (" + RECORD_COLUMNS + """
                         , version, created_at, created_by)
                         VALUES (:id, :order, :customer, :orderNumber, :amount, :currency, :refundedOn, :reference,
-                                :note, :status, :by, :at, NULL, NULL, NULL, 0, NOW(), :createdBy)""",
+                                :note, :status, :by, :at, NULL, NULL, NULL, :payeeNumber, :payeeBank,
+                                :payeeHolder, 0, NOW(), :createdBy)""",
                 new MapSqlParameterSource("id", r.id())
                         .addValue("order", r.orderId())
                         .addValue("customer", r.customerId())
@@ -172,6 +186,12 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                         .addValue("status", r.status().name())
                         .addValue("by", r.recordedBy())
                         .addValue("at", utc(r.recordedAt()))
+                        .addValue("payeeNumber", r.payeeAccount() == null ? null
+                                : r.payeeAccount().accountNumber(), java.sql.Types.VARCHAR)
+                        .addValue("payeeBank", r.payeeAccount() == null ? null : r.payeeAccount().bankName(),
+                                java.sql.Types.VARCHAR)
+                        .addValue("payeeHolder", r.payeeAccount() == null ? null
+                                : r.payeeAccount().accountHolder(), java.sql.Types.VARCHAR)
                         .addValue("createdBy", r.recordedBy().toString()));
         return r;
     }
@@ -222,8 +242,10 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
 
     @Override
     public Page<RefundRecord> records(UUID customerId, UUID orderId, RefundRecord.Status status, Pageable pageable) {
-        String where = """
-                 WHERE (CAST(:customer AS UUID) IS NULL OR customer_id = :customer)
+        // The leading space is written out: a text block strips the indentation its lines share, and with " WHERE" the
+        // least indented line, that space went too - "payment.refund_recordWHERE", a 500 on every call (demo run 24/11).
+        String where = " " + """
+                WHERE (CAST(:customer AS UUID) IS NULL OR customer_id = :customer)
                    AND (CAST(:order AS UUID) IS NULL OR order_id = :order)
                    AND (CAST(:status AS VARCHAR) IS NULL OR status = :status)""";
         MapSqlParameterSource params = new MapSqlParameterSource("customer", customerId).addValue("order", orderId)
@@ -242,7 +264,12 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                                AS customer_id, MAX(s.currency) AS currency, SUM(s.refundable_amount) AS refundable,
                                COALESCE((SELECT SUM(r.amount) FROM payment.refund_record r
                                           WHERE r.order_id = s.order_id AND r.status = 'RECORDED'), 0) AS refunded,
-                               MAX(s.settled_at) AS settled_at
+                               MIN(s.settled_at) FILTER (WHERE s.refundable_amount > 0) AS owed_since,
+                               COALESCE((SELECT SUM(i.amount - i.reduced_amount - i.paid_amount)
+                                           FROM payment.installment i
+                                          WHERE i.order_id = s.order_id
+                                            AND i.milestone IN ('CANCELLATION_FEE', 'FAILED_TRIP_FEE')
+                                            AND i.status NOT IN ('PAID', 'CANCELLED')), 0) AS fee_owed
                           FROM payment.order_settlement s
                          WHERE CAST(:customer AS UUID) IS NULL OR s.customer_id = :customer
                          GROUP BY s.order_id
@@ -253,10 +280,13 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                 .addValue("limit", pageable.getPageSize()).addValue("offset", pageable.getOffset());
         long total = count("SELECT count(*)" + from, params);
         List<OrderRefund> content = jdbc.query("""
-                        SELECT o.order_id, o.order_number, o.customer_id, o.currency, o.refundable, o.refunded""" + from
-                        + " ORDER BY o.settled_at DESC, o.order_id LIMIT :limit OFFSET :offset", params,
+                        SELECT o.order_id, o.order_number, o.customer_id, o.currency, o.refundable, o.refunded,
+                               GREATEST(o.refundable - o.refunded, 0) AS remaining, o.fee_owed""" + from
+                        // TT-4: the oldest debt first - by the first settlement that made something refundable.
+                        + " ORDER BY o.owed_since, o.order_id LIMIT :limit OFFSET :offset", params,
                 (rs, n) -> new OrderRefund(rs.getObject(1, UUID.class), rs.getString(2),
-                        UUID.fromString(rs.getString(3)), rs.getString(4), rs.getBigDecimal(5), rs.getBigDecimal(6)));
+                        UUID.fromString(rs.getString(3)), rs.getString(4), rs.getBigDecimal(5), rs.getBigDecimal(6),
+                        rs.getBigDecimal(7), rs.getBigDecimal(8)));
         return new PageImpl<>(content, pageable, total);
     }
 

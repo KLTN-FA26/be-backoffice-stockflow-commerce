@@ -10,7 +10,7 @@ import com.stockflow.chat.internal.domain.ChatMessage;
 import com.stockflow.chat.internal.domain.ChatMessageRepository;
 import com.stockflow.chat.internal.domain.ContextKind;
 import com.stockflow.chat.internal.domain.ContextRef;
-import com.stockflow.chat.internal.domain.VietQr;
+import com.stockflow.payment.api.VietQr;
 import com.stockflow.contracts.DesignQuoteRequestClosed;
 import com.stockflow.contracts.EInvoiceIssued;
 import com.stockflow.contracts.InstallmentDue;
@@ -105,7 +105,10 @@ public class DocumentCards {
         });
     }
 
-    /** A customer asked one quote over several approved designs of a project: one card of several lines. */
+    /**
+     * A customer asked one quote over several designs of a project - approved, waiting for review or returned (12
+     * BR-25): one card of several lines, "approved x/y".
+     */
     public void projectQuoteRequested(UUID requestId) {
         quoteRequests.projectRequest(requestId).ifPresent(request -> {
             ContextRef project = new ContextRef(ContextKind.DESIGN_PROJECT, request.projectId());
@@ -125,6 +128,14 @@ public class DocumentCards {
 
     /** Sales closed a project's quote request: its card closes, as a single design's does. */
     public void projectQuoteRequestClosed(UUID requestId) {
+        projectQuoteRequestChanged(requestId);
+    }
+
+    /**
+     * A project's quote request moved without being asked again - a design on it decided or submitted again, every
+     * design on it approved, the request closed: its card shows it as it is now.
+     */
+    public void projectQuoteRequestChanged(UUID requestId) {
         quoteRequests.projectRequest(requestId).ifPresent(request -> card(
                 new ContextRef(ContextKind.DESIGN_PROJECT, request.projectId()), CardKind.QUOTE_REQUEST, "requestId",
                 requestId).ifPresent(card -> refreshProjectCard(card, request)));
@@ -150,12 +161,19 @@ public class DocumentCards {
         payload.putPOJO("desiredDeliveryDate", request.desiredDeliveryDate());
         payload.putPOJO("requestedAt", request.requestedAt());
         payload.set("lines", json.valueToTree(request.lines()));
+        // "Approved x/y": Sales quote it once every line is approved (12 BR-25.2).
+        payload.put("approvedCount", request.approvedCount());
+        payload.put("lineCount", request.lines().size());
+        if (request.closeReason() != null) {
+            payload.put("closeReason", request.closeReason());
+        }
         return payload;
     }
 
     /**
      * A design moved (decided, submitted again) or its request closed: its quote request cards show it as it is now -
-     * approved with its SKU, back to draft with the reason, or closed (B40: the card follows the design).
+     * approved with its SKU, back to draft with the reason, or closed (B40: the card follows the design) - and so does
+     * the card of its project's open request (12 BR-25).
      */
     public void designChanged(UUID designId) {
         ContextRef design = new ContextRef(ContextKind.DESIGN, designId);
@@ -171,6 +189,7 @@ public class DocumentCards {
                 cards.update(card.id(), state, payload, Actor.system(), null, null);
             });
         }
+        quoteRequests.openProjectRequestOf(designId).ifPresent(this::projectQuoteRequestChanged);
     }
 
     public void designQuoteRequestClosed(DesignQuoteRequestClosed event) {
@@ -214,20 +233,41 @@ public class DocumentCards {
             default -> null;
         };
         Actor actor = cards.actorOf(event.changedBy());
+        // The quote ended (cancelled, expired): an earlier revision's card ends with it. The customer who asked for
+        // changes holds revision N's card while Sales write N+1; cancelling N+1 before sending it left that card
+        // "changes requested" for good. It takes the end state on its own payload - never the unsent draft's terms.
+        boolean ended = state == CardState.CANCELLED || state == CardState.EXPIRED;
         for (ChatMessage card : messages.cardsAbout(ref, CardKind.QUOTE)) {
             if (card.card().state() == CardState.SUPERSEDED) {
                 continue;
             }
-            boolean latest = cards.readPayload(card.card().payloadJson()).path("revision").asInt() == quote.revision();
-            cards.update(card.id(), latest ? state : null, latest ? payload : null, actor, null,
-                    "{\"quoteStatus\":\"" + event.toStatus() + "\"}");
+            JsonNode old = cards.readPayload(card.card().payloadJson());
+            boolean latest = old.path("revision").asInt() == quote.revision();
+            String detail = "{\"quoteStatus\":\"" + event.toStatus() + "\"}";
+            if (latest) {
+                cards.update(card.id(), state, payload, actor, null, detail);
+            } else if (ended && old instanceof ObjectNode kept) {
+                ObjectNode endedPayload = kept.deepCopy();
+                endedPayload.put("status", event.toStatus());
+                cards.update(card.id(), state, endedPayload, actor, null, detail);
+            } else {
+                cards.update(card.id(), null, null, actor, null, detail);
+            }
         }
     }
 
     // ---- contracts (16 §4.3 step 8) ---------------------------------------------------------------------------------
 
-    /** Sent: the contract's card with its document and installments; signed or cancelled: the card shows it. */
+    /**
+     * Sent: the contract's card with its document and installments; signed or cancelled: the card shows it. Sent or
+     * cancelled, the card of the quote the order came from is redrawn too: sending the contract is when the customer
+     * may open the order (17 §5.2), cancelling it puts the order back to a draft they may not, and the quote card links
+     * to the order only while they can - the quote itself did not move, so {@link #quoteChanged} is not called.
+     */
     public void contractChanged(SalesContractStatusChanged event) {
+        if ("SENT".equals(event.status()) || "CANCELLED".equals(event.status())) {
+            quoteOfOrderChanged(event.orderId());
+        }
         Optional<ContractCards.Card> found = contracts.contract(event.orderId(), event.contractId());
         if (found.isEmpty()) {
             return;
@@ -251,16 +291,35 @@ public class DocumentCards {
         CardState state = switch (event.status()) {
             case "SIGNED" -> CardState.ACTED;
             case "CANCELLED" -> CardState.CANCELLED;
-            case "COMPLETED" -> CardState.CLOSED;
+            // WF-05 Q-6: a contract liquidated - its order delivered nothing - is closed like a completed one.
+            case "COMPLETED", "LIQUIDATED" -> CardState.CLOSED;
             default -> null;
         };
         existing.stream().filter(c -> c.card().state() != CardState.SUPERSEDED).forEach(c -> cards.update(c.id(),
                 state, payload, Actor.system(), null, null));
     }
 
+    /** The latest revision's quote card shows the converted order as the customer may now see it; its state stays. */
+    private void quoteOfOrderChanged(UUID orderId) {
+        quotes.quoteOfOrder(orderId).ifPresent(quote -> {
+            JsonNode payload = quotePayload(quote);
+            for (ChatMessage card : messages.cardsAbout(new ContextRef(ContextKind.QUOTE, quote.id()), CardKind.QUOTE)) {
+                if (card.card().state() != CardState.SUPERSEDED && cards.readPayload(card.card().payloadJson())
+                        .path("revision").asInt() == quote.revision()) {
+                    cards.update(card.id(), null, payload, Actor.system(), null, null);
+                }
+            }
+        });
+    }
+
     // ---- transfer details (16 §4.4, BR-06) --------------------------------------------------------------------------
 
-    /** An installment fell due: its transfer details, by the system, once per installment. */
+    /**
+     * An installment fell due: its transfer details, by the system, once per installment. Falling due again - WF-05
+     * BE-04: a carrier's return or a later delivery moved the date an installment after delivery counts from, and
+     * payment re-dated it ({@code Installment.redate}) - posts no second card: the one posted shows the new due date
+     * and amount, as after a receipt ({@link #paymentsChanged}). Before, it kept the first date.
+     */
     public void installmentDue(InstallmentDue event) {
         Optional<CustomerInstallments.Transfer> found = installments.transfer(event.installmentId());
         if (found.isEmpty() || found.get().outstanding().signum() <= 0) {
@@ -268,8 +327,11 @@ public class DocumentCards {
         }
         CustomerInstallments.Transfer transfer = found.get();
         ContextRef ref = new ContextRef(ContextKind.CONTRACT, transfer.contractId());
-        if (card(ref, CardKind.PAYMENT_INFO, "installmentId", transfer.installmentId()).isPresent()
-                || !owned(ref, transfer.customerId())) {
+        if (!owned(ref, transfer.customerId())) {
+            return;
+        }
+        if (card(ref, CardKind.PAYMENT_INFO, "installmentId", transfer.installmentId()).isPresent()) {
+            paymentsChanged(transfer.customerId());
             return;
         }
         cards.post(new ChatCards.NewCard(transfer.customerId(), ref,
@@ -279,22 +341,40 @@ public class DocumentCards {
     }
 
     /**
-     * The customer paid (or a receipt was voided): their open transfer cards show what is left - paid in full, the
-     * card is done; cancelled with its order, the card is too.
+     * The customer paid, a receipt was voided, or the order was cancelled: their transfer cards show what is left -
+     * paid in full, the card is done; cancelled with its order, the card is too, its VietQR gone. A card done because
+     * the installment was paid opens again when a void leaves it owing (15 BR-13): the customer was told it was paid,
+     * and is told it is not any more, with the transfer details and the code. Superseded, cancelled or closed cards
+     * stay as they are.
      */
     public void paymentsChanged(UUID customerId) {
-        for (ChatMessage card : messages.openCardsOf(customerId,
-                EnumSet.of(CardKind.PAYMENT_INFO, CardKind.PAYMENT_REMINDER))) {
+        for (ChatMessage card : messages.cardsOf(customerId,
+                EnumSet.of(CardKind.PAYMENT_INFO, CardKind.PAYMENT_REMINDER),
+                EnumSet.of(CardState.OPEN, CardState.ACTED))) {
             JsonNode old = cards.readPayload(card.card().payloadJson());
             installments.transfer(uuid(old, "installmentId")).ifPresent(transfer -> {
                 CardState state = switch (transfer.status()) {
                     case "PAID" -> CardState.ACTED;
                     case "CANCELLED" -> CardState.CANCELLED;
-                    default -> null;
+                    default -> CardState.OPEN;
                 };
-                cards.update(card.id(), state, transferPayload(transfer, old.path("reminder").asBoolean()),
-                        Actor.system(), null, null);
+                ObjectNode payload = transferPayload(transfer, old.path("reminder").asBoolean());
+                // Nothing changed: no update, so no conversation lock - a customer's paid cards are walked on every
+                // receipt, and most of them stay as they were.
+                if (state == card.card().state() && sameAsStored(payload, old)) {
+                    return;
+                }
+                cards.update(card.id(), state, payload, Actor.system(), null, null);
             });
+        }
+    }
+
+    /** Whether {@code payload}, once stored, reads as {@code stored}: compared as text, the way the card keeps it. */
+    private boolean sameAsStored(ObjectNode payload, JsonNode stored) {
+        try {
+            return cards.readPayload(json.writeValueAsString(payload)).equals(stored);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException unwritable) {
+            return false;
         }
     }
 
@@ -327,9 +407,10 @@ public class DocumentCards {
             node.put("bankBin", bank.bankBin());
             node.put("accountNumber", bank.accountNumber());
             node.put("accountName", bank.accountName());
-            boolean payable = transfer.outstanding().signum() > 0 && VND.equals(transfer.currency());
-            payload.put("vietQr", bank.bankBin() == null || !payable ? null : VietQr.payload(bank.bankBin(),
-                    bank.accountNumber(), transfer.outstanding(), transfer.transferReference()));
+            // The order page's transfer instructions draw the same code (R5-9); nothing to scan for an installment
+            // paid or cancelled.
+            payload.put("vietQr", VietQr.forInstallment(bank, transfer.outstanding(), transfer.currency(),
+                    transfer.status(), transfer.transferReference()));
         } else {
             payload.putNull("bank");
             payload.putNull("vietQr");

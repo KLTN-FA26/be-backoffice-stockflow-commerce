@@ -86,8 +86,8 @@ class FindOrderToolTest {
     private final PaymentService payments = mock(PaymentService.class);
     private final ProductionOrderQueries productionOrders = mock(ProductionOrderQueries.class);
     private final OrderStockCoverage stockCoverage = mock(OrderStockCoverage.class);
-    private final FindOrderTool tool = new FindOrderTool(orders, picking, currentUsers, payments, productionOrders,
-            stockCoverage, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final FindOrderTool tool = new FindOrderTool(orders, picking, currentUsers, payments,
+            new OrderBlockers(orders, productionOrders, stockCoverage, picking, Clock.fixed(NOW, ZoneOffset.UTC)));
     /** The standings a test set; every other order has none. */
     private final Map<UUID, InstallmentStanding> standings = new HashMap<>();
 
@@ -448,10 +448,11 @@ class FindOrderToolTest {
         OrderSummary order = order(OrderStatus.PACKED, lifecycle(null, null, List.of(), false),
                 List.of(line(UUID.randomUUID(), "CUP-12OZ", false)));
         when(orders.handoverBlocks(anyCollection(), any())).thenReturn(List.of(new HandoverBlock(order.orderId(),
-                order.orderNumber(), "ORDER_BALANCE_NOT_PAID", BigDecimal.valueOf(437_580), "VND", 2, null)));
+                order.orderNumber(), "ORDER_BALANCE_NOT_PAID", List.of("ORDER_BALANCE_NOT_PAID"), BigDecimal.valueOf(437_580), "VND", 2,
+                null)));
         as(ACCOUNTANT);
 
-        FindOrderTool.Blocker due = find(order, List.of()).blockers().reasons().getFirst();
+        OrderBlockers.Blocker due = find(order, List.of()).blockers().reasons().getFirst();
 
         assertThat(due.code()).isEqualTo("INSTALLMENT_DUE");
         assertThat(due.amountDue()).isEqualByComparingTo("437580");
@@ -460,7 +461,7 @@ class FindOrderToolTest {
         verify(orders).handoverBlocks(List.of(order.orderId()), NOW);
 
         as(MANAGER);
-        FindOrderTool.Blocker hidden = find(order, List.of()).blockers().reasons().getFirst();
+        OrderBlockers.Blocker hidden = find(order, List.of()).blockers().reasons().getFirst();
         assertThat(hidden.code()).isEqualTo("INSTALLMENT_DUE");
         assertThat(hidden.amountDue()).isNull();
         assertThat(hidden.currency()).isNull();
@@ -474,15 +475,15 @@ class FindOrderToolTest {
                 List.of(line(UUID.randomUUID(), "CUP-12OZ", false)));
         when(orders.handoverBlocks(anyCollection(), any())).thenReturn(List.of(
                 new HandoverBlock(order.orderId(), order.orderNumber(), "DELIVERY_BATCH_WINDOW_NOT_OPEN",
-                        BigDecimal.ZERO, "VND", 3, LocalDate.parse("2026-11-20")),
-                new HandoverBlock(order.orderId(), order.orderNumber(), "SOMETHING_NEW", BigDecimal.ZERO, "VND",
-                        null, null),
-                new HandoverBlock(UUID.randomUUID(), "SO-OTHER", "ORDER_BALANCE_NOT_PAID", BigDecimal.TEN, "VND",
-                        1, null)));
+                        List.of("DELIVERY_BATCH_WINDOW_NOT_OPEN"), BigDecimal.ZERO, "VND", 3, LocalDate.parse("2026-11-20")),
+                new HandoverBlock(order.orderId(), order.orderNumber(), "SOMETHING_NEW", List.of("SOMETHING_NEW"),
+                        BigDecimal.ZERO, "VND", null, null),
+                new HandoverBlock(UUID.randomUUID(), "SO-OTHER", "ORDER_BALANCE_NOT_PAID",
+                        List.of("ORDER_BALANCE_NOT_PAID"), BigDecimal.TEN, "VND", 1, null)));
 
-        List<FindOrderTool.Blocker> reasons = find(order, List.of()).blockers().reasons();
+        List<OrderBlockers.Blocker> reasons = find(order, List.of()).blockers().reasons();
 
-        assertThat(reasons).extracting(FindOrderTool.Blocker::code)
+        assertThat(reasons).extracting(OrderBlockers.Blocker::code)
                 .as("another order's block is not this order's").containsExactly("DELIVERY_WINDOW_NOT_OPEN",
                         "HANDOVER_REFUSED");
         assertThat(reasons.getFirst().batchSeq()).isEqualTo(3);
@@ -510,17 +511,17 @@ class FindOrderToolTest {
                 production("PRD-20261110-0001", "RECEIVED", 1, 10, 10),
                 production("PRD-20261110-0002", "IN_PRODUCTION", 2, 6, 2)));
 
-        FindOrderTool.Blockers blockers = find(order, List.of()).blockers();
+        OrderBlockers.Blockers blockers = find(order, List.of()).blockers();
 
-        assertThat(blockers.reasons()).extracting(FindOrderTool.Blocker::code)
+        assertThat(blockers.reasons()).extracting(OrderBlockers.Blocker::code)
                 .containsExactly("STOCK_NOT_HELD", "PRODUCTION_NOT_RECEIVED");
-        FindOrderTool.Blocker stock = blockers.reasons().getFirst();
+        OrderBlockers.Blocker stock = blockers.reasons().getFirst();
         assertThat(stock.batchSeq()).isEqualTo(2);
         assertThat(stock.sku()).isEqualTo("CUP-12OZ");
         assertThat(stock.cartons()).isEqualTo(10);
         assertThat(stock.heldCartons()).isEqualTo(4);
         assertThat(stock.shortCartons()).isEqualTo(6);
-        FindOrderTool.Blocker made = blockers.reasons().get(1);
+        OrderBlockers.Blocker made = blockers.reasons().get(1);
         assertThat(made.productionOrderCode()).isEqualTo("PRD-20261110-0002");
         assertThat(made.productionOrderStatus()).isEqualTo("IN_PRODUCTION");
         assertThat(made.batchSeq()).isEqualTo(2);
@@ -541,7 +542,7 @@ class FindOrderToolTest {
         when(stockCoverage.coverage(order.orderId())).thenReturn(Optional.of(new OrderStockCoverage.Coverage(false,
                 null, false, List.of(new OrderStockCoverage.Line("CUP-12OZ", 10, 0, 10)), List.of())));
 
-        assertThat(find(order, List.of()).blockers().reasons()).extracting(FindOrderTool.Blocker::code)
+        assertThat(find(order, List.of()).blockers().reasons()).extracting(OrderBlockers.Blocker::code)
                 .containsExactly("NO_SHIPPING_WAREHOUSE");
     }
 
@@ -552,10 +553,10 @@ class FindOrderToolTest {
         OrderSummary order = order(OrderStatus.CONFIRMED, lifecycle(null, null, List.of(), false),
                 List.of(line(UUID.randomUUID(), "CUP-12OZ", true)));
 
-        FindOrderTool.Blockers blockers = find(order, List.of()).blockers();
+        OrderBlockers.Blockers blockers = find(order, List.of()).blockers();
 
         assertThat(blockers.reasons()).isEmpty();
-        assertThat(blockers.notChecked()).containsExactly(FindOrderTool.STOCK_HELD, FindOrderTool.PRODUCTION_ORDERS);
+        assertThat(blockers.notChecked()).containsExactly(OrderBlockers.STOCK_HELD, OrderBlockers.PRODUCTION_ORDERS);
         verifyNoInteractions(stockCoverage, productionOrders);
     }
 
@@ -573,8 +574,8 @@ class FindOrderToolTest {
 
         assertThat(answer.status()).isEqualTo("PACKED");
         assertThat(answer.blockers().reasons()).isEmpty();
-        assertThat(answer.blockers().notChecked()).containsExactly(FindOrderTool.HANDOVER, FindOrderTool.STOCK_HELD,
-                FindOrderTool.PRODUCTION_ORDERS);
+        assertThat(answer.blockers().notChecked()).containsExactly(OrderBlockers.HANDOVER, OrderBlockers.STOCK_HELD,
+                OrderBlockers.PRODUCTION_ORDERS);
     }
 
     @Test
@@ -584,9 +585,9 @@ class FindOrderToolTest {
         OrderSummary order = order(OrderStatus.PENDING_CONTRACT, lifecycle(null, null, List.of(), false),
                 List.of(line(UUID.randomUUID(), "CUP-12OZ", true)));
 
-        FindOrderTool.Blockers blockers = find(order, List.of()).blockers();
+        OrderBlockers.Blockers blockers = find(order, List.of()).blockers();
 
-        assertThat(blockers.reasons()).extracting(FindOrderTool.Blocker::code).containsExactly("CONTRACT_NOT_SIGNED");
+        assertThat(blockers.reasons()).extracting(OrderBlockers.Blocker::code).containsExactly("CONTRACT_NOT_SIGNED");
         assertThat(blockers.notChecked()).isEmpty();
         verifyNoInteractions(stockCoverage, productionOrders);
     }
@@ -599,7 +600,7 @@ class FindOrderToolTest {
         OrderSummary order = order(OrderStatus.PENDING_PAYMENT, lifecycle(null, null, List.of(), false),
                 List.of(line(UUID.randomUUID(), "CUP-12OZ", true)));
 
-        assertThat(find(order, List.of()).blockers().reasons()).extracting(FindOrderTool.Blocker::code)
+        assertThat(find(order, List.of()).blockers().reasons()).extracting(OrderBlockers.Blocker::code)
                 .containsExactly("SIGNING_INSTALLMENT_UNPAID");
         verifyNoInteractions(stockCoverage);
     }
@@ -610,7 +611,7 @@ class FindOrderToolTest {
         as(SALES);
         OrderSummary held = order(OrderStatus.ON_HOLD, lifecycle(HoldReason.CREDIT, "Vượt hạn mức", List.of(), false),
                 List.of(line(UUID.randomUUID(), "CUP-12OZ", true)));
-        FindOrderTool.Blocker hold = find(held, List.of()).blockers().reasons().getFirst();
+        OrderBlockers.Blocker hold = find(held, List.of()).blockers().reasons().getFirst();
         assertThat(hold.code()).isEqualTo("ON_HOLD");
         assertThat(hold.holdReason()).isEqualTo("CREDIT");
 

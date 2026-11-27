@@ -4,12 +4,15 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.support.StockedSkus;
 import com.stockflow.inventory.api.UomConversionDraft;
 import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.warehouse.internal.domain.AreaDetails;
+import com.stockflow.warehouse.internal.domain.AreaType;
 import com.stockflow.warehouse.internal.domain.BinDetails;
 import com.stockflow.warehouse.internal.domain.BinType;
 import com.stockflow.warehouse.internal.domain.Footprint;
@@ -38,6 +41,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  *
  * <p>Demo bin {@code HCM-B01-2-A}: 5 m wide x 1.2 m long on a level 1.4 m clear. Two cartons of 50 x 40 x 30 cm
  * (0.06 m³ each, rotatable) stand in it. Every test rolls back.</p>
+ *
+ * <p>An area is never judged (06 BR-19, decided again 2026-11-13, SCRUM-666): it has no volume, so resizing one that
+ * holds cartons is not refused.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -47,6 +53,7 @@ class BinResizeStrandingIntegrationTest {
     private static final String BIN = "HCM-B01-2-A";
 
     @Autowired ShelfLayoutService shelves;
+    @Autowired AreaLayoutService areas;
     @Autowired UomConversionService units;
     @Autowired JdbcTemplate jdbc;
 
@@ -62,8 +69,7 @@ class BinResizeStrandingIntegrationTest {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Stranding fixture", sku.toLowerCase(Locale.ROOT));
-        jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                Identifiers.newId(), product, sku, "Stranding fixture");
+        StockedSkus.customerSkuOn(jdbc, product, sku, "Stranding fixture");
         unit = CartonRows.unit(jdbc, sku, 10);
         jdbc.update("update inventory.uom_conversions set length_cm = 50, width_cm = 40, height_cm = 30 where id = ?",
                 unit);
@@ -98,6 +104,53 @@ class BinResizeStrandingIntegrationTest {
     }
 
     @Test
+    @DisplayName("a bin the cartons fit only turned on the horizontal is accepted while their item may be turned")
+    void rotatableCartonFitsTurned() {
+        resizeBin("0.5", "0.4");    // 50 cm along the bin's width, 40 cm along its length: turned, they fit
+
+        assertThat(jdbc.queryForObject("select length from warehouse.bin where id = ?", BigDecimal.class, bin))
+                .isEqualByComparingTo("0.4");
+    }
+
+    @Test
+    @DisplayName("the same bin is refused once the item may not be turned; the bin the right way round is not")
+    void cartonThatMayNotTurn() {
+        jdbc.update("""
+                update product.variants set rotatable = false
+                where id = (select variant_id from inventory.uom_conversions where id = ?)""", unit);
+
+        BusinessException refused = assertThrows(BusinessException.class, () -> resizeBin("0.5", "0.4"));
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.CARTONS_WOULD_NOT_FIT);
+        assertThat(refused.getMessage()).contains(BIN);
+
+        resizeBin("0.4", "0.5");
+        assertThat(jdbc.queryForObject("select width from warehouse.bin where id = ?", BigDecimal.class, bin))
+                .isEqualByComparingTo("0.4");
+    }
+
+    @Test
+    @DisplayName("an area holding cartons can be shrunk: an area has no volume to strand them in")
+    void areaIsNotJudged() {
+        UUID qc01 = DemoData.area("QC01");
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_package where location_code = 'HCM-QC01'"
+                + " and status in ('RECEIVING', 'IN_STOCK')", Long.class)).isPositive();
+        var row = jdbc.queryForMap("""
+                select a.type, a.name, a.x, a.y, a.is_obstacle, a.version,
+                       l.max_weight, l.is_pickable, l.is_putaway_target
+                from warehouse.area a join warehouse.storage_location l on l.id = a.location_id
+                where a.id = ?""", qc01);
+
+        areas.updateArea(new AreaCommands.UpdateArea(qc01, new AreaDetails(AreaType.valueOf((String) row.get("type")),
+                (String) row.get("name"), new Footprint((BigDecimal) row.get("x"), (BigDecimal) row.get("y"),
+                BigDecimal.ONE, BigDecimal.ONE, 0), (Boolean) row.get("is_obstacle"),
+                new LocationSettings((BigDecimal) row.get("max_weight"), (Boolean) row.get("is_pickable"),
+                        (Boolean) row.get("is_putaway_target"))), (Long) row.get("version")));
+
+        assertThat(jdbc.queryForObject("select width from warehouse.area where id = ?", BigDecimal.class, qc01))
+                .isEqualByComparingTo("1");
+    }
+
+    @Test
     @DisplayName("a level's clear height lowered under a carton is refused; down to the carton's height it is not")
     void clearHeightUnderACarton() {
         assertThat(refusal(() -> clearHeight("0.29"))).isEqualTo(ErrorCode.CARTONS_WOULD_NOT_FIT);
@@ -122,12 +175,12 @@ class BinResizeStrandingIntegrationTest {
     void cartonUnitResized() {
         long version = jdbc.queryForObject("select version from inventory.uom_conversions where id = ?", Long.class,
                 unit);
-        assertThat(refusal(() -> units.change(new Sku(sku), unit, version, new UomConversionDraft("CTN", 10, null,
-                new BigDecimal("50"), new BigDecimal("40"), new BigDecimal("141"), false, true))))
+        assertThat(refusal(() -> units.change(new Sku(sku + "-BLANK"), unit, version, new UomConversionDraft("CTN", 10, null,
+                new BigDecimal("50"), new BigDecimal("40"), new BigDecimal("141"), true))))
                 .isEqualTo(ErrorCode.CARTONS_WOULD_NOT_FIT);
 
-        units.change(new Sku(sku), unit, version, new UomConversionDraft("CTN", 10, null, new BigDecimal("45"),
-                new BigDecimal("40"), new BigDecimal("30"), false, true));
+        units.change(new Sku(sku + "-BLANK"), unit, version, new UomConversionDraft("CTN", 10, null, new BigDecimal("45"),
+                new BigDecimal("40"), new BigDecimal("30"), true));
         assertThat(jdbc.queryForObject("select length_cm from inventory.uom_conversions where id = ?",
                 BigDecimal.class, unit)).isEqualByComparingTo("45");
     }

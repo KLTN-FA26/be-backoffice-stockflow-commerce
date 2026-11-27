@@ -102,6 +102,7 @@ class ProductionSampleIntegrationTest {
     private static Warehouse a;
 
     @Autowired ProductionOrderService productionOrders;
+    @Autowired com.stockflow.order.internal.domain.SkuProductionHistory productionHistory;
     @Autowired ProductionSampleService samples;
     @Autowired ProducerService producers;
     @Autowired SalesContracts contracts;
@@ -117,7 +118,6 @@ class ProductionSampleIntegrationTest {
 
     private CurrentUser sales;
     private UUID coordinator;
-    private UUID manager;
     private UUID customerId;
     private UUID customerUser;
     private IssuedSku sku;
@@ -134,7 +134,6 @@ class ProductionSampleIntegrationTest {
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        manager = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = customer("Print Sample Co");
         customerUser = PrintSamples.portalUser(jdbc, tx, entityManager, customerId);
         sku = issueSku();
@@ -206,18 +205,17 @@ class ProductionSampleIntegrationTest {
             UUID variant = Identifiers.newId();
             String code = product.sku() + "-S" + variant.toString().substring(24, 28).toUpperCase(Locale.ROOT);
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Printed cup', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), code, "OWNED-SKU:" + code, customerId, design.snapshotId(),
-                    product.variantId());
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Printed cup', 'ACTIVE', 0, NOW())""",
+                    variant, product.productId(), product.variantId(), customerId, design.snapshotId(), code);
+            // The order of the SKU made its inventory item (owner decision Q5); the test stocks or receives it.
+            UUID item = com.stockflow.support.CartonRows.item(jdbc, code);
             UUID carton = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, version, created_at,
-                        default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, FALSE, TRUE, 0, NOW(), TRUE)""",
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
+                    VALUES (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', ?, 4.2, 60, 40, 35, TRUE, 0, NOW())""",
                     carton, item, PER_CARTON);
             return new IssuedSku(code, carton);
         });
@@ -259,16 +257,15 @@ class ProductionSampleIntegrationTest {
         return orders.findById(orderId).orElseThrow().status();
     }
 
-    /** Drawn up for the order's batch, submitted, approved by the manager: SENT, a print sample wanted (BR-24). */
+    /** Drawn up for the order's batch and sent by the coordinator: SENT, a print sample wanted (BR-24). */
     private ProductionOrder sent(UUID orderId) {
         ProductionOrder draft = productionOrders.drawUp(orderId, 1, producer.id(), coordinator);
-        ProductionOrder pending = productionOrders.submit(draft.id(), draft.version(), coordinator);
-        return productionOrders.approve(pending.id(), pending.version(), manager);
+        return productionOrders.send(draft.id(), draft.version(), coordinator);
     }
 
     private ProductionOrder accepted(UUID orderId) {
         ProductionOrder sent = sent(orderId);
-        return productionOrders.accept(sent.id(), sent.version(), today.plusDays(14), coordinator);
+        return productionOrders.accept(sent.id(), sent.version(), today.plusDays(14), null, coordinator);
     }
 
     private ProductionOrder reread(UUID id) {
@@ -305,7 +302,7 @@ class ProductionSampleIntegrationTest {
                 .as("no day before the producer accepted").extracting(ProductionSampleIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
 
-        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(14), coordinator);
+        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(14), null, coordinator);
         assertThat(accepted.status()).isEqualTo(ProductionOrderStatus.ACCEPTED);
         assertThat(accepted.expectedCompletionDate()).isEqualTo(today.plusDays(14));
         assertThat(jdbc.queryForObject("SELECT expected_completion_date FROM ordering.production_order WHERE id = ?",
@@ -335,14 +332,13 @@ class ProductionSampleIntegrationTest {
         UUID otherOrder = confirmedOrder(null);
         ProductionOrder draft = productionOrders.drawUp(otherOrder, 1, producer.id(), coordinator);
         ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
-                draft.producerId(), draft.needByDate(), null, null, false, "A re-run of a tested design", null));
-        ProductionOrder pending = productionOrders.submit(waived.id(), waived.version(), coordinator);
-        ProductionOrder sentWaived = productionOrders.approve(pending.id(), pending.version(), manager);
+                draft.producerId(), draft.needByDate(), null, false, "A re-run of a tested design", null));
+        ProductionOrder sentWaived = productionOrders.send(waived.id(), waived.version(), coordinator);
         assertThatThrownBy(() -> samples.open(sentWaived.id(), null, null, PrintSamples.photos(1), coordinator))
                 .extracting(ProductionSampleIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_SAMPLE_NOT_REQUIRED);
         ProductionOrder acceptedWaived = productionOrders.accept(sentWaived.id(), sentWaived.version(),
-                today.plusDays(10), coordinator);
+                today.plusDays(10), null, coordinator);
         assertThat(printingStartedAt(otherOrder)).isNull();
         ProductionOrder started = productionOrders.startProduction(acceptedWaived.id(), acceptedWaived.version(),
                 today.plusDays(12), coordinator);
@@ -350,6 +346,40 @@ class ProductionSampleIntegrationTest {
         assertThat(started.productionStartedAt()).isNotNull();
         assertThat(started.expectedCompletionDate()).isEqualTo(today.plusDays(12));
         assertThat(printingStartedAt(otherOrder)).as("BR-11: the sales order records printing started").isNotNull();
+    }
+
+    @Test
+    @DisplayName("QD4: the plate exists once a production order reached In Production, even after its order ended")
+    void plateMadeOnceProductionStarted() {
+        UUID orderId = confirmedOrder(null);
+        ProductionOrder draft = productionOrders.drawUp(orderId, 1, producer.id(), coordinator);
+        ProductionOrder waived = productionOrders.edit(draft.id(), draft.version(), new ProductionOrder.Draft(
+                draft.producerId(), draft.needByDate(), null, false, "A re-run of a tested design", null));
+        ProductionOrder sentWaived = productionOrders.send(waived.id(), waived.version(), coordinator);
+        ProductionOrder acceptedWaived = productionOrders.accept(sentWaived.id(), sentWaived.version(),
+                today.plusDays(10), null, coordinator);
+
+        // The sales order no longer counts (as if cancelled) - only the production order says the plate was made.
+        Boolean beforeStart = tx.execute(s -> {
+            s.setRollbackOnly();
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'OTHER', "
+                    + "cancellation_reason = 'test' WHERE id = ?", orderId);
+            return productionHistory.producedBefore(List.of(sku.sku())).contains(sku.sku());
+        });
+        assertThat(beforeStart).as("accepted by the producer is not printed yet").isFalse();
+
+        productionOrders.startProduction(acceptedWaived.id(), acceptedWaived.version(), today.plusDays(12),
+                coordinator);
+        Boolean afterStart = tx.execute(s -> {
+            s.setRollbackOnly();
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'OTHER', "
+                    + "cancellation_reason = 'test' WHERE id = ?", orderId);
+            return productionHistory.producedBefore(List.of(sku.sku())).contains(sku.sku());
+        });
+        assertThat(afterStart).as("In Production made the plate").isTrue();
+        assertThat(productionHistory.producedBefore(List.of("NO-SUCH-SKU"))).isEmpty();
     }
 
     @Test
@@ -526,7 +556,7 @@ class ProductionSampleIntegrationTest {
                  WHERE id = ?""", sent.id())).as("BR-24: from SENT with a sample to approve")
                 .hasMessageContaining("print sample");
 
-        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(7), coordinator);
+        ProductionOrder accepted = productionOrders.accept(sent.id(), sent.version(), today.plusDays(7), null, coordinator);
         assertThatThrownBy(() -> sql("""
                 UPDATE ordering.production_order SET status = 'SAMPLE_PENDING' WHERE id = ?""", accepted.id()))
                 .as("pending before round 1 is there").hasMessageContaining("round 1");

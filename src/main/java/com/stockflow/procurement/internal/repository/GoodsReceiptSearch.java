@@ -12,12 +12,12 @@ import java.util.UUID;
 /** Read side of goods receipts for the list screen. Rows carry no lines. */
 public interface GoodsReceiptSearch {
 
-    /** {@code productionOrderId}, {@code receiptType}: 4A-5; {@code PURCHASE} keeps the historical purchase receipts. */
+    /** {@code productionOrderId}, {@code receiptType}: 4A-5; {@code PRODUCTION} is the only type this list holds. */
     record Criteria(List<GoodsReceiptStatus> statuses, UUID warehouseId, String number, Instant receivedFrom,
                     Instant receivedTo, UUID productionOrderId, GoodsReceiptType receiptType) {
     }
 
-    /** {@code productionOrderId}: the production order of a PRODUCTION receipt (4A-5), null on a purchase receipt. */
+    /** {@code productionOrderId}: the production order the receipt is against (4A-5). */
     record Row(UUID id, String number, UUID warehouseId, GoodsReceiptStatus status, String deliveryNote,
                Instant receivedAt, UUID receivedBy, Instant confirmedAt, UUID confirmedBy, Instant closedAt,
                GoodsReceiptType receiptType, UUID productionOrderId) {

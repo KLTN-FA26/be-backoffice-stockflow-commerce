@@ -2,8 +2,8 @@
 -- Adversarial checks + happy paths: the staging area (STAGING) and the pick destination
 -- (V20261113000600, team plan 4C-5; kltn-docs 07 sections 4.1-4.3 and 4.5, BR-07, BR-08, BR-11; 06 BR-18, BR-22;
 -- 20 section 4.9, BR-20; 11 BR-09).
--- Needs the demo seed: HCM-STG01 (STAGING), HCM-PACK01 (merged into DISPATCH) and the sofa cartons on HCM-A01-2-B
--- (V20261111000110). Rolled back at the end.
+-- Needs the demo seed: HCM-STG01 (STAGING), HCM-PACK01 (merged into DISPATCH) and the blue cups' cartons of 1,000 on
+-- HCM-A01-2-B (V20261206000100). Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -57,20 +57,21 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------------------------
--- Fixtures: an order of sofas, a STAGING task and a DISPATCH task, and the cartons they hold.
+-- Fixtures: an order of cups, a STAGING task and a DISPATCH task, and the cartons they hold.
 -- ---------------------------------------------------------------------------------------------
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
 VALUES (md5('qa64:order')::uuid, 'SO-QA-64', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PENDING_PAYMENT', 1, 'VND', NOW(), NOW());
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-VALUES (md5('qa64:ol')::uuid, md5('qa64:order')::uuid, 'SOFA-3S-GREY', 8, 1, 'VND');
+VALUES (md5('qa64:ol')::uuid, md5('qa64:order')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 8000, 1, 'VND');
 -- A task is one per order: the DISPATCH task of the script belongs to a second order.
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
 VALUES (md5('qa64:order2')::uuid, 'SO-QA-64B', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PENDING_PAYMENT', 1, 'VND', NOW(), NOW());
 
 CREATE TEMP TABLE qa64_carton AS
-SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_id, p.lpn
-  FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
- WHERE s.sku = 'SOFA-3S-GREY' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK' AND s.on_hand = 1
+SELECT row_number() OVER (ORDER BY p.lpn) AS n, p.id AS package_id, p.lpn, p.nominal_qty AS units
+  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+ WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+   AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
  ORDER BY p.lpn LIMIT 10;
 
 \echo '--- the demo seed: PACKING is merged into DISPATCH, a staging area exists (06 BR-22)'
@@ -83,9 +84,10 @@ SELECT pg_temp.expect_true('ST2 HCM-STG01 is a STAGING area, neither pickable no
 SELECT pg_temp.expect_true('ST3 no area is PACKING any more',
     NOT EXISTS (SELECT 1 FROM warehouse.area WHERE type = 'PACKING'));
 
--- Holds on the first six cartons, as an allocation leaves them (a hold takes the whole carton: one unit each).
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-SELECT md5('qa64:res:' || n)::uuid, row_id, md5('qa64:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, NOW(), NULL, 'HELD'
+-- Holds on the first six cartons, as an allocation leaves them (a hold takes the whole carton: all its units).
+INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+SELECT md5('qa64:res:' || n)::uuid, package_id, md5('qa64:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, units, NOW(),
+       'HELD'
   FROM qa64_carton WHERE n <= 6;
 
 \echo '--- an area is a STAGING area, or not: the types and the location flags (06 BR-12, BR-18)'
@@ -116,12 +118,10 @@ SELECT pg_temp.expect_fail_by('SA9 an unknown type is refused as before', 'ck_ar
     UPDATE warehouse.area SET type = 'WAITING' WHERE code = 'QAD' AND warehouse_id = md5('demo:wh:HCM')::uuid $q$);
 
 \echo '--- an area holding stock does not turn into a STAGING area, nor out of one (20 BR-20)'
--- Carton 9 stands in the DISPATCH area, carton 10 in the staging area (moved as the rows and the carton move together).
+-- Carton 9 stands in the DISPATCH area, carton 10 in the staging area (a carton is one row: it moves by itself).
 SELECT pg_temp.expect_ok('SB1 stock in a DISPATCH area and in a STAGING area', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-QAD' WHERE id = (SELECT package_id FROM qa64_carton WHERE n = 9);
-    UPDATE inventory.stock_item SET location_code = 'HCM-QAD' WHERE id = (SELECT row_id FROM qa64_carton WHERE n = 9);
-    UPDATE inventory.stock_package SET location_code = 'HCM-STG01' WHERE id = (SELECT package_id FROM qa64_carton WHERE n = 10);
-    UPDATE inventory.stock_item SET location_code = 'HCM-STG01' WHERE id = (SELECT row_id FROM qa64_carton WHERE n = 10) $q$);
+    UPDATE inventory.stock_package SET location_code = 'HCM-STG01' WHERE id = (SELECT package_id FROM qa64_carton WHERE n = 10) $q$);
 SELECT pg_temp.expect_fail_by('SB2 the DISPATCH area holding stock turns into STAGING', 'holds stock', $q$
     UPDATE warehouse.area SET type = 'STAGING' WHERE code = 'QAD' AND warehouse_id = md5('demo:wh:HCM')::uuid $q$);
 SELECT pg_temp.expect_fail_by('SB3 the STAGING area holding stock turns into DISPATCH', 'holds stock', $q$
@@ -133,21 +133,18 @@ SELECT pg_temp.expect_ok('SB5 its other columns change freely while it holds sto
     UPDATE warehouse.area SET name = 'Khu chờ xuất (renamed)' WHERE code = 'STG01' AND warehouse_id = md5('demo:wh:HCM')::uuid $q$);
 -- Carton 10 goes back to its bin, so the staging area is empty for the rest of the script.
 UPDATE inventory.stock_package SET location_code = 'HCM-A01-2-B' WHERE id = (SELECT package_id FROM qa64_carton WHERE n = 10);
-UPDATE inventory.stock_item SET location_code = 'HCM-A01-2-B' WHERE id = (SELECT row_id FROM qa64_carton WHERE n = 10);
 
 \echo '--- stock enters and leaves a staging area only by picking (11 BR-09, 20 BR-20)'
 CREATE FUNCTION pg_temp.move_sql(movement TEXT, from_loc TEXT, to_loc TEXT, ref_type TEXT, ref UUID, carton INT DEFAULT NULL,
                                  from_status TEXT DEFAULT NULL, to_status TEXT DEFAULT NULL) RETURNS TEXT LANGUAGE sql AS $$
     SELECT format($f$
-        INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, quantity,
+        INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
                                               from_status, to_status, reference_type, reference_id, occurred_at,
-                                              from_stock_package_id, to_stock_package_id)
-        SELECT gen_random_uuid(), %L, 'SOFA-3S-GREY', 'UNTRACED', %L, %L, 1, %L, %L, %L, %L::uuid, NOW(),
-               CASE WHEN %L IS NOT NULL AND %L IS NOT NULL THEN c.package_id END,
-               CASE WHEN %L IS NOT NULL AND %L IS NOT NULL THEN c.package_id END
+                                              stock_package_id)
+        SELECT gen_random_uuid(), %L, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', %L, %L, %L, %L, %L,
+               %L::uuid, NOW(), c.package_id
           FROM (SELECT 1) one LEFT JOIN qa64_carton c ON c.n = %s $f$,
-        movement, from_loc, to_loc, from_status, to_status, ref_type, ref,
-        from_loc, carton, to_loc, carton, coalesce(carton, 0))
+        movement, from_loc, to_loc, from_status, to_status, ref_type, ref, coalesce(carton, 0))
 $$;
 SELECT pg_temp.expect_fail_by('LG1 a return line moves a loose unit into the staging area', 'cannot touch staging area',
     pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-STG01', 'RETURN_REQUEST_LINE', gen_random_uuid()));
@@ -162,7 +159,7 @@ SELECT pg_temp.expect_fail_by('LG5 a status change on stock standing in the stag
 SELECT pg_temp.expect_fail_by('LG6 a receipt straight into the staging area', 'cannot touch staging area',
     pg_temp.move_sql('RECEIPT', NULL, 'HCM-STG01', 'GOODS_RECEIPT_LINE', gen_random_uuid()));
 SELECT pg_temp.expect_ok('LG7 a MOVE between two ordinary bins is what it was',
-    pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-A01-1-A', 'RETURN_REQUEST_LINE', gen_random_uuid()));
+    pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-A01-1-A', 'RETURN_REQUEST_LINE', gen_random_uuid(), 7));
 -- A pick line stages its carton out of its bin, and puts it back out of the staging area.
 SELECT pg_temp.expect_ok('LG8 a pick line stages a carton: a MOVE naming the line, bin to staging',
     pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-STG01', 'PICK_LINE', md5('qa64:line:A')::uuid, 7));
@@ -170,7 +167,6 @@ SELECT pg_temp.expect_fail_by('LG9 the same line stages out of the same place ag
     pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-STG01', 'PICK_LINE', md5('qa64:line:A')::uuid, 7));
 -- Cartons 7 and 8 stand in the staging area from here (a ledger line names the carton where it leaves from).
 UPDATE inventory.stock_package SET location_code = 'HCM-STG01' WHERE id IN (SELECT package_id FROM qa64_carton WHERE n IN (7, 8));
-UPDATE inventory.stock_item SET location_code = 'HCM-STG01' WHERE id IN (SELECT row_id FROM qa64_carton WHERE n IN (7, 8));
 SELECT pg_temp.expect_ok('LG10 ... its order cancelled, it puts the carton back: a second MOVE, out of the staging area',
     pg_temp.move_sql('MOVE', 'HCM-STG01', 'HCM-A01-1-A', 'PICK_LINE', md5('qa64:line:A')::uuid, 7));
 SELECT pg_temp.expect_fail_by('LG11 a third MOVE of the line out of the staging area', 'uk_stock_movement_pick_line_move',
@@ -179,12 +175,12 @@ SELECT pg_temp.expect_ok('LG12 a task moved to dispatch deducts from the staging
     pg_temp.move_sql('PICK', 'HCM-STG01', NULL, 'PICK_LINE', md5('qa64:line:B')::uuid, 8, 'AVAILABLE'));
 SELECT pg_temp.expect_fail_by('LG13 a second PICK of the line', 'uk_stock_movement_pick_line',
     pg_temp.move_sql('PICK', 'HCM-STG01', NULL, 'PICK_LINE', md5('qa64:line:B')::uuid, 8, 'AVAILABLE'));
-UPDATE inventory.stock_package SET location_code = 'HCM-A01-2-B' WHERE id IN (SELECT package_id FROM qa64_carton WHERE n IN (7, 8));
-UPDATE inventory.stock_item SET location_code = 'HCM-A01-2-B' WHERE id IN (SELECT row_id FROM qa64_carton WHERE n IN (7, 8));
+-- The write-downs name the carton they take, still standing in the staging area (V20261231000200: a line names its carton).
 SELECT pg_temp.expect_ok('LG14 a count corrects a staging area (20 section 4.9 step 4): COUNT_CORRECTION out of it',
-    pg_temp.move_sql('COUNT_CORRECTION', 'HCM-STG01', NULL, 'CYCLE_COUNT_LINE', gen_random_uuid(), NULL, 'AVAILABLE'));
+    pg_temp.move_sql('COUNT_CORRECTION', 'HCM-STG01', NULL, 'CYCLE_COUNT_LINE', gen_random_uuid(), 7, 'AVAILABLE'));
 SELECT pg_temp.expect_ok('LG15 ... and an approved adjustment writes it down: ADJUSTMENT out of it',
-    pg_temp.move_sql('ADJUSTMENT', 'HCM-STG01', NULL, 'STOCK_ADJUSTMENT', gen_random_uuid(), NULL, 'AVAILABLE'));
+    pg_temp.move_sql('ADJUSTMENT', 'HCM-STG01', NULL, 'STOCK_ADJUSTMENT', gen_random_uuid(), 8, 'AVAILABLE'));
+UPDATE inventory.stock_package SET location_code = 'HCM-A01-2-B' WHERE id IN (SELECT package_id FROM qa64_carton WHERE n IN (7, 8));
 -- Review L5: never up - found units there would be nobody's, out of ATP, unpickable and unmovable.
 SELECT pg_temp.expect_fail_by('LG16 an ADJUSTMENT into a staging area (a surplus)', 'cannot add to staging area',
     pg_temp.move_sql('ADJUSTMENT', NULL, 'HCM-STG01', 'STOCK_ADJUSTMENT', gen_random_uuid(), NULL, NULL, 'AVAILABLE'));
@@ -245,7 +241,7 @@ SELECT pg_temp.expect_fail_by('PE5 a PICKING task changes its staging area', 'on
 SELECT pg_temp.expect_ok('PE6 a PICKING task changes its status as it did (the trigger is for the three columns only)', $q$
     UPDATE fulfillment.pick SET started_at = NOW() WHERE id = md5('qa64:pick')::uuid $q$);
 SELECT pg_temp.expect_fail_by('PE7 a CANCELLED task is no exception', 'only while it is PENDING', $q$
-    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE WHERE id = md5('qa64:pick')::uuid;
+    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE, cancelled_at = NOW() WHERE id = md5('qa64:pick')::uuid;
     UPDATE fulfillment.pick SET assigned_user_id = md5('demo:user:approver')::uuid WHERE id = md5('qa64:pick')::uuid $q$);
 
 \echo '--- the lines: STAGED is picked in full, by someone, and not deducted (07 section 4.2 step 5)'
@@ -255,17 +251,17 @@ RETURNS TEXT LANGUAGE sql AS $$
         INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
                                            allocated_qty, status, lpn, whole_carton %s)
         SELECT gen_random_uuid(), md5('qa64:pick')::uuid, md5('qa64:ol')::uuid, md5('qa64:res:' || c.n)::uuid,
-               'SOFA-3S-GREY', 'HCM-A01-2-B', c.n, 1, %L, c.lpn, TRUE %s
+               'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', c.n, c.units, %L, c.lpn, TRUE %s
           FROM qa64_carton c WHERE c.n = %s $f$, extra_cols, status, extra_vals, n)
 $$;
 SELECT pg_temp.expect_ok('LN1 a STAGED line: taken whole by a picker, when and where it was staged, nothing deducted',
     pg_temp.line_sql(1, 'STAGED', ', picked_qty, picked_by, picked_at, staged_at, staged_location_code',
-        ', 1, md5(''demo:user:editor'')::uuid, NOW(), NOW(), ''HCM-STG01'''));
+        ', c.units, md5(''demo:user:editor'')::uuid, NOW(), NOW(), ''HCM-STG01'''));
 SELECT pg_temp.expect_fail_by('LN2 a STAGED line already deducted', 'ck_pick_line_staged',
     pg_temp.line_sql(2, 'STAGED', ', picked_qty, picked_by, picked_at, consumed_at, staged_at, staged_location_code',
-        ', 1, md5(''demo:user:editor'')::uuid, NOW(), NOW(), NOW(), ''HCM-STG01'''));
+        ', c.units, md5(''demo:user:editor'')::uuid, NOW(), NOW(), NOW(), ''HCM-STG01'''));
 SELECT pg_temp.expect_fail_by('LN3 a STAGED line that says nothing of when and where (also a picked line never deducted)', 'ck_pick_line_picked',
-    pg_temp.line_sql(2, 'STAGED', ', picked_qty, picked_by, picked_at', ', 1, md5(''demo:user:editor'')::uuid, NOW()'));
+    pg_temp.line_sql(2, 'STAGED', ', picked_qty, picked_by, picked_at', ', c.units, md5(''demo:user:editor'')::uuid, NOW()'));
 SELECT pg_temp.expect_fail_by('LN4 a time of staging with no place', 'ck_pick_line_staged',
     pg_temp.line_sql(2, 'OPEN', ', staged_at', ', NOW()'));
 SELECT pg_temp.expect_fail_by('LN5 a place of staging with no time', 'ck_pick_line_staged',
@@ -276,28 +272,28 @@ SELECT pg_temp.expect_fail_by('LN7 a STAGED line short of its whole carton', 'ck
     pg_temp.line_sql(2, 'STAGED', ', picked_qty, picked_by, picked_at, staged_at, staged_location_code',
         ', 0, md5(''demo:user:editor'')::uuid, NOW(), NOW(), ''HCM-STG01'''));
 SELECT pg_temp.expect_fail_by('LN8 a STAGED line nobody picked', 'ck_pick_line_picked',
-    pg_temp.line_sql(2, 'STAGED', ', picked_qty, picked_at, staged_at, staged_location_code', ', 1, NOW(), NOW(), ''HCM-STG01'''));
+    pg_temp.line_sql(2, 'STAGED', ', picked_qty, picked_at, staged_at, staged_location_code', ', c.units, NOW(), NOW(), ''HCM-STG01'''));
 SELECT pg_temp.expect_fail_by('LN9 a PICKED line never deducted is still refused', 'ck_pick_line_picked',
-    pg_temp.line_sql(2, 'PICKED', ', picked_qty, picked_by, picked_at', ', 1, md5(''demo:user:editor'')::uuid, NOW()'));
+    pg_temp.line_sql(2, 'PICKED', ', picked_qty, picked_by, picked_at', ', c.units, md5(''demo:user:editor'')::uuid, NOW()'));
 SELECT pg_temp.expect_fail_by('LN10 a PICKED line never deducted is refused even if it was staged', 'ck_pick_line_picked',
     pg_temp.line_sql(2, 'PICKED', ', picked_qty, picked_by, picked_at, staged_at, staged_location_code',
-        ', 1, md5(''demo:user:editor'')::uuid, NOW(), NOW(), ''HCM-STG01'''));
+        ', c.units, md5(''demo:user:editor'')::uuid, NOW(), NOW(), ''HCM-STG01'''));
 SELECT pg_temp.expect_ok('LN11 a line staged, then deducted when the task moved to dispatch: PICKED, consumed, staging kept',
     pg_temp.line_sql(3, 'PICKED', ', picked_qty, picked_by, picked_at, consumed_at, staged_at, staged_location_code',
-        ', 1, md5(''demo:user:editor'')::uuid, NOW(), NOW(), NOW(), ''HCM-STG01'''));
+        ', c.units, md5(''demo:user:editor'')::uuid, NOW(), NOW(), NOW(), ''HCM-STG01'''));
 SELECT pg_temp.expect_ok('LN12 a line put back from staging, never deducted: PUT_BACK with staged_at and no consumed_at',
     pg_temp.line_sql(4, 'PUT_BACK', ', picked_qty, picked_by, picked_at, staged_at, staged_location_code, put_back_qty, put_back_by, put_back_at, put_back_location_code',
-        ', 1, md5(''demo:user:editor'')::uuid, NOW(), NOW(), ''HCM-STG01'', 1, md5(''demo:user:editor'')::uuid, NOW(), ''HCM-A01-1-A'''));
+        ', c.units, md5(''demo:user:editor'')::uuid, NOW(), NOW(), ''HCM-STG01'', c.units, md5(''demo:user:editor'')::uuid, NOW(), ''HCM-A01-1-A'''));
 SELECT pg_temp.expect_fail_by('LN13 a line put back that was neither staged nor deducted', 'ck_pick_line_picked',
     pg_temp.line_sql(5, 'PUT_BACK', ', picked_qty, picked_by, picked_at, put_back_qty, put_back_by, put_back_at, put_back_location_code',
-        ', 1, md5(''demo:user:editor'')::uuid, NOW(), 1, md5(''demo:user:editor'')::uuid, NOW(), ''HCM-A01-1-A'''));
+        ', c.units, md5(''demo:user:editor'')::uuid, NOW(), c.units, md5(''demo:user:editor'')::uuid, NOW(), ''HCM-A01-1-A'''));
 SELECT pg_temp.expect_ok('LN14 a line put back after a pick was deducted, as before (PUT_BACK, consumed)',
     pg_temp.line_sql(6, 'PUT_BACK', ', picked_qty, picked_by, picked_at, consumed_at, put_back_qty, put_back_by, put_back_at, put_back_location_code',
-        ', 1, md5(''demo:user:editor'')::uuid, NOW(), NOW(), 1, md5(''demo:user:editor'')::uuid, NOW(), ''HCM-A01-1-A'''));
+        ', c.units, md5(''demo:user:editor'')::uuid, NOW(), NOW(), c.units, md5(''demo:user:editor'')::uuid, NOW(), ''HCM-A01-1-A'''));
 SELECT pg_temp.expect_ok('LN15 an OPEN line is untouched by all this', pg_temp.line_sql(5, 'OPEN'));
 
 \echo '--- the task: STAGED needs a STAGING task with its time; moving to dispatch is once, by someone (07 BR-11)'
-UPDATE fulfillment.pick SET status = 'PICKING', needs_put_back = FALSE WHERE id = md5('qa64:pick')::uuid;
+UPDATE fulfillment.pick SET status = 'PICKING', needs_put_back = FALSE, cancelled_at = NULL WHERE id = md5('qa64:pick')::uuid;
 SELECT pg_temp.expect_fail_by('PS1 a STAGED DISPATCH task', 'ck_pick_staged',
     pg_temp.pick_sql('qa64:s1', 'STAGED', 'DISPATCH', NULL, ', staged_at', ', NOW()'));
 SELECT pg_temp.expect_fail_by('PS2 a STAGED task with no time of staging', 'ck_pick_staged',

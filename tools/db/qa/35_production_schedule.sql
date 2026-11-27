@@ -50,15 +50,15 @@ SELECT md5('qa35:draft')::uuid, c.id, md5('qa35:product')::uuid, 'DRAFT', NOW(),
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa35:snap')::uuid, md5('qa35:draft')::uuid, repeat('c', 64), 'https://example.com/c.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-SELECT md5('qa35:own')::uuid, md5('qa35:product')::uuid, 'QA-SCH-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
-       'OWNED-SKU:QA-SCH-OWN', 1, 0, NOW(), c.id, md5('qa35:snap')::uuid, md5('qa35:blank')::uuid
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+SELECT md5('qa35:own')::uuid, md5('qa35:product')::uuid, 'QA-SCH-OWN', 'QA ly in logo', 'ACTIVE', 0, NOW(),
+       c.id, md5('qa35:snap')::uuid, md5('qa35:blank')::uuid
   FROM customer.customer c ORDER BY c.id LIMIT 1;
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
-                                       version, created_at, default_shipping)
-SELECT md5('qa35:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(), TRUE
-  FROM inventory.inventory_items i WHERE i.sku = 'QA-SCH-OWN';
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
+                                       version, created_at)
+SELECT md5('qa35:carton')::uuid, i.variant_id, 'CARTON', 50, TRUE, 0, NOW()
+  FROM product.customer_skus i WHERE i.sku = 'QA-SCH-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 SELECT md5('qa35:order')::uuid, 'SO-QA-SCH', c.id, gen_random_uuid(), 'DRAFT', 2200000, 200000, 'VND', NOW(), NOW()
@@ -129,11 +129,9 @@ SELECT pg_temp.expect_ok('DA0 a production order for batch 2, sent', $q$
     SELECT pg_temp.line(md5('qa35:po1')::uuid, 10, 'QA-SCH-OWN') $q$);
 SELECT pg_temp.expect_fail('DA1 an expected completion day on a draft', $q$
     UPDATE ordering.production_order SET expected_completion_date = CURRENT_DATE WHERE id = md5('qa35:po1')::uuid $q$);
-SELECT pg_temp.expect_ok('DA1a submitted and approved, so sent', $q$
-    UPDATE ordering.production_order SET status = 'PENDING_APPROVAL', submitted_at = NOW()
-     WHERE id = md5('qa35:po1')::uuid;
-    UPDATE ordering.production_order SET status = 'SENT', approved_by = md5('demo:user:approver')::uuid,
-           approved_at = NOW(), sent_at = NOW() WHERE id = md5('qa35:po1')::uuid $q$);
+SELECT pg_temp.expect_ok('DA1a sent by the coordinator', $q$
+    UPDATE ordering.production_order SET status = 'SENT', sent_by = md5('demo:user:editor')::uuid, sent_at = NOW()
+     WHERE id = md5('qa35:po1')::uuid $q$);
 SELECT pg_temp.expect_fail('DA2 an expected completion day while only sent', $q$
     UPDATE ordering.production_order SET expected_completion_date = CURRENT_DATE WHERE id = md5('qa35:po1')::uuid $q$);
 SELECT pg_temp.expect_ok('DA3 accepted with the producer''s day, and the day moved later', $q$
@@ -229,12 +227,20 @@ SELECT pg_temp.expect_true('DA22 the schedule: the coordinator, Sales, the Sales
     AND pg_temp.grants('WAREHOUSE_MANAGER', 'production-schedule:READ')
     AND NOT pg_temp.grants('WAREHOUSE_STAFF', 'production-schedule:READ')
     AND NOT pg_temp.grants('CUSTOMER', 'production-schedule:READ'));
-SELECT pg_temp.expect_true('DA23 the delay flags (and DELIVERY_LATE): Sales, the Sales Manager, the warehouse manager',
+-- V20261209000400 split the two jobs delay-alerts:READ had: reading the list (now the coordinator's too, 17 §3) and
+-- following late deliveries (delivery-delay-alerts:READ, still not the coordinator's, BR-30).
+SELECT pg_temp.expect_true('DA23 the delay flags: Sales, the Sales Manager, the warehouse manager, the coordinator; '
+        || 'DELIVERY_LATE: not the coordinator',
     pg_temp.grants('SALES_STAFF', 'delay-alerts:READ')
     AND pg_temp.grants('SALES_MANAGER', 'delay-alerts:READ')
     AND pg_temp.grants('WAREHOUSE_MANAGER', 'delay-alerts:READ')
-    AND NOT pg_temp.grants('PRODUCTION_COORDINATOR', 'delay-alerts:READ')
-    AND NOT pg_temp.grants('CUSTOMER', 'delay-alerts:READ'));
+    AND pg_temp.grants('PRODUCTION_COORDINATOR', 'delay-alerts:READ')
+    AND NOT pg_temp.grants('CUSTOMER', 'delay-alerts:READ')
+    AND pg_temp.grants('SALES_STAFF', 'delivery-delay-alerts:READ')
+    AND pg_temp.grants('SALES_MANAGER', 'delivery-delay-alerts:READ')
+    AND pg_temp.grants('WAREHOUSE_MANAGER', 'delivery-delay-alerts:READ')
+    AND NOT pg_temp.grants('PRODUCTION_COORDINATOR', 'delivery-delay-alerts:READ')
+    AND NOT pg_temp.grants('CUSTOMER', 'delivery-delay-alerts:READ'));
 SELECT pg_temp.expect_true('DA24 the warehouse manager is the only warehouse-bound reader of the schedule',
     (SELECT array_agg(r.code ORDER BY r.code) FROM identity.role_permission rp
        JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id

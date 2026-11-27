@@ -48,6 +48,7 @@ class PdfContentPolicyTest {
                 .isInstanceOfSatisfying(BusinessException.class, ex -> {
                     assertThat(ex.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
                     assertThat(ex.getMessage()).contains(reason);
+                    assertThat(ex.messageKey()).as("a key the handler translates").startsWith("refusal.pdf.");
                 });
     }
 

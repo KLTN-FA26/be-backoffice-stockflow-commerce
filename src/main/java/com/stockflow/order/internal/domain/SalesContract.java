@@ -6,6 +6,7 @@ import com.stockflow.common.error.ErrorCode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -21,10 +22,17 @@ import java.util.UUID;
  * Cancelled before it is signed, with a reason; the order may then get a new one. A signed contract is never cancelled
  * here. The database keeps the same state machine ({@code tg_sales_contract_transition}) and the same rules over the
  * schedule and plan ({@code ordering.check_sales_contract_terms}).</p>
+ *
+ * <p>A draft whose credit check fails is not sent but waits for accounting (15 BR-11 as changed on 2026-11-26):
+ * {@link #submitForCreditReview} keeps it a DRAFT - so the customer, who never sees a draft, sees nothing of it - and
+ * locks it; {@link #approveCredit} sends it, {@link #refuseCredit} and {@link #withdrawCreditReview} hand it back to
+ * Sales. Only a draft waits ({@code ck_sales_contract_credit_review}).</p>
  */
 public final class SalesContract {
 
     private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
+    /** How a day is written in a message people read. */
+    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
     private final UUID id;
     private final String contractNumber;
@@ -33,6 +41,11 @@ public final class SalesContract {
     private final ContractParty seller;
     private final ContractParty buyer;
     private int freeSampleRounds;
+    /**
+     * The complaint period agreed, in calendar days from each delivery (Luật Thương mại 2005 Điều 318; WF-05 TH-1);
+     * null on a contract drawn up before it was written down, which reads the configured default.
+     */
+    private Integer returnWindowDays;
     private List<DeliveryBatch> schedule;
     private List<PlannedInstallment> plan;
     private Instant sentAt;
@@ -47,6 +60,10 @@ public final class SalesContract {
     private UUID cancelledBy;
     private String cancellationReason;
     private Instant completedAt;
+    /** WF-05 Q-6: when it was liquidated; null otherwise. */
+    private Instant liquidatedAt;
+    /** 15 BR-11: whether the draft waits for accounting to approve the customer's credit before it is sent. */
+    private boolean creditReviewPending;
     private final long version;
 
     private SalesContract(UUID id, String contractNumber, UUID orderId, SalesContractStatus status,
@@ -91,7 +108,7 @@ public final class SalesContract {
         if (order.lines().stream().anyMatch(line -> line.cartons() == null)) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_ORDER_NOT_CARTONS, ("Order %s has lines not ordered "
                     + "in cartons: a contract schedules cartons of the customer's own SKUs").formatted(
-                    order.orderNumber()));
+                    order.orderNumber())).localized("refusal.contract.orderNotCartons", order.orderNumber().value());
         }
     }
 
@@ -134,6 +151,30 @@ public final class SalesContract {
     }
 
     /**
+     * The complaint period agreed (Điều 318; WF-05 TH-1): written on the contract while it is a draft - the configured
+     * default when it is drawn up, what Sales and the customer agree on an edit - and frozen with the rest once sent
+     * ({@code tg_sales_contract_transition}). Returns of the order are opened within it, and the order completes only
+     * after it.
+     *
+     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID} once sent; {@code SALES_CONTRACT_ORDER_NOT_DRAFT};
+     *         {@code VALIDATION_FAILED} outside 1..365 days ({@code ck_sales_contract_return_window_days})
+     */
+    public void agreeReturnWindow(Order order, int days) {
+        requireRevisable(order);
+        if (days < 1 || days > 365) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Return window: a whole number of days, 1 to 365")
+                    .localized("refusal.contract.returnWindow");
+        }
+        this.returnWindowDays = days;
+    }
+
+    /** Rehydration of the complaint period; null for a contract drawn up before it was written down. */
+    public SalesContract restoreReturnWindow(Integer days) {
+        this.returnWindowDays = days;
+        return this;
+    }
+
+    /**
      * Whether it may still be edited: a draft, of a draft order. Asked before a new schedule or plan is even checked,
      * so editing a sent contract answers that it is sent (BR-14) - not that the plan Sales typed does not add up, which
      * would send them fixing a plan they may not change at all.
@@ -142,6 +183,7 @@ public final class SalesContract {
      */
     public void requireRevisable(Order order) {
         requireStatus(SalesContractStatus.DRAFT, "edited");
+        requireNoCreditReview();
         requireOrder(order);
         requireDraftOrder(order);
     }
@@ -155,6 +197,10 @@ public final class SalesContract {
      */
     public void send(Order order, Instant at, UUID by, String documentKey) {
         requireSendable(order, at);
+        markSent(at, by, documentKey);
+    }
+
+    private void markSent(Instant at, UUID by, String documentKey) {
         this.status = SalesContractStatus.SENT;
         this.sentAt = Objects.requireNonNull(at, "at");
         this.sentBy = Objects.requireNonNull(by, "by");
@@ -169,9 +215,78 @@ public final class SalesContract {
      */
     public void requireSendable(Order order, Instant at) {
         requireStatus(SalesContractStatus.DRAFT, "sent");
+        requireNoCreditReview();
+        requireSendableContent(order, at);
+    }
+
+    /**
+     * 15 BR-11 (2026-11-26): the draft, ready to be sent, waits for accounting instead - its credit check failed. It
+     * stays a DRAFT, locked against edits until approved, refused or withdrawn. Checked as {@link #send} is, so a
+     * contract that could not be sent is not put in front of accounting either.
+     *
+     * @throws BusinessException as {@link #send}; {@code CONTRACT_CREDIT_REVIEW_PENDING} when it waits already
+     */
+    public void submitForCreditReview(Order order, Instant at) {
+        requireSendable(order, at);
+        creditReviewPending = true;
+    }
+
+    /**
+     * Whether accounting may approve it now and so send it: it waits, and could be sent - the windows may have passed
+     * while it waited, and a refusal leaves it waiting. Checked before the PDF is drawn.
+     *
+     * @throws BusinessException {@code CONTRACT_CREDIT_REVIEW_NOT_PENDING}; as {@link #send}
+     */
+    public void requireCreditApprovable(Order order, Instant at) {
+        requireStatus(SalesContractStatus.DRAFT, "sent");
+        requireCreditReview();
+        requireSendableContent(order, at);
+    }
+
+    /**
+     * 15 BR-11: accounting approved the customer's credit; the contract is sent at once (decision 1 of the credit plan),
+     * as {@code sentBy} - the Sales account that asked, who follows it with the customer.
+     *
+     * @throws BusinessException as {@link #requireCreditApprovable}
+     */
+    public void approveCredit(Order order, Instant at, UUID sentBy, String documentKey) {
+        requireCreditApprovable(order, at);
+        creditReviewPending = false;
+        markSent(at, sentBy, documentKey);
+    }
+
+    /** 15 BR-11: accounting refused; the draft is Sales' to change - the payment plan, most likely - and send again. */
+    public void refuseCredit() {
+        requireCreditReview();
+        creditReviewPending = false;
+    }
+
+    /** 15 BR-11: Sales takes the draft back from accounting to change it. */
+    public void withdrawCreditReview() {
+        requireCreditReview();
+        creditReviewPending = false;
+    }
+
+    private void requireSendableContent(Order order, Instant at) {
         requireOrder(order);
         requireDraftOrder(order);
         ContractTerms.requireWindows(schedule, LocalDate.ofInstant(at, VIETNAM));
+    }
+
+    private void requireNoCreditReview() {
+        if (creditReviewPending) {
+            throw new BusinessException(ErrorCode.CONTRACT_CREDIT_REVIEW_PENDING, ("Contract %s is waiting for "
+                    + "accounting to approve the customer's credit; withdraw it first").formatted(contractNumber))
+                    .localized("refusal.contract.creditReviewPending", contractNumber);
+        }
+    }
+
+    private void requireCreditReview() {
+        if (!creditReviewPending) {
+            throw new BusinessException(ErrorCode.CONTRACT_CREDIT_REVIEW_NOT_PENDING, ("Contract %s is not waiting for "
+                    + "accounting to approve the customer's credit").formatted(contractNumber))
+                    .localized("refusal.contract.creditReviewNotPending", contractNumber);
+        }
     }
 
     /**
@@ -199,12 +314,13 @@ public final class SalesContract {
      * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID} for a contract not signed
      */
     public boolean complete(Instant at) {
-        if (status == SalesContractStatus.COMPLETED) {
+        if (status == SalesContractStatus.COMPLETED || status == SalesContractStatus.LIQUIDATED) {
             return false;
         }
         if (!status.canTransitionTo(SalesContractStatus.COMPLETED)) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is %s: only a signed "
-                    .formatted(contractNumber, status) + "contract is completed");
+                    .formatted(contractNumber, status) + "contract is completed")
+                    .localized("refusal.contract.status.completed", contractNumber, status);
         }
         this.status = SalesContractStatus.COMPLETED;
         this.completedAt = Objects.requireNonNull(at, "at");
@@ -220,12 +336,16 @@ public final class SalesContract {
     public void cancel(String reason, Instant at, UUID by) {
         if (!status.canTransitionTo(SalesContractStatus.CANCELLED)) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is %s: only a draft or a "
-                    .formatted(contractNumber, status) + "sent contract is cancelled");
+                    .formatted(contractNumber, status) + "sent contract is cancelled")
+                    .localized("refusal.contract.status.cancelled", contractNumber, status);
         }
         if (reason == null || reason.isBlank() || reason.strip().length() > 500) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A reason of at most 500 characters");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A reason of at most 500 characters")
+                    .localized("refusal.contract.cancellationReason", 500);
         }
         this.status = SalesContractStatus.CANCELLED;
+        // Cancelled while it waited, it waits no more: the adapter closes the review WITHDRAWN with this reason.
+        this.creditReviewPending = false;
         this.cancellationReason = reason.strip();
         this.cancelledAt = Objects.requireNonNull(at, "at");
         this.cancelledBy = Objects.requireNonNull(by, "by");
@@ -248,14 +368,17 @@ public final class SalesContract {
         LocalDate today = LocalDate.ofInstant(at, VIETNAM);
         if (on.isAfter(today) || on.isBefore(LocalDate.ofInstant(sentAt, VIETNAM))) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Contract %s: signed on %s - not before it was "
-                    + "sent (%s), not after today").formatted(contractNumber, on, LocalDate.ofInstant(sentAt, VIETNAM)));
+                    + "sent (%s), not after today").formatted(contractNumber, on, LocalDate.ofInstant(sentAt, VIETNAM)))
+                    .localized("refusal.contract.signedOn", contractNumber, DAY.format(on),
+                            DAY.format(LocalDate.ofInstant(sentAt, VIETNAM)));
         }
     }
 
     private void requireStatus(SalesContractStatus wanted, String verb) {
         if (status != wanted) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is %s: only a %s contract "
-                    .formatted(contractNumber, status, wanted.name().toLowerCase(java.util.Locale.ROOT)) + "is " + verb);
+                    .formatted(contractNumber, status, wanted.name().toLowerCase(java.util.Locale.ROOT)) + "is " + verb)
+                    .localized("refusal.contract.status." + verb, contractNumber, status);
         }
     }
 
@@ -268,13 +391,15 @@ public final class SalesContract {
     private static void requireDraftOrder(Order order) {
         if (order.status() != com.stockflow.order.api.OrderStatus.DRAFT) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_ORDER_NOT_DRAFT, ("Order %s is %s: a contract is "
-                    + "drawn up, edited and sent for a draft order").formatted(order.orderNumber(), order.status()));
+                    + "drawn up, edited and sent for a draft order").formatted(order.orderNumber(), order.status()))
+                    .localized("refusal.contract.orderNotDraft", order.orderNumber().value(), order.status());
         }
     }
 
     private static void requireRounds(int rounds) {
         if (rounds < 0 || rounds > 100) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Free sample rounds: a whole number, 0 to 100");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Free sample rounds: a whole number, 0 to 100")
+                    .localized("refusal.contract.freeSampleRounds");
         }
     }
 
@@ -285,6 +410,8 @@ public final class SalesContract {
     public ContractParty seller() { return seller; }
     public ContractParty buyer() { return buyer; }
     public int freeSampleRounds() { return freeSampleRounds; }
+    /** The complaint period agreed, in days from each delivery; null: the configured default. */
+    public Integer returnWindowDays() { return returnWindowDays; }
     public List<DeliveryBatch> schedule() { return schedule; }
     public List<PlannedInstallment> plan() { return plan; }
     public Instant sentAt() { return sentAt; }
@@ -299,5 +426,43 @@ public final class SalesContract {
     public UUID cancelledBy() { return cancelledBy; }
     public String cancellationReason() { return cancellationReason; }
     public Instant completedAt() { return completedAt; }
+    public Instant liquidatedAt() { return liquidatedAt; }
+
+    /** 15 BR-11: whether the draft waits for accounting to approve the customer's credit. */
+    public boolean creditReviewPending() { return creditReviewPending; }
+
+    /** Rehydration of whether it waits for accounting (15 BR-11). */
+    public SalesContract restoreCreditReview(boolean pending) {
+        this.creditReviewPending = pending;
+        return this;
+    }
+
+    /** Rehydration of when it was liquidated (WF-05 Q-6). */
+    public SalesContract restoreLiquidated(Instant at) {
+        this.liquidatedAt = at;
+        return this;
+    }
+
+    /**
+     * WF-05 Q-6 (kltn-docs 14 §5.2): the order it binds ended with nothing delivered - every shipment came back from
+     * the carrier or was lost, or it was cancelled after signing - and its money is settled: SIGNED → LIQUIDATED, once.
+     * Never COMPLETED: that says the goods were delivered. The caller decides that nothing was; the database checks it
+     * again ({@code check_sales_contract_transition}).
+     *
+     * @return whether this changed the contract (false when it was liquidated, or completed, already)
+     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID} for a contract not signed
+     */
+    public boolean liquidate(Instant at) {
+        if (status == SalesContractStatus.LIQUIDATED || status == SalesContractStatus.COMPLETED) {
+            return false;
+        }
+        if (!status.canTransitionTo(SalesContractStatus.LIQUIDATED)) {
+            throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is %s: only a signed "
+                    .formatted(contractNumber, status) + "contract is liquidated");
+        }
+        this.status = SalesContractStatus.LIQUIDATED;
+        this.liquidatedAt = Objects.requireNonNull(at, "at");
+        return true;
+    }
     public long version() { return version; }
 }

@@ -202,24 +202,12 @@ public final class ConfirmedOrders {
         if (line.unit() == null) {
             return jdbc.queryForObject("""
                     SELECT u.id FROM inventory.uom_conversions u
-                      JOIN inventory.inventory_items i ON i.id = u.inventory_item_id
-                     WHERE i.sku = ? AND u.factor = ? AND NOT u.is_base AND u.active
-                     ORDER BY u.default_shipping DESC, u.created_at LIMIT 1""", UUID.class, line.sku(),
+                     WHERE u.variant_id = ? AND u.factor = ? AND u.active
+                     ORDER BY u.created_at LIMIT 1""", UUID.class, CartonRows.variantOf(jdbc, line.sku()),
                     line.unitsPerCarton());
         }
-        return tx().execute(s -> {
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
-                    line.sku());
-            jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        default_purchase, active, version, created_at, default_shipping)
-                    VALUES (?, ?, ?, ?, FALSE, FALSE, TRUE, 0, NOW(), FALSE)
-                    ON CONFLICT (inventory_item_id, unit_of_measure) DO NOTHING""", Identifiers.newId(), item,
-                    line.unit(), line.unitsPerCarton());
-            return jdbc.queryForObject("""
-                    SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? AND unit_of_measure = ?
-                       AND factor = ?""", UUID.class, item, line.unit(), line.unitsPerCarton());
-        });
+        return tx().execute(s -> CartonRows.cartonUnitOfVariant(jdbc, CartonRows.variantOf(jdbc, line.sku()),
+                line.unit(), line.unitsPerCarton()));
     }
 
     /** A DRAFT order of {@code lines} for the customer - what converting an accepted quote leaves. */
@@ -236,7 +224,11 @@ public final class ConfirmedOrders {
             }
             Order order = Order.draft(OrderNumber.of(today(), SEQUENCE.incrementAndGet()), customerId,
                     Identifiers.newId(), orderLines, Instant.now());
-            return bean(OrderRepository.class).save(order).id().value();
+            UUID id = bean(OrderRepository.class).save(order).id().value();
+            // Placing an order opens the inventory item of each of its SKUs (owner decision Q5); this draft skips
+            // placeQuotedOrder, so it opens them as that would.
+            lines.stream().map(Line::sku).distinct().forEach(sku -> CartonRows.item(jdbc(), sku));
+            return id;
         });
     }
 
@@ -259,6 +251,16 @@ public final class ConfirmedOrders {
      * each next one two weeks after the one before; the first opens today, because a batch is not handed over before its window (4B-8, 09 BR-04) and the tests hand over at once; a line's cartons must divide by the number of batches.
      */
     public Signed sign(UUID orderId, List<SalesContracts.Installment> plan, int batches) {
+        SalesContracts.ContractView sent = send(orderId, plan, batches);
+        return signSent(orderId, sent.version());
+    }
+
+    /**
+     * The order's contract drawn up as {@link #sign} draws it and sent. A plan whose credit check fails waits for
+     * accounting when sent (15 BR-11, 2026-11-26): the fixture's accountant approves it, as the real flow has it, and
+     * it is sent then - so a test that wants an order held at signing makes the customer's credit worse after this.
+     */
+    public SalesContracts.ContractView send(UUID orderId, List<SalesContracts.Installment> plan, int batches) {
         legalProfile(customerOf(orderId));
         SalesContracts contracts = bean(SalesContracts.class);
         List<Map<String, Object>> lines = jdbc().queryForList(
@@ -275,8 +277,56 @@ public final class ConfirmedOrders {
         SalesContracts.ContractView drafted = asSales(() -> contracts.create(sales(), orderId,
                 new SalesContracts.Draft(null, schedule, plan)));
         SalesContracts.ContractView sent = asSales(() -> contracts.send(sales(), orderId, drafted.version()));
+        if (!"PENDING".equals(sent.creditReview())) {
+            return sent;
+        }
+        CurrentUser accounting = new CurrentUser(accountant(), "accountant-" + accountant(), Set.of(Role.ACCOUNTANT),
+                Set.of(), DataScope.ALL, Set.of(), Set.of());
+        return WithCurrentUser.call(accounting, DataScope.ALL, () -> contracts.approveCredit(accounting, orderId,
+                sent.version(), "test: credit approved before sending"));
+    }
+
+    /**
+     * The order's contract with {@code plan}, held for credit when signed (15 BR-11): sent while the customer's limit
+     * still carried it - raised for the send and put back before signing, as if accounting lowered it in between - so
+     * it did not wait for accounting before it was sent, and the check at signing fails as the customer's own limit
+     * says. For a test of the hold at signing; the customer has a credit profile already. A customer with something
+     * overdue fails at sending whatever the limit, and is not for this.
+     */
+    public Signed signHeldForCredit(UUID orderId, List<SalesContracts.Installment> plan) {
+        UUID customerId = customerOf(orderId);
+        BigDecimal limit = jdbc().queryForObject("SELECT credit_limit FROM customer.credit_profile WHERE customer_id = ?",
+                BigDecimal.class, customerId);
+        creditLimit(customerId, new BigDecimal("999999999999"));
+        SalesContracts.ContractView sent;
+        try {
+            sent = send(orderId, plan, 1);
+        } finally {
+            creditLimit(customerId, limit);
+        }
+        if (!"SENT".equals(sent.status()) || sent.latestCreditReview() != null) {
+            throw new IllegalStateException("The contract of " + orderId + " waited for accounting: the customer has "
+                    + "something overdue");
+        }
+        return signSent(orderId, sent.version());
+    }
+
+    /** A new order of {@code lines} with {@code plan}, held for credit when signed: {@link #signHeldForCredit}. */
+    public Signed signedHeldForCredit(UUID customerId, List<SalesContracts.Installment> plan, Line... lines) {
+        return signHeldForCredit(draft(customerId, Arrays.asList(lines)), plan);
+    }
+
+    private void creditLimit(UUID customerId, BigDecimal limit) {
+        tx().executeWithoutResult(s -> jdbc().update("UPDATE customer.credit_profile SET credit_limit = ? WHERE "
+                + "customer_id = ?", limit, customerId));
+    }
+
+    /** The sent contract of the order, at {@code version}, signed today with a real one-page PDF scan. */
+    public Signed signSent(UUID orderId, long version) {
+        SalesContracts contracts = bean(SalesContracts.class);
+        LocalDate today = today();
         byte[] scan = TestPdfs.blank();
-        SalesContracts.ContractView signed = asSales(() -> contracts.sign(sales(), orderId, sent.version(),
+        SalesContracts.ContractView signed = asSales(() -> contracts.sign(sales(), orderId, version,
                 IncomingFiles.sent(List.of(new FileUpload("signed.pdf", "application/pdf", scan.length,
                         new ByteArrayInputStream(scan)))), today));
         List<UUID> installments = jdbc().queryForList(

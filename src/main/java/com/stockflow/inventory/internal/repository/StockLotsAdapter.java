@@ -5,7 +5,6 @@ import com.stockflow.inventory.internal.domain.StockLots;
 import com.stockflow.inventory.internal.entity.StockLotJpaEntity;
 import org.springframework.stereotype.Repository;
 
-import java.util.Objects;
 import java.util.UUID;
 
 /** {@link StockLots} on Spring Data. */
@@ -27,19 +26,26 @@ class StockLotsAdapter implements StockLots {
      */
     @Override
     public UUID openForReceipt(ReceiptLot lot) {
-        if (lot.productionOrderId() != null) {
-            return jpa.findByProductionOrderIdAndSku(lot.productionOrderId(), lot.sku().code())
-                    .map(StockLotJpaEntity::getId)
-                    .orElseGet(() -> jpa.saveAndFlush(StockLotJpaEntity.ofProductionOrder(Identifiers.newId(),
-                            lot.sku().code(), lot.receivedAt(), lot.warehouseId(), lot.productionOrderId(),
-                            lot.productionOrderCode())).getId());
-        }
-        return jpa.findByGoodsReceiptIdAndSku(lot.goodsReceiptId(), lot.sku().code()).stream()
-                .filter(found -> Objects.equals(found.getLotNumber(), lot.lotNumber()))
+        return jpa.findByProductionOrderIdAndSku(lot.productionOrderId(), lot.sku().code())
                 .map(StockLotJpaEntity::getId)
-                .findFirst()
-                .orElseGet(() -> jpa.saveAndFlush(new StockLotJpaEntity(Identifiers.newId(), lot.sku().code(),
-                        lot.lotNumber(), lot.receivedAt(), lot.goodsReceiptId(),
-                        lot.goodsReceiptNumber(), lot.warehouseId())).getId());
+                .orElseGet(() -> jpa.saveAndFlush(StockLotJpaEntity.ofProductionOrder(Identifiers.newId(),
+                        lot.sku().code(), lot.receivedAt(), lot.warehouseId(), lot.productionOrderId(),
+                        lot.productionOrderCode())).getId());
+    }
+
+    @Override
+    public UUID openUntraced(com.stockflow.common.domain.Sku sku, String lotNumber, java.time.Instant receivedAt) {
+        return jpa.findBySkuAndLotNumberAndReceivedAtAndOriginOrderByCreatedAtAscIdAsc(sku.code(), lotNumber,
+                        receivedAt, StockLotJpaEntity.Origin.UNTRACED).stream().findFirst()
+                .map(StockLotJpaEntity::getId)
+                .orElseGet(() -> jpa.saveAndFlush(StockLotJpaEntity.untraced(Identifiers.newId(), sku.code(),
+                        lotNumber, receivedAt)).getId());
+    }
+
+    @Override
+    public java.util.Optional<ProductionLot> productionLotOf(UUID lotId) {
+        return lotId == null ? java.util.Optional.empty() : jpa.findById(lotId)
+                .filter(lot -> lot.getProductionOrderId() != null)
+                .map(lot -> new ProductionLot(lot.getProductionOrderId(), lot.getProductionOrderCode()));
     }
 }

@@ -17,7 +17,14 @@ public record CycleCountResponse(UUID id, String countNumber, UUID warehouseId, 
                                  boolean blind, UUID assignedUserId, LocalDate plannedDate, Instant startedAt,
                                  Instant completedAt,
                                  @Schema(description = "Absent on a blind count for a counter") String note,
-                                 Instant createdAt, List<Line> lines) {
+                                 Instant createdAt, List<Line> lines,
+                                 @Schema(description = "Display name of assignedUserId, so a counter's screen can "
+                                         + "say who the count is with; null while unassigned", nullable = true)
+                                 String assignedUserName,
+                                 @Schema(description = "The warehouse's code (its location prefix)",
+                                         example = "HCM", nullable = true)
+                                 String warehouseCode,
+                                 @Schema(nullable = true) String warehouseName) {
 
     @Schema(name = "CycleCountLine")
     public record Line(UUID id, String locationCode, String sku, String lotNumber,
@@ -32,10 +39,16 @@ public record CycleCountResponse(UUID id, String countNumber, UUID warehouseId, 
                        UUID countedBy, Instant countedAt, boolean recountRequired,
                        @Schema(description = "The variance adjustments raised from this line; empty on a blind count "
                                + "for a counter")
-                       List<Adjustment> adjustments) {
+                       List<Adjustment> adjustments,
+                       @Schema(description = "Display name of countedBy; null until the line is counted",
+                               nullable = true)
+                       String countedByName) {
     }
 
     @Schema(name = "CycleCountLineAdjustment")
-    public record Adjustment(UUID id, String number, int quantityDelta, String status) {
+    public record Adjustment(UUID id, String number,
+                             @Schema(description = "WRITE_OFF for a carton not found, RESTOCK for a LOST carton "
+                                     + "found", allowableValues = {"WRITE_OFF", "RESTOCK"})
+                             String direction, String status) {
     }
 }

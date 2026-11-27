@@ -14,9 +14,10 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Which price a customer pays for a SKU at a quantity: its own tier, the one source of a price (kltn-docs 13 BR-04,
- * D14). There is no base or group price behind it since 5-3: a SKU without the customer's own price has no price.
- * Joins the caller's transaction and reads only: nothing is priced for a checkout any more (team plan 5-2).
+ * The customer's own price for a SKU at a quantity (kltn-docs 13 BR-05, D14). A SKU without one starts a quote from the
+ * standard price of its variant instead (13 BR-04 as changed on 2026-11-26, read through {@code CatalogService});
+ * there is no group price. Joins the caller's transaction and reads only: nothing is priced for a checkout any more
+ * (team plan 5-2).
  *
  * <p>Since 4B-2 a customer's own price for one of its own SKUs counts cartons (13 BR-05): what a quote starts from
  * ({@link #own}). Checkout read one in units on a stock variant until it went (team plan 5-2), so that reading is gone

@@ -9,6 +9,7 @@ glossary
 09-shipping
 11-intra-warehouse-transfer
 20-inventory-control
+13-catalog
 14-cart-and-order
 15-payment
 17-order-management

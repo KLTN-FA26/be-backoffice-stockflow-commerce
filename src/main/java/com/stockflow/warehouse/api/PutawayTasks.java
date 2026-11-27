@@ -47,6 +47,12 @@ public interface PutawayTasks {
     /** The PENDING or IN_PROGRESS task of a carton, whatever its source; empty when it has none. */
     Optional<PutawayTaskView> openTaskOf(UUID stockPackageId);
 
+    /**
+     * {@link #openTaskOf} for a page of cartons (#454, the carton list), in one read: each of {@code stockPackageIds}
+     * with an open task, mapped to it; a carton with none is absent.
+     */
+    Map<UUID, PutawayTaskView> openTasksOf(java.util.Collection<UUID> stockPackageIds);
+
     /** Every task of the receipt, whatever its status, oldest first. */
     List<PutawayTaskView> tasksOfReceipt(UUID goodsReceiptId);
 

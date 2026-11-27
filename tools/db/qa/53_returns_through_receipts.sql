@@ -58,7 +58,7 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------------------------
--- Fixtures: an order of HCM with a line of 10 sofas; a return of 6 of them, approved for 4 and awaiting its goods, by
+-- Fixtures: an order of HCM with a line of 10 cups; a return of 6 of them, approved for 4 and awaiting its goods, by
 -- a Sales who opened it (the editor) and another who approved it (the approver). A CLOSED return receipt against it,
 -- written with triggers off (what the receipt went through is QA 52's subject).
 -- ---------------------------------------------------------------------------------------------
@@ -67,13 +67,13 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
 VALUES (md5('qa53:o1')::uuid, 'SO-QA53-O1', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PICKING',
         1000, 'VND', NOW(), NOW(), md5('demo:wh:HCM')::uuid);
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-VALUES (md5('qa53:o1:l')::uuid, md5('qa53:o1')::uuid, 'SOFA-3S-GREY', 10, 100, 'VND');
+VALUES (md5('qa53:o1:l')::uuid, md5('qa53:o1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 10, 100, 'VND');
 INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
                                      requested_resolution, status, reason_code, requested_at)
 VALUES (md5('qa53:r1')::uuid, 'RMA-QA53-1', md5('qa53:o1')::uuid, 'SO-QA53-O1', 'c0000000-0000-4000-8000-000000000001',
         gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'DAMAGED_IN_TRANSIT', NOW());
 INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
-VALUES (md5('qa53:r1:l')::uuid, md5('qa53:r1')::uuid, md5('qa53:o1:l')::uuid, 'SOFA-3S-GREY', FALSE, 100, 6);
+VALUES (md5('qa53:r1:l')::uuid, md5('qa53:r1')::uuid, md5('qa53:o1:l')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', FALSE, 100, 6);
 UPDATE ordering.return_request_line SET approved_quantity = 4 WHERE id = md5('qa53:r1:l')::uuid;
 UPDATE ordering.return_request SET status = 'AWAITING_RETURN', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW(),
        return_required = TRUE, return_deadline = NOW() + INTERVAL '14 days' WHERE id = md5('qa53:r1')::uuid;
@@ -98,15 +98,21 @@ SET LOCAL session_replication_role = replica;
 UPDATE procurement.goods_receipts SET status = 'CLOSED', confirmed_at = NOW(), confirmed_by = md5('demo:user:editor')::uuid,
        closed_at = NOW() WHERE id = md5('qa53:g')::uuid;
 SET LOCAL session_replication_role = origin;
--- A legacy purchase receipt: the supplier and blind columns went with purchasing (V20261113000200, 4A-9), and no new
--- one is started by the application, so it is written as old data is, triggers off.
+-- A receipt that is not a return receipt: a production receipt, written with the row triggers off and a minimal
+-- production order (the rules of a production receipt are QA 22's).
 SET LOCAL session_replication_role = replica;
-INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by, receipt_type)
-VALUES (md5('qa53:g:purchase')::uuid, 'GR-QA53-P', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
-        'PURCHASE');
+INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
+                                       receiving_warehouse_id, need_by_date, status, sample_approval_required,
+                                       sample_required_by_default, drawn_up_by, sent_by, sent_at)
+VALUES (md5('qa53:prod')::uuid, 'PRD-20261109-5301', md5('qa53:so')::uuid, md5('qa53:batch')::uuid,
+        md5('qa53:cust')::uuid, md5('qa53:producer')::uuid, md5('demo:wh:HCM')::uuid, CURRENT_DATE + 30, 'SENT', FALSE,
+        FALSE, md5('demo:user:editor')::uuid, md5('demo:user:editor')::uuid, NOW());
+INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by, receipt_type, production_order_id)
+VALUES (md5('qa53:g:production')::uuid, 'GR-QA53-P', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
+        'PRODUCTION', md5('qa53:prod')::uuid);
 SET LOCAL session_replication_role = origin;
-SELECT pg_temp.expect_fail_by('RT3 a receipt that is not a return receipt (a purchase one)', 'its goods come back on a confirmed return receipt', $q$
-    UPDATE ordering.return_request SET goods_receipt_id = md5('qa53:g:purchase')::uuid,
+SELECT pg_temp.expect_fail_by('RT3 a receipt that is not a return receipt (a production one)', 'its goods come back on a confirmed return receipt', $q$
+    UPDATE ordering.return_request SET goods_receipt_id = md5('qa53:g:production')::uuid,
            received_by = md5('demo:user:editor')::uuid, received_at = NOW(), receiving_location_code = 'HCM-QC01'
      WHERE id = md5('qa53:r1')::uuid $q$);
 SELECT pg_temp.expect_fail_by('RT4 a receipt named without who took the goods, when and where', 'ck_return_request_goods_back', $q$
@@ -118,6 +124,34 @@ SELECT pg_temp.expect_ok('RT5 RECEIVED on the closed receipt, 4 units counted', 
      WHERE id = md5('qa53:r1')::uuid $q$);
 SELECT pg_temp.expect_fail_by('RT6 the receipt that brought the goods is changed', 'the receipt that brought its goods does not change', $q$
     UPDATE ordering.return_request SET goods_receipt_id = gen_random_uuid() WHERE id = md5('qa53:r1')::uuid $q$);
+
+\echo '--- parcels: every receipt that brought goods of the return, a confirmed return receipt against it (WF-05 TH-3)'
+SELECT pg_temp.expect_fail_by('RQ1 a parcel on a receipt that is not a return receipt (a production one)',
+    'a parcel comes back on a confirmed return receipt', $q$
+    INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,
+                                                 receiving_location_code, received_by, received_at)
+    VALUES (md5('qa53:g:production')::uuid, md5('qa53:r1')::uuid, 1, 'GR-QA53-P', 'HCM-QC01',
+            md5('demo:user:editor')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail_by('RQ2 a parcel numbered 0', 'ck_return_request_receipt_parcel', $q$
+    INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,
+                                                 receiving_location_code, received_by, received_at)
+    VALUES (md5('qa53:g')::uuid, md5('qa53:r1')::uuid, 0, 'GR-QA53-C', 'HCM-QC01', md5('demo:user:editor')::uuid,
+            NOW()) $q$);
+SELECT pg_temp.expect_ok('RQ3 the closed receipt is the return''s first parcel', $q$
+    INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,
+                                                 receiving_location_code, received_by, received_at)
+    VALUES (md5('qa53:g')::uuid, md5('qa53:r1')::uuid, 1, 'GR-QA53-C', 'HCM-QC01', md5('demo:user:editor')::uuid,
+            NOW()) $q$);
+SELECT pg_temp.expect_fail_by('RQ4 the same receipt a second parcel', 'pk_return_request_receipt', $q$
+    INSERT INTO ordering.return_request_receipt (goods_receipt_id, return_request_id, parcel, receipt_number,
+                                                 receiving_location_code, received_by, received_at)
+    VALUES (md5('qa53:g')::uuid, md5('qa53:r1')::uuid, 2, 'GR-QA53-C', 'HCM-QC01', md5('demo:user:editor')::uuid,
+            NOW()) $q$);
+SELECT pg_temp.expect_fail_by('RQ5 a parcel rewritten', 'append-only', $q$
+    UPDATE ordering.return_request_receipt SET parcel = 3 WHERE goods_receipt_id = md5('qa53:g')::uuid $q$);
+SELECT pg_temp.expect_fail_by('RQ6 a return with a parcel back is withdrawn: its goods would stay unrefunded',
+    'it is not withdrawn - mark its goods complete', $q$
+    UPDATE ordering.return_request SET status = 'CANCELLED' WHERE id = md5('qa53:r1')::uuid $q$);
 
 \echo '--- the refund: units that came back, adding up to the settlement (17 §4.10 step 40)'
 SELECT pg_temp.expect_fail_by('RF1 more units refunded than came back', 'ck_return_request_line_refund', $q$
@@ -184,7 +218,7 @@ SELECT pg_temp.expect_fail_by('QE4b a return line that received fewer than nothi
             gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'PRINT_DEFECT', NOW());
     INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity,
                                               received_quantity)
-    VALUES (md5('qa53:r2:l')::uuid, md5('qa53:r2')::uuid, md5('qa53:o1:l')::uuid, 'SOFA-3S-GREY', FALSE, 100, 2, -1) $q$);
+    VALUES (md5('qa53:r2:l')::uuid, md5('qa53:r2')::uuid, md5('qa53:o1:l')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', FALSE, 100, 2, -1) $q$);
 SELECT pg_temp.expect_ok('QE4c ... and nothing received is fine', $q$
     INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
                                          requested_resolution, status, reason_code, requested_at)
@@ -192,7 +226,7 @@ SELECT pg_temp.expect_ok('QE4c ... and nothing received is fine', $q$
             gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'PRINT_DEFECT', NOW());
     INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity,
                                               received_quantity)
-    VALUES (md5('qa53:r3:l')::uuid, md5('qa53:r3')::uuid, md5('qa53:o1:l')::uuid, 'SOFA-3S-GREY', FALSE, 100, 2, 0) $q$);
+    VALUES (md5('qa53:r3:l')::uuid, md5('qa53:r3')::uuid, md5('qa53:o1:l')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', FALSE, 100, 2, 0) $q$);
 SELECT pg_temp.expect_true('QE5 no QC, parcel, credit, replacement or withdrawal column is left on a return',
     (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'ordering' AND table_name = 'return_request'
         AND column_name IN ('inspected_by', 'inspected_at', 'inspection_note', 'receipt_note', 'parcel_count',

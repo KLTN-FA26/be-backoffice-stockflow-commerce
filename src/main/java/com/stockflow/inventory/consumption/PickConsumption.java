@@ -22,8 +22,8 @@ import java.util.UUID;
 public interface PickConsumption {
 
     /**
-     * Turns the hold behind a pick line into a real deduction: {@code on_hand} falls by the hold's
-     * quantity, the hold becomes CONSUMED, one {@code PICK} ledger row names the pick line and
+     * Turns the hold behind a pick line into a real deduction: the hold becomes CONSUMED and its carton
+     * leaves stock whole, one {@code PICK} ledger row names the pick line and
      * {@code StockDeducted} is published. Called again for the same pick line, it changes nothing and
      * answers {@code alreadyConsumed = true}.
      *
@@ -39,7 +39,7 @@ public interface PickConsumption {
      * 4C-4): the carton goes CONSUMED to IN_STOCK, sealed, at the bin, keeping its LPN; its stock row - the layer the
      * pick emptied, same SKU, lot and receipt - follows it there and holds the carton's count again, AVAILABLE; one
      * {@code PUT_BACK} ledger row names the pick line and the carton. Called again for the same pick line, it changes
-     * nothing. Whether the carton fits the bin (BR-12) is not checked here (team plan 5-4).
+     * nothing. The carton must fit the bin, or go to OVERFLOW when no bin takes it (BR-12).
      *
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} when the line's
      *         hold is unknown; {@code LOCATION_NOT_FOUND} / {@code LOCATION_NOT_USABLE} for the bin;
@@ -47,7 +47,8 @@ public interface PickConsumption {
      *         stock, part of a carton); {@code INVALID_STOCK_PACKAGE_TRANSITION}
      *         when the carton is not CONSUMED; {@code STOCK_STATUS_MISMATCH} when its row is not AVAILABLE stock;
      *         {@code CARTON_DOES_NOT_FIT_BIN} when the carton does not fit that bin dimension by dimension (kltn-docs
-     *         07 BR-12: such a carton goes to an OVERFLOW area);
+     *         07 BR-12: such a carton goes to an OVERFLOW area); {@code PUT_BACK_OVERFLOW_NOT_ALLOWED} for an OVERFLOW
+     *         area while a bin still takes the carton;
      *         {@code OUT_OF_DATA_SCOPE}
      */
     void putBack(PutBackCommand command);
@@ -81,7 +82,7 @@ public interface PickConsumption {
 
     /**
      * Deducts a carton {@link #stage} put in a staging area, where it stands (kltn-docs 07 §4.3 step 8, 20 §4.9 step 3):
-     * as {@link #consumeForPick} - the allocation CONSUMED, {@code on_hand} falls, the carton CONSUMED, one {@code PICK}
+     * as {@link #consumeForPick} - the allocation CONSUMED, the carton CONSUMED, one {@code PICK}
      * ledger row from the staging area names the pick line. Called again for the same pick line, it changes nothing and
      * answers {@code alreadyConsumed = true}.
      *
@@ -107,8 +108,8 @@ public interface PickConsumption {
      * Moves a carton {@link #stage} put in a staging area back onto a bin, whole, after its order was cancelled (kltn-docs
      * 07 §4.5 steps 13-14, 20 §4.9 step 3): nothing was deducted, so this is a {@code MOVE} from the staging area naming
      * the pick line and the carton, and the carton is IN_STOCK at the bin as it was - available to promise again, its
-     * allocation released by the cancellation. Called again for the same pick line, it changes nothing. Whether the
-     * carton fits the bin (07 BR-12) is not checked here (team plan 5-4).
+     * allocation released by the cancellation. Called again for the same pick line, it changes nothing. The carton must
+     * fit the bin, or go to OVERFLOW when no bin takes it (07 BR-12).
      *
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND}; {@code CONFLICT} while the
      *         allocation is still held for its order; {@code LOCATION_NOT_FOUND} / {@code LOCATION_NOT_USABLE} /
@@ -116,6 +117,15 @@ public interface PickConsumption {
      * @throws IllegalStateException when this pick line never staged the carton
      */
     void unstage(PutBackCommand command);
+
+    /**
+     * Where cartons waiting to go back may go when no bin takes them (kltn-docs 07 BR-12, 05 BR-13): for each of these
+     * LPNs that fits no bin of {@code warehouseId} dimension by dimension, the warehouse's usable OVERFLOW areas.
+     * A carton some bin takes, or one unknown, is absent; so is every carton when the warehouse has no OVERFLOW area.
+     * Reads only.
+     */
+    java.util.Map<String, java.util.List<String>> overflowAreasFor(UUID warehouseId,
+                                                                    java.util.Collection<String> lpns);
 
     /**
      * A picker came up short at an allocation's bin (docs 04c X-SHORT step 03): the books and the shelf disagree, so the

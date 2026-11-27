@@ -1,5 +1,6 @@
 package com.stockflow.inventory.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
@@ -9,8 +10,6 @@ import com.stockflow.inventory.internal.domain.CycleCountLine;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.CycleCountStatus;
 import com.stockflow.inventory.internal.domain.LocationId;
-import com.stockflow.inventory.internal.domain.StockItem;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
@@ -28,7 +27,6 @@ import java.time.Clock;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -64,7 +62,6 @@ class CycleCountCountingService {
     private final CycleCountViewMapper views;
     private final InventoryPolicyRepository policies;
     private final StockPackageRepository stockPackages;
-    private final StockItemRepository stockItems;
     private final StockOperations operations;
     private final WarehouseDirectory warehouseDirectory;
     private final Clock clock;
@@ -73,14 +70,13 @@ class CycleCountCountingService {
 
     CycleCountCountingService(CycleCountRepository counts, CycleCountViewMapper views,
                               InventoryPolicyRepository policies, StockPackageRepository stockPackages,
-                              StockItemRepository stockItems, StockOperations operations,
+                              StockOperations operations,
                               WarehouseDirectory warehouseDirectory, Clock clock,
                               @Value("${stockflow.inventory.cycle-count-max-lines:500}") int maxLines) {
         this.counts = counts;
         this.views = views;
         this.policies = policies;
         this.stockPackages = stockPackages;
-        this.stockItems = stockItems;
         this.operations = operations;
         this.warehouseDirectory = warehouseDirectory;
         this.clock = clock;
@@ -91,14 +87,31 @@ class CycleCountCountingService {
      * The line's carton scanned at its bin ({@code found}) or not found there. A carton moved whole since planning is
      * counted where it is now: the line follows it (20 §4.2 b6). Only a carton that can hold stock - IN_STOCK, or LOST
      * and found again - is found; one emptied since (picked, written off) is not there to scan.
+     *
+     * <p>Found is the line's own LPN scanned (§4.2 b4), checked against the carton under its lock, so a scan of the
+     * wrong carton - the neighbour on the shelf - is refused instead of counting this line found. It is not proof the
+     * carton was seen: the line shows its LPN to the counter, so the scanner workflow, not this check, is what keeps
+     * a counter from typing it in. The refusal names only the scanned LPN, which the counter holds, and the line's,
+     * which the line already shows, so it tells a blind counter nothing of the books (BR-07).</p>
      */
     @Transactional
-    public CycleCountView count(UUID id, UUID lineId, boolean found, UUID actor, boolean mayDecide) {
+    public CycleCountView count(UUID id, UUID lineId, boolean found, String lpn, UUID actor, boolean mayDecide) {
         CycleCount count = lockForCounting(id, actor, mayDecide);
         requireOpen(count);
         CycleCountLine line = count.lines().stream().filter(l -> l.id().equals(lineId)).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No such line on this count"));
         count.requireMayCount(line, actor);
+        // The body is judged once the count is known open and the caller its counter, so a closed count, an unknown one
+        // or someone else's line is answered as such and not as a malformed scan; still before any stock lock.
+        String scanned = CycleCountInput.upper(lpn);
+        if (found && scanned == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Scan the carton's LPN to count it found",
+                    List.of(new FieldError("lpn", "Scan the carton's LPN to count it found", "Required")));
+        }
+        if (!found && scanned != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A carton not found has no LPN scanned",
+                    List.of(new FieldError("lpn", "A carton not found has no LPN scanned", "NotAllowed")));
+        }
         if (!line.slot().isCarton()) {
             // Only a count planned before counts were by carton could hold one, and none is open since V20261113000300.
             throw new BusinessException(ErrorCode.CONFLICT, "Line %s counts loose stock; counts are by carton".formatted(
@@ -106,14 +119,17 @@ class CycleCountCountingService {
         }
         policies.lock(line.slot().sku().code());
         StockPackage carton = lockCarton(line.slot().stockPackageId());
+        if (found && !scanned.equalsIgnoreCase(carton.lpn())) {
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_LPN_MISMATCH,
+                    "%s is not the carton of this line (%s)".formatted(scanned, carton.lpn()));
+        }
         boolean reveal = revealsBooks(count, mayDecide);
         if (carton.status() == StockPackageStatus.IN_STOCK) {
             // The line object is the aggregate's own: relocating it moves this very slot.
             follow(count, line, carton, prefixOf(count), reveal);
         }
         requireFindable(carton, found, reveal);
-        count.count(lineId, found, booked(carton, line.slot().location()), carton.nominalQty(), actor,
-                clock.instant());
+        count.count(lineId, found, booked(carton, line.slot().location()), actor, clock.instant());
         return views.of(counts.save(count), mayDecide);
     }
 
@@ -143,9 +159,9 @@ class CycleCountCountingService {
                 .filter(carton -> prefix.equals(carton.location().warehouseCode()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND,
                         "No carton with LPN %s in warehouse %s".formatted(lpn, prefix)));
-        StockItem content = contentOf(seen);
-        policies.lock(content.sku().code());
-        requireFree(count, CountSlot.carton(seen.location(), content.sku(), content.lotNumber(), seen.id()));
+        requireStocked(seen);
+        policies.lock(seen.sku().code());
+        requireFree(count, CountSlot.carton(seen.location(), seen.sku(), seen.lotNumber(), seen.id()));
         StockPackage carton = lockCarton(seen.id());
         boolean reveal = revealsBooks(count, command.mayDecide());
         if (carton.status() != StockPackageStatus.IN_STOCK && carton.status() != StockPackageStatus.LOST) {
@@ -159,8 +175,8 @@ class CycleCountCountingService {
                             .formatted(carton.lpn(), carton.location(), location)
                     : cannotCountHere(carton, location));
         }
-        CountSlot slot = CountSlot.carton(carton.location(), content.sku(), content.lotNumber(), carton.id());
-        count.addLine(slot, booked(carton, location), carton.nominalQty(), command.actor(), clock.instant(),
+        CountSlot slot = CountSlot.carton(carton.location(), carton.sku(), carton.lotNumber(), carton.id());
+        count.addLine(slot, booked(carton, location), command.actor(), clock.instant(),
                 maxLines);
         return views.of(counts.save(count), command.mayDecide());
     }
@@ -209,12 +225,12 @@ class CycleCountCountingService {
         }
         count.submit(clock.instant());
         String note = "Count " + count.number();
-        List<CycleCountLine> ordered = counted.stream().filter(line -> line.delta() != 0)
+        List<CycleCountLine> ordered = counted.stream().filter(line -> line.variance().isPresent())
                 .sorted(Comparator.comparing((CycleCountLine line) -> line.slot().sku().code())
                         .thenComparing(line -> line.slot().lockKey()))
                 .toList();
         for (CycleCountLine line : ordered) {
-            operations.requestCountVariance(line.id(), line.slot(), line.delta(), actor, note);
+            operations.requestCountVariance(line.id(), line.slot(), line.variance().orElseThrow(), actor, note);
         }
         CycleCount saved = counts.save(count);
         log.info("Cycle count {} submitted by {}: {} carton(s) differ, as many adjustment(s) asked", count.number(),
@@ -327,14 +343,15 @@ class CycleCountCountingService {
     }
 
     /**
-     * The SKU and lot of a carton, from its row (one per carton): the carton itself holds no quantity and no lot
-     * (V20261020000100). A LOST carton's row is kept at zero, which is what lets a count find it again.
+     * A count line names a carton by its SKU and lot, and a carton has its lot from the day it goes into stock and
+     * keeps it out of stock (ADR-0011) - which is what lets a count find a LOST carton again. One with no lot was only
+     * ever labelled on a receipt (RECEIVING, VOID): there is nothing of it to count.
      */
-    private StockItem contentOf(StockPackage carton) {
-        return stockItems.findIdsInStockPackage(carton.id()).stream()
-                .map(stockItems::findById).flatMap(Optional::stream).findFirst()
-                .orElseThrow(() -> new BusinessException(ErrorCode.CYCLE_COUNT_UNKNOWN_LAYER,
-                        "Carton %s has never held stock".formatted(carton.lpn())));
+    private static void requireStocked(StockPackage carton) {
+        if (carton.lotId() == null) {
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_UNKNOWN_LAYER,
+                    "Carton %s has never held stock".formatted(carton.lpn()));
+        }
     }
 
     /** Another open count, or a variance still pending approval, holds the carton (the plan's rule, BR-10). */

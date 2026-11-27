@@ -54,6 +54,9 @@ CHAPTERS = [
      "moving cartons inside one warehouse"),
     ("warehouse/20-inventory-control/README.md", "20-inventory-control",
      "stock statuses, ATP, counts, adjustments, quarantine, the movement ledger"),
+    ("ecommerce/13-catalog/README.md", "13-catalog",
+     "internal prices: a customer's own price list and a variant's standard price, tiers by carton, MOQ, price per "
+     "piece; the reference price a quote's price review is measured against"),
     ("ecommerce/14-cart-and-order/README.md", "14-cart-and-order",
      "quotes, orders and sales contracts"),
     ("ecommerce/15-payment/README.md", "15-payment",
@@ -73,7 +76,6 @@ LEFT_OUT = [
      "has the roles"),
     ("ecommerce/12-product-design", "the customer's own design tool on the portal (2D/3D, preflight, PDF/X); the Sales "
      "Manager's design review is in it too, a back-office task, but most of its rules are about the editor"),
-    ("ecommerce/13-catalog", "the customer portal's catalog pages"),
     ("ecommerce/16-sales-chat", "the chat between a customer and Sales"),
     ("open-questions", "the decision log: settled questions repeat what the chapters say, open ones are not rules"),
     ("diagrams", "Mermaid diagrams, unreadable as text"),

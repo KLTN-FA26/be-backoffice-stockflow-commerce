@@ -10,6 +10,7 @@ import com.stockflow.fulfillment.api.ShipmentQueries;
 import com.stockflow.fulfillment.api.ShipmentSummary;
 import com.stockflow.common.error.NotFoundException;
 import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.StockAdjustmentDirection;
 import com.stockflow.inventory.api.StockAdjustmentQueries;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
@@ -84,7 +85,8 @@ class P8ToolsTest {
 
         private StockAdjustmentSummary adjustment(String number, UUID requestedBy, Instant at, UUID carton,
                                                   String note) {
-            return new StockAdjustmentSummary(UUID.randomUUID(), number, "HCM-A01-1-B", "CUP-12OZ", "L-7", -20,
+            return new StockAdjustmentSummary(UUID.randomUUID(), number, "HCM-A01-1-B", "CUP-12OZ", "L-7",
+                    StockAdjustmentDirection.WRITE_OFF,
                     StockAdjustmentReason.DAMAGED, note, StockAdjustmentStatus.PENDING_APPROVAL, requestedBy, at,
                     null, null, null, null, null, 0, carton, null);
         }
@@ -144,7 +146,7 @@ class P8ToolsTest {
             List<StockAdjustmentSummary> rows = new java.util.ArrayList<>();
             for (int i = 0; i < FindPendingAdjustmentsTool.MAX_ROWS; i++) {
                 rows.add(new StockAdjustmentSummary(UUID.randomUUID(), longest("ADJ-" + i, 32),
-                        longest("HCM-A01-1-B", 64), longest("CUP", 64), longest("L", 64), -2_000_000_000,
+                        longest("HCM-A01-1-B", 64), longest("CUP", 64), longest("L", 64), StockAdjustmentDirection.WRITE_OFF,
                         StockAdjustmentReason.SUBCONTRACT_LOSS, longest("Ghi chú ", 500),
                         StockAdjustmentStatus.PENDING_APPROVAL, colleague, NOW, null, null, null, null, null, 0,
                         UUID.randomUUID(), UUID.randomUUID()));
@@ -179,7 +181,7 @@ class P8ToolsTest {
             assertThat(first.daysWaiting()).isEqualTo(4);
             assertThat(first.requestedByMe()).isFalse();
             assertThat(first.carton()).isFalse();
-            assertThat(first.quantityDelta()).isEqualTo(-20);
+            assertThat(first.direction()).isEqualTo("WRITE_OFF");
             assertThat(first.reason()).isEqualTo("DAMAGED");
             assertThat(first.note()).doesNotContain("0903").contains(TypedText.PHONE);
             FindPendingAdjustmentsTool.Row second = answer.adjustments().get(1);

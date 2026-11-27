@@ -68,6 +68,50 @@ class EInvoiceAttentionNotificationListenerTest {
     }
 
     @Test
+    @DisplayName("audit r2 M-2 AUTO_ISSUE_HELD: critical, says why and by when it must be issued today; told once per "
+            + "draft and reason - a draft has no submission to tell notices apart by")
+    void aDraftHeldBackIsAnnouncedPerReason() {
+        InboxMessage sent = told(event(Cause.AUTO_ISSUE_HELD, "TAX_CLASS_UNKNOWN", null));
+
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.CRITICAL);
+        assertThat(sent.title()).isEqualTo("Hoá đơn EINV-20261112-0001 không tự phát hành được");
+        assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007",
+                "có sản phẩm chưa xác định nhóm thuế", "00:00 14/11/2026", "Lập trễ")
+                .as("audit r3 EINV-6: the reason in words, not its code").doesNotContain("TAX_CLASS_UNKNOWN");
+        assertThat(sent.dedupeKey()).isEqualTo("einvoice-auto-issue-held:" + INVOICE + ":TAX_CLASS_UNKNOWN");
+
+        String everyWarning = "BUYER_EMAIL_MISSING,TAX_RATE_DIFFERS_FROM_CONTRACT,TAX_RATE_NOT_ON_CONTRACT,"
+                + "TAX_CLASS_UNKNOWN,TAX_RATE_OUT_OF_DATE,TAX_EXEMPT_NOT_SUPPORTED,BUYER_PROFILE_INCOMPLETE";
+        InboxMessage long_ = EInvoiceAttentionNotificationListener.message(
+                event(Cause.AUTO_ISSUE_HELD, everyWarning, null));
+        assertThat(long_.dedupeKey()).hasSizeLessThanOrEqualTo(InboxMessage.DEDUPE_KEY_MAX)
+                .doesNotContain(everyWarning);
+    }
+
+    @Test
+    @DisplayName("audit r3 EINV-6: every warning code and a refusal's error code are named in words in the held "
+            + "notice; a code nothing names is shown as it came")
+    void theHeldReasonsAreNamedInWords() {
+        java.util.ResourceBundle vi = java.util.ResourceBundle.getBundle("i18n.messages",
+                java.util.Locale.forLanguageTag("vi"));
+        String body = EInvoiceAttentionNotificationListener.message(event(Cause.AUTO_ISSUE_HELD,
+                "TAX_CLASS_UNKNOWN,TAX_RATE_DIFFERS_FROM_CONTRACT", null)).body();
+        assertThat(body).contains("có sản phẩm chưa xác định nhóm thuế",
+                "thuế suất khác thuế suất đã chốt trên hợp đồng").doesNotContain("TAX_");
+        assertThat(EInvoiceAttentionNotificationListener.message(event(Cause.AUTO_ISSUE_HELD,
+                "EINVOICE_SERIES_NOT_CONFIGURED", null)).body())
+                .contains(vi.getString("error.EINVOICE_SERIES_NOT_CONFIGURED"))
+                .doesNotContain("EINVOICE_SERIES_NOT_CONFIGURED");
+        for (String code : List.of("BUYER_PROFILE_INCOMPLETE", "BUYER_EMAIL_MISSING", "TAX_RATE_DIFFERS_FROM_CONTRACT",
+                "TAX_RATE_NOT_ON_CONTRACT", "TAX_CLASS_UNKNOWN", "TAX_RATE_OUT_OF_DATE", "TAX_EXEMPT_NOT_SUPPORTED",
+                "UNKNOWN_TO_PROVIDER", "SIGNATURE_INVALID", "ISSUED_LATE")) {
+            assertThat(EInvoiceAttentionNotificationListener.reasons(code, vi)).as(code).doesNotContain(code);
+        }
+        assertThat(EInvoiceAttentionNotificationListener.reasons("SOMETHING_NEW", vi)).isEqualTo("SOMETHING_NEW");
+        assertThat(EInvoiceAttentionNotificationListener.reasons(null, vi)).isEqualTo("-");
+    }
+
+    @Test
     @DisplayName("a refusal without a provider code is still announced")
     void aRefusalWithoutACode() {
         InboxMessage sent = told(event(Cause.REJECTED, null, SUBMITTED));
@@ -90,6 +134,38 @@ class EInvoiceAttentionNotificationListenerTest {
     }
 
     @Test
+    @DisplayName("WF-05 HĐ-3, DELIVERY_FAILED_REVERSAL_DRAWN_UP: critical, names the draft reduction, the order and its "
+            + "deadline, says no agreement is needed, and keys once per draft")
+    void aReversalDrawnUpIsAnnounced() {
+        InboxMessage sent = told(event(Cause.DELIVERY_FAILED_REVERSAL_DRAWN_UP, null, null));
+
+        assertThat(sent.category()).isEqualTo("EINVOICE_ATTENTION");
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.CRITICAL);
+        assertThat(sent.title()).isEqualTo("Nháp điều chỉnh EINV-20261112-0001 giảm hoá đơn của một lần giao không "
+                + "thành công");
+        assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007", "00:00 14/11/2026",
+                "không cần biên bản").doesNotContain("null");
+        assertThat(sent.link()).isEqualTo("/invoicing/einvoices/" + INVOICE);
+        assertThat(sent.dedupeKey()).isEqualTo("einvoice-delivery-reversal:" + INVOICE + ":0");
+    }
+
+    @Test
+    @DisplayName("WF-05 HĐ-3, DELIVERY_FAILED_AWAITING_PROVIDER: a warning - the system settles it when the provider "
+            + "answers - that asks not to issue it by hand, keyed once per submission")
+    void anInvoiceOfAFailedDeliveryAtTheProviderIsAnnounced() {
+        InboxMessage sent = told(event(Cause.DELIVERY_FAILED_AWAITING_PROVIDER, null, SUBMITTED));
+
+        assertThat(sent.category()).isEqualTo("EINVOICE_ATTENTION");
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.WARN);
+        assertThat(sent.title()).isEqualTo("Hoá đơn EINV-20261112-0001 đang ở nhà cung cấp cho một lần giao không "
+                + "thành công");
+        assertThat(sent.body()).contains("EINV-20261112-0001", "SO-20261101-0007", "09:15 12/11/2026",
+                "Không phát hành lại").doesNotContain("null");
+        assertThat(sent.dedupeKey())
+                .isEqualTo("einvoice-delivery-failed-awaiting:" + INVOICE + ":" + SUBMITTED.toEpochMilli());
+    }
+
+    @Test
     @DisplayName("UNKNOWN_TO_PROVIDER: critical, asks for a fresh send and keys on its own cause")
     void anInvoiceUnknownToTheProviderIsAnnounced() {
         InboxMessage sent = told(event(Cause.UNKNOWN_TO_PROVIDER, null, SUBMITTED));
@@ -100,6 +176,18 @@ class EInvoiceAttentionNotificationListenerTest {
         assertThat(sent.body()).contains("SO-20261101-0007", "09:15 12/11/2026", "00:00 14/11/2026");
         assertThat(sent.link()).isEqualTo("/invoicing/einvoices/" + INVOICE);
         assertThat(sent.dedupeKey()).isEqualTo("einvoice-unknown:" + INVOICE + ":" + SUBMITTED.toEpochMilli());
+    }
+
+    @Test
+    @DisplayName("HĐ-8 SIGNATURE_INVALID: critical, says the buyer was not sent it and asks for a replacement")
+    void anInvoiceWhoseSignatureDoesNotHoldIsAnnounced() {
+        InboxMessage sent = told(event(Cause.SIGNATURE_INVALID, null, SUBMITTED));
+
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.CRITICAL);
+        assertThat(sent.title()).isEqualTo("Hoá đơn EINV-20261112-0001 đã phát hành nhưng chữ ký số không hợp lệ");
+        assertThat(sent.body()).contains("SO-20261101-0007", "09:15 12/11/2026", "chưa được gửi cho khách",
+                "thay thế");
+        assertThat(sent.dedupeKey()).isEqualTo("einvoice-signature-invalid:" + INVOICE + ":" + SUBMITTED.toEpochMilli());
     }
 
     @Test

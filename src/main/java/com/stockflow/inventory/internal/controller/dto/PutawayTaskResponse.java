@@ -1,5 +1,7 @@
 package com.stockflow.inventory.internal.controller.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.util.List;
 import java.util.UUID;
 
@@ -8,6 +10,7 @@ import java.util.UUID;
  *
  * @param left                what is still to put away
  * @param sourceLocationCode  where the goods stand now
+ * @param warehouseId         the task's warehouse: that of where its goods stand, since stock never changes warehouse
  * @param lpn                 the carton's; null for a loose task
  * @param targetLocationCode  the bin of the latest putaway; null until something was put away
  * @param suggestions         ranked bins; empty in a list, filled when one task is read
@@ -17,7 +20,13 @@ import java.util.UUID;
  *                            receipt or receipt line
  */
 public record PutawayTaskResponse(UUID id, UUID goodsReceiptId, UUID goodsReceiptLineId, String sku, String lotNumber,
-                                  int quantity, int left, String sourceLocationCode, String lpn, String status,
-                                  String targetLocationCode, List<PutawaySuggestionResponse> suggestions,
-                                  List<String> overflowLocationCodes, String source) {
+                                  int quantity, int left, String sourceLocationCode,
+                                  @Schema(description = "The task's warehouse, that of where its goods stand")
+                                  UUID warehouseId, String lpn, String status, String targetLocationCode,
+                                  List<PutawaySuggestionResponse> suggestions,
+                                  List<String> overflowLocationCodes, String source,
+                                  @Schema(description = "The warehouse's code (its location prefix)", example = "HCM",
+                                          nullable = true)
+                                  String warehouseCode,
+                                  @Schema(nullable = true) String warehouseName) {
 }

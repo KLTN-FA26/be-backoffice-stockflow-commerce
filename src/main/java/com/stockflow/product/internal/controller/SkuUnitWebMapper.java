@@ -15,23 +15,21 @@ import org.springframework.stereotype.Component;
 class SkuUnitWebMapper {
 
     UomConversionResponse toResponse(UomConversion c) {
-        return new UomConversionResponse(c.id(), c.sku(), c.unitOfMeasure(), c.factor(), c.base(), c.weightKg(),
-                c.lengthCm(), c.widthCm(), c.heightCm(), c.defaultPurchase(), c.active(), c.version(), c.defaultShipping());
+        return new UomConversionResponse(c.id(), c.sku(), c.unitOfMeasure(), c.factor(), c.weightKg(),
+                c.lengthCm(), c.widthCm(), c.heightCm(), c.active(), c.version());
     }
 
     UomConversionDraft toDraft(CreateUomConversionRequest r) {
         return new UomConversionDraft(r.unitOfMeasure(), r.factor(), r.weightKg(), r.lengthCm(), r.widthCm(),
-                r.heightCm(), Boolean.TRUE.equals(r.defaultPurchase()), true,
-                Boolean.TRUE.equals(r.defaultShipping()));
+                r.heightCm(), true);
     }
 
     UomConversionDraft toDraft(UpdateUomConversionRequest r) {
         return new UomConversionDraft(r.unitOfMeasure(), r.factor(), r.weightKg(), r.lengthCm(), r.widthCm(),
-                r.heightCm(), r.defaultPurchase(), r.active(), r.defaultShipping());
+                r.heightCm(), r.active());
     }
 
     SalesUnitResponse toResponse(SkuUnitService.SalesUnitView v) {
-        return new SalesUnitResponse(v.id(), v.variantId(), v.uomConversionId(), v.unitOfMeasure(), v.factor(),
-                v.base(), v.active(), v.implicitDefault(), v.version());
+        return new SalesUnitResponse(v.variantId(), v.uomConversionId(), v.unitOfMeasure(), v.factor());
     }
 }

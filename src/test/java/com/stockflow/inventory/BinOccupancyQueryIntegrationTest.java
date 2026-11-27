@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Need;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
@@ -50,18 +51,16 @@ class BinOccupancyQueryIntegrationTest {
         skuA = "BOQ-A-" + suffix;
         skuB = "BOQ-B-" + suffix;
         tx.executeWithoutResult(s -> {
-            item(skuA, "2.000");
-            item(skuB, null);
+            item(skuA);
+            item(skuB);
         });
     }
 
-    private void item(String sku, String weight) {
+    private void item(String sku) {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Occupancy fixture", sku.toLowerCase(Locale.ROOT));
-        jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                Identifiers.newId(), product, sku, "Occupancy fixture");
-        jdbc.update("update inventory.inventory_items set weight_kg = ?::numeric where sku = ?", weight, sku);
+        StockedSkus.customerSkuOn(jdbc, product, sku, "Occupancy fixture");
     }
 
     /** One carton of exactly {@code onHand} units, its unit neither measured nor weighed. */
@@ -71,8 +70,8 @@ class BinOccupancyQueryIntegrationTest {
     }
 
     @Test
-    @DisplayName("two SKUs in one bin: units add up, an unweighed carton weighs on_hand x weight_kg with an unknown "
-            + "weight as 0, and the asked SKU and lot are recognised; an empty bin is absent")
+    @DisplayName("two SKUs in one bin: units add up, an unweighed carton weighs nothing (the item has no weight to "
+            + "stand in, V20261215000100), and the asked SKU and lot are recognised; an empty bin is absent")
     void sumsEverySkuOnTheBin() {
         // Other data may share the bin, so the test measures what its own rows add.
         Occupancy before = query.occupancyOf(List.of(BIN), skuA, "LOT-1").getOrDefault(BIN, Occupancy.EMPTY);
@@ -85,7 +84,7 @@ class BinOccupancyQueryIntegrationTest {
         assertThat(out).containsOnlyKeys(BIN);
         Occupancy bin = out.get(BIN);
         assertThat(bin.units() - before.units()).isEqualTo(22);
-        assertThat(bin.weightKg().subtract(before.weightKg())).isEqualByComparingTo("30");
+        assertThat(bin.weightKg().subtract(before.weightKg())).isEqualByComparingTo("0");
         assertThat(bin.holdsSku()).isTrue();
         assertThat(bin.holdsLot()).isTrue();
     }
@@ -120,12 +119,13 @@ class BinOccupancyQueryIntegrationTest {
     }
 
     @Test
-    @DisplayName("what a carton takes: its unit's size, the item's rotatable flag, the unit's weight or else the units'")
+    @DisplayName("what a carton takes: its unit's size, the variant's rotatable flag, the unit's weight or none")
     void needsOfCartons() {
         cartonUnit(skuA, 10, "12");
         cartonUnit(skuB, 10, null);
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set rotatable = false, weight_kg = 0.5"
-                + " where sku = ?", skuB));
+        tx.executeWithoutResult(s -> jdbc.update("update product.variants set rotatable = false where id = "
+                + "(select variant_id from inventory.inventory_items where sku = ?)",
+                skuB));
         UUID a = tx.execute(s -> CartonRows.stock(jdbc, skuA, BIN, 1, 10, "LOT-1", Instant.now())).get(0).id();
         UUID b = tx.execute(s -> CartonRows.stock(jdbc, skuB, BIN, 1, 10, "LOT-1", Instant.now())).get(0).id();
 
@@ -136,7 +136,7 @@ class BinOccupancyQueryIntegrationTest {
         assertThat(needs.get(a).carton().rotatable()).isTrue();
         assertThat(needs.get(a).weightKg()).isEqualByComparingTo("12");
         assertThat(needs.get(b).carton().rotatable()).isFalse();
-        assertThat(needs.get(b).weightKg()).as("10 units x 0.5 kg").isEqualByComparingTo("5");
+        assertThat(needs.get(b).weightKg()).as("nobody recorded the carton's weight").isNull();
     }
 
     @Test

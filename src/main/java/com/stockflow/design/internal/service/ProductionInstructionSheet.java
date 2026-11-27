@@ -1,147 +1,158 @@
 package com.stockflow.design.internal.service;
 
-import com.stockflow.common.label.LabelFonts;
+import com.stockflow.common.document.BusinessDocument;
+import com.stockflow.common.document.BusinessDocument.Align;
+import com.stockflow.common.document.BusinessDocument.Block;
+import com.stockflow.common.document.BusinessDocument.Cell;
+import com.stockflow.common.document.BusinessDocument.Column;
+import com.stockflow.common.document.BusinessDocument.Field;
+import com.stockflow.common.document.BusinessDocument.Fields;
+import com.stockflow.common.document.BusinessDocument.Heading;
+import com.stockflow.common.document.BusinessDocument.Layout;
+import com.stockflow.common.document.BusinessDocument.Paragraph;
+import com.stockflow.common.document.BusinessDocument.Signatures;
+import com.stockflow.common.document.BusinessDocument.Signer;
+import com.stockflow.common.document.BusinessDocument.Table;
+import com.stockflow.common.document.BusinessDocument.Title;
+import com.stockflow.common.document.DocumentFonts;
+import com.stockflow.common.document.DocumentFormats;
+import com.stockflow.common.document.DocumentParts;
+import com.stockflow.common.document.Letterhead;
+import com.stockflow.common.document.SellerLetterhead;
+import com.stockflow.design.internal.domain.BagSheet;
 import com.stockflow.inventory.api.UomConversion;
+import com.stockflow.product.api.BagModel;
 import com.stockflow.product.api.PrintArea;
 import com.stockflow.product.api.PrintConfig;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.UncheckedIOException;
+import org.springframework.stereotype.Component;
+
+import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.ResourceBundle;
 import java.util.UUID;
-import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.pdmodel.PDPage;
-import org.apache.pdfbox.pdmodel.PDPageContentStream;
-import org.apache.pdfbox.pdmodel.common.PDRectangle;
-import org.apache.pdfbox.pdmodel.font.PDFont;
-import org.apache.pdfbox.pdmodel.font.PDType0Font;
-import org.springframework.stereotype.Component;
 
 /**
- * The production instruction issued with an approved design (kltn-docs 12 §4.5; plan D2): one A4 page for the
- * producer, generated from what the system knows - the customer's SKU, the variant and its carton spec, the template's
- * print areas and colour mode, the layout's checksum and who approved it - rather than drawn by the customer.
+ * The production instruction issued with an approved design (kltn-docs 12 §4.5; plan D2): the paper the print shop
+ * works from, generated from what the system knows - the customer's SKU, the variant and its carton spec, the
+ * template's print areas and colour mode (and, for a bag, its flat sheet and folds), the layout's and the print file's
+ * checksums and when it was approved - rather than drawn by the customer.
  *
- * <p>Vietnamese, as the producer reads it; the text lives in the {@code design.instruction.*} keys of the message
- * bundle, the code stays English. Drawn with the embedded Noto Sans of the labels ({@link LabelFonts}): the 14
- * standard PDF fonts cannot draw Vietnamese.</p>
+ * <p>An internal order to production ("lệnh sản xuất"), so it carries the company's head and no Quốc hiệu, no price,
+ * and three places to sign - who drew it up, the workshop, who approved - as such an order does on a shop floor. The
+ * print areas are a table: a template may have many, and a table carries on over pages where the single page this
+ * sheet once was let them run off the paper.</p>
+ *
+ * <p>Vietnamese, as the producer reads it; the words are the {@code design.instruction.*} keys of the bundle, the
+ * layout the kit's ({@link BusinessDocument}) with its embedded serif, which draws every Vietnamese letter.</p>
  */
 @Component
 class ProductionInstructionSheet {
 
-    private static final float MARGIN = 50;
-    private static final float LINE = 16;
-    private static final DateTimeFormatter WHEN = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")
-            .withZone(ZoneId.of("Asia/Ho_Chi_Minh"));
-
-    private final LabelFonts fonts;
+    private final DocumentFonts fonts;
+    private final SellerLetterhead letterhead;
     private final PrintOutputIntentProperties intent;
 
-    ProductionInstructionSheet(LabelFonts fonts, PrintOutputIntentProperties intent) {
+    ProductionInstructionSheet(DocumentFonts fonts, SellerLetterhead letterhead, PrintOutputIntentProperties intent) {
         this.fonts = fonts;
+        this.letterhead = letterhead;
         this.intent = intent;
     }
 
-    /** What the sheet states. {@code carton} is null when the variant has none (preflight refuses that already). */
+    /**
+     * What the sheet states. {@code carton} is null when the variant has none (preflight refuses that already).
+     * {@code printPages} is how many pages the stamped print file has: a bag's flat sheet is stated only when the file
+     * is that one sheet - a bag submitted side by side before the sheet (four pages) is printed as it was drawn.
+     * {@code approvedBy} is the approver's account: the design module does not read staff names, and the account is
+     * what the audit trail is searched by.
+     */
     record Facts(String customerSku, String productName, String sourceSku, PrintConfig template,
                  UomConversion carton, String layoutChecksum, String printFileChecksum, UUID approvedBy,
-                 Instant approvedAt) {
+                 Instant approvedAt, int printPages) {
     }
 
     byte[] render(Facts facts) {
-        ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-        List<String[]> lines = new ArrayList<>();
-        lines.add(row(texts, "design.instruction.customerSku", facts.customerSku()));
-        lines.add(row(texts, "design.instruction.product", facts.productName()));
-        lines.add(row(texts, "design.instruction.variant", facts.sourceSku()));
-        lines.add(row(texts, "design.instruction.template", facts.template().code() + " - " + facts.template().name()));
-        lines.add(row(texts, "design.instruction.colorMode", facts.template().colorMode()
-                + " · " + facts.template().minDpi() + " DPI"));
+        ResourceBundle t = DocumentParts.bundle();
+        Letterhead head = letterhead.get();
+        PrintConfig template = facts.template();
+        List<Block> blocks = new ArrayList<>();
+        blocks.add(DocumentParts.brandHeader(t, head));
+        blocks.add(new Title(t.getString("design.instruction.title"),
+                t.getString("design.instruction.subtitle").formatted(plain(facts.customerSku())), null));
+
+        List<Field> product = new ArrayList<>();
+        product.add(field(t, "design.instruction.product", facts.productName()));
+        product.add(field(t, "design.instruction.variant", facts.sourceSku()));
+        product.add(field(t, "design.instruction.template", template.code() + " - " + template.name()));
+        product.add(field(t, "design.instruction.colorMode", template.colorMode() + " - " + template.minDpi()
+                + " DPI"));
         if (facts.carton() != null) {
             UomConversion carton = facts.carton();
-            lines.add(row(texts, "design.instruction.carton", texts.getString("design.instruction.cartonValue")
+            product.add(field(t, "design.instruction.carton", t.getString("design.instruction.cartonValue")
                     .formatted(carton.unitOfMeasure(), carton.factor(), plain(carton.lengthCm()),
                             plain(carton.widthCm()), plain(carton.heightCm()), plain(carton.weightKg()))));
         }
-        for (PrintArea area : facts.template().printAreas()) {
-            lines.add(row(texts, "design.instruction.area", texts.getString("design.instruction.areaValue")
-                    .formatted(area.code(), area.name(), area.widthMm(), area.heightMm(), area.bleedMm(),
-                            area.safeMarginMm())));
+        // A bag is printed as one flat sheet (FE request 2026-11-18 BE-10): the producer reads its die-cut size and the
+        // folds the sides do not show - the glue flap, the top fold, the bottom fold.
+        if (template.model() instanceof BagModel bag && facts.printPages() == 1) {
+            BagSheet sheet = BagSheet.of(bag, template.printAreas());
+            product.add(field(t, "design.instruction.sheet", t.getString("design.instruction.sheetValue")
+                    .formatted(sheet.trimWidth(), sheet.trimHeight(), sheet.bleedMm(), sheet.glueFlapMm(),
+                            sheet.topFoldMm(), sheet.bottomFoldMm())));
         }
-        lines.add(row(texts, "design.instruction.layoutChecksum", facts.layoutChecksum()));
-        lines.add(row(texts, "design.instruction.printFileChecksum", facts.printFileChecksum()));
-        lines.add(row(texts, "design.instruction.approved", facts.approvedBy() + " · "
-                + WHEN.format(facts.approvedAt())));
+        blocks.add(new Fields(product, 0));
+
+        blocks.add(new Heading(t.getString("design.instruction.areas")));
+        List<List<Cell>> rows = new ArrayList<>();
+        int no = 0;
+        for (PrintArea area : template.printAreas()) {
+            rows.add(List.of(Cell.of(String.valueOf(++no)), Cell.of(area.code()), Cell.bold(area.name()),
+                    Cell.of(mm(area.widthMm()) + " x " + mm(area.heightMm())), Cell.of(mm(area.bleedMm())),
+                    Cell.of(mm(area.safeMarginMm()))));
+        }
+        blocks.add(new Table(List.of(new Column(t.getString("document.goods.no"), 30, Align.CENTRE),
+                new Column(t.getString("design.instruction.area.code"), 80, Align.LEFT),
+                new Column(t.getString("design.instruction.area.name"), 150, Align.LEFT),
+                new Column(t.getString("design.instruction.area.size"), 100, Align.CENTRE),
+                new Column(t.getString("design.instruction.area.bleed"), 70, Align.CENTRE),
+                new Column(t.getString("design.instruction.area.safe"), 70, Align.CENTRE)), rows));
+
+        blocks.add(new Heading(t.getString("design.instruction.files")));
+        blocks.add(new Fields(List.of(
+                field(t, "design.instruction.layoutChecksum", facts.layoutChecksum()),
+                field(t, "design.instruction.printFileChecksum", facts.printFileChecksum()),
+                field(t, "design.instruction.approvedAt", DocumentFormats.moment(facts.approvedAt())),
+                field(t, "design.instruction.approved", String.valueOf(facts.approvedBy()))), 0));
         // Which output intent PrintReadyStamp embedded, and whether it is still the interim one (B35).
-        lines.add(new String[] {"", texts.getString(intent.interim() ? "design.instruction.pdfxInterim"
-                : "design.instruction.pdfx").formatted(intent.outputConditionIdentifier())});
+        blocks.add(Paragraph.of(t.getString(intent.interim() ? "design.instruction.pdfxInterim"
+                : "design.instruction.pdfx").formatted(intent.outputConditionIdentifier())).after(6));
 
-        try (PDDocument document = new PDDocument()) {
-            PDFont bold = PDType0Font.load(document, new ByteArrayInputStream(fonts.bold()), true);
-            PDFont regular = PDType0Font.load(document, new ByteArrayInputStream(fonts.regular()), true);
-            PDPage page = new PDPage(PDRectangle.A4);
-            document.addPage(page);
-            float y = PDRectangle.A4.getHeight() - MARGIN;
-            try (PDPageContentStream out = new PDPageContentStream(document, page)) {
-                y = text(out, bold, 16, MARGIN, y, texts.getString("design.instruction.title")) - LINE;
-                for (String[] line : lines) {
-                    if (!line[0].isEmpty()) {
-                        text(out, bold, 10, MARGIN, y, line[0]);
-                    }
-                    for (String part : wrap(line[1], 70)) {
-                        y = text(out, regular, 10, MARGIN + 150, y, part);
-                    }
-                }
-            }
-            document.getDocumentInformation().setTitle(texts.getString("design.instruction.title") + " "
-                    + facts.customerSku());
-            var bytes = new ByteArrayOutputStream();
-            document.save(bytes);
-            return bytes.toByteArray();
-        } catch (IOException ex) {
-            throw new UncheckedIOException("Could not render the production instruction", ex);
-        }
+        String caption = t.getString("document.sign.voucher");
+        blocks.add(new Signatures(null, List.of(
+                new Signer(t.getString("design.instruction.sign.drawnUp"), caption, null),
+                new Signer(t.getString("design.instruction.sign.workshop"), caption, null),
+                new Signer(t.getString("design.instruction.sign.approver"), caption, null))));
+        return BusinessDocument.draw(fonts, Layout.commercial(DocumentParts.ACCENT, facts.customerSku(),
+                        head.name(), t.getString("document.page"), null),
+                t.getString("design.instruction.title") + " " + facts.customerSku(), blocks);
     }
 
-    private String[] row(ResourceBundle texts, String key, String value) {
-        return new String[] {texts.getString(key), fonts.drawable(value == null ? "-" : value)};
+    private static Field field(ResourceBundle t, String key, String value) {
+        return Field.of(t.getString(key), plain(value));
     }
 
-    /** Draws one line and returns the baseline of the next. */
-    private static float text(PDPageContentStream out, PDFont font, float size, float x, float y, String text)
-            throws IOException {
-        out.beginText();
-        out.setFont(font, size);
-        out.newLineAtOffset(x, y);
-        out.showText(text);
-        out.endText();
-        return y - LINE;
+    private static String plain(String value) {
+        return value == null || value.isBlank() ? "-" : value;
     }
 
-    /** {@code text} cut into lines of at most {@code width} characters, at spaces where it can. */
-    private static List<String> wrap(String text, int width) {
-        List<String> parts = new ArrayList<>();
-        String rest = text;
-        while (rest.length() > width) {
-            int cut = rest.lastIndexOf(' ', width);
-            if (cut <= 0) {
-                cut = width;
-            }
-            parts.add(rest.substring(0, cut));
-            rest = rest.substring(cut).strip();
-        }
-        parts.add(rest);
-        return parts;
+    private static String plain(BigDecimal value) {
+        return value == null ? "-" : value.stripTrailingZeros().toPlainString().replace('.', ',');
     }
 
-    private static String plain(java.math.BigDecimal value) {
-        return value == null ? "-" : value.stripTrailingZeros().toPlainString();
+    /** Millimetres to one decimal, with the comma a Vietnamese paper writes a decimal with. */
+    private static String mm(double value) {
+        return String.format(Locale.ROOT, "%.1f", value).replace('.', ',');
     }
 }

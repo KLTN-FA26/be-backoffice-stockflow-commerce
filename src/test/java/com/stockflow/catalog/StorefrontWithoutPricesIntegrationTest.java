@@ -128,7 +128,8 @@ class StorefrontWithoutPricesIntegrationTest {
         awaitListed(owner, marker);
 
         // Everything a price or a stock figure could be read from: the customer's internal price on its own SKU, a price
-        // kept from before 4B-2 on the variant the page shows, and plenty of stock on both.
+        // kept from before 4B-2 on the variant the page shows, and plenty of stock on the customers' SKUs (a variant
+        // holds none since V20270105000100: only a customer's SKU has an inventory item).
         String own = CustomerSkuRows.issueOn(jdbc, tx, owner.customerId(), product, CARTON).sku();
         String others = CustomerSkuRows.issueOn(jdbc, tx, other.customerId(), product, CARTON).sku();
         mvc.perform(post(customerPrice(owner.customerId(), own)).header("Authorization", bearer(manager))
@@ -136,7 +137,7 @@ class StorefrontWithoutPricesIntegrationTest {
                         .content("{\"tiers\":[{\"minQuantity\":2,\"unitPrice\":" + INTERNAL + "}]}"))
                 .andExpect(status().isCreated());
         KeptCheckoutPrices.give(jdbc, tx, owner.customerId(), product.sku(), KEPT);
-        for (String sku : List.of(own, others, product.sku())) CustomerSkuRows.stock(jdbc, tx, sku, 600);
+        for (String sku : List.of(own, others)) CustomerSkuRows.stock(jdbc, tx, sku, 600);
 
         JsonNode cards = storefront(owner, LIST, "q", marker).get("items");
         assertThat(cards).hasSize(1);
@@ -146,6 +147,10 @@ class StorefrontWithoutPricesIntegrationTest {
 
         JsonNode page = storefront(owner, LIST + "/" + slug);
         assertThat(page.get("variants").findValuesAsText("sku")).containsExactly(product.sku());
+        // The page names each variant as the card does.
+        assertThat(page.get("variants").findValuesAsText("name"))
+                .containsExactlyElementsOf(cards.get(0).get("skus").findValuesAsText("name"));
+        assertThat(page.get("variants").get(0).get("name").asText()).isNotBlank();
         assertThat(storefront(owner, LIST + "/" + slug + "/gallery").get("images")).isNotEmpty();
         assertThat(storefront(owner, SUGGEST, "q", marker).findValuesAsText("slug")).contains(slug);
 
@@ -168,10 +173,12 @@ class StorefrontWithoutPricesIntegrationTest {
         Buyer other = buyer("ACTIVE");
         ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
 
-        // Pieces on hand -> indicator, cartons of 10, low at 5 cartons or fewer: a part carton is no carton.
+        // Pieces on hand -> indicator, cartons of 10, low at 5 cartons or fewer. A figure that is not whole cartons of 10
+        // is stocked as one carton of that count (CustomerSkuRows.stock), and a carton of another count is no carton the
+        // SKU is sold in (ADR-0011): 9 and 59 pieces are none.
         Map<String, String> expected = new LinkedHashMap<>();
         int[] pieces = {0, 9, 10, 50, 59, 60, 500};
-        String[] indicator = {"OUT_OF_STOCK", "OUT_OF_STOCK", "LOW_STOCK", "LOW_STOCK", "LOW_STOCK", "IN_STOCK",
+        String[] indicator = {"OUT_OF_STOCK", "OUT_OF_STOCK", "LOW_STOCK", "LOW_STOCK", "OUT_OF_STOCK", "IN_STOCK",
                 "IN_STOCK"};
         for (int i = 0; i < pieces.length; i++) {
             String sku = CustomerSkuRows.issueOn(jdbc, tx, owner.customerId(), product, CARTON).sku();
@@ -184,10 +191,10 @@ class StorefrontWithoutPricesIntegrationTest {
         stock(secondWarehouse, split, 30);
         expected.put(split, "IN_STOCK");
 
-        // Not the caller's: another customer's SKU and a variant (quy cách), both well stocked.
+        // Not the caller's: another customer's SKU, well stocked, and a variant (quy cách), which holds no stock and
+        // has no inventory item at all (V20270105000100).
         String others = CustomerSkuRows.issueOn(jdbc, tx, other.customerId(), product, CARTON).sku();
         CustomerSkuRows.stock(jdbc, tx, others, 600);
-        CustomerSkuRows.stock(jdbc, tx, product.sku(), 600);
 
         List<String> asked = new ArrayList<>(expected.keySet());
         asked.add(others);
@@ -417,7 +424,8 @@ class StorefrontWithoutPricesIntegrationTest {
                     UPDATE product.products SET name = ?, description = 'Ly giay in theo thiet ke cua khach',
                            kind = 'CUSTOMIZABLE' WHERE id = ?""", "Ly giay " + marker, product.productId());
             jdbc.update("INSERT INTO product.product_categories(id, product_id, category_id, is_primary)"
-                    + " VALUES (?, ?, md5('demo:cat:SOFA')::uuid, TRUE)", Identifiers.newId(), product.productId());
+                    + " VALUES (?, ?, md5('demo:wf02:category:LY_GIAY')::uuid, TRUE)", Identifiers.newId(),
+                    product.productId());
             jdbc.update("""
                     INSERT INTO product.media(id, variant_id, url, is_published, published_at, published_by, created_by)
                     VALUES (?, ?, 'https://example.test/ly-giay.jpg', TRUE, NOW(), md5('demo:user:approver')::uuid,
@@ -462,7 +470,7 @@ class StorefrontWithoutPricesIntegrationTest {
 
     /**
      * {@code pieces} of {@code sku}, sellable, at {@code location}, received a while ago: whole cartons of the SKU's
-     * carton unit ({@link #CARTON}), since stock is kept in cartons only (ck_stock_item_whole_cartons).
+     * carton unit ({@link #CARTON}), since stock is cartons and nothing else (ADR-0011).
      */
     private void stock(String location, String sku, int pieces) {
         tx.executeWithoutResult(s -> CartonRows.stock(jdbc, sku, location, pieces / CARTON, CARTON, null,

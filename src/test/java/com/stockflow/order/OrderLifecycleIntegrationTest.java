@@ -165,6 +165,11 @@ class OrderLifecycleIntegrationTest {
                     + "VALUES (gen_random_uuid(), ?, '1 Le Loi, TP HCM', 'Tran Van A', 'Director', ?, 0, NOW()) "
                     + "ON CONFLICT (customer_id) DO UPDATE SET invoice_email = EXCLUDED.invoice_email", customer,
                     "ke.toan@" + customer + ".example.com");
+            // Its deliveries are invoiced below: a STANDARD product, quoted and invoiced at the day's rate. The
+            // fixture's EXEMPT product makes a 0% line, which an e-invoice refuses at submit
+            // (EINVOICE_TAX_EXEMPT_NOT_SUPPORTED).
+            jdbc.update("UPDATE product.products SET tax_class = 'STANDARD' WHERE id = (SELECT product_id FROM "
+                    + "product.customer_skus WHERE sku = ?)", sku);
         });
         OrderSummary order = picking(4);
         assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
@@ -307,8 +312,9 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("split: one shipment delivered, the other failed and returned - ON_HOLD for the failed delivery, "
-            + "its hold on record, neither resolved with a note nor closed past it")
+    @DisplayName("split, RTM-RETURNED-PARTIAL: one shipment delivered, the other failed and returned - its unit not "
+            + "closed on the carrier's word (Q-7), the order PARTIALLY_FULFILLED with no hold (never DELIVERED as a whole), and "
+            + "nothing is left for staff to close")
     void oneDeliveredOneReturned() {
         OrderSummary order = picking(3);
         orders.markPacked(order.orderId(), staff);
@@ -318,19 +324,21 @@ class OrderLifecycleIntegrationTest {
         orders.recordHandover(order.orderId(), handover(order, s2, 1));
         orders.recordShipmentDelivered(order.orderId(), s1, staff);
         orders.recordShipmentDeliveryFailed(order.orderId(), s2, DeliveryFailureReason.DAMAGED, "vỡ thùng", staff);
-        OrderSummary held = orders.recordShipmentReturned(order.orderId(), s2, staff);
-        assertThat(held.status()).as("WF-05: the order waits for Sales").isEqualTo(OrderStatus.ON_HOLD);
-        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.DELIVERY_FAILED);
-        assertThat(held.lifecycle().statusBeforeHold()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        OrderSummary back = orders.recordShipmentReturned(order.orderId(), s2, staff);
+        assertThat(back.status()).as("one delivered, one back").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(back.lifecycle().holdReason()).isNull();
         assertThat(jdbc.queryForList("SELECT reason FROM ordering.order_hold WHERE order_id = ? AND resolved_at IS NULL",
-                String.class, order.orderId())).containsExactly("DELIVERY_FAILED");
-        assertThat(code(catchThrowable(() -> orders.resolveHold(order.orderId(), "a note is not a decision", staff))))
-                .isEqualTo(ErrorCode.ORDER_DELIVERY_FAILURE_USE_DECISION);
+                String.class, order.orderId())).isEmpty();
+        // WF-05 Q-7 (L-I8): the carrier's word closes nothing - the unit is on its way back, neither owed again nor
+        // closed; its return receipt closes and settles it (DeliveryFailureGoodsReceivedTest, OrderDeliveredInFullTest).
+        assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, order.orderId())).as("nothing closed on the report").isZero();
+        assertThat(jdbc.queryForObject("SELECT units_closed_at IS NULL FROM ordering.order_shipment WHERE id = ?",
+                Boolean.class, s2)).as("the shipment still holds its unit").isTrue();
+        assertThat(orders.remainderClosures(order.orderId())).as("nothing settled before the receipt").isEmpty();
         assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
-                "khách không lấy lại", staff)))).isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
-        // The decision itself - deliver again, or cancel what was not delivered - is the delivery failure case's
-        // (FtlDispatchIntegrationTest#aFailedDelivery...): it needs the goods received back.
-        assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.ON_HOLD);
+                "khách không lấy lại", staff)))).as("nothing left to close").isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+        assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
     }
 
     @Test
@@ -480,6 +488,17 @@ class OrderLifecycleIntegrationTest {
         assertThat(closed.status()).isEqualTo(OrderStatus.SHIPPED);
         assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
                 Integer.class, order.orderId())).as("the shortfall only").isEqualTo(1);
+        // WF4-CLOSE-HIST-SCHEMA: the closure is a row of its own - never a from = to row of the status history - and the
+        // table is append-only.
+        assertThat(orders.remainderClosures(order.orderId())).singleElement().satisfies(closure -> {
+            assertThat(closure.reasonCode()).isEqualTo(CancellationReasonCode.OUT_OF_STOCK);
+            assertThat(closure.note()).isNull();
+            assertThat(closure.closedBy()).isEqualTo(staff);
+            assertThat(closure.closedAt()).isNotNull();
+        });
+        assertThat(orders.history(order.orderId())).noneMatch(change -> change.from() == change.to());
+        assertThat(catchThrowable(() -> jdbc.update("UPDATE ordering.order_remainder_closure SET note = 'x' "
+                + "WHERE order_id = ?", order.orderId()))).hasMessageContaining("append-only");
     }
 
     @Test
@@ -554,7 +573,9 @@ class OrderLifecycleIntegrationTest {
                 "UPDATE ordering.customer_order SET status = 'SHIPPED', shipped_at = NOW() WHERE id = ?", order.orderId())));
         assertThat(jump).isInstanceOf(DataAccessException.class).hasMessageContaining("cannot move from CONFIRMED to SHIPPED");
         assertThat(jdbc.queryForList("SELECT from_status || '>' || to_status FROM ordering.order_status_transition",
-                String.class)).containsExactlyInAnyOrderElementsOf(OrderStatus.edges());
+                String.class)).containsExactlyInAnyOrderElementsOf(OrderStatus.edges())
+                .as("TT-4, V20261201000100: a voided refund reopens a refunded order")
+                .contains("REFUNDED>RETURNED", "PARTIALLY_REFUNDED>RETURNED");
     }
 
     @Test
@@ -589,8 +610,9 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("a closure of one order leaves it SHIPPED; its last shipment then fails and comes back: held for the "
-            + "failed delivery from DELIVERY_FAILED, and closing again is Sales' decision on that")
+    @DisplayName("a closure of one order leaves it SHIPPED; its last shipment then fails and comes back: its unit "
+            + "waits for its return receipt (Q-7) - nothing closed on the report - and the order is PARTIALLY_FULFILLED "
+            + "(DELIVERY_FAILED -> PARTIALLY_FULFILLED, checked by tg_order_status_transition) with nothing left to close")
     void secondClosureIsNotLost() {
         OrderSummary order = picking(4);
         UUID a = UUID.randomUUID();
@@ -602,14 +624,14 @@ class OrderLifecycleIntegrationTest {
                 .isEqualTo(OrderStatus.SHIPPED);
         orders.recordShipmentDeliveryFailed(order.orderId(), b, DeliveryFailureReason.LOST, null, staff);
         assertThat(orders.recordShipmentReturned(order.orderId(), b, staff).status())
-                .as("held from DELIVERY_FAILED: the new edge, checked by tg_order_status_transition")
-                .isEqualTo(OrderStatus.ON_HOLD);
-        assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
-                "hàng thất lạc", staff)))).as("the second closure is Sales' decision on the failed delivery now")
-                .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+                .as("one delivered, one back").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        // WF-05 Q-7: the one that came back is closed by its return receipt, not by the report.
+        assertThat(orders.remainderClosures(order.orderId())).as("only the first closure so far").hasSize(1);
         assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
-                Integer.class, order.orderId())).as("two pieces closed by the first closure; the one that came back waits")
-                .isEqualTo(2);
+                Integer.class, order.orderId())).as("two pieces closed by the first closure").isEqualTo(2);
+        assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
+                "hàng thất lạc", staff)))).as("nothing left to close").isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+        assertThat(orders.remainderClosures(order.orderId())).as("a refused closure leaves no row").hasSize(1);
     }
 
     /** Both calls released at once, each in its own transaction; what each returned or threw. */

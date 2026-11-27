@@ -20,7 +20,7 @@ import java.util.UUID;
 
 /**
  * A cancelled sales order stops its production orders (4A-6; kltn-docs 17 §4.8 steps 30 and 32, §5.3, BR-06, BR-09):
- * those not mass printing yet (DRAFT, PENDING_APPROVAL, SENT, ACCEPTED, SAMPLE_PENDING) are cancelled; those printing
+ * those not mass printing yet (DRAFT, SENT, ACCEPTED, SAMPLE_PENDING) are cancelled; those printing
  * (IN_PRODUCTION) or partly received are closed - what the producer already made and still delivers is received as the
  * customer's surplus (BR-07). Each with the order's cancellation as its reason and who cancelled the order as its actor.
  * The rest of a sales order closed stops them the same way (17 §4.8 step 33, WF4-CLOSE-REST 2026-11-13).

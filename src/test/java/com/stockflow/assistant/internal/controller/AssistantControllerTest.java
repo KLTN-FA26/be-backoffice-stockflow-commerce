@@ -4,6 +4,7 @@ import com.stockflow.assistant.internal.controller.dto.AskRequest;
 import com.stockflow.assistant.internal.controller.dto.FeedbackRequest;
 import com.stockflow.assistant.internal.service.AssistantService;
 import com.stockflow.assistant.internal.service.AssistantStreams;
+import com.stockflow.assistant.internal.service.AssistantTelemetry;
 import com.stockflow.assistant.internal.service.ConversationService;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -56,7 +57,7 @@ class AssistantControllerTest {
         AssistantService assistant = mock(AssistantService.class);
         AssistantStreams streams = mock(AssistantStreams.class);
         AssistantController controller = new AssistantController(mock(ConversationService.class), assistant, streams,
-                mock(AssistantWebMapper.class));
+                mock(AssistantWebMapper.class), AssistantTelemetry.NONE);
 
         assertThatThrownBy(() -> controller.askStreaming(PLANNER, UUID.randomUUID(), "retry-key-0001",
                 new AskRequest("Xin chào")))
@@ -73,7 +74,7 @@ class AssistantControllerTest {
     void feedbackIsBackOfficeOnly() {
         ConversationService conversations = mock(ConversationService.class);
         AssistantController controller = new AssistantController(conversations, mock(AssistantService.class),
-                mock(AssistantStreams.class), mock(AssistantWebMapper.class));
+                mock(AssistantStreams.class), mock(AssistantWebMapper.class), AssistantTelemetry.NONE);
         CurrentUser customer = new CurrentUser(UUID.randomUUID(), "customer", Set.of(Role.CUSTOMER), Set.of(),
                 DataScope.OWN, Set.of());
 

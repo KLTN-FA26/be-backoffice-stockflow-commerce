@@ -12,16 +12,17 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Read side for the back-office stock screens (SCRUM-462): holds, and every stock row of a
- * warehouse whatever its status. Both are limited to the caller's warehouses (BR-SEC-002) through
+ * Read side for the back-office stock screens (SCRUM-462): holds, and every carton in stock of a
+ * warehouse whatever its stock status (a "stock row" of the screen is one carton, ADR-0011; the field named
+ * {@code stockItemId} carries the carton's id, the HTTP contract kept its name). Both are limited to the caller's warehouses (BR-SEC-002) through
  * the location code, as the ledger is. Outside the domain port for the same reason as
  * {@link StockLedgerSearch}: paging is Spring Data's vocabulary.
  */
 public interface StockBrowseSearch {
 
     record ReservationRow(UUID reservationId, UUID orderId, UUID stockItemId, String sku, String locationCode,
-                          String lotNumber, int quantity, ReservationStatus status, Instant reservedAt,
-                          Instant expiresAt, ReleaseReason releaseReason, Instant closedAt) {
+                          String lotNumber, int quantity, int cartons, ReservationStatus status, Instant reservedAt,
+                          ReleaseReason releaseReason, Instant closedAt, String orderNumber) {
     }
 
     /** @param warehousePrefix the warehouse the held stock sits in, by prefix ({@code HCM}); null for all */
@@ -33,7 +34,8 @@ public interface StockBrowseSearch {
 
     /**
      * @param locationPrefix the start of a location code inside the warehouse ({@code HCM-A01})
-     * @param includeEmpty   also rows with nothing on hand; they are left out by default
+     * @param includeEmpty   also cartons that are out of stock (picked, written off, lost), shown with nothing on
+     *                       hand and no status; they are left out by default
      */
     record StockCriteria(String warehousePrefix, String locationPrefix, String sku, String lotNumber,
                          List<StockStatus> statuses, boolean includeEmpty) {

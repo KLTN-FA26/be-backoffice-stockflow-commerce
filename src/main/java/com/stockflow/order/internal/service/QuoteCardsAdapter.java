@@ -20,10 +20,13 @@ class QuoteCardsAdapter implements QuoteCards {
 
     private final Quotes quotes;
     private final com.stockflow.order.internal.domain.QuoteRepository repository;
+    private final com.stockflow.order.internal.repository.QuoteSearch search;
 
-    QuoteCardsAdapter(Quotes quotes, com.stockflow.order.internal.domain.QuoteRepository repository) {
+    QuoteCardsAdapter(Quotes quotes, com.stockflow.order.internal.domain.QuoteRepository repository,
+                      com.stockflow.order.internal.repository.QuoteSearch search) {
         this.quotes = quotes;
         this.repository = repository;
+        this.search = search;
     }
 
     @Override
@@ -33,6 +36,12 @@ class QuoteCardsAdapter implements QuoteCards {
             return Optional.empty();
         }
         return Optional.of(card(quotes.get(SYSTEM, quoteId)));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<Card> quoteOfOrder(UUID orderId) {
+        return orderId == null ? Optional.empty() : search.quoteConvertedInto(orderId).flatMap(this::quote);
     }
 
     @Override
@@ -54,15 +63,21 @@ class QuoteCardsAdapter implements QuoteCards {
                 new Quotes.Draft(draft.validUntil(), null, lines, draft.requestedDeliveryDate()))));
     }
 
+    /**
+     * The card shows the converted order only once the customer can open it - the rule of the quote's customer view
+     * (17 §5.2): a card sits in the customer's conversation, and the staff view it is read from shows the DRAFT order.
+     */
     private static Card card(Quotes.QuoteView view) {
         List<Line> lines = view.lines().stream().map(line -> new Line(line.id(), line.lineNo(), line.sku(),
                 line.cartons(), line.unitsPerCarton(), line.units(), line.proposedUnitPrice(),
                 line.proposedLineTotal(), line.acceptedCartons())).toList();
+        Quotes.ConvertedOrder converted = view.convertedOrder() == null
+                || view.convertedOrder().status() == com.stockflow.order.api.OrderStatus.DRAFT
+                ? null : view.convertedOrder();
         return new Card(view.id(), view.quoteNumber(), view.customerId(), view.status().name(), view.revision(),
                 view.validUntil(), view.requestedDeliveryDate(), lines, view.proposedTotal(), view.acceptedTotal(),
-                view.convertedOrder() == null ? null : view.convertedOrder().orderId(),
-                view.convertedOrder() == null ? null : view.convertedOrder().orderNumber(), view.sentBy(),
-                view.sentAt(), view.version());
+                converted == null ? null : converted.orderId(), converted == null ? null : converted.orderNumber(),
+                view.sentBy(), view.sentAt(), view.version());
     }
 
     /**

@@ -18,25 +18,45 @@ final class TaskAccess {
     private TaskAccess() {
     }
 
-    /** The order statuses a task may be worked in: from release until everything left, and while it is held. */
+    /**
+     * The order statuses a task may be worked in: from release until everything left, and while it is held - and
+     * AWAITING_STOCK, whose part held is picked before its release (kltn-docs 07 §4.1 step 2, 17 §4.4 step 15).
+     */
     private static final java.util.Set<OrderStatus> WORKABLE = java.util.EnumSet.of(OrderStatus.READY_TO_FULFILL,
-            OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.ON_HOLD);
+            OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.ON_HOLD,
+            OrderStatus.AWAITING_STOCK);
 
     /**
      * The assignee sees the task; so does whoever oversees tasks, for the warehouses they are assigned to (BR-SEC-002:
      * a caller whose scope is ALL is not limited). Once picking is done the task is at the
      * packing table, where any packer of its warehouse may take it (G4-5, docs 08): they see it too. Seeded, that is
-     * managers, and warehouse staff at packing (V20261022000200).
+     * managers, and warehouse staff at packing (V20261022000200). The assignee too must still be assigned to the task's
+     * warehouse: a clerk taken off it no longer reads its tasks, as they could no longer work them.
      */
     static void requireVisible(PickJpaEntity pick, CurrentUser actor) {
-        if (Objects.equals(pick.getAssignedUserId(), actor.userId())) {
-            return;
-        }
-        if (!actor.can(FulfillmentPermissions.TASK_OVERSIGHT, Action.READ)
+        boolean assignee = Objects.equals(pick.getAssignedUserId(), actor.userId());
+        if (!assignee && !actor.can(FulfillmentPermissions.TASK_OVERSIGHT, Action.READ)
                 && !(actor.can(FulfillmentPermissions.PACKING, Action.UPDATE) && atPacking(pick))) {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
+    }
+
+    /**
+     * Who may work a pick task (07 BR-08, and the actor table of 07 §2: the warehouse manager "works on behalf when
+     * needed"; WF4-QLK-TAKEOVER). The assignee does; so does whoever holds task assignment ({@code
+     * fulfillment-task-assignment:UPDATE}) for a warehouse of their scope - the caller checked the scope - even once
+     * picking has started. Permission codes only. Anyone else is refused as before ({@code NOT_FOUND}).
+     *
+     * @return the user the task is worked as: the caller for the assignee, the assignee for the one working on behalf
+     */
+    static java.util.UUID requireWorker(PickJpaEntity pick, CurrentUser actor) {
+        // A task nobody is assigned to is nobody's to work on behalf of: refused as before, never given to the manager.
+        if (pick.getAssignedUserId() != null && actor.can(FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE)) {
+            return pick.getAssignedUserId();
+        }
+        pick.requireAssigned(actor.userId());
+        return actor.userId();
     }
 
     /** Picking is complete: the goods wait at the packing area and the task is the packer's to work. */

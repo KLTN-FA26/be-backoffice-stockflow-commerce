@@ -10,6 +10,9 @@
  * and the shelf service asks it synchronously, inside the edit's transaction. An event would come too late: the edit
  * must be refused, not undone.</p>
  *
+ * <p>The same holds for taking a bin, a shelf, an area or a warehouse off the layout while cartons still stand there
+ * (06 BR-04): {@link com.stockflow.warehouse.spi.LocationOccupants} answers which cartons do.</p>
+ *
  * <p>Like {@code api}: records and interfaces only, nothing internal.</p>
  */
 @org.springframework.modulith.NamedInterface("spi")

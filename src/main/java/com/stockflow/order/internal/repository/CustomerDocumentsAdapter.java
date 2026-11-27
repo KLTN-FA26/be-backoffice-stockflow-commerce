@@ -29,6 +29,16 @@ class CustomerDocumentsAdapter implements CustomerDocuments {
             SELECT q.id, q.customer_id, q.quote_number AS number, q.status, q.sent_by AS responsible,
                    NULL::numeric AS amount, NULL AS currency, q.created_at
               FROM ordering.quote q""";
+    /**
+     * {@link #QUOTES} as the customer's portal names the status: a revision being written after the customer asked for
+     * changes (DRAFT, sent before) is CHANGES_REQUESTED to them ({@code Quote#revisingSentQuote}).
+     */
+    private static final String QUOTES_AS_CUSTOMER_SEES = """
+            SELECT q.id, q.customer_id, q.quote_number AS number,
+                   CASE WHEN q.status = 'DRAFT' AND q.sent_at IS NOT NULL THEN 'CHANGES_REQUESTED' ELSE q.status END
+                       AS status,
+                   q.sent_by AS responsible, NULL::numeric AS amount, NULL AS currency, q.created_at
+              FROM ordering.quote q""";
     private static final String ORDERS = """
             SELECT o.id, o.customer_id, o.order_number AS number, o.status,
                    (SELECT q.sent_by FROM ordering.quote q WHERE q.converted_order_id = o.id
@@ -63,6 +73,12 @@ class CustomerDocumentsAdapter implements CustomerDocuments {
     @Transactional(readOnly = true)
     public Optional<CustomerDocument> quote(UUID quoteId) {
         return one(QUOTES + " WHERE q.id = :id", quoteId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<CustomerDocument> quoteAsCustomerSees(UUID quoteId) {
+        return one(QUOTES_AS_CUSTOMER_SEES + " WHERE q.id = :id", quoteId);
     }
 
     @Override
@@ -109,6 +125,24 @@ class CustomerDocumentsAdapter implements CustomerDocuments {
     public List<CustomerDocument> recentProductionOrders(UUID customerId, int limit) {
         return recent(PRODUCTION_ORDERS + " WHERE p.customer_id = :customer ORDER BY p.created_at DESC, p.id DESC",
                 customerId, limit);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, UUID> contractSalespeople(java.util.Collection<UUID> contractIds) {
+        if (contractIds == null || contractIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, UUID> found = new java.util.HashMap<>();
+        jdbc.query("""
+                SELECT k.id, COALESCE(k.sent_by, k.signed_by) AS sales
+                  FROM ordering.sales_contract k
+                 WHERE k.id IN (:ids) AND COALESCE(k.sent_by, k.signed_by) IS NOT NULL""",
+                Map.of("ids", java.util.Set.copyOf(contractIds)),
+                rs -> {
+                    found.put(rs.getObject("id", UUID.class), rs.getObject("sales", UUID.class));
+                });
+        return found;
     }
 
     private Optional<CustomerDocument> one(String sql, UUID id) {

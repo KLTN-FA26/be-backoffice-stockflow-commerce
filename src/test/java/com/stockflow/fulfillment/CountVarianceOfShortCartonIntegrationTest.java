@@ -3,6 +3,7 @@ package com.stockflow.fulfillment;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.internal.service.CycleCounts;
 import com.stockflow.inventory.internal.service.StockOperations;
@@ -73,6 +74,7 @@ class CountVarianceOfShortCartonIntegrationTest {
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
     @Autowired StockOperations operations;
+    @Autowired com.stockflow.inventory.internal.service.CartonQuarantineService quarantine;
     @Autowired com.stockflow.fulfillment.internal.service.PickLists pickLists;
     @Autowired CycleCounts cycleCounts;
     @Autowired JdbcTemplate jdbc;
@@ -80,10 +82,11 @@ class CountVarianceOfShortCartonIntegrationTest {
     @Autowired EntityManager entityManager;
     @Autowired ApplicationContext context;
     @Autowired com.stockflow.order.internal.service.ShippingWarehouseService shippingWarehouses;
+    @Autowired com.stockflow.order.internal.service.DeliveryBatchService deliveryBatches;
 
     private ConfirmedOrders confirmedOrders;
-    private Sku sofa;
-    private CustomerSkuRows.Issued sofaCarton;
+    private Sku cup;
+    private CustomerSkuRows.Issued cupCarton;
     private UUID coordinator;
     private UUID manager;
     private UUID picker;
@@ -96,10 +99,10 @@ class CountVarianceOfShortCartonIntegrationTest {
     @BeforeEach
     void setUp() {
         confirmedOrders = new ConfirmedOrders(context);
-        sofaCarton = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, "SOFA-3S-GREY", 2);
-        sofa = new Sku(sofaCarton.sku());
+        cupCarton = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, DemoData.SKU_STOCKED, 2);
+        cup = new Sku(cupCarton.sku());
         // Five cartons of two at HCM: the order takes one, a reallocation has others to take.
-        CustomerSkuRows.stock(jdbc, tx, sofa.code(), 10);
+        CustomerSkuRows.stock(jdbc, tx, cup.code(), 10);
         coordinator = staff("SYSTEM_ADMIN");
         manager = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
@@ -157,7 +160,7 @@ class CountVarianceOfShortCartonIntegrationTest {
      */
     private Scenario shortPickWithPendingVariance() throws Exception {
         UUID order = confirmedOrders.release(
-                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(sofaCarton, 1, 12_000_000))
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000))
                         .orderId(), HCM, coordinator).orderId();
         placed.add(order);
         String admin = token(coordinator, "SYSTEM_ADMIN");
@@ -187,7 +190,7 @@ class CountVarianceOfShortCartonIntegrationTest {
                  WHERE l.stock_package_id = ? AND c.trigger_type = 'SHORT_PICK'""", carton);
         UUID count = (UUID) countLine.get("cycle_count_id");
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> {
-            cycleCounts.count(count, (UUID) countLine.get("id"), false, counter, false);
+            cycleCounts.count(count, (UUID) countLine.get("id"), false, null, counter, false);
             cycleCounts.submit(count, counter, false);
         });
         UUID adjustment = jdbc.queryForObject("""
@@ -212,11 +215,9 @@ class CountVarianceOfShortCartonIntegrationTest {
 
     private Map<String, Object> cartonState(UUID carton) {
         return jdbc.queryForMap("""
-                SELECT p.status, (p.closed_at IS NOT NULL) AS closed,
-                       (SELECT COALESCE(SUM(s.on_hand), 0) FROM inventory.stock_item s WHERE s.stock_package_id = p.id)
-                           AS on_hand,
-                       (SELECT COUNT(*) FROM inventory.stock_reservation r JOIN inventory.stock_item s
-                            ON s.id = r.stock_item_id WHERE s.stock_package_id = p.id AND r.status = 'HELD') AS live_holds
+                SELECT p.status, (p.closed_at IS NOT NULL) AS closed, (p.stock_status IS NOT NULL) AS in_stock,
+                       (SELECT COUNT(*) FROM inventory.stock_reservation r
+                         WHERE r.stock_package_id = p.id AND r.status = 'HELD') AS live_holds
                   FROM inventory.stock_package p WHERE p.id = ?""", carton);
     }
 
@@ -226,9 +227,8 @@ class CountVarianceOfShortCartonIntegrationTest {
 
     private List<Map<String, Object>> liveHolds(UUID order) {
         return jdbc.queryForList("""
-                SELECT r.id, r.quantity, s.stock_package_id FROM inventory.stock_reservation r
-                  JOIN inventory.stock_item s ON s.id = r.stock_item_id
-                 WHERE r.order_id = ? AND r.status = 'HELD'""", order);
+                SELECT r.id, r.cartons * r.units_per_carton AS quantity, r.stock_package_id FROM inventory.stock_reservation r
+                 WHERE r.order_id = ? AND r.stock_package_id IS NOT NULL AND r.status = 'HELD'""", order);
     }
 
     private List<UUID> holdsRecordedOnTheOrder(UUID order) {
@@ -239,8 +239,10 @@ class CountVarianceOfShortCartonIntegrationTest {
 
     private List<Map<String, Object>> ledgerOf(UUID adjustment) {
         return jdbc.queryForList("""
-                SELECT movement_type, quantity, from_stock_package_id, to_stock_package_id, from_location_code
-                  FROM inventory.stock_movement WHERE reference_id = ? AND reference_type = 'STOCK_ADJUSTMENT'""",
+                SELECT m.movement_type, p.nominal_qty AS quantity, m.stock_package_id, m.from_location_code,
+                       m.to_location_code
+                  FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
+                 WHERE m.reference_id = ? AND m.reference_type = 'STOCK_ADJUSTMENT'""",
                 adjustment);
     }
 
@@ -259,14 +261,15 @@ class CountVarianceOfShortCartonIntegrationTest {
     /** What must be true at the end, whichever order the two steps came in. */
     private void assertSettled(Scenario s) {
         assertThat(cartonState(s.carton())).as("the carton is written off whole and LOST")
-                .containsEntry("status", "LOST").containsEntry("closed", true).containsEntry("on_hand", 0L)
+                .containsEntry("status", "LOST").containsEntry("closed", true).containsEntry("in_stock", false)
                 .containsEntry("live_holds", 0L);
         assertThat(ledgerOf(s.variance().adjustmentId())).as("one ADJUSTMENT line, leaving the carton").singleElement()
                 .satisfies(row -> {
                     assertThat(row.get("movement_type")).isEqualTo("ADJUSTMENT");
                     assertThat(row.get("quantity")).isEqualTo(2);
-                    assertThat(row.get("from_stock_package_id")).isEqualTo(s.carton());
-                    assertThat(row.get("to_stock_package_id")).isNull();
+                    assertThat(row.get("stock_package_id")).isEqualTo(s.carton());
+                    assertThat(row.get("from_location_code")).as("out of the place it stood").isNotNull();
+                    assertThat(row.get("to_location_code")).as("into nowhere: the carton left").isNull();
                 });
         assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_adjustment WHERE id = ?", String.class,
                 s.variance().adjustmentId())).isEqualTo("POSTED");
@@ -299,7 +302,7 @@ class CountVarianceOfShortCartonIntegrationTest {
         StockAdjustmentSummary posted = approve(s);
 
         assertThat(posted.status()).isEqualTo(StockAdjustmentStatus.POSTED);
-        assertThat(cartonState(s.carton())).containsEntry("status", "LOST").containsEntry("on_hand", 0L)
+        assertThat(cartonState(s.carton())).containsEntry("status", "LOST").containsEntry("in_stock", false)
                 .containsEntry("live_holds", 0L);
         assertThat(holdState(s.hold())).containsEntry("status", "RELEASED").containsEntry("release_reason",
                 "SHORT_PICKED");
@@ -334,12 +337,170 @@ class CountVarianceOfShortCartonIntegrationTest {
         assertSettled(s);
     }
 
+    // ------------------------------------------------------------------ a damaged carton, quarantined at once
+
+    @Test
+    @DisplayName("WF04 G7 (07 §4.4 step 9, 20 §4.8): the picker reports the carton DAMAGED; the manager quarantines it at "
+            + "once, without waiting for the blind count it opened to be submitted - its hold is given up, the line stays "
+            + "SHORT, and the reallocation then takes another carton")
+    void aDamagedCartonIsQuarantinedBeforeTheCountIsSubmitted() throws Exception {
+        UUID order = confirmedOrders.release(
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000))
+                        .orderId(), HCM, coordinator).orderId();
+        placed.add(order);
+        String admin = token(coordinator, "SYSTEM_ADMIN");
+        String pickerToken = token(picker, "WAREHOUSE_STAFF");
+        UUID task = taskIdOf(send(admin, API + "/tasks",
+                "{\"orderId\":\"" + order + "\",\"assignedUserId\":\"" + picker + "\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
+        send(pickerToken, API + "/tasks/" + task + "/picking-start", null).andExpect(status().isOk());
+        Map<String, Object> line = jdbc.queryForMap("""
+                SELECT id, lpn, location_code, reservation_id FROM fulfillment.pick_line
+                 WHERE pick_id = ? AND status = 'OPEN'""", task);
+        UUID lineId = (UUID) line.get("id");
+        send(pickerToken, API + "/tasks/" + task + "/pick-lines/" + lineId + "/short",
+                "{\"locationCode\":\"" + line.get("location_code") + "\",\"reason\":\"DAMAGED\"}")
+                .andExpect(status().isOk());
+        String lpn = (String) line.get("lpn");
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class, lpn);
+        UUID hold = (UUID) line.get("reservation_id");
+        UUID count = jdbc.queryForObject("""
+                SELECT c.id FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                 WHERE l.stock_package_id = ? AND c.trigger_type = 'SHORT_PICK'""", UUID.class, carton);
+        assertThat(holdState(hold)).containsEntry("status", "HELD");
+
+        StockPackageView quarantined = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
+                () -> quarantine.quarantine(lpn, "HCM-QC01", "Damaged: reported short", manager));
+
+        assertThat(quarantined.locationCode()).isEqualTo("HCM-QC01");
+        assertThat(jdbc.queryForObject("""
+                SELECT stock_status FROM inventory.stock_package WHERE id = ?""",
+                String.class, carton)).isEqualTo("QUARANTINE");
+        assertThat(holdState(hold)).containsEntry("status", "RELEASED").containsEntry("release_reason", "SHORT_PICKED");
+        assertThat(jdbc.queryForObject("SELECT status FROM inventory.cycle_count WHERE id = ?", String.class, count))
+                .as("the blind count is still open: it is not cancelled by the quarantine").isIn("PLANNED", "IN_PROGRESS");
+        assertThat(lineStatus(lineId)).isEqualTo("SHORT");
+        OrderSummary stillHeld = orders.findById(order).orElseThrow();
+        assertThat(stillHeld.status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(stillHeld.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+
+        send(token(manager, "WAREHOUSE_MANAGER"), API + "/tasks/" + task + "/pick-lines/" + lineId + "/reallocation",
+                null).andExpect(status().isOk());
+        assertThat(jdbc.queryForList("SELECT lpn FROM fulfillment.pick_line WHERE pick_id = ? AND status = 'OPEN'",
+                String.class, task)).singleElement().isNotEqualTo(lpn);
+    }
+
+    @Test
+    @DisplayName("WF04 G7: a DAMAGED carton standing in the STAGING area is quarantined at once, and it commits (the staging "
+            + "trigger lets that one STATUS_CHANGE out of the staging area into quarantine): hold given up, line SHORT")
+    void aDamagedStagedCartonIsQuarantinedFromTheStagingArea() throws Exception {
+        UUID order = confirmedOrders.release(
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000))
+                        .orderId(), HCM, coordinator).orderId();
+        placed.add(order);
+        String admin = token(coordinator, "SYSTEM_ADMIN");
+        String pickerToken = token(picker, "WAREHOUSE_STAFF");
+        UUID task = taskIdOf(send(admin, API + "/tasks", "{\"orderId\":\"" + order + "\",\"assignedUserId\":\""
+                + picker + "\",\"destination\":\"STAGING\"}").andExpect(status().isCreated()).andReturn().getResponse()
+                .getContentAsString());
+        send(pickerToken, API + "/tasks/" + task + "/picking-start", null).andExpect(status().isOk());
+        Map<String, Object> line = jdbc.queryForMap("""
+                SELECT id, lpn, location_code, reservation_id FROM fulfillment.pick_line
+                 WHERE pick_id = ? AND status = 'OPEN'""", task);
+        UUID lineId = (UUID) line.get("id");
+        String lpn = (String) line.get("lpn");
+        send(pickerToken, API + "/tasks/" + task + "/pick-lines/" + lineId + "/confirmation",
+                "{\"locationCode\":\"" + line.get("location_code") + "\",\"lpn\":\"" + lpn + "\"}")
+                .andExpect(status().isOk());
+        send(pickerToken, API + "/tasks/" + task + "/picking-completion", null).andExpect(status().isOk());
+        String staging = jdbc.queryForObject("SELECT staging_location_code FROM fulfillment.pick WHERE id = ?",
+                String.class, task);
+        assertThat(lineStatus(lineId)).isEqualTo("STAGED");
+        // The picker finds the staged carton damaged.
+        send(pickerToken, API + "/tasks/" + task + "/pick-lines/" + lineId + "/short",
+                "{\"locationCode\":\"" + staging + "\",\"reason\":\"DAMAGED\"}").andExpect(status().isOk());
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class, lpn);
+        UUID hold = (UUID) line.get("reservation_id");
+        assertThat(jdbc.queryForObject("SELECT location_code FROM inventory.stock_package WHERE id = ?", String.class,
+                carton)).as("the carton stands in the staging area").isEqualTo(staging);
+
+        StockPackageView quarantined = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
+                () -> quarantine.quarantine(lpn, "HCM-QC01", "Damaged: reported short at the staging area", manager));
+
+        assertThat(quarantined.locationCode()).isEqualTo("HCM-QC01");
+        assertThat(jdbc.queryForObject("SELECT location_code FROM inventory.stock_package WHERE id = ?", String.class,
+                carton)).isEqualTo("HCM-QC01");
+        assertThat(jdbc.queryForObject("""
+                SELECT stock_status FROM inventory.stock_package WHERE id = ?""",
+                String.class, carton)).isEqualTo("QUARANTINE");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.stock_movement WHERE movement_type = 'STATUS_CHANGE'
+                   AND reference_type = 'STOCK_PACKAGE' AND from_location_code = ? AND to_location_code = 'HCM-QC01'""",
+                Long.class, staging)).isEqualTo(1L);
+        assertThat(holdState(hold)).containsEntry("status", "RELEASED").containsEntry("release_reason", "SHORT_PICKED");
+        assertThat(lineStatus(lineId)).isEqualTo("SHORT");
+        assertThat(orders.findById(order).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+    }
+
+    @Test
+    @DisplayName("WF04 G7: a carton reported NOT_FOUND is not there to be quarantined: refused STOCK_SLOT_UNDER_COUNT until "
+            + "its blind count is submitted; nothing changes")
+    void aNotFoundCartonIsNotQuarantinedAtOnce() throws Exception {
+        UUID order = confirmedOrders.release(
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000))
+                        .orderId(), HCM, coordinator).orderId();
+        placed.add(order);
+        String admin = token(coordinator, "SYSTEM_ADMIN");
+        String pickerToken = token(picker, "WAREHOUSE_STAFF");
+        UUID task = taskIdOf(send(admin, API + "/tasks",
+                "{\"orderId\":\"" + order + "\",\"assignedUserId\":\"" + picker + "\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
+        send(pickerToken, API + "/tasks/" + task + "/picking-start", null).andExpect(status().isOk());
+        Map<String, Object> line = jdbc.queryForMap("""
+                SELECT id, lpn, location_code, reservation_id FROM fulfillment.pick_line
+                 WHERE pick_id = ? AND status = 'OPEN'""", task);
+        send(pickerToken, API + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/short",
+                "{\"locationCode\":\"" + line.get("location_code") + "\",\"reason\":\"NOT_FOUND\"}")
+                .andExpect(status().isOk());
+        String lpn = (String) line.get("lpn");
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class, lpn);
+
+        Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() -> WithCurrentUser.call(TestUsers.admin(),
+                DataScope.ALL, () -> quarantine.quarantine(lpn, "HCM-QC01", "Not found", manager)));
+
+        assertThat(refused).isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        assertThat(((com.stockflow.common.error.BusinessException) refused).errorCode())
+                .isEqualTo(com.stockflow.common.error.ErrorCode.STOCK_SLOT_UNDER_COUNT);
+        assertThat(cartonState(carton)).containsEntry("status", "IN_STOCK").containsEntry("live_holds", 1L);
+        assertThat(holdState((UUID) line.get("reservation_id"))).containsEntry("status", "HELD");
+    }
+
+    @Test
+    @DisplayName("WF04 G7: a carton held for an order that nobody reported short is still refused: STOCK_PACKAGE_HELD")
+    void aHeldCartonNobodyReportedIsStillRefused() throws Exception {
+        UUID order = confirmedOrders.release(
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000))
+                        .orderId(), HCM, coordinator).orderId();
+        placed.add(order);
+        String heldLpn = jdbc.queryForObject("""
+                SELECT p.lpn FROM inventory.stock_reservation r
+                  JOIN inventory.stock_package p ON p.id = r.stock_package_id
+                 WHERE r.order_id = ? AND r.status = 'HELD' LIMIT 1""", String.class, order);
+
+        Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() -> WithCurrentUser.call(TestUsers.admin(),
+                DataScope.ALL, () -> quarantine.quarantine(heldLpn, "HCM-QC01", "Damaged", manager)));
+
+        assertThat(refused).isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        assertThat(((com.stockflow.common.error.BusinessException) refused).errorCode())
+                .isEqualTo(com.stockflow.common.error.ErrorCode.STOCK_PACKAGE_HELD);
+    }
+
     // ------------------------------------------------------------------ a shortage nobody reported at a bin
 
     /** A confirmed order of one carton, released from HCM. */
     private UUID releasedOrder() {
         UUID order = confirmedOrders.release(
-                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(sofaCarton, 1, 12_000_000))
+                confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000))
                         .orderId(), HCM, coordinator).orderId();
         placed.add(order);
         return order;
@@ -356,21 +517,31 @@ class CountVarianceOfShortCartonIntegrationTest {
      * COUNT_VARIANCE of it, asked as a submitted count asks it.
      */
     private StockAdjustmentSummary manualCountMisses(UUID carton) {
+        return manualCountMissesAll(List.of(carton)).getFirst();
+    }
+
+    /** {@link #manualCountMisses} for several cartons of one count: one pending COUNT_VARIANCE each. */
+    private List<StockAdjustmentSummary> manualCountMissesAll(List<UUID> cartons) {
         UUID count = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> cycleCounts.plan(
                 new CycleCounts.PlanCycleCountCommand(HCM, null, null, true, "Manual count", List.of(), List.of(),
-                        List.of("HCM-A01-1-A"), List.of(sofa.code())), false).count().id());
+                        List.of("HCM-A01-1-A"), List.of(cup.code())), false).count().id());
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> {
-            for (Map<String, Object> line : jdbc.queryForList(
-                    "SELECT id, stock_package_id FROM inventory.cycle_count_line WHERE cycle_count_id = ?", count)) {
-                cycleCounts.count(count, (UUID) line.get("id"), !carton.equals(line.get("stock_package_id")), counter,
-                        false);
+            for (Map<String, Object> line : jdbc.queryForList("""
+                    SELECT l.id, l.stock_package_id, p.lpn FROM inventory.cycle_count_line l
+                      JOIN inventory.stock_package p ON p.id = l.stock_package_id
+                     WHERE l.cycle_count_id = ?""", count)) {
+                boolean found = !cartons.contains(line.get("stock_package_id"));
+                cycleCounts.count(count, (UUID) line.get("id"), found, found ? (String) line.get("lpn") : null,
+                        counter, false);
             }
             cycleCounts.submit(count, counter, false);
         });
-        UUID adjustment = jdbc.queryForObject("SELECT id FROM inventory.stock_adjustment WHERE stock_package_id = ? "
-                + "AND status = 'PENDING_APPROVAL'", UUID.class, carton);
-        return WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
-                () -> operations.findAdjustment(adjustment).orElseThrow());
+        return cartons.stream().map(carton -> {
+            UUID adjustment = jdbc.queryForObject("SELECT id FROM inventory.stock_adjustment WHERE stock_package_id = ? "
+                    + "AND status = 'PENDING_APPROVAL'", UUID.class, carton);
+            return WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
+                    () -> operations.findAdjustment(adjustment).orElseThrow());
+        }).toList();
     }
 
     private void awaitLine(UUID line, String wanted) {
@@ -405,7 +576,7 @@ class CountVarianceOfShortCartonIntegrationTest {
         awaitHold(order);
         OrderSummary held = orders.findById(order).orElseThrow();
         assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
-        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("on_hand", 0L)
+        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("in_stock", false)
                 .containsEntry("live_holds", 0L);
         assertThat(holdState(s.hold())).containsEntry("status", "RELEASED").containsEntry("release_reason",
                 "SHORT_PICKED");
@@ -468,19 +639,19 @@ class CountVarianceOfShortCartonIntegrationTest {
             + "nothing of the order's is touched")
     void aSkuLevelHoldDoesNotBlockTheWriteOff() {
         UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
-                ConfirmedOrders.Line.cartons(sofaCarton, 1, 12_000_000)).orderId();
+                ConfirmedOrders.Line.cartons(cupCarton, 1, 12_000_000)).orderId();
         placed.add(order);
         confirmedOrders.ship(order, HCM);
         assertThat(liveHolds(order)).as("no allocation on a carton before the release").isEmpty();
         UUID carton = jdbc.queryForObject("""
-                SELECT p.id FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
-                 WHERE s.sku = ? AND p.status = 'IN_STOCK' ORDER BY p.lpn LIMIT 1""", UUID.class, sofa.code());
+                SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE i.sku = ? AND p.status = 'IN_STOCK' ORDER BY p.lpn LIMIT 1""", UUID.class, cup.code());
         StockAdjustmentSummary variance = manualCountMisses(carton);
 
         assertThat(WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(
                 variance.adjustmentId(), approver)).status()).isEqualTo(StockAdjustmentStatus.POSTED);
 
-        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("on_hand", 0L);
+        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("in_stock", false);
         assertThat(ledgerOf(variance.adjustmentId())).hasSize(1);
         assertThat(orders.findById(order).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
     }
@@ -490,25 +661,35 @@ class CountVarianceOfShortCartonIntegrationTest {
     /** Units the order holds by SKU (before its release) still live. */
     private int heldBySku(UUID order) {
         return jdbc.queryForObject("""
-                SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation
-                 WHERE order_id = ? AND stock_item_id IS NULL AND status = 'HELD'""", Integer.class, order);
+                SELECT COALESCE(SUM(cartons * units_per_carton), 0) FROM inventory.stock_reservation
+                 WHERE order_id = ? AND stock_package_id IS NULL AND status = 'HELD'""", Integer.class, order);
     }
 
     private UUID freeCarton() {
         return jdbc.queryForObject("""
-                SELECT p.id FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
-                 WHERE s.sku = ? AND p.status = 'IN_STOCK' AND s.reserved = 0 ORDER BY p.lpn LIMIT 1""", UUID.class,
-                sofa.code());
+                SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE i.sku = ? AND p.status = 'IN_STOCK' AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation r
+                        WHERE r.stock_package_id = p.id AND r.status = 'HELD') ORDER BY p.lpn LIMIT 1""", UUID.class,
+                cup.code());
+    }
+
+    /** {@code n} cartons of the SKU nothing holds. */
+    private List<UUID> freeCartons(int n) {
+        return jdbc.queryForList("""
+                SELECT p.id FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE i.sku = ? AND p.status = 'IN_STOCK' AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation r
+                        WHERE r.stock_package_id = p.id AND r.status = 'HELD') ORDER BY p.lpn LIMIT ?""", UUID.class,
+                cup.code(), n);
     }
 
     /** The order module handled the count's write-off of the SKU (its publication completed). */
     private void awaitRecomputed() {
-        com.stockflow.support.Await.until("the holds of " + sofa.code() + " are recomputed",
+        com.stockflow.support.Await.until("the holds of " + cup.code() + " are recomputed",
                 java.time.Duration.ofSeconds(20), () -> jdbc.queryForObject("""
                         SELECT COUNT(*) FROM event_publication
                          WHERE event_type = 'com.stockflow.contracts.StockWrittenOffByCount'
                            AND serialized_event LIKE ? AND completion_date IS NOT NULL""", Integer.class,
-                        "%" + sofa.code() + "%") > 0);
+                        "%" + cup.code() + "%") > 0);
     }
 
     @Test
@@ -516,12 +697,12 @@ class CountVarianceOfShortCartonIntegrationTest {
             + "cut to the cartons left, the order short of one carton as at its confirmation, still CONFIRMED")
     void aConfirmedOrderGivesUpTheHoldNoCartonCovers() {
         UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
-                ConfirmedOrders.Line.cartons(sofaCarton, 5, 12_000_000)).orderId();
+                ConfirmedOrders.Line.cartons(cupCarton, 5, 12_000_000)).orderId();
         placed.add(order);
         confirmedOrders.ship(order, HCM);
         assertThat(heldBySku(order)).as("the five cartons of HCM, held by SKU").isEqualTo(10);
         UUID first = jdbc.queryForObject("""
-                SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL
+                SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND stock_package_id IS NULL
                    AND status = 'HELD'""", UUID.class, order);
         StockAdjustmentSummary variance = manualCountMisses(freeCarton());
 
@@ -533,7 +714,7 @@ class CountVarianceOfShortCartonIntegrationTest {
         assertThat(holdState(first)).containsEntry("status", "RELEASED").containsEntry("release_reason",
                 "SHORT_PICKED");
         UUID kept = jdbc.queryForObject("""
-                SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL
+                SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND stock_package_id IS NULL
                    AND status = 'HELD'""", UUID.class, order);
         assertThat(jdbc.queryForObject("SELECT warehouse_code FROM inventory.stock_reservation WHERE id = ?",
                 String.class, kept)).isEqualTo("HCM");
@@ -551,7 +732,7 @@ class CountVarianceOfShortCartonIntegrationTest {
                 .isEqualTo(OrderStatus.CONFIRMED);
 
         // The event handled again: every hold is covered, nothing changes.
-        assertThat(shippingWarehouses.giveUpUncovered(sofa.code(), "HCM")).isZero();
+        assertThat(shippingWarehouses.giveUpUncovered(cup.code(), "HCM")).isZero();
         assertThat(heldBySku(order)).isEqualTo(8);
     }
 
@@ -559,7 +740,7 @@ class CountVarianceOfShortCartonIntegrationTest {
     @DisplayName("WF4-COUNT-EDGE a: an order holding fewer cartons than are left keeps its hold")
     void aHoldStillCoveredIsKept() {
         UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
-                ConfirmedOrders.Line.cartons(sofaCarton, 3, 12_000_000)).orderId();
+                ConfirmedOrders.Line.cartons(cupCarton, 3, 12_000_000)).orderId();
         placed.add(order);
         confirmedOrders.ship(order, HCM);
         StockAdjustmentSummary variance = manualCountMisses(freeCarton());
@@ -570,30 +751,99 @@ class CountVarianceOfShortCartonIntegrationTest {
         awaitRecomputed();
         assertThat(heldBySku(order)).isEqualTo(6);
         assertThat(jdbc.queryForObject("""
-                SELECT COUNT(*) FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL
+                SELECT COUNT(*) FROM inventory.stock_reservation WHERE order_id = ? AND stock_package_id IS NULL
                    AND status <> 'HELD'""", Integer.class, order)).isZero();
     }
 
+    /** Sales moves the first batch's window of the order to start {@code days} from today (17 BR-28). */
+    private void moveFirstWindow(UUID order, int days) {
+        java.time.LocalDate start = java.time.LocalDate.now(ConfirmedOrders.VIETNAM).plusDays(days);
+        UUID batch = jdbc.queryForObject("""
+                SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
+                 WHERE c.order_id = ? AND b.seq = 1""", UUID.class, order);
+        UUID consent = com.stockflow.support.ChatRows.message(jdbc, tx, DemoData.CUSTOMER_ID, order, "CUSTOMER");
+        WithCurrentUser.run(confirmedOrders.sales(), DataScope.ALL, () -> deliveryBatches.changeWindow(
+                confirmedOrders.sales(), order, batch, new com.stockflow.order.internal.service.DeliveryBatchService
+                        .WindowChange(start, start.plusDays(2),
+                        com.stockflow.order.internal.domain.WindowChangeReason.SELLER_DELAY, "The producer is late",
+                        null, consent)));
+    }
+
+    private UUID holdingOrder(int cartons) {
+        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.cartons(cupCarton, cartons, 12_000_000)).orderId();
+        placed.add(order);
+        confirmedOrders.ship(order, HCM);
+        return order;
+    }
+
+    private void approveAll(List<StockAdjustmentSummary> variances) {
+        variances.forEach(v -> assertThat(WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
+                () -> operations.approve(v.adjustmentId(), approver)).status()).isEqualTo(StockAdjustmentStatus.POSTED));
+    }
+
     @Test
-    @DisplayName("WF4-COUNT-EDGE a, not decided: two orders holding the SKU by SKU, one carton counted missing - which "
-            + "order gives its hold up is not in kltn-docs, so both holds are kept")
-    void twoOrdersShortOfTheSameCartonsKeepTheirHolds() {
-        UUID a = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
-                ConfirmedOrders.Line.cartons(sofaCarton, 3, 12_000_000)).orderId();
-        placed.add(a);
-        confirmedOrders.ship(a, HCM);
-        UUID b = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
-                ConfirmedOrders.Line.cartons(sofaCarton, 2, 12_000_000)).orderId();
-        placed.add(b);
-        confirmedOrders.ship(b, HCM);
+    @DisplayName("WF4-COUNT-WHO: two orders hold the SKU by SKU, one carton counted missing - the order whose next "
+            + "delivery window starts LATEST gives its hold up first, even when it was confirmed first")
+    void theOrderDeliveringLatestGivesUpFirst() {
+        UUID later = holdingOrder(3);
+        UUID sooner = holdingOrder(2);
+        moveFirstWindow(later, 10);
         StockAdjustmentSummary variance = manualCountMisses(freeCarton());
 
         WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(variance.adjustmentId(),
                 approver));
 
-        awaitRecomputed();
-        assertThat(heldBySku(a)).isEqualTo(6);
-        assertThat(heldBySku(b)).isEqualTo(4);
+        com.stockflow.support.Await.until("the later order gives a carton up", java.time.Duration.ofSeconds(20),
+                () -> heldBySku(later) == 4);
+        assertThat(heldBySku(sooner)).as("the order delivering sooner keeps every carton").isEqualTo(4);
+        var coverage = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> shippingWarehouses.coverage(later));
+        assertThat(coverage.lines()).singleElement().satisfies(line -> {
+            assertThat(line.heldCartons()).isEqualTo(2);
+            assertThat(line.shortCartons()).isEqualTo(1);
+        });
+        assertThat(orders.findById(later).orElseThrow().status()).as("BR-04: AWAITING_STOCK only when a production "
+                + "order is sent").isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(orders.findById(sooner).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(shippingWarehouses.giveUpUncovered(cup.code(), "HCM")).as("the event handled again").isZero();
+    }
+
+    @Test
+    @DisplayName("WF4-COUNT-WHO: the next windows start the same day - the order confirmed LATEST gives up first")
+    void aTieGoesToTheOrderConfirmedLatest() {
+        UUID first = holdingOrder(3);
+        UUID last = holdingOrder(2);
+        StockAdjustmentSummary variance = manualCountMisses(freeCarton());
+
+        WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(variance.adjustmentId(),
+                approver));
+
+        com.stockflow.support.Await.until("the order confirmed last gives a carton up",
+                java.time.Duration.ofSeconds(20), () -> heldBySku(last) == 2);
+        assertThat(heldBySku(first)).isEqualTo(6);
+    }
+
+    @Test
+    @DisplayName("WF4-COUNT-WHO: holds are cut in that order until the missing cartons are covered - the first order "
+            + "gives all it holds, the next the rest")
+    void theNextOrderGivesUpWhatTheFirstCannot() {
+        UUID later = holdingOrder(2);
+        UUID sooner = holdingOrder(3);
+        moveFirstWindow(later, 10);
+        List<StockAdjustmentSummary> variances = manualCountMissesAll(freeCartons(3));
+
+        approveAll(variances);
+
+        com.stockflow.support.Await.until("two cartons are left for five held", java.time.Duration.ofSeconds(20),
+                () -> heldBySku(later) + heldBySku(sooner) == 4);
+        assertThat(heldBySku(later)).as("the later order lost everything it held").isZero();
+        assertThat(heldBySku(sooner)).as("the other lost one carton").isEqualTo(4);
+        assertThat(WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> shippingWarehouses.coverage(later))
+                .lines()).singleElement().satisfies(line -> assertThat(line.shortCartons()).isEqualTo(2));
+        assertThat(WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> shippingWarehouses.coverage(sooner))
+                .lines()).singleElement().satisfies(line -> assertThat(line.shortCartons()).isEqualTo(1));
+        assertThat(orders.findById(later).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(orders.findById(sooner).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
     }
 
     // ------------------------------------------------------------------ WF4-COUNT-EDGE (b): no task yet

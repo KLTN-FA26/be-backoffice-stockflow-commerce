@@ -3,6 +3,7 @@ package com.stockflow.procurement.api;
 import com.stockflow.common.api.PageResponse;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Goods receipts for other modules to show, read through the list the receipt screen reads
@@ -44,5 +45,33 @@ public interface GoodsReceiptQueries {
      * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for a status not in
      *         {@link #STATUSES} or a limit out of range
      */
-    PageResponse<GoodsReceiptSummary> receipts(List<String> statuses, String number, int limit);
+    default PageResponse<GoodsReceiptSummary> receipts(List<String> statuses, String number, int limit) {
+        return receipts(statuses, number, null, limit);
+    }
+
+    /**
+     * {@link #receipts(List, String, int)} at one warehouse: the screen's own {@code warehouseId} filter, for the
+     * assistant's work queue narrowed to the warehouse a manager runs a shift at.
+     *
+     * @param warehouseId one warehouse; null for every warehouse the caller may see
+     * @throws com.stockflow.common.error.BusinessException as the screen: {@code OUT_OF_DATA_SCOPE} for a warehouse
+     *         the caller is not assigned to
+     */
+    PageResponse<GoodsReceiptSummary> receipts(List<String> statuses, String number, UUID warehouseId, int limit);
+
+    /**
+     * The return receipts still being counted (DRAFT) that list a carton, the newest first: a carton that came back
+     * from a customer waits there before it is quarantined (4D-2). For the assistant's carton investigation, which is
+     * asked where a carton is; under the return receipts' own warehouse rule.
+     */
+    List<ReturnReceiptRef> openReturnReceiptsOf(UUID stockPackageId);
+
+    /**
+     * A return receipt listing a carton.
+     *
+     * @param quarantineLocationId the quarantine area its cartons go into once it is confirmed
+     */
+    record ReturnReceiptRef(UUID receiptId, String number, String status, UUID warehouseId,
+                            UUID quarantineLocationId) {
+    }
 }

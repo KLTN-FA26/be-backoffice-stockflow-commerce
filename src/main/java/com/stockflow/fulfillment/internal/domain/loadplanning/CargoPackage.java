@@ -44,6 +44,12 @@ public record CargoPackage(String ref, String sourceRef, int lengthMm, int width
         }
     }
 
+    /** This carton as filler cargo ("hàng chèn", {@link SelectionMode#PRIORITY_FILL}). */
+    public CargoPackage asFill() {
+        return new CargoPackage(ref, sourceRef, lengthMm, widthMm, heightMm, weightKg, rotatable, partCode, kitGroup,
+                groupKey, true);
+    }
+
     /** A main-cargo parcel with no part code, set or group: the common case in tests. */
     public static CargoPackage of(String ref, int lengthMm, int widthMm, int heightMm, BigDecimal weightKg,
                                   boolean rotatable) {

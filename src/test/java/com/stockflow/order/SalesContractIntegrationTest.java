@@ -49,6 +49,7 @@ import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * 4B-4 (kltn-docs 14 §4.3 steps 11-17, §5.2, BR-12, BR-13, BR-14, BR-18, BR-23; 18 BR-05) against the real database: a
@@ -63,6 +64,7 @@ class SalesContractIntegrationTest {
     private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
 
     @Autowired SalesContracts contracts;
+    @Autowired com.stockflow.order.api.OrderService orderService;
     @Autowired OrderRepository orders;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
@@ -163,8 +165,10 @@ class SalesContractIntegrationTest {
         assertThat(drafted.status()).isEqualTo("DRAFT");
         assertThat(drafted.contractNumber()).startsWith("HD-").endsWith("-1");
         assertThat(drafted.freeSampleRounds()).as("BR-18, as configured").isEqualTo(2);
+        assertThat(drafted.returnWindowDays()).as("WF-05 TH-1 (Điều 318): the configured period, written in the "
+                + "contract").isEqualTo(7);
         assertThat(drafted.buyer().representative()).isEqualTo("Tran Van B");
-        assertThat(drafted.seller().name()).isEqualTo("DEMO STOCKFLOW CO LTD");
+        assertThat(drafted.seller().name()).isEqualTo("CÔNG TY TNHH STOCKFLOW");
         assertThat(drafted.totals().totalAmount()).as("the order's total with tax").isEqualByComparingTo("2530000");
         assertThat(drafted.deliverySchedule()).singleElement().satisfies(batch -> {
             assertThat(batch.windowStart()).as("the day the customer asked for").isEqualTo(asked);
@@ -192,8 +196,9 @@ class SalesContractIntegrationTest {
                                 new SalesContracts.Installment("Dot 2", "BEFORE_DELIVERY", new BigDecimal("1320000"),
                                         null, null, 2),
                                 new SalesContracts.Installment("Con lai", "BEFORE_DELIVERY", new BigDecimal("451000"),
-                                        null, null, null)))));
+                                        null, null, null)), 14)));
         assertThat(edited.freeSampleRounds()).isEqualTo(3);
+        assertThat(edited.returnWindowDays()).as("agreed with the customer while a draft").isEqualTo(14);
         assertThat(edited.deliverySchedule()).extracting(SalesContracts.BatchView::value)
                 .usingElementComparator(BigDecimal::compareTo)
                 .containsExactly(new BigDecimal("880000"), new BigDecimal("1320000"));
@@ -214,6 +219,7 @@ class SalesContractIntegrationTest {
                                 List.of(new SalesContracts.BatchLine(line, 12)))), null)));
         assertThat(rescheduled.version()).isGreaterThan(edited.version());
         assertThat(rescheduled.freeSampleRounds()).as("kept").isEqualTo(3);
+        assertThat(rescheduled.returnWindowDays()).as("kept").isEqualTo(14);
         assertThat(rescheduled.paymentPlan()).as("kept").hasSize(3);
         assertThatThrownBy(() -> asSales(() -> contracts.edit(sales, orderId, edited.version(),
                 new SalesContracts.Draft(null, null, List.of(new SalesContracts.Installment("All", "ON_SIGNING", null,
@@ -249,12 +255,18 @@ class SalesContractIntegrationTest {
                 + "window_end = window_end + 1 WHERE contract_id = ?", sent.id())))
                 .hasRootCauseInstanceOf(SQLException.class).rootCause()
                 .hasMessageContaining("do not change (14 BR-14)");
+        // And its complaint period (WF-05 TH-1).
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.sales_contract SET "
+                + "return_window_days = 30 WHERE id = ?", sent.id())))
+                .hasRootCauseInstanceOf(SQLException.class).rootCause()
+                .hasMessageContaining("does not change (14 BR-14)");
 
         // The customer reads the contract sent; another customer's order is not there.
         SalesContracts.ContractView customersCopy = contracts.customerContract(customerId, orderId);
         assertThat(customersCopy.contractNumber()).isEqualTo(sent.contractNumber());
         assertThat(customersCopy.sentAt()).isNotNull();
         assertThat(customersCopy.sentBy()).as("who in the back office sent it is not the customer's").isNull();
+        assertThat(customersCopy.returnWindowDays()).as("the customer reads the period too").isEqualTo(14);
         assertThatThrownBy(() -> contracts.customerContract(Identifiers.newId(), orderId))
                 .extracting(SalesContractIntegrationTest::code).isEqualTo(ErrorCode.NOT_FOUND);
 
@@ -297,6 +309,49 @@ class SalesContractIntegrationTest {
         assertThat(second.contractNumber()).isEqualTo(first.contractNumber().replaceAll("-1$", "-2"));
         assertThat(asSales(() -> contracts.history(orderId))).extracting(SalesContracts.ContractView::status)
                 .containsExactly("DRAFT", "CANCELLED");
+    }
+
+    @Test
+    @DisplayName("LC-1: an order cancelled before its contract is signed announces the contract cancelled, so the "
+            + "contract card the customer holds in chat closes")
+    void anUnsignedContractCancelledWithItsOrderIsAnnounced() {
+        legalProfile();
+        UUID orderId = draftOrder();
+        SalesContracts.ContractView drawn = asSales(() -> contracts.create(sales, orderId, null));
+        SalesContracts.ContractView sent = asSales(() -> contracts.send(sales, orderId, drawn.version()));
+
+        asSales(() -> orderService.cancel(orderId, new com.stockflow.order.api.CancelOrderCommand(
+                com.stockflow.order.api.CancellationReasonCode.DUPLICATE_ORDER, "drawn up twice", null,
+                sales.userId())));
+
+        assertThat(jdbc.queryForObject("SELECT status::text FROM ordering.sales_contract WHERE id = ?", String.class,
+                sent.id())).isEqualTo("CANCELLED");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication
+                WHERE event_type LIKE '%SalesContractStatusChanged' AND serialized_event LIKE ?
+                  AND serialized_event LIKE '%CANCELLED%'""", Long.class, "%" + sent.id() + "%"))
+                .as("one announcement of the cancelled contract").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Q-9: a customer blocked before the contract is sent is not sent it; one sent before is still signed")
+    void notSentToABlockedCustomer() throws Exception {
+        legalProfile();
+        UUID orderId = draftOrder();
+        SalesContracts.ContractView drawn = asSales(() -> contracts.create(sales, orderId, null));
+        UUID otherOrder = draftOrder();
+        SalesContracts.ContractView other = asSales(() -> contracts.create(sales, otherOrder, null));
+        SalesContracts.ContractView sentBefore = asSales(() -> contracts.send(sales, otherOrder, other.version()));
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE customer.customer SET status = 'BLOCKED' WHERE id = ?",
+                customerId));
+
+        Throwable refused = catchThrowable(() -> asSales(() -> contracts.send(sales, orderId, drawn.version())));
+        assertThat(code(refused)).isEqualTo(ErrorCode.CUSTOMER_NOT_ACTIVE);
+        assertThat(((BusinessException) refused).messageKey()).isEqualTo("refusal.contract.customerNotActive");
+        assertThat(asSales(() -> contracts.get(orderId)).status()).isEqualTo("DRAFT");
+        assertThat(sentBefore.status()).isEqualTo("SENT");
+        assertThat(asSales(() -> contracts.get(otherOrder)).status()).as("sent before the block: left to be signed")
+                .isEqualTo("SENT");
     }
 
     @Test

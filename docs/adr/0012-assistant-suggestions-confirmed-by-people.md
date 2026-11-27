@@ -110,4 +110,5 @@ ADR này **không bị bác bỏ**: nếu sau này trợ lý được đề xu�
 còn thiếu), các quyết định trên vẫn là cách làm: model không có tool ghi, đề xuất là dòng của chính người hỏi, chứng từ
 chỉ tạo khi người đó bấm, qua endpoint mang đúng guard của màn chứng từ, đúng một lần, chỉ bản nháp. Khi đó cần một
 migration mới cho bảng đề xuất. Sửa ở lớp nền làm cùng ADR này (`AuditAspect` chỉ ghi SUCCESS khi transaction bao ngoài
-commit) vẫn còn và đúng cho mọi module.
+commit) đã được gỡ ngày 27/11/2026 khi gộp `develop`: không còn chứng từ nào được tạo trong transaction của nơi gọi, và
+một thay đổi hành vi audit của mọi module phải đi qua `develop`. Nếu trợ lý lại tạo chứng từ, cần làm lại sửa đó ở đó.

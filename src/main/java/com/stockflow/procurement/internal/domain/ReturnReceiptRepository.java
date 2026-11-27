@@ -16,9 +16,26 @@ public interface ReturnReceiptRepository {
 
     ReturnReceipt save(ReturnReceipt receipt);
 
-    /** The receipt not cancelled for this returned shipment, if any ({@code uk_goods_receipts_return_shipment}). */
-    Optional<ReturnReceipt> findLiveForShipment(UUID shipmentId);
+    /**
+     * The draft receipt of this returned shipment, if any ({@code uk_goods_receipts_return_shipment_draft}). The
+     * carrier may bring a shipment back in several trips, each received on a receipt of its own (WF-05 Q-11), one being
+     * counted at a time.
+     */
+    Optional<ReturnReceipt> findDraftForShipment(UUID shipmentId);
 
-    /** The receipt not cancelled for this return request, if any ({@code uk_goods_receipts_return_request}). */
-    Optional<ReturnReceipt> findLiveForReturnRequest(UUID returnRequestId);
+    /** The LPNs on this returned shipment's CLOSED receipts: what of it came back so far (WF-05 BE-24). */
+    java.util.Set<String> lpnsReceivedForShipment(UUID shipmentId);
+
+    /**
+     * The units of {@code sku} back for return request {@code returnRequestId} on its receipts not cancelled - cartons
+     * by their count, and loose units - leaving out the loose line {@code exceptLooseLine} (being recounted; null for
+     * none). What WF-05 Q-18 caps at what the return approved.
+     */
+    long unitsReceivedForReturn(UUID returnRequestId, String sku, UUID exceptLooseLine);
+
+    /**
+     * The draft receipt of this return request, if any ({@code uk_goods_receipts_return_request_draft}). A return may
+     * come back in several parcels, each on a receipt of its own (WF-05 TH-3), one being counted at a time.
+     */
+    Optional<ReturnReceipt> findDraftForReturnRequest(UUID returnRequestId);
 }

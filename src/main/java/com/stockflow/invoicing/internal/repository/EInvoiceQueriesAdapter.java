@@ -24,10 +24,26 @@ import java.util.UUID;
 @Repository
 class EInvoiceQueriesAdapter implements EInvoiceQueries {
 
+    /**
+     * What the customer is shown of its invoices (audit r3 EINV-5; decision §3 HĐ-8: "Chữ ký sai thì báo Kế toán ngay,
+     * không gửi khách hoá đơn lỗi"): an issued invoice whose seller's signature does not hold is announced to the
+     * accountants and replaced, and the buyer is never mailed it ({@code EInvoice.Snapshot#sendableToBuyer}). Listed on
+     * the portal and downloadable there, it was sent to the customer all the same, by another road. The one predicate
+     * for every customer-facing read - the list, its count, one invoice, its files, the replacement links and the
+     * chat's invoice card - over the comma-joined {@code warnings} column, matched as a whole code.
+     *
+     * @param alias the table's alias in the statement, or empty for none
+     */
+    static String signatureHolds(String alias) {
+        String column = alias.isEmpty() ? "warnings" : alias + ".warnings";
+        return "(',' || COALESCE(" + column + ", '') || ',') NOT LIKE '%,SIGNATURE_INVALID,%'";
+    }
+
     private static final String LIST_COLUMNS = """
             id, code, type, status, adjusted, order_id, order_number, shipment_id, shipment_code, customer_id,
             buyer_name, buyer_tax_code, issue_date, issue_due_at, template_code, symbol, invoice_number, subtotal,
-            tax_total, grand_total, warnings, rejection_code, issued_at""";
+            tax_total, grand_total, warnings, rejection_code, issued_at, correction_basis, reversed_at,
+            delivered_on""";
 
     private static final RowMapper<Listing> LISTING = (row, n) -> new Listing(row.getObject("id", UUID.class),
             row.getString("code"), EInvoiceType.valueOf(row.getString("type")),
@@ -39,7 +55,10 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
             row.getString("template_code"), row.getString("symbol"), row.getObject("invoice_number", Integer.class),
             row.getBigDecimal("subtotal"), row.getBigDecimal("tax_total"), row.getBigDecimal("grand_total"),
             row.getString("warnings"), row.getString("rejection_code"),
-            row.getTimestamp("issued_at") == null ? null : row.getTimestamp("issued_at").toInstant());
+            row.getTimestamp("issued_at") == null ? null : row.getTimestamp("issued_at").toInstant(),
+            row.getString("correction_basis"),
+            row.getTimestamp("reversed_at") == null ? null : row.getTimestamp("reversed_at").toInstant(),
+            row.getObject("delivered_on", LocalDate.class));
 
     private final JdbcTemplate jdbc;
 
@@ -109,29 +128,98 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
             predicates.add("status IN ('DRAFT', 'REJECTED', 'SUBMITTING') AND issue_due_at < ?");
             arguments.add(Timestamp.from(filter.dueBefore()));
         }
+        if (filter.warning() != null) {
+            // The column holds the codes comma-joined: matched as a whole code, never as part of another. WF-05 Q-10:
+            // "issued late" is ISSUED_LATE, which ck_einvoice_issued_late ties to the dates.
+            predicates.add("(',' || warnings || ',') LIKE ?");
+            arguments.add("%," + filter.warning().name() + ",%");
+        }
         return predicates.isEmpty() ? "" : " WHERE " + String.join(" AND ", predicates);
     }
 
     @Override
-    public List<Listing> issuedTo(UUID customerId, int offset, int limit) {
-        return jdbc.query("SELECT " + LIST_COLUMNS + " FROM invoicing.einvoice " + """
-                WHERE customer_id = ? AND status IN ('ISSUED', 'REPLACED')
+    public List<Listing> issuedTo(UUID customerId, UUID orderId, int offset, int limit) {
+        List<Object> arguments = new ArrayList<>(List.of(customerId));
+        String byOrder = byOrder(orderId, arguments);
+        arguments.add(limit);
+        arguments.add(offset);
+        return jdbc.query("SELECT " + LIST_COLUMNS + " FROM invoicing.einvoice WHERE customer_id = ?"
+                + " AND status IN ('ISSUED', 'REPLACED') AND " + signatureHolds("") + byOrder + " " + """
                 ORDER BY issue_date DESC, issued_at DESC, id
-                LIMIT ? OFFSET ?""", LISTING, customerId, limit, offset);
+                LIMIT ? OFFSET ?""", LISTING, arguments.toArray());
+    }
+
+    /**
+     * The order as one more predicate under the customer's, never instead of it: another customer's order finds
+     * nothing. Added only when asked, so the plan of the unfiltered list is the one it always was
+     * ({@code ix_einvoice_order} serves the filtered one).
+     */
+    private static String byOrder(UUID orderId, List<Object> arguments) {
+        if (orderId == null) {
+            return "";
+        }
+        arguments.add(orderId);
+        return " AND order_id = ?";
     }
 
     @Override
-    public long countIssuedTo(UUID customerId) {
-        Long count = jdbc.queryForObject("""
-                SELECT count(*) FROM invoicing.einvoice
-                 WHERE customer_id = ? AND status IN ('ISSUED', 'REPLACED')""", Long.class, customerId);
+    public long countIssuedTo(UUID customerId, UUID orderId) {
+        List<Object> arguments = new ArrayList<>(List.of(customerId));
+        Long count = jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE customer_id = ?"
+                + " AND status IN ('ISSUED', 'REPLACED') AND " + signatureHolds("") + byOrder(orderId, arguments),
+                Long.class,
+                arguments.toArray());
         return count == null ? 0 : count;
+    }
+
+    @Override
+    public Map<UUID, Replacements> replacementsOf(UUID customerId, java.util.Collection<UUID> invoiceIds) {
+        if (invoiceIds.isEmpty()) {
+            return Map.of();
+        }
+        // One statement for the page. Both sides are held to what the portal lists - the customer's own, ISSUED or
+        // REPLACED - so a replacement still a draft or at the provider is never named (ix_einvoice_original serves the
+        // look-up of the replacement). An original is replaced at most once: a REPLACED invoice is no longer in force
+        // and tg_einvoice_original_in_force refuses a second replacement of it; LIMIT 1 only keeps that an assumption
+        // the statement does not depend on.
+        Map<UUID, Replacements> links = new HashMap<>();
+        jdbc.query("""
+                SELECT i.id, o.id AS replaces_id, o.code AS replaces_code, r.id AS replaced_by_id,
+                       r.code AS replaced_by_code
+                  FROM invoicing.einvoice i
+                  LEFT JOIN invoicing.einvoice o
+                         ON i.type = 'REPLACEMENT' AND o.id = i.original_einvoice_id AND o.customer_id = i.customer_id
+                        AND o.status IN ('ISSUED', 'REPLACED') AND """ + signatureHolds("o") + """
+
+                  LEFT JOIN LATERAL (SELECT x.id, x.code FROM invoicing.einvoice x
+                                      WHERE x.original_einvoice_id = i.id AND x.type = 'REPLACEMENT'
+                                        AND x.customer_id = i.customer_id AND x.status IN ('ISSUED', 'REPLACED')
+                                        AND """ + signatureHolds("x") + """
+
+                                      ORDER BY x.issued_at, x.id
+                                      LIMIT 1) r ON TRUE
+                 WHERE i.id = ANY (?) AND i.customer_id = ?
+                   AND (o.id IS NOT NULL OR r.id IS NOT NULL)""",
+                ps -> {
+                    ps.setArray(1, ps.getConnection().createArrayOf("uuid", invoiceIds.toArray()));
+                    ps.setObject(2, customerId);
+                },
+                row -> {
+                    UUID replacesId = row.getObject("replaces_id", UUID.class);
+                    UUID replacedById = row.getObject("replaced_by_id", UUID.class);
+                    links.put(row.getObject("id", UUID.class), new Replacements(
+                            replacesId == null ? null : new Reference(replacesId, row.getString("replaces_code")),
+                            replacedById == null ? null
+                                    : new Reference(replacedById, row.getString("replaced_by_code"))));
+                });
+        return links;
     }
 
     @Override
     public java.util.Optional<Listing> findIssuedTo(UUID customerId, UUID id) {
         return jdbc.query("SELECT " + LIST_COLUMNS + " FROM invoicing.einvoice " + """
-                WHERE id = ? AND customer_id = ? AND status IN ('ISSUED', 'REPLACED')""", LISTING, id,
+                WHERE id = ? AND customer_id = ? AND status IN ('ISSUED', 'REPLACED') AND """ + signatureHolds(""),
+                LISTING, id,
                 customerId).stream().findFirst();
     }
 
@@ -142,8 +230,13 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
         }
         java.util.Set<UUID> invoiced = new java.util.HashSet<>();
         jdbc.query("""
-                SELECT DISTINCT shipment_id FROM invoicing.einvoice
-                 WHERE shipment_id = ANY (?) AND status = 'ISSUED' AND type <> 'ADJUSTMENT'""",
+                SELECT DISTINCT i.shipment_id FROM invoicing.einvoice i
+                 WHERE i.shipment_id = ANY (?) AND i.status = 'ISSUED' AND i.type <> 'ADJUSTMENT'
+                   AND i.reversed_at IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM invoicing.einvoice r
+                                    WHERE r.shipment_id = i.shipment_id AND r.type = 'ADJUSTMENT'
+                                      AND r.correction_basis = 'DELIVERY_FAILED'
+                                      AND r.status IN ('DRAFT', 'SUBMITTING', 'REJECTED'))""",
                 ps -> ps.setArray(1, ps.getConnection().createArrayOf("uuid", shipmentIds.toArray())),
                 row -> { invoiced.add(row.getObject(1, UUID.class)); });
         return invoiced;

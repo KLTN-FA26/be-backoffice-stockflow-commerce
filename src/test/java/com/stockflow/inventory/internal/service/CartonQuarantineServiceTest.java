@@ -6,18 +6,13 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.PutawayCompleted;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.internal.domain.LocationId;
-import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.StockAdjustmentRepository;
-import com.stockflow.inventory.internal.domain.StockItem;
-import com.stockflow.inventory.internal.domain.StockItemId;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
-import com.stockflow.inventory.internal.repository.UomConversionRepository;
 import com.stockflow.warehouse.api.PutawaySource;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
@@ -63,29 +58,33 @@ class CartonQuarantineServiceTest {
 
     private final StockOperations operations = mock(StockOperations.class);
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
-    private final StockItemRepository stockItems = mock(StockItemRepository.class);
     private final PutawayTasks tasks = mock(PutawayTasks.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
-    private final CartonQuarantineService service = new CartonQuarantineService(operations, stockPackages, stockItems,
-            mock(StockAdjustmentRepository.class), mock(UomConversionRepository.class),
-            mock(InventoryPolicyRepository.class), tasks, warehouses, events);
+    private final CartonQuarantineService service = new CartonQuarantineService(operations, stockPackages,
+            mock(StockAdjustmentRepository.class), mock(InventoryPolicyRepository.class), tasks, warehouses, events,
+            mock(com.stockflow.inventory.internal.domain.ReturnedCartonOwnership.class));
 
     private final StockPackageId cartonId = new StockPackageId(UUID.randomUUID());
     private final UUID areaId = UUID.randomUUID();
 
+    /** The carton as it stands in {@code stockStatus} at {@code location}: received by the test's receipt line. */
+    private StockPackage carton(String location, StockStatus stockStatus) {
+        return new StockPackage(cartonId, LPN, new Sku("CUP-12OZ"), UUID.randomUUID(), UUID.randomUUID(), 10,
+                Instant.parse("2026-11-01T00:00:00Z"), new LocationId(location), StockPackageStatus.IN_STOCK,
+                stockStatus, UUID.randomUUID(), "LOT-1", Instant.parse("2026-11-01T00:00:00Z"), LINE, null,
+                List.of(), 0L);
+    }
+
     @BeforeEach
     void setUp() {
-        StockPackage carton = new StockPackage(cartonId, LPN, UUID.randomUUID(), UUID.randomUUID(), 10, 10,
-                new LocationId(DOCK), StockPackageStatus.IN_STOCK, LINE, null, 0L);
-        when(stockPackages.findByLpns(List.of(LPN))).thenReturn(List.of(carton));
-        StockItemId row = StockItemId.newId();
-        when(stockItems.findIdsInStockPackage(cartonId)).thenReturn(List.of(row));
-        when(stockItems.findById(row)).thenReturn(Optional.of(new StockItem(row, new Sku("CUP-12OZ"),
-                new LocationId(DOCK), "LOT-1", Quantity.of(10), StockStatus.INBOUND, List.of(), 0L,
-                Instant.parse("2026-11-01T00:00:00Z"), UUID.randomUUID(), cartonId)));
+        // Received, still to be put away: INBOUND on the dock.
+        when(stockPackages.findByLpns(List.of(LPN))).thenReturn(List.of(carton(DOCK, StockStatus.INBOUND)));
+        org.mockito.Mockito.lenient().when(stockPackages.stockStatusOf(cartonId))
+                .thenReturn(Optional.of(StockStatus.INBOUND));
         when(operations.quarantine(anyString(), anyString(), anyString(), any())).thenReturn(new StockPackageView(
-                cartonId.value(), LPN, LINE, "CUP-12OZ", UUID.randomUUID(), "CARTON", 10, 10, 10, AREA, "IN_STOCK"));
+                cartonId.value(), LPN, LINE, "CUP-12OZ", UUID.randomUUID(), "CARTON", 10, 10,
+                Instant.parse("2026-11-01T00:00:00Z"), AREA, "IN_STOCK"));
         when(warehouses.findLocation(AREA)).thenReturn(Optional.of(new StorageLocationView(areaId,
                 StorageLocationView.Kind.AREA, UUID.randomUUID(), AREA,
                 StorageLocationView.Status.ACTIVE, StorageLocationView.Status.ACTIVE, true)));
@@ -119,12 +118,9 @@ class CartonQuarantineServiceTest {
         PutawayTaskView open = task("PENDING");
         when(tasks.openTaskOf(cartonId.value())).thenReturn(Optional.of(open));
         when(tasks.lockForUpdate(open.id())).thenReturn(task("DONE"));
-        // Put away meanwhile: the carton's row is AVAILABLE in its bin by now.
-        StockItemId row = StockItemId.newId();
-        when(stockItems.findIdsInStockPackage(cartonId)).thenReturn(List.of(row));
-        when(stockItems.findById(row)).thenReturn(Optional.of(new StockItem(row, new Sku("CUP-12OZ"),
-                new LocationId("WH1-A01-1-A"), "LOT-1", Quantity.of(10), StockStatus.AVAILABLE, List.of(), 0L,
-                Instant.parse("2026-11-01T00:00:00Z"), UUID.randomUUID(), cartonId)));
+        // Put away meanwhile: read before the wait the carton was INBOUND on the dock; read once the task's lock is
+        // held it is AVAILABLE in its bin.
+        when(stockPackages.stockStatusOf(cartonId)).thenReturn(Optional.of(StockStatus.AVAILABLE));
 
         service.quarantine(LPN, AREA, "Torn", MANAGER);
 

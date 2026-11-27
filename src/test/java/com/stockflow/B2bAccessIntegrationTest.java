@@ -161,22 +161,23 @@ class B2bAccessIntegrationTest {
 
     @Test
     void availabilityRequiresAnActiveLinkedCustomerAndHasNoPublicAlias() throws Exception {
-        mvc.perform(get(AVAILABILITY).param("sku", "TABLE-OAK"))
+        mvc.perform(get(AVAILABILITY).param("sku", "HOP-GIAY-DEMO"))
                 .andExpect(status().isUnauthorized());
         for (Account caller : List.of(blocked, unlinked, sales, warehouse, admin)) {
-            mvc.perform(get(AVAILABILITY).param("sku", "TABLE-OAK")
+            mvc.perform(get(AVAILABILITY).param("sku", "HOP-GIAY-DEMO")
                             .param("customerId", alice.customerId().toString())
                             .header("Authorization", bearer(caller)))
                     .andExpect(status().isForbidden());
         }
-        mvc.perform(get(AVAILABILITY).param("sku", "TABLE-OAK").header("Authorization", bearer(alice)))
+        mvc.perform(get(AVAILABILITY).param("sku", "HOP-GIAY-DEMO").header("Authorization", bearer(alice)))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", "max-age=10, private"))
-                // TABLE-OAK is not on sale here (no published listing): omitted, as if not found (SCRUM-485).
+                // HOP-GIAY-DEMO names a product, not a SKU on sale (no published listing of it): omitted, as if not
+                // found (SCRUM-485).
                 .andExpect(jsonPath("$.data").isEmpty());
-        mvc.perform(get("/api/v1/public/products/availability").param("sku", "TABLE-OAK"))
+        mvc.perform(get("/api/v1/public/products/availability").param("sku", "HOP-GIAY-DEMO"))
                 .andExpect(status().isUnauthorized());
-        mvc.perform(get("/api/v1/public/products/availability").param("sku", "TABLE-OAK")
+        mvc.perform(get("/api/v1/public/products/availability").param("sku", "HOP-GIAY-DEMO")
                         .header("Authorization", bearer(alice)))
                 .andExpect(status().isForbidden());
     }
@@ -211,6 +212,39 @@ class B2bAccessIntegrationTest {
     }
 
     @Test
+    void aCustomerReadsItsOwnAddressesAtMeAndNeverAnotherCustomers() throws Exception {
+        String added = mvc.perform(post("/api/v1/customers/" + alice.customerId() + "/addresses")
+                        .header("Authorization", bearer(alice)).contentType("application/json").content("""
+                                {"type":"SHIPPING","recipientName":"Alice Me","phone":"0901234567",
+                                 "line1":"34 Le Loi","wardCode":"26734","wardName":"Ben Nghe",
+                                 "provinceCode":"79","provinceName":"HCM","countryCode":"VN"}
+                                """))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String addressId = mapper.readTree(added).at("/data/addressId").asText();
+
+        String mine = mvc.perform(get("/api/v1/customers/me/addresses").header("Authorization", bearer(alice)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.addressId == '" + addressId + "')].recipientName").value("Alice Me"))
+                .andReturn().getResponse().getContentAsString();
+        String byId = mvc.perform(get("/api/v1/customers/" + alice.customerId() + "/addresses")
+                        .header("Authorization", bearer(alice)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(mapper.readTree(mine).path("data")).as("the same answer as by the customer's own id")
+                .isEqualTo(mapper.readTree(byId).path("data"));
+
+        String theirs = mvc.perform(get("/api/v1/customers/me/addresses").header("Authorization", bearer(bob)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(theirs).doesNotContain(addressId, "Alice Me");
+
+        mvc.perform(get("/api/v1/customers/me/addresses").header("Authorization", bearer(unlinked)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("CUSTOMER_NOT_FOUND"));
+        mvc.perform(get("/api/v1/customers/me/addresses")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void staffBackofficeAccessAndExistingLoginRemainAvailable() throws Exception {
         for (Account caller : List.of(alice, sales)) {
             mvc.perform(post("/api/v1/identity/auth/login").contentType("application/json")
@@ -221,7 +255,7 @@ class B2bAccessIntegrationTest {
                 .andExpect(status().isOk());
         mvc.perform(get("/api/v1/customers").header("Authorization", bearer(warehouse)))
                 .andExpect(status().isForbidden());
-        mvc.perform(get("/api/v1/inventory/stock-items").param("sku", "TABLE-OAK")
+        mvc.perform(get("/api/v1/inventory/stock-items").param("sku", "HOP-GIAY-DEMO")
                         .header("Authorization", bearer(admin)))
                 .andExpect(status().isOk());
     }

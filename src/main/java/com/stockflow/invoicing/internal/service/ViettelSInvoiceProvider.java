@@ -95,6 +95,15 @@ class ViettelSInvoiceProvider implements EInvoiceProvider {
         return false;
     }
 
+    /**
+     * Only with a production account: a test account's documents reach no tax authority, and whether they are signed
+     * is not verified, so they do not hold back a test invoice's mail (HĐ-8).
+     */
+    @Override
+    public boolean signsDocuments() {
+        return accounts.find(CODE).map(stored -> "PRODUCTION".equals(stored.environment())).orElse(false);
+    }
+
     @Override
     public Submission submit(InvoiceDocument invoice) {
         ViettelSInvoiceClient.Account account = account();
@@ -107,6 +116,12 @@ class ViettelSInvoiceProvider implements EInvoiceProvider {
         // against the account.
         ViettelSInvoiceClient.Answer answer = client.createInvoice(account, invoice.seller().taxCode(), body);
         return ViettelSInvoiceAnswers.submission(answer.status(), answer.json());
+    }
+
+    @Override
+    public boolean pendingMayBeRefusedByTaxAuthority() {
+        // ASSUMPTION 3 of ViettelSInvoiceAnswers: an entry the tax authority refused stays numbered without a code.
+        return true;
     }
 
     @Override

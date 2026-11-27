@@ -15,18 +15,14 @@ import com.stockflow.chat.internal.domain.MessageKind;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
-import com.stockflow.design.api.QuoteRequests;
 import com.stockflow.order.api.QuoteCards;
+import com.stockflow.order.api.QuotesFromRequests;
 import com.stockflow.order.api.SampleRoundCards;
 import com.stockflow.payment.api.CustomerInstallments;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -72,16 +68,16 @@ public class ChatCardActions {
     private final DocumentCards documents;
     private final ChatViews views;
     private final QuoteCards quotes;
-    private final QuoteRequests quoteRequests;
+    private final QuotesFromRequests fromRequests;
+    private final QuoteRequestAnswers answers;
     private final SampleRoundCards samples;
     private final CustomerInstallments installments;
-    private final ChatProperties properties;
     private final Clock clock;
 
     public ChatCardActions(ChatCallers callers, ConversationWriter writer, ChatMessageRepository messages,
                            ChatCards cards, DocumentCards documents, ChatViews views, QuoteCards quotes,
-                           QuoteRequests quoteRequests, SampleRoundCards samples, CustomerInstallments installments,
-                           ChatProperties properties, Clock clock) {
+                           QuotesFromRequests fromRequests, QuoteRequestAnswers answers, SampleRoundCards samples,
+                           CustomerInstallments installments, Clock clock) {
         this.callers = callers;
         this.writer = writer;
         this.messages = messages;
@@ -89,10 +85,10 @@ public class ChatCardActions {
         this.documents = documents;
         this.views = views;
         this.quotes = quotes;
-        this.quoteRequests = quoteRequests;
+        this.fromRequests = fromRequests;
+        this.answers = answers;
         this.samples = samples;
         this.installments = installments;
-        this.properties = properties;
         this.clock = clock;
     }
 
@@ -120,13 +116,14 @@ public class ChatCardActions {
             case CardActions.REQUEST_CHANGES -> {
                 long version = request.version() != null ? request.version() : payload.path("version").asLong();
                 QuoteCards.Card quote = quotes.requestChanges(user, uuid(payload, "quoteId"), version,
-                        required(request.note(), "Say what to change in the quote"));
+                        required(request.note(), "Say what to change in the quote", "refusal.chat.changesNote"));
                 cards.update(card.id(), CardState.ACTED, documents.quotePayload(quote), actor, action,
                         "{\"quoteId\":\"" + quote.id() + "\",\"quoteStatus\":\"" + quote.status() + "\"}");
             }
             case CardActions.APPROVE, CardActions.REQUEST_REPRINT -> {
                 boolean approved = CardActions.APPROVE.equals(action);
-                String note = approved ? null : required(request.note(), "Say why the sample is to be printed again");
+                String note = approved ? null : required(request.note(), "Say why the sample is to be printed again",
+                        "refusal.chat.reprintNote");
                 SampleRoundCards.Card round = samples.answer(caller.customerId(), user.userId(),
                         uuid(payload, "roundId"), approved, note);
                 cards.update(card.id(), CardState.ACTED, samplePayload(payload, round), actor, action,
@@ -146,12 +143,16 @@ public class ChatCardActions {
     /**
      * Sales act on a card of a conversation they are in charge of: draw up a DRAFT quote from a quote request (16 §4.2,
      * BR-11; 14 BR-22) - its SKUs, the cartons asked as a suggestion, the delivery date asked - once every design on
-     * it is approved. The request is then closed in the design module, and the quote attached to the conversation, so
-     * the quote's card lands here when Sales send it.
+     * it is approved. Drawing it up and closing the request are the order module's {@link QuotesFromRequests}, the
+     * operation the back office's request inbox calls too, so the two cannot drift; this adds the chat's own checks
+     * before it (the conversation, who is in charge, the card offering the action) and its own error codes, which the
+     * chat's screen matches on, and then {@link QuoteRequestAnswers} shows the quote on the card and attaches it to
+     * the conversation, so the quote's card lands here when Sales send it. A request answered already from the inbox
+     * answers that quote here too.
      *
-     * @throws BusinessException {@code CHAT_CARD_ACTION_NOT_ALLOWED} for the customer's actions (BR-10, BR-11) or a
-     *         card no longer open; {@code CHAT_DESIGN_NOT_APPROVED} while a design waits for review;
-     *         {@code CHAT_NOT_ASSIGNEE}
+     * @throws BusinessException {@code CHAT_CARD_ACTION_NOT_ALLOWED} for the customer's actions (BR-10, BR-11), a
+     *         card no longer open or a request closed without a quote; {@code CHAT_DESIGN_NOT_APPROVED} while a design
+     *         waits for review; {@code CHAT_NOT_ASSIGNEE}
      */
     public ChatMessageView staffAct(CurrentUser user, UUID conversationId, UUID messageId, Action request) {
         Actor staff = callers.staff(user);
@@ -163,47 +164,34 @@ public class ChatCardActions {
             throw new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED);
         }
         JsonNode payload = cards.readPayload(card.card().payloadJson());
-        boolean project = "PROJECT".equals(payload.path("scope").asText());
-        UUID requestId = uuid(payload, "requestId");
-        List<QuoteCards.DraftLine> lines;
-        LocalDate wanted;
-        ObjectNode next;
-        if (project) {
-            QuoteRequests.ProjectRequest asked = quoteRequests.projectRequest(requestId)
-                    .orElseThrow(() -> new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED));
-            if (asked.lines().stream().anyMatch(l -> !"APPROVED".equals(l.designStatus()) || l.customerSku() == null)) {
-                throw new BusinessException(ErrorCode.CHAT_DESIGN_NOT_APPROVED);
-            }
-            lines = asked.lines().stream().map(l -> new QuoteCards.DraftLine(l.customerSku(), l.cartons())).toList();
-            wanted = asked.desiredDeliveryDate();
-            next = (ObjectNode) payload.deepCopy();
-        } else {
-            QuoteRequests.DesignRequest asked = quoteRequests.designRequest(requestId)
-                    .orElseThrow(() -> new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED));
-            if (!"APPROVED".equals(asked.designStatus()) || asked.customerSku() == null) {
-                throw new BusinessException(ErrorCode.CHAT_DESIGN_NOT_APPROVED);
-            }
-            if (!"OPEN".equals(asked.status())) {
-                throw new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED, "The quote request is closed");
-            }
-            lines = List.of(new QuoteCards.DraftLine(asked.customerSku(), asked.cartons()));
-            wanted = asked.desiredDeliveryDate();
-            next = documents.designRequestPayload(asked, null);
+        QuotesFromRequests.Scope scope = "PROJECT".equals(payload.path("scope").asText())
+                ? QuotesFromRequests.Scope.PROJECT : QuotesFromRequests.Scope.DESIGN;
+        QuotesFromRequests.Drawn quote;
+        try {
+            quote = fromRequests.draw(user, scope, uuid(payload, "requestId"));
+        } catch (BusinessException refused) {
+            throw onTheCard(refused);
         }
-        Instant now = clock.instant();
-        LocalDate today = LocalDate.ofInstant(now, properties.businessHours().zone());
-        QuoteCards.Card quote = quotes.draft(user, new QuoteCards.Draft(draftRequestId(card.id()), c.customerId(),
-                lines, wanted == null || wanted.isBefore(today) ? null : wanted,
-                now.plus(properties.draftQuoteValidity())));
-        if (!project) {
-            quoteRequests.close(requestId, staff.userId());
-            next.put("requestStatus", "CLOSED");
+        if (!quote.customerId().equals(c.customerId())) {
+            // BR-02: the quote is the request's customer's; a card about another customer's request draws up nothing.
+            throw new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED);
         }
-        next.put("quoteId", quote.id().toString());
-        next.put("quoteNumber", quote.number());
-        cards.attach(c, new ContextRef(ContextKind.QUOTE, quote.id()), staff);
-        cards.update(card.id(), CardState.ACTED, next, staff, action, "{\"quoteId\":\"" + quote.id() + "\"}");
+        answers.answer(c, card, quote.quoteId(), quote.quoteNumber(), staff);
         return views.message(messages.findById(card.id(), Audience.STAFF).orElseThrow());
+    }
+
+    /**
+     * The card's own words for the request's refusals: the chat's screen matches on {@code CHAT_DESIGN_NOT_APPROVED},
+     * and a request gone or closed is an action the card no longer offers. The quote's own refusals pass through.
+     */
+    private static BusinessException onTheCard(BusinessException refused) {
+        return switch (refused.errorCode()) {
+            case DESIGN_NOT_APPROVED -> new BusinessException(ErrorCode.CHAT_DESIGN_NOT_APPROVED);
+            case DESIGN_QUOTE_REQUEST_CLOSED -> new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED,
+                    "The quote request is closed").localized("refusal.chat.requestClosed");
+            case NOT_FOUND -> new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED);
+            default -> refused;
+        };
     }
 
     /**
@@ -225,7 +213,8 @@ public class ChatCardActions {
         if (transfer.outstanding().signum() <= 0 || "CANCELLED".equals(transfer.status())
                 || "PAID".equals(transfer.status())) {
             throw new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED, "Installment %s owes nothing"
-                    .formatted(transfer.transferReference()));
+                    .formatted(transfer.transferReference()))
+                    .localized("refusal.chat.nothingOwed", transfer.transferReference());
         }
         UUID contextId = cards.attach(c, new ContextRef(ContextKind.CONTRACT, transfer.contractId()), staff);
         UUID posted = cards.postInto(c, contextId, reminder ? CardKind.PAYMENT_REMINDER : CardKind.PAYMENT_INFO,
@@ -241,11 +230,6 @@ public class ChatCardActions {
         writer.save(c, agent);
     }
 
-    /** The same quote request card asks the same draft: a retried click answers the quote the first one drew up. */
-    static UUID draftRequestId(UUID cardId) {
-        return UUID.nameUUIDFromBytes(("chat-quote-request-card:" + cardId).getBytes(StandardCharsets.UTF_8));
-    }
-
     private ChatMessage cardOf(Conversation c, UUID messageId, Audience audience) {
         return messages.findById(messageId, audience)
                 .filter(m -> m.kind() == MessageKind.CARD && m.conversationId().equals(c.id()))
@@ -258,7 +242,8 @@ public class ChatCardActions {
                 .toUpperCase(java.util.Locale.ROOT);
         if (customer != CUSTOMER_ACTIONS.contains(action)) {
             throw new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED, customer
-                    ? "This is the staff's to do" : "This is the customer's to do on the card (16 BR-10, BR-11)");
+                    ? "This is the staff's to do" : "This is the customer's to do on the card (16 BR-10, BR-11)")
+                    .localized(customer ? "refusal.chat.staffAction" : "refusal.chat.customerAction");
         }
         CardActions.Available offered = CardActions.of(card.card().kind(), card.card().state(),
                 cards.readPayload(card.card().payloadJson()));
@@ -280,9 +265,9 @@ public class ChatCardActions {
         return next;
     }
 
-    private static String required(String text, String why) {
+    private static String required(String text, String why, String key) {
         if (text == null || text.isBlank()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, why);
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, why).localized(key);
         }
         return text.strip();
     }

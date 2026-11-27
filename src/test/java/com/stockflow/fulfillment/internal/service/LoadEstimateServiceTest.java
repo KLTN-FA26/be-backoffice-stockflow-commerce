@@ -10,6 +10,8 @@ import com.stockflow.fulfillment.internal.entity.LoadEstimateJpaEntity;
 import com.stockflow.fulfillment.internal.entity.VehicleTypeJpaEntity;
 import com.stockflow.fulfillment.internal.repository.LoadEstimateJpaRepository;
 import com.stockflow.fulfillment.internal.repository.VehicleTypeJpaRepository;
+import com.stockflow.inventory.api.HoldView;
+import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.PackagingRequest;
 import com.stockflow.inventory.api.PackagingSpec;
 import com.stockflow.inventory.api.PackagingSpecResolver;
@@ -19,7 +21,6 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.support.WithCurrentUser;
 import com.stockflow.warehouse.api.WarehouseService;
-import com.stockflow.warehouse.api.WarehouseView;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -58,10 +59,11 @@ class LoadEstimateServiceTest {
     private final OrderService orders = mock(OrderService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final PackagingSpecResolver packaging = mock(PackagingSpecResolver.class);
+    private final InventoryService inventory = mock(InventoryService.class);
     private final PlatformTransactionManager transactions = mock(PlatformTransactionManager.class);
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
-    private final LoadEstimateService service = new LoadEstimateService(estimates, vehicleTypes, orders, warehouses,
-            packaging, json, transactions, Duration.ofSeconds(2), Duration.ofSeconds(12));
+    private final LoadEstimateService service = new LoadEstimateService(estimates, vehicleTypes, orders,
+            packaging, inventory, json, transactions, Duration.ofSeconds(2), Duration.ofSeconds(12));
 
     private final UUID orderId = UUID.randomUUID();
     private final UUID lineId = UUID.randomUUID();
@@ -102,7 +104,7 @@ class LoadEstimateServiceTest {
     }
 
     private PackagingSpec resolved(String sku, int quantity, int length, int width, int height, String kg) {
-        return new PackagingSpec(sku, itemId, quantity, PackagingSpec.Status.RESOLVED, RuleLevel.ITEM_UNIT, "EA", 1,
+        return new PackagingSpec(sku, itemId, quantity, PackagingSpec.Status.RESOLVED, RuleLevel.LARGEST_PACKING_UNIT, "EA", 1,
                 quantity, null, new PackagingSpec.CartonSpec(length, width, height, new BigDecimal(kg), true), 1,
                 List.of(), null);
     }
@@ -120,9 +122,9 @@ class LoadEstimateServiceTest {
     @Test
     @DisplayName("a solver budget that is not positive is refused at start-up")
     void budgetMustBePositive() {
-        assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, warehouses, packaging, json,
+        assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, packaging, inventory, json,
                 transactions, Duration.ZERO, Duration.ofSeconds(12))).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, warehouses, packaging, json,
+        assertThatThrownBy(() -> new LoadEstimateService(estimates, vehicleTypes, orders, packaging, inventory, json,
                 transactions, null, Duration.ofSeconds(12))).isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -146,6 +148,24 @@ class LoadEstimateServiceTest {
                 assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
                 assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("sources");
             }
+        }
+
+        @Test
+        @DisplayName("RTM-LPGROUP: filler lines are ticked only with PRIORITY_FILL, and only lines of the order")
+        void fillerLinesOnlyWithTheirMode() {
+            var source = List.of(new LoadEstimates.Source(LoadEstimates.SourceType.ORDER, orderId));
+            var other = refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId),
+                    SelectionMode.SINGLE_TYPE, List.of(lineId))));
+            assertThat(other.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(other.fieldErrors()).extracting(f -> f.code()).containsExactly("FILL_NOT_IN_MODE");
+            var unknown = refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId),
+                    SelectionMode.PRIORITY_FILL, List.of(UUID.randomUUID()))));
+            assertThat(unknown.fieldErrors()).extracting(f -> f.code()).containsExactly("FILL_LINE_UNKNOWN");
+            verify(estimates, never()).saveAndFlush(any());
+
+            var view = service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId),
+                    SelectionMode.PRIORITY_FILL, List.of(lineId)));
+            assertThat(view.selectionMode()).isEqualTo(SelectionMode.PRIORITY_FILL);
         }
     }
 
@@ -214,29 +234,35 @@ class LoadEstimateServiceTest {
         }
 
         @Test
-        @DisplayName("a confirmed order not released yet needs the warehouse it will ship from, an existing and active one")
+        @DisplayName("09 §4.0 step 1 (RTM-ESTWH): an order whose shipping warehouse is not chosen yet is "
+                + "LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN, whatever warehouse the caller names; once chosen it is the "
+                + "estimate's, and another named is refused")
         void confirmedOrderNeedsAWarehouse() {
             when(orders.findById(orderId)).thenReturn(Optional.of(order(OrderStatus.CONFIRMED, null, 10, 0, 0)));
             when(orders.lockedStatus(orderId)).thenReturn(Optional.of(OrderStatus.CONFIRMED));
             var source = List.of(new LoadEstimates.Source(LoadEstimates.SourceType.ORDER, orderId));
 
-            assertThat(refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId), null)))
-                    .fieldErrors()).extracting(f -> f.field()).containsExactly("warehouseId");
+            assertThat(refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId),
+                    null))).errorCode()).isEqualTo(ErrorCode.LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN);
+            assertThat(refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, WAREHOUSE,
+                    List.of(truckId), null))).errorCode()).isEqualTo(ErrorCode.LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN);
+            verify(estimates, never()).saveAndFlush(any());
 
-            UUID unknown = UUID.randomUUID();
-            when(warehouses.findWarehouse(unknown)).thenReturn(Optional.empty());
-            assertThatThrownBy(() -> service.create(new LoadEstimates.CreateEstimate(source, unknown, List.of(truckId),
-                    null))).isInstanceOf(NotFoundException.class);
-
-            when(warehouses.findWarehouse(WAREHOUSE)).thenReturn(Optional.of(
-                    new WarehouseView(WAREHOUSE, "HCM", "HCM warehouse", "1 Le Loi", false)));
-            assertThat(refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, WAREHOUSE, List.of(truckId),
-                    null))).fieldErrors()).extracting(f -> f.code()).containsExactly("WarehouseInactive");
-
-            when(warehouses.findWarehouse(WAREHOUSE)).thenReturn(Optional.of(
-                    new WarehouseView(WAREHOUSE, "HCM", "HCM warehouse", "1 Le Loi", true)));
-            assertThat(service.create(new LoadEstimates.CreateEstimate(source, WAREHOUSE, List.of(truckId), null))
+            when(orders.shippingWarehouseId(orderId)).thenReturn(Optional.of(WAREHOUSE));
+            assertThat(refusal(() -> service.create(new LoadEstimates.CreateEstimate(source, OTHER_WAREHOUSE,
+                    List.of(truckId), null))).fieldErrors()).extracting(f -> f.code())
+                    .containsExactly("WarehouseMismatch");
+            assertThat(service.create(new LoadEstimates.CreateEstimate(source, null, List.of(truckId), null))
                     .warehouseId()).isEqualTo(WAREHOUSE);
+        }
+
+        @Test
+        @DisplayName("an order that may not be estimated at all says so first, even with no shipping warehouse")
+        void notEligibleBeforeNoWarehouse() {
+            when(orders.findById(orderId)).thenReturn(Optional.of(order(OrderStatus.DRAFT, null, 10, 0, 0)));
+
+            assertThat(refusal(() -> service.create(create())).errorCode())
+                    .isEqualTo(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE);
         }
     }
 
@@ -462,12 +488,21 @@ class LoadEstimateServiceTest {
     @DisplayName("the trial estimate (LP2-9): nothing is stored")
     class Trial {
 
+        /** A line of boxes of 1 kg each. */
         private LoadEstimates.TrialLine line(int l, int w, int h, int quantity) {
-            return new LoadEstimates.TrialLine("Box", "G1", l, w, h, quantity, true);
+            return weighed(l, w, h, quantity, BigDecimal.valueOf(quantity), false);
+        }
+
+        private LoadEstimates.TrialLine weighed(int l, int w, int h, int quantity, BigDecimal totalKg, boolean fill) {
+            return new LoadEstimates.TrialLine("Box", "G1", l, w, h, quantity, totalKg, true, fill);
         }
 
         private LoadEstimates.TrialEstimate trial(LoadEstimates.TrialLine... lines) {
             return new LoadEstimates.TrialEstimate(List.of(lines), List.of(truckId), null);
+        }
+
+        private LoadEstimates.TrialEstimate trial(SelectionMode mode, LoadEstimates.TrialLine... lines) {
+            return new LoadEstimates.TrialEstimate(List.of(lines), List.of(truckId), mode);
         }
 
         @Test
@@ -489,22 +524,71 @@ class LoadEstimateServiceTest {
         }
 
         @Test
-        @DisplayName("the placeholder weight is tiny and the payload is not checked: boxes the real planner would refuse load")
-        void payloadIsNotChecked() {
-            // A 1 kg payload truck: a real estimate of 20 boxes weighing 0.001 kg each would not need it, so use a
-            // payload below the total of the placeholders.
-            truck.apply("Truck tiny", "TRUCK", 6000, 2400, 2400, 0, null, null, new BigDecimal("0.005"), 1, null,
+        @DisplayName("WF4-TRIAL-EST: each box weighs its line's total over its quantity, and the payload is checked")
+        void payloadIsChecked() {
+            // One 100 kg truck; 20 boxes weighing 200 kg in all, 10 kg each: only 10 fit its payload.
+            truck.apply("Truck 100kg", "TRUCK", 6000, 2400, 2400, 0, null, null, new BigDecimal("100"), 1, null,
                     "ACTIVE");
 
-            var view = service.trial(trial(line(600, 400, 300, 20)));
+            var view = service.trial(trial(weighed(600, 400, 300, 20, new BigDecimal("200"), false)));
 
-            assertThat(view.unplaced()).isEmpty();
             assertThat(view.vehicles()).singleElement().satisfies(v -> {
-                assertThat(v.boxes()).hasSize(20);
-                assertThat(v.boxes()).allSatisfy(b -> assertThat(b.weightKg())
-                        .isEqualByComparingTo(LoadEstimateService.TRIAL_WEIGHT_KG));
-                assertThat(v.usedWeightKg()).isGreaterThan(v.maxPayloadKg());
+                assertThat(v.boxes()).hasSize(10);
+                assertThat(v.boxes()).allSatisfy(b -> assertThat(b.weightKg()).isEqualByComparingTo("10"));
+                assertThat(v.usedWeightKg()).isEqualByComparingTo("100");
             });
+            assertThat(view.unplaced()).singleElement().satisfies(u -> assertThat(u.quantity()).isEqualTo(10));
+        }
+
+        @Test
+        @DisplayName("a box heavier than every payload is TOO_HEAVY")
+        void tooHeavy() {
+            var view = service.trial(trial(weighed(600, 400, 300, 2, new BigDecimal("20000"), false)));
+
+            assertThat(view.vehicles()).isEmpty();
+            assertThat(view.unplaced()).singleElement()
+                    .satisfies(u -> assertThat(u.reason().name()).isEqualTo("TOO_HEAVY"));
+        }
+
+        @Test
+        @DisplayName("the total weight is shared out exactly, and a gram over 3 000 boxes still weighs something")
+        void boxWeight() {
+            assertThat(LoadEstimateService.boxWeight(new BigDecimal("1"), 3)).isEqualByComparingTo("0.333333333");
+            assertThat(LoadEstimateService.boxWeight(new BigDecimal("0.001"), 3_000)).isPositive();
+            assertThat(LoadEstimateService.boxWeight(new BigDecimal("1E-12"), 3_000)).isPositive();
+        }
+
+        @Test
+        @DisplayName("the 'Hàng chèn' flag is read in PRIORITY_FILL only: elsewhere every line is main cargo")
+        void fillOnlyInPriorityFill() {
+            // Only fill cargo: in PRIORITY_FILL it never opens a vehicle; in any other mode it is cargo like any.
+            var fill = weighed(500, 500, 500, 3, new BigDecimal("3"), true);
+
+            var priority = service.trial(trial(SelectionMode.PRIORITY_FILL, fill));
+            var single = service.trial(trial(SelectionMode.SINGLE_TYPE, fill));
+
+            assertThat(priority.selectionMode()).isEqualTo(SelectionMode.PRIORITY_FILL);
+            assertThat(priority.vehicles()).isEmpty();
+            assertThat(priority.unplaced()).singleElement().satisfies(u -> {
+                assertThat(u.quantity()).isEqualTo(3);
+                assertThat(u.reason().name()).isEqualTo("NO_SPACE");
+            });
+            assertThat(single.vehicles()).singleElement().satisfies(v -> assertThat(v.boxes()).hasSize(3));
+        }
+
+        @Test
+        @DisplayName("KEEP_LINES: a sheet row is a line, its boxes ride in one vehicle")
+        void keepLinesByRow() {
+            truck.apply("Truck 5t", "TRUCK", 6000, 2400, 2400, 0, null, null, new BigDecimal("5000"), 3, null,
+                    "ACTIVE");
+            // 2 x 2 x 6 = 24 cubes a truck; rows of 14 and 14 cannot share one.
+            var view = service.trial(trial(SelectionMode.KEEP_LINES,
+                    weighed(1000, 1000, 1000, 14, new BigDecimal("140"), false),
+                    weighed(1000, 1000, 1000, 14, new BigDecimal("140"), false)));
+
+            assertThat(view.selectionMode()).isEqualTo(SelectionMode.KEEP_LINES);
+            assertThat(view.unplaced()).isEmpty();
+            assertThat(view.vehicles()).hasSize(2).allSatisfy(v -> assertThat(v.boxes()).hasSize(14));
         }
 
         @Test
@@ -527,12 +611,13 @@ class LoadEstimateServiceTest {
         }
 
         @Test
-        @DisplayName("no line, or a size or quantity that is not positive, is VALIDATION_FAILED")
+        @DisplayName("no line, or a size, quantity or weight that is not positive, is VALIDATION_FAILED")
         void validation() {
             assertThat(refusal(() -> service.trial(new LoadEstimates.TrialEstimate(List.of(), List.of(), null)))
                     .errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
             for (var bad : List.of(line(0, 400, 300, 1), line(600, 0, 300, 1), line(600, 400, 0, 1),
-                    line(600, 400, 300, 0))) {
+                    line(600, 400, 300, 0), weighed(600, 400, 300, 1, BigDecimal.ZERO, false),
+                    weighed(600, 400, 300, 1, null, false))) {
                 var thrown = refusal(() -> service.trial(trial(bad)));
                 assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
                 assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("lines[0]");
@@ -568,8 +653,8 @@ class LoadEstimateServiceTest {
         @DisplayName("the name falls back to the group, then to the line number; a fixed box keeps its orientation")
         void namesAndRotation() {
             var view = service.trial(trial(
-                    new LoadEstimates.TrialLine(null, " G9 ", 600, 400, 300, 1, false),
-                    new LoadEstimates.TrialLine(" ", null, 500, 500, 500, 1, true)));
+                    new LoadEstimates.TrialLine(null, " G9 ", 600, 400, 300, 1, BigDecimal.ONE, false, false),
+                    new LoadEstimates.TrialLine(" ", null, 500, 500, 500, 1, BigDecimal.ONE, true, false)));
 
             var boxes = view.vehicles().get(0).boxes();
             assertThat(boxes).extracting(b -> b.partName()).containsExactlyInAnyOrder("G9", "Line 2");
@@ -577,6 +662,94 @@ class LoadEstimateServiceTest {
                 assertThat(b.rotatable()).isFalse();
                 assertThat(b.orientation()).isEqualTo("LWH");
             });
+        }
+    }
+
+    @Nested
+    @DisplayName("a line already allocated (09 §4.0 step 2, 07 BR-03; RTM 09A-84)")
+    class AllocatedLines {
+
+        private final UUID first = UUID.randomUUID();
+        private final UUID second = UUID.randomUUID();
+        private final UUID third = UUID.randomUUID();
+
+        /** The order's line of {@code quantity} cartons (one unit each) holding the three reservations. */
+        private void anOrderHolding(int quantity) {
+            var line = new OrderSummary.LineSummary(lineId, "CUP-12OZ", quantity, Money.vnd(1000),
+                    Money.vnd(1000L * quantity), List.of(first, second, third));
+            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
+                    BigDecimal.ZERO, BigDecimal.ZERO, List.of(new OrderSummary.LineProgress(lineId, 0, 0, 0)),
+                    List.of());
+            when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-0001",
+                    UUID.randomUUID(), OrderStatus.READY_TO_FULFILL, Money.vnd(1000L * quantity), List.of(line), NOW,
+                    null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle)));
+        }
+
+        private HoldView hold(UUID id, String lpn, HoldView.Status status) {
+            return new HoldView(id, "CUP-12OZ", lpn == null ? null : "HCM-A01-1-A", null, 1, status, null, lpn,
+                    lpn != null);
+        }
+
+        private List<String> labels(LoadEstimates.LoadEstimateView view) {
+            return view.vehicles().stream().flatMap(v -> v.boxes().stream()).map(b -> b.label()).sorted().toList();
+        }
+
+        @Test
+        @DisplayName("every unit allocated: one carton per allocated LPN, labelled with it; the packaging is not "
+                + "asked again")
+        void everyUnitAllocated() {
+            anOrderHolding(3);
+            when(inventory.holds(any())).thenReturn(List.of(hold(first, "LPN-0001", HoldView.Status.HELD),
+                    hold(second, "LPN-0002", HoldView.Status.HELD), hold(third, "LPN-0003", HoldView.Status.HELD)));
+
+            var view = service.create(create());
+
+            assertThat(view.lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(3));
+            assertThat(labels(view)).containsExactly("LPN-0001", "LPN-0002", "LPN-0003");
+            verify(packaging).resolveAll(any());
+        }
+
+        @Test
+        @DisplayName("part allocated (a later delivery batch): the allocated LPNs, then the rest from the packaging")
+        void partAllocated() {
+            anOrderHolding(5);
+            when(inventory.holds(any())).thenReturn(List.of(hold(first, "LPN-0001", HoldView.Status.HELD),
+                    hold(second, "LPN-0002", HoldView.Status.HELD), hold(third, null, HoldView.Status.HELD)));
+
+            var view = service.create(create());
+
+            assertThat(view.lines()).singleElement().satisfies(l -> {
+                assertThat(l.quantity()).isEqualTo(5);
+                assertThat(l.cartons()).isEqualTo(5);
+            });
+            assertThat(labels(view)).containsExactly("CUP-12OZ", "CUP-12OZ", "CUP-12OZ", "LPN-0001", "LPN-0002");
+        }
+
+        @Test
+        @DisplayName("a carton already picked, or a released hold, is not an allocated carton: the line counts from "
+                + "its packaging")
+        void pickedOrReleased() {
+            anOrderHolding(3);
+            when(inventory.holds(any())).thenReturn(List.of(hold(first, "LPN-0001", HoldView.Status.CONSUMED),
+                    hold(second, "LPN-0002", HoldView.Status.RELEASED), hold(third, null, HoldView.Status.HELD)));
+
+            var view = service.create(create());
+
+            assertThat(view.lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(3));
+            assertThat(labels(view)).containsOnly("CUP-12OZ");
+        }
+
+        @Test
+        @DisplayName("holds for more than the line still ships are not used: the line counts from its packaging")
+        void moreHeldThanLeft() {
+            anOrderHolding(2);
+            when(inventory.holds(any())).thenReturn(List.of(hold(first, "LPN-0001", HoldView.Status.HELD),
+                    hold(second, "LPN-0002", HoldView.Status.HELD), hold(third, "LPN-0003", HoldView.Status.HELD)));
+
+            var view = service.create(create());
+
+            assertThat(view.lines()).singleElement().satisfies(l -> assertThat(l.cartons()).isEqualTo(2));
+            assertThat(labels(view)).containsOnly("CUP-12OZ");
         }
     }
 }

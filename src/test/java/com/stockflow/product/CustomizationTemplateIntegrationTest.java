@@ -211,6 +211,93 @@ class CustomizationTemplateIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_INVALID"));
     }
 
+    private static String bag(String code, String extraModel, Long version) {
+        return "{" + (code == null ? "" : "\"code\":\"" + code + "\",") + "\"name\":\"Túi M\","
+                + "\"allowedFileFormats\":[\"image/png\"],\"maxFileSizeMb\":20,\"model\":{\"kind\":\"parametric-bag\","
+                + "\"widthMm\":260,\"gussetMm\":120,\"heightMm\":320,\"topFoldMm\":40," + extraModel
+                + "\"handle\":\"twisted\",\"material\":\"kraft-brown\"},"
+                + "\"printAreas\":[{\"code\":\"FRONT\",\"name\":\"a\",\"safeMarginMm\":5,\"bleedMm\":3},"
+                + "{\"code\":\"BACK\",\"name\":\"b\",\"safeMarginMm\":5,\"bleedMm\":3},"
+                + "{\"code\":\"LEFT\",\"name\":\"c\",\"safeMarginMm\":5,\"bleedMm\":3},"
+                + "{\"code\":\"RIGHT\",\"name\":\"d\",\"safeMarginMm\":5,\"bleedMm\":3}]"
+                + (version == null ? "" : ",\"version\":" + version) + "}";
+    }
+
+    /**
+     * FE request 2026-11-18 BE-8: a bag's glue flap and bottom fold are kept in the model's JSON, default when a
+     * request leaves them out (20 mm, and 0.6 x the 120 mm gusset = 72 mm), change without a new {@code .glb} like the
+     * top fold, and reach the storefront's catalog; an impossible one is refused naming its field (BE-12).
+     */
+    @Test
+    void aBagsGlueFlapAndBottomFoldDefaultAreStoredAndChangeWithoutAFile() throws Exception {
+        JsonNode created = data(createWithFile(bag("BAG-M", "", null)).andExpect(status().isCreated()));
+        String id = created.get("templateId").asText();
+        assertThat(created.get("model").get("glueFlapMm").asDouble()).isEqualTo(20);
+        assertThat(created.get("model").get("bottomFoldMm").asDouble()).isEqualTo(72);
+        assertThat(jdbc.queryForObject("SELECT (model_params_json ->> 'bottomFoldMm')::float8 FROM "
+                + "product.customization_templates WHERE id = ?::uuid", Double.class, id)).isEqualTo(72);
+
+        JsonNode edited = data(updateJson(id, bag(null, "\"glueFlapMm\":25,\"bottomFoldMm\":60,",
+                created.get("version").asLong())).andExpect(status().isOk()));
+        assertThat(edited.get("model").get("glueFlapMm").asDouble()).isEqualTo(25);
+        assertThat(edited.get("model").get("bottomFoldMm").asDouble()).isEqualTo(60);
+        assertThat(edited.get("printAreas").get(0).get("heightMm").asDouble()).isEqualTo(280);
+
+        updateJson(id, bag(null, "\"glueFlapMm\":25,\"bottomFoldMm\":121,", edited.get("version").asLong()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_INVALID"))
+                .andExpect(jsonPath("$.fieldErrors.length()").value(1))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("model.bottomFoldMm"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("Range"));
+        updateJson(id, bag(null, "\"glueFlapMm\":101,", edited.get("version").asLong()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("model.glueFlapMm"));
+
+        activate(id, edited.get("version").asLong()).andExpect(status().isOk());
+        String slug = publish(productId, sku);
+        mvc.perform(get("/api/v1/catalog/products/" + slug + "/customization"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.templates[0].model.glueFlapMm").value(25.0))
+                .andExpect(jsonPath("$.data.templates[0].model.bottomFoldMm").value(60.0));
+    }
+
+    /** FE request BE-18: a template narrows the studio's fonts only to fonts the studio offers. */
+    @Test
+    void aTemplateAllowsOnlyFontsTheStudioOffers() throws Exception {
+        String withFonts = cup("CUP12-BODY", 2, null).replace("\"maxFileSizeMb\":20,",
+                "\"maxFileSizeMb\":20,\"allowedFontCodes\":[\"montserrat\",\"comic-sans\"],");
+        mvc.perform(TemplateModelFiles.create(base, withFonts).header("Accept-Language", "vi"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("allowedFontCodes"))
+                .andExpect(jsonPath("$.fieldErrors[0].message").value(
+                        "Phông chữ comic-sans không có trong danh sách phông của công cụ thiết kế: hãy chọn trong "
+                                + "danh sách."));
+        createWithFile(withFonts.replace(",\"comic-sans\"", ",\"pacifico\""))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.allowedFontCodes[1]").value("pacifico"));
+        // No list is every font, as before.
+        createWithFile(cup("CUP12-ALL", 2, null)).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.allowedFontCodes").doesNotExist());
+    }
+
+    /** BE-12: a refusal names the request field it is about, by the path the back office's form maps. */
+    @Test
+    void anInvalidTemplateNamesTheFieldAtFault() throws Exception {
+        createWithFile(cup("CUP12-BODY", 25, null))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_INVALID"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("printAreas[0].bleedMm"))
+                .andExpect(jsonPath("$.fieldErrors[0].message").value(
+                        "Print area BODY: margins are 0 or more, bleed at most 20 mm"));
+        createWithFile(cup("CUP12-BODY", 2, null).replace("\"seamMm\":8", "\"seamMm\":150"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("model.seamMm"));
+        createWithFile(cup("CUP12-BODY", 2, null).replace("parametric-cup", "gltf"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("model.kind"));
+    }
+
     @Test
     void anUpdateRecomputesTheAreasAndAStaleOneIsRefused() throws Exception {
         JsonNode created = data(createWithFile(cup("CUP12-BODY", 2, null)).andExpect(status().isCreated()));
@@ -354,6 +441,16 @@ class CustomizationTemplateIntegrationTest {
         activate(id, version)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_MODEL_FILE_REQUIRED"));
+        // No model at all either (written before models were stored): the same 409, the same fix (FE 2026-11-17 B-2).
+        String noModel = data(createWithFile(cup("CUP12-NOMODEL", 2, null)).andExpect(status().isCreated()))
+                .get("templateId").asText();
+        sql("UPDATE product.customization_templates SET model_params_json = NULL, model_file_key = NULL, "
+                + "model_file_name = NULL, model_file_checksum = NULL, model_surfaces_json = '[]'::jsonb "
+                + "WHERE id = ?::uuid", noModel);
+        activate(noModel, jdbc.queryForObject("SELECT version FROM product.customization_templates WHERE id = ?::uuid",
+                Long.class, noModel))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_MODEL_FILE_REQUIRED"));
         mvc.perform(get(base + "/" + id)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.model3d.hasFile").value(false));
         JsonNode renamed = data(updateJson(id, cup(null, 2, version).replace("Ly 12oz - thân ly", "Ly cũ"))
@@ -416,6 +513,12 @@ class CustomizationTemplateIntegrationTest {
                 .andExpect(jsonPath("$.data.templates[0].sku").value(sku))
                 .andExpect(jsonPath("$.data.templates[0].code").value("CUP12-BODY"))
                 .andExpect(jsonPath("$.data.templates[0].printAreas[0].shape.type").value("annular-sector"));
+        // The studio names a design by the product's published title, the product page's own title.
+        String title = jdbc.queryForObject("SELECT published_title FROM catalog.product_listing WHERE product_id = ?",
+                String.class, productId);
+        assertThat(title).isNotBlank();
+        mvc.perform(get("/api/v1/catalog/products/" + slug + "/customization"))
+                .andExpect(jsonPath("$.data.productTitle").value(title));
 
         mvc.perform(get("/api/v1/catalog/products/no-such-product-" + UUID.randomUUID() + "/customization"))
                 .andExpect(status().isNotFound());
@@ -426,8 +529,8 @@ class CustomizationTemplateIntegrationTest {
     private String publish(UUID product, String variantSku) {
         tx.executeWithoutResult(s -> {
             jdbc.update("INSERT INTO product.product_categories (id, product_id, category_id, is_primary) "
-                    + "VALUES (?, ?, md5('demo:cat:SOFA')::uuid, TRUE) ON CONFLICT DO NOTHING", UUID.randomUUID(),
-                    product);
+                    + "VALUES (?, ?, md5('demo:wf02:category:LY_GIAY')::uuid, TRUE) ON CONFLICT DO NOTHING",
+                    UUID.randomUUID(), product);
             jdbc.update("UPDATE product.variants SET status = 'ACTIVE' WHERE product_id = ?", product);
             jdbc.update("""
                     INSERT INTO product.media (id, variant_id, url, is_published, published_at, published_by, created_by)

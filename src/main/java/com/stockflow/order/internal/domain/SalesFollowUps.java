@@ -13,6 +13,14 @@ import java.util.UUID;
 public interface SalesFollowUps {
 
     /**
+     * The note a voided receipt puts its PAYMENT hold on with ({@code %s} is the receipt's reference). A coordinator may
+     * put an order on PAYMENT hold by hand too, for reasons of their own; the follow-up tells the two apart by this note,
+     * so that Sales are never told a receipt was voided when none was, nor invited to lift a hold someone raised on
+     * purpose.
+     */
+    String VOIDED_RECEIPT_HOLD_NOTE = "Payment receipt %s voided: the installment on signing is short";
+
+    /**
      * A contract the customer has not signed since {@code sentAt}.
      *
      * @param salesUserId who sent it: the salesperson handling it
@@ -33,4 +41,30 @@ public interface SalesFollowUps {
 
     /** PENDING_PAYMENT orders whose contract was signed at or before {@code signedBy}, the newest first. */
     List<UnpaidOrder> unpaidSince(Instant signedBy, int limit);
+
+    /**
+     * An order whose next step waits on someone inside (WF-02 FLOW-1..3).
+     *
+     * @param salesUserId who sent its signed contract, or - for none recorded - who recorded it signed; null without one
+     * @param since       when the hold now open was raised, or for a confirmed order when its contract was signed
+     */
+    record WaitingOrder(UUID orderId, String orderNumber, UUID salesUserId, Instant since) { }
+
+    /** ON_HOLD orders held for {@code reason} ({@code CREDIT}, {@code PAYMENT}), the newest hold first. */
+    List<WaitingOrder> heldFor(String reason, int limit);
+
+    /**
+     * ON_HOLD orders whose open PAYMENT hold a voided receipt raised ({@link #VOIDED_RECEIPT_HOLD_NOTE}), the newest
+     * hold first; PAYMENT holds raised by hand are left out.
+     */
+    List<WaitingOrder> heldAfterVoidedReceipt(int limit);
+
+    /** CONFIRMED orders of a signed contract with no shipping warehouse chosen yet, the newest first. */
+    List<WaitingOrder> confirmedWithoutWarehouse(int limit);
+
+    /**
+     * PENDING_PAYMENT orders of a signed contract (WF-02 CONC-2), the oldest signature first: those the installments may
+     * already have paid while the event that would have confirmed them was lost.
+     */
+    List<UUID> awaitingOnSigning(int limit);
 }

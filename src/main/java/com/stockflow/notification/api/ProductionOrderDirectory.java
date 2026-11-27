@@ -30,4 +30,19 @@ public interface ProductionOrderDirectory {
      * being told to stop. Empty when there is no such production order.
      */
     Optional<ProductionOrderMail> stop(UUID productionOrderId);
+
+    /**
+     * The sales order the production order was drawn up for, if it is still open and short of cartons of the production
+     * order's SKUs - what the Production Coordinator is told when a carton of the production order's goods is written
+     * off as damaged (kltn-docs 17 §4.13 step 51). Empty when there is no such production order, the order is closed or
+     * cancelled, or it lacks nothing of them (a surplus carton: no replacement is drawn up, step 54).
+     */
+    Optional<ShortSalesOrder> shortSalesOrder(UUID productionOrderId);
+
+    /**
+     * The slip the production order was sent with, as a PDF to attach to the message that sends it: the stored bytes,
+     * checked against the digest recorded at approval. Empty when it has no slip, or the stored one no longer matches
+     * (the producer is then sent the links only - never a slip other than the one approved).
+     */
+    Optional<byte[]> slipPdf(UUID productionOrderId);
 }

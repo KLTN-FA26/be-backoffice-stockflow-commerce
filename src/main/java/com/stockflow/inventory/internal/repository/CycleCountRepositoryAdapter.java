@@ -2,6 +2,7 @@ package com.stockflow.inventory.internal.repository;
 
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.WarehouseScope;
+import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.domain.CountSlot;
 import com.stockflow.inventory.internal.domain.CycleCount;
 import com.stockflow.inventory.internal.domain.CycleCount.CountLineDraft;
@@ -69,7 +70,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
 
     /**
      * The row is locked in SQL first and the entity then refreshed under the lock: returning the persistence-context
-     * copy would make the lock decorative (see {@code StockItemRepositoryAdapter.findByIdForUpdate}).
+     * copy would make the lock decorative (see {@code StockPackageRepositoryAdapter.findAllByIdForUpdate}).
      */
     @Override
     public Optional<CycleCount> findByIdForUpdate(UUID id) {
@@ -184,12 +185,16 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     public List<CountLineDraft> stockIn(String warehousePrefix, Collection<String> locationCodes,
                                         Collection<String> locationPrefixes, Collection<String> skus) {
         List<CountLineDraft> drafts = new ArrayList<>();
-        // One line per carton in stock (kltn-docs 20 §4.2 a2). Units in no carton - a put-back, a return or a damage
-        // report not yet in cartons - are not counted: a count states cartons present or not found (BR-14).
+        // One line per carton in stock (kltn-docs 20 §4.2 a2): a count states cartons present or not found (BR-14),
+        // and a carton in stock is booked by being in stock.
         String cartons = """
-                SELECT b.stock_package_id, b.location_code, b.sku, b.lot_number, b.on_hand AS qty
-                  FROM inventory.stock_package_balance b
-                 WHERE b.status = 'IN_STOCK' AND %s
+                SELECT b.stock_package_id, b.location_code, b.sku, b.lot_number
+                  FROM (SELECT p.id AS stock_package_id, p.location_code, i.sku, l.lot_number
+                          FROM inventory.stock_package p
+                          JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                          LEFT JOIN inventory.stock_lot l ON l.id = p.lot_id
+                         WHERE p.status = 'IN_STOCK') b
+                 WHERE %s
                  ORDER BY b.location_code, b.sku, b.stock_package_id""";
         MapSqlParameterSource cartonParams = new MapSqlParameterSource();
         jdbc.query(cartons.formatted(scope("b", warehousePrefix, locationCodes, locationPrefixes, skus, cartonParams)),
@@ -197,7 +202,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                         CountSlot.carton(new LocationId(rs.getString("location_code")), new Sku(rs.getString("sku")),
                                 rs.getString("lot_number"),
                                 new StockPackageId(rs.getObject("stock_package_id", UUID.class))),
-                        rs.getInt("qty"))));
+                        true)));
         return drafts;
     }
 
@@ -237,17 +242,17 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     /**
      * {@inheritDoc}
      *
-     * <p>{@code FOR SHARE} cannot sit on an aggregate query in PostgreSQL, hence the inner select: the row is
-     * locked, then read. A carton is one row (V20261113000300).</p>
+     * <p>The carton's row is locked {@code FOR SHARE} and then read: booked is "in stock" (ADR-0011: a carton in
+     * stock stands for its count, any other for nothing), as it stands once whoever is changing the carton has
+     * committed.</p>
      */
     @Override
-    public int bookQuantity(CountSlot slot) {
+    public boolean booked(CountSlot slot) {
         requireCarton(slot);
-        Number total = jdbc.queryForObject("""
-                SELECT COALESCE(sum(q.on_hand), 0)
-                  FROM (SELECT s.on_hand FROM inventory.stock_item s WHERE s.stock_package_id = :package FOR SHARE) q""",
-                new MapSqlParameterSource("package", slot.stockPackageId().value()), Number.class);
-        return total == null ? 0 : total.intValue();
+        List<String> status = jdbc.queryForList(
+                "SELECT p.status FROM inventory.stock_package p WHERE p.id = :package FOR SHARE",
+                new MapSqlParameterSource("package", slot.stockPackageId().value()), String.class);
+        return status.contains("IN_STOCK");
     }
 
     /**
@@ -269,10 +274,9 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                        c.planned_date, c.started_at, c.completed_at, c.note, c.created_at,
                        (SELECT count(*) FROM inventory.cycle_count_line l WHERE l.cycle_count_id = c.id) AS line_count,
                        (SELECT count(*) FROM inventory.cycle_count_line l
-                         WHERE l.cycle_count_id = c.id AND l.counted_qty IS NOT NULL) AS counted_count,
+                         WHERE l.cycle_count_id = c.id AND l.found IS NOT NULL) AS counted_count,
                        (SELECT count(*) FROM inventory.cycle_count_line l
-                         WHERE l.cycle_count_id = c.id AND l.counted_qty IS NOT NULL
-                           AND l.counted_qty <> l.expected_qty) AS variance_count
+                         WHERE l.cycle_count_id = c.id AND l.found <> l.booked) AS variance_count
                   FROM inventory.cycle_count c
                  WHERE %s
                  ORDER BY c.created_at DESC, c.id DESC LIMIT :limit OFFSET :offset""".formatted(where), params,
@@ -310,12 +314,12 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
         }
         Map<UUID, List<LineAdjustment>> byLine = new HashMap<>();
         jdbc.query("""
-                SELECT a.cycle_count_line_id, a.id, a.adjustment_number, a.quantity_delta, a.status
+                SELECT a.cycle_count_line_id, a.id, a.adjustment_number, a.direction, a.status
                   FROM inventory.stock_adjustment a WHERE a.cycle_count_line_id IN (:ids)
                  ORDER BY a.created_at, a.id""", new MapSqlParameterSource("ids", lineIds), (RowCallbackHandler) rs ->
                 byLine.computeIfAbsent(rs.getObject("cycle_count_line_id", UUID.class), id -> new ArrayList<>())
                         .add(new LineAdjustment(rs.getObject("id", UUID.class), rs.getString("adjustment_number"),
-                                rs.getInt("quantity_delta"), rs.getString("status"))));
+                                AdjustmentDirection.valueOf(rs.getString("direction")), rs.getString("status"))));
         return byLine;
     }
 
@@ -341,8 +345,8 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     /**
      * {@inheritDoc}
      *
-     * <p>A line freezes the stock row of its carton ({@code stock_package_id} equal). Units in no carton are never
-     * allocated (whole cartons only, team plan 4C-2), so a loose line of the history has nothing to freeze.</p>
+     * <p>A line freezes its carton ({@code stock_package_id} equal). Only a free carton is listed - AVAILABLE, with no
+     * live allocation: a held one is not promised or planned anyway - and {@code free} is its count.</p>
      *
      * <p>The freeze lasts while the SHORT_PICK count is open, and (SCRUM-146 D7) after it completes until every
      * {@code COUNT_VARIANCE} adjustment of the line is decided: between submission and approval the books still hold
@@ -367,10 +371,12 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
             return List.of();
         }
         return jdbc.query("""
-                SELECT s.id, s.sku, s.location_code, s.on_hand - s.reserved AS free
-                  FROM inventory.stock_item s
-                 WHERE s.sku IN (:skus) AND s.status = 'AVAILABLE' AND s.on_hand > s.reserved
-                   AND s.stock_package_id IS NOT NULL
+                SELECT s.id, i.sku, s.location_code, s.nominal_qty AS free
+                  FROM inventory.stock_package s
+                  JOIN inventory.inventory_items i ON i.id = s.inventory_item_id
+                 WHERE i.sku IN (:skus) AND s.stock_status = 'AVAILABLE'
+                   AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation r
+                                    WHERE r.stock_package_id = s.id AND r.status = 'HELD')
                    AND (EXISTS (SELECT 1 FROM inventory.cycle_count c
                                   JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
                                  WHERE ((c.trigger_type = 'SHORT_PICK' AND %s)
@@ -379,11 +385,11 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                                                          WHERE a.cycle_count_line_id = l.id
                                                            AND a.reason_code = 'COUNT_VARIANCE'
                                                            AND a.status = 'PENDING_APPROVAL'
-                                                           AND a.quantity_delta < 0)))
-                                   AND l.stock_package_id = s.stock_package_id)
+                                                           AND a.direction = 'WRITE_OFF')))
+                                   AND l.stock_package_id = s.id)
                         OR EXISTS (SELECT 1 FROM inventory.stock_adjustment w
-                                    WHERE w.stock_package_id = s.stock_package_id
-                                      AND w.status = 'PENDING_APPROVAL' AND w.quantity_delta < 0))"""
+                                    WHERE w.stock_package_id = s.id
+                                      AND w.status = 'PENDING_APPROVAL' AND w.direction = 'WRITE_OFF'))"""
                         .formatted(CountBusy.BUSY),
                 new MapSqlParameterSource().addValue("skus", skus),
                 (rs, row) -> new Frozen(rs.getObject("id", UUID.class), rs.getString("sku"),

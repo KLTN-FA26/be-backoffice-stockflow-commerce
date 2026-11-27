@@ -31,19 +31,25 @@ END $$;
 
 \echo '--- checkout: reservation written BEFORE the order row (OrderServiceImpl.placeOrder order)'
 SELECT pg_temp.expect_ok('O1 reserve first, save the order after, same transaction (deferred keys)', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-    VALUES (md5('qa:res:1')::uuid, '11111111-1111-4111-8111-111111111111', md5('qa:order:1')::uuid, gen_random_uuid(), gen_random_uuid(),
-            2, NOW(), NOW() + INTERVAL '15 minutes', 'HELD');
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+    SELECT md5('qa:res:1')::uuid, p.id, md5('qa:order:1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, p.nominal_qty, NOW(), 'HELD'
+      FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+       AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
+     ORDER BY p.lpn LIMIT 1;
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
     VALUES (md5('qa:order:1')::uuid, 'SO-QA-1', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PENDING_PAYMENT',
             20000000, 'VND', NOW(), NOW());
     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-    VALUES (md5('qa:ol:1')::uuid, md5('qa:order:1')::uuid, 'SOFA-3S-GREY', 2, 10000000, 'VND');
+    VALUES (md5('qa:ol:1')::uuid, md5('qa:order:1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 2000, 10000, 'VND');
     INSERT INTO ordering.order_line_reservation (order_line_id, reservation_id) VALUES (md5('qa:ol:1')::uuid, md5('qa:res:1')::uuid) $q$);
 SELECT pg_temp.expect_fail('O2 a reservation whose order is never saved (fails at commit)', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-    VALUES (gen_random_uuid(), '11111111-1111-4111-8111-111111111111', gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
-            1, NOW(), NOW() + INTERVAL '15 minutes', 'HELD') $q$);
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+    SELECT gen_random_uuid(), p.id, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1, p.nominal_qty, NOW(), 'HELD'
+      FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+       AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
+     ORDER BY p.lpn LIMIT 1 $q$);
 SELECT pg_temp.expect_fail('O3 an order for a customer that does not exist', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
     VALUES (gen_random_uuid(), 'SO-QA-X', gen_random_uuid(), gen_random_uuid(), 'PENDING_PAYMENT', 0, 'VND', NOW(), NOW()) $q$);
@@ -56,32 +62,36 @@ VALUES (md5('qa:pick:1')::uuid, md5('qa:order:1')::uuid, 'SO-QA-1', md5('demo:wh
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at)
 VALUES (md5('qa:order:2')::uuid, 'SO-QA-2', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PENDING_PAYMENT', 1, 'VND', NOW(), NOW());
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-VALUES (md5('qa:ol:2')::uuid, md5('qa:order:2')::uuid, 'TABLE-OAK-160', 1, 1, 'VND');
+VALUES (md5('qa:ol:2')::uuid, md5('qa:order:2')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 1, 1, 'VND');
 SELECT pg_temp.expect_fail('O6 pick line for a line of another order', $q$
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, allocated_qty)
-    VALUES (gen_random_uuid(), md5('qa:pick:1')::uuid, md5('qa:ol:2')::uuid, 'TABLE-OAK-160', 'HCM-B01-1-A', 1) $q$);
+    VALUES (gen_random_uuid(), md5('qa:pick:1')::uuid, md5('qa:ol:2')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'HCM-B01-1-A', 1) $q$);
 SELECT pg_temp.expect_fail('O7 pick line with another sku than its order line', $q$
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, allocated_qty)
-    VALUES (gen_random_uuid(), md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, 'TABLE-OAK-160', 'HCM-B01-1-A', 1) $q$);
--- Since V20261113000400 a pick line is one carton, named by its LPN (07 BR-04, BR-10): it is allocated from a carton's
--- row, and the checkout reservation of O1 (on an emptied loose row of the demo) is not a line's hold any more.
+    VALUES (gen_random_uuid(), md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 'HCM-B01-1-A', 1) $q$);
+-- Since V20261113000400 a pick line is one carton, named by its LPN (07 BR-04, BR-10), and its hold names that carton
+-- (V20261231000600). The hold of O1 took one free carton; this one takes the next (a carton has one live allocation).
 SELECT pg_temp.expect_ok('O8 pick line for a carton allocated from a bin, against its own hold', $q$
-    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-    SELECT md5('qa:res:3')::uuid, s.id, md5('qa:order:1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, NOW(), NULL, 'HELD'
-      FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
-     WHERE s.sku = 'SOFA-3S-GREY' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK' ORDER BY p.lpn LIMIT 1;
+    INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+    SELECT md5('qa:res:3')::uuid, p.id, md5('qa:order:1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, p.nominal_qty, NOW(),
+           'HELD'
+      FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+       AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
+     ORDER BY p.lpn LIMIT 1;
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty, lpn, whole_carton)
-    SELECT md5('qa:pl:1')::uuid, md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, md5('qa:res:3')::uuid, 'SOFA-3S-GREY', 'HCM-A01-2-B', 1, p.lpn, TRUE
-      FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
-      JOIN inventory.stock_package p ON p.id = s.stock_package_id WHERE r.id = md5('qa:res:3')::uuid $q$);
+    SELECT md5('qa:pl:1')::uuid, md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, md5('qa:res:3')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 'HCM-A01-2-B', r.cartons * r.units_per_carton, p.lpn,
+           TRUE
+      FROM inventory.stock_reservation r
+      JOIN inventory.stock_package p ON p.id = r.stock_package_id WHERE r.id = md5('qa:res:3')::uuid $q$);
 SELECT pg_temp.expect_fail('O9 picking more than allocated (BR-04)', $q$
-    UPDATE fulfillment.pick_line SET picked_qty = 2 WHERE id = md5('qa:pl:1')::uuid $q$);
+    UPDATE fulfillment.pick_line SET picked_qty = allocated_qty + 1 WHERE id = md5('qa:pl:1')::uuid $q$);
 SELECT pg_temp.expect_fail('O10 PICKED with nothing picked: a carton is taken whole', $q$
     UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = 0, picked_by = md5('demo:user:editor')::uuid, picked_at = NOW()
      WHERE id = md5('qa:pl:1')::uuid $q$);
 -- consumed_at since V20261014001000: a picked line with a hold has deducted it (09_outbound F5).
 SELECT pg_temp.expect_ok('O11 picked in full', $q$
-    UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = 1, picked_by = md5('demo:user:editor')::uuid, picked_at = NOW(),
+    UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = allocated_qty, picked_by = md5('demo:user:editor')::uuid, picked_at = NOW(),
            consumed_at = NOW()
      WHERE id = md5('qa:pl:1')::uuid $q$);
 
@@ -101,7 +111,7 @@ SELECT pg_temp.expect_ok('O13 a picked carton becomes a shipping carton row, lab
     UPDATE fulfillment.package SET status = 'CHECKED', checked_at = NOW(), checked_by = md5('demo:user:editor')::uuid
      WHERE id = md5('qa:pkg:1')::uuid;
     UPDATE fulfillment.package SET status = 'LABELED', labeled_at = NOW(), labeled_by = md5('demo:user:editor')::uuid, label_version = 1,
-           weight_kg = 30, length_cm = 215, width_cm = 95, height_cm = 90, dim_weight_kg = 30, shipment_id = md5('qa:ship:1')::uuid
+           weight_kg = 8.6, length_cm = 60, width_cm = 40, height_cm = 50, dim_weight_kg = 24, shipment_id = md5('qa:ship:1')::uuid
      WHERE id = md5('qa:pkg:1')::uuid $q$);
 SELECT pg_temp.expect_fail('O14 a second carton row for the same pick line', $q$
     INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
@@ -138,13 +148,13 @@ VALUES (md5('qa:rma:1')::uuid, 'RMA-QA-1', md5('qa:order:1')::uuid, 'SO-QA-1', '
         gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'DAMAGED_IN_TRANSIT', NOW());
 SELECT pg_temp.expect_fail('O33 returning a line of another order', $q$
     INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
-    VALUES (gen_random_uuid(), md5('qa:rma:1')::uuid, md5('qa:ol:2')::uuid, 'TABLE-OAK-160', FALSE, 1, 1) $q$);
-SELECT pg_temp.expect_fail('O34 returning 3 of 2 ordered', $q$
+    VALUES (gen_random_uuid(), md5('qa:rma:1')::uuid, md5('qa:ol:2')::uuid, 'LY-GIAY-DEMO-12OZ-DO', FALSE, 1, 1) $q$);
+SELECT pg_temp.expect_fail('O34 returning 2,001 of 2,000 ordered', $q$
     INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
-    VALUES (gen_random_uuid(), md5('qa:rma:1')::uuid, md5('qa:ol:1')::uuid, 'SOFA-3S-GREY', FALSE, 10000000, 3) $q$);
+    VALUES (gen_random_uuid(), md5('qa:rma:1')::uuid, md5('qa:ol:1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', FALSE, 10000, 2001) $q$);
 SELECT pg_temp.expect_ok('O35 returning 1: approved by someone else, the goods are to come back (they always do, 17 BR-18)', $q$
     INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
-    VALUES (md5('qa:rmal:1')::uuid, md5('qa:rma:1')::uuid, md5('qa:ol:1')::uuid, 'SOFA-3S-GREY', FALSE, 10000000, 1);
+    VALUES (md5('qa:rmal:1')::uuid, md5('qa:rma:1')::uuid, md5('qa:ol:1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', FALSE, 10000, 1);
     UPDATE ordering.return_request_line SET approved_quantity = 1 WHERE id = md5('qa:rmal:1')::uuid;
     UPDATE ordering.return_request SET status = 'AWAITING_RETURN', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW(),
            return_required = TRUE, return_deadline = NOW() + INTERVAL '14 days' WHERE id = md5('qa:rma:1')::uuid $q$);
@@ -154,7 +164,7 @@ SELECT pg_temp.expect_fail('O36 a second return of a line that already has an op
     VALUES (md5('qa:rma:2')::uuid, 'RMA-QA-2', md5('qa:order:1')::uuid, 'SO-QA-1', 'c0000000-0000-4000-8000-000000000001',
             gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'PRINT_DEFECT', NOW());
     INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
-    VALUES (gen_random_uuid(), md5('qa:rma:2')::uuid, md5('qa:ol:1')::uuid, 'SOFA-3S-GREY', FALSE, 10000000, 1) $q$);
+    VALUES (gen_random_uuid(), md5('qa:rma:2')::uuid, md5('qa:ol:1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', FALSE, 10000, 1) $q$);
 SELECT pg_temp.expect_fail('O37 RESOLVED straight from AWAITING_RETURN: the goods never came back, nothing was refunded', $q$
     UPDATE ordering.return_request SET status = 'RESOLVED' WHERE id = md5('qa:rma:1')::uuid $q$);
 SELECT pg_temp.expect_fail('O38 RECEIVED with no return receipt behind it (4D-3: the goods come back on a receipt)', $q$
@@ -175,7 +185,7 @@ SELECT pg_temp.expect_ok('O38g2 goods printed to the customer''s design claimed 
                 'REFUND', 'REQUESTED', 'OTHER', 'x', NOW());
         INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price,
                                                   quantity)
-        VALUES (gen_random_uuid(), md5('qa:rma:other')::uuid, md5('qa:ol:1')::uuid, 'SOFA-3S-GREY', TRUE, 10000000, 1);
+        VALUES (gen_random_uuid(), md5('qa:rma:other')::uuid, md5('qa:ol:1')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', TRUE, 10000, 1);
         RAISE EXCEPTION 'the database accepted it';
     EXCEPTION WHEN check_violation THEN
         IF SQLERRM NOT LIKE 'printed goods come back for a named defect only%' THEN
@@ -189,7 +199,7 @@ INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, cus
 VALUES (md5('qa:rma:3')::uuid, 'RMA-QA-3', md5('qa:order:2')::uuid, 'SO-QA-2', 'c0000000-0000-4000-8000-000000000001',
         gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'PRINT_DEFECT', NOW());
 INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity)
-VALUES (md5('qa:rmal:3')::uuid, md5('qa:rma:3')::uuid, md5('qa:ol:2')::uuid, 'TABLE-OAK-160', FALSE, 1, 1);
+VALUES (md5('qa:rmal:3')::uuid, md5('qa:rma:3')::uuid, md5('qa:ol:2')::uuid, 'LY-GIAY-DEMO-12OZ-DO', FALSE, 1, 1);
 SELECT pg_temp.expect_fail('O38h a claim Sales opened, approved by the same person', $q$
     UPDATE ordering.return_request SET status = 'AWAITING_RETURN', decided_by = md5('demo:user:editor')::uuid,
            decided_at = NOW(), return_required = TRUE, return_deadline = NOW() + INTERVAL '14 days'
@@ -236,7 +246,7 @@ SELECT pg_temp.expect_fail('O51 a rejection without a reason', $q$
 SELECT pg_temp.expect_fail('O52 a pick to put back that was not cancelled', $q$
     UPDATE fulfillment.pick SET needs_put_back = TRUE WHERE id = md5('qa:pick:1')::uuid $q$);
 SELECT pg_temp.expect_ok('O53 a cancelled pick whose goods go back', $q$
-    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE WHERE id = md5('qa:pick:1')::uuid $q$);
+    UPDATE fulfillment.pick SET status = 'CANCELLED', needs_put_back = TRUE, cancelled_at = NOW() WHERE id = md5('qa:pick:1')::uuid $q$);
 
 \echo '--- order lifecycle: fulfilment states, hold, delivery outcome, split shipments (G3-2, V20261021000100)'
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
@@ -244,7 +254,7 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
 VALUES (md5('qa:order:l1')::uuid, 'SO-QA-L1', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'CONFIRMED',
         1000000, 'VND', NOW(), NOW(), NOW());
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-VALUES (md5('qa:order:l1:line')::uuid, md5('qa:order:l1')::uuid, 'TABLE-OAK-160', 10, 100000, 'VND');
+VALUES (md5('qa:order:l1:line')::uuid, md5('qa:order:l1')::uuid, 'LY-GIAY-DEMO-12OZ-DO', 10, 100000, 'VND');
 SELECT pg_temp.expect_fail('O57 the retired IN_FULFILMENT', $q$
     UPDATE ordering.customer_order SET status = 'IN_FULFILMENT' WHERE id = md5('qa:order:l1')::uuid $q$);
 SELECT pg_temp.expect_fail('O58 CONFIRMED straight to PICKING (no release)', $q$

@@ -16,7 +16,6 @@ import com.stockflow.catalog.internal.repository.CatalogSearchRepository;
 import com.stockflow.catalog.internal.repository.CatalogSearchRepository.Candidate;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.ProductPublication;
 
 import org.junit.jupiter.api.Test;
@@ -32,10 +31,9 @@ class CatalogSearchServiceTest {
 
     private final CatalogSearchRepository repository = mock(CatalogSearchRepository.class);
     private final ProductPublication products = mock(ProductPublication.class);
-    private final InventoryService inventory = mock(InventoryService.class);
-    private final SearchProperties properties = new SearchProperties(1.0, 1.0, 10.0, 0.25, 0.2, 500);
+    private final SearchProperties properties = new SearchProperties(1.0, 1.0, 10.0, 0.2, 500);
     private final CatalogSearchService service =
-            new CatalogSearchService(repository, products, inventory, properties,
+            new CatalogSearchService(repository, products, properties,
                     mock(com.stockflow.product.api.CategoryNavigation.class));
 
     private static Candidate candidate(String title, double score, String sku, Instant listedAt) {
@@ -63,53 +61,11 @@ class CatalogSearchServiceTest {
     // ---- relevance ------------------------------------------------------------------------
 
     @Test
-    void inStockProductWinsAnExactTieOnTextScore() {
-        var out = candidate("Ly nhua A", 0.5, "A-1", null);
-        var in = candidate("Ly nhua B", 0.5, "B-1", null);
-        when(repository.match(any(), any(), anyInt())).thenReturn(List.of(out, in));
-        everythingPublished();
-        when(inventory.availableQuantities(any())).thenReturn(Map.of("A-1", 0L, "B-1", 7L));
-
-        var page = service.search("ly nhua", null, 0, 20);
-
-        assertThat(page.items()).extracting(c -> c.title()).containsExactly("Ly nhua B", "Ly nhua A");
-    }
-
-    @Test
-    void stockIsABonusNotAnOverride() {
-        var better = candidate("Better text", 0.9, "A-1", null);
-        var stocked = candidate("Worse text", 0.5, "B-1", null);
-        when(repository.match(any(), any(), anyInt())).thenReturn(List.of(better, stocked));
-        everythingPublished();
-        when(inventory.availableQuantities(any())).thenReturn(Map.of("B-1", 100L));
-
-        // 0.9 vs 0.5 + 0.25: text still wins; the bonus is a tie-breaker between close matches.
-        assertThat(service.search("text", "relevance", 0, 20).items())
-                .extracting(c -> c.title()).containsExactly("Better text", "Worse text");
-    }
-
-    @Test
-    void stockBonusFollowsTheConfiguredWeight() {
-        var service = new CatalogSearchService(repository, products, inventory,
-                new SearchProperties(1.0, 1.0, 10.0, 1.0, 0.2, 500),
-                mock(com.stockflow.product.api.CategoryNavigation.class));
-        var better = candidate("Better text", 0.9, "A-1", null);
-        var stocked = candidate("Worse text", 0.5, "B-1", null);
-        when(repository.match(any(), any(), anyInt())).thenReturn(List.of(better, stocked));
-        everythingPublished();
-        when(inventory.availableQuantities(any())).thenReturn(Map.of("B-1", 1L));
-
-        assertThat(service.search("text", null, 0, 20).items())
-                .extracting(c -> c.title()).containsExactly("Worse text", "Better text");
-    }
-
-    @Test
     void equalScoresFallBackToFoldedTitleThenId() {
         var b = candidate("Bàn", 0.5, "B-1", null);
         var a = candidate("Ao", 0.5, "A-1", null);
         when(repository.match(any(), any(), anyInt())).thenReturn(List.of(b, a));
         everythingPublished();
-        when(inventory.availableQuantities(any())).thenReturn(Map.of());
 
         assertThat(service.search("x", null, 0, 20).items()).extracting(c -> c.title()).containsExactly("Ao", "Bàn");
     }
@@ -122,7 +78,6 @@ class CatalogSearchServiceTest {
         var gone = candidate("Discontinued meanwhile", 0.9, "G-1", null);
         when(repository.match(any(), any(), anyInt())).thenReturn(List.of(gone, kept));
         when(products.published(any())).thenReturn(Set.of(kept.productId()));
-        when(inventory.availableQuantities(any())).thenReturn(Map.of());
 
         var page = service.search("kept", null, 0, 20);
 
@@ -138,7 +93,6 @@ class CatalogSearchServiceTest {
                 .mapToObj(i -> candidate("P" + i, 1.0 - i / 10.0, "S-" + i, null)).toList();
         when(repository.match(any(), any(), anyInt())).thenReturn(all);
         everythingPublished();
-        when(inventory.availableQuantities(any())).thenReturn(Map.of());
 
         var last = service.search("p", null, 2, 3);
         assertThat(last.items()).extracting(c -> c.title()).containsExactly("P6");
@@ -155,7 +109,7 @@ class CatalogSearchServiceTest {
                     .isInstanceOfSatisfying(BusinessException.class,
                             e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.UNSUPPORTED_PARAMETER));
         }
-        verifyNoInteractions(repository, products, inventory);
+        verifyNoInteractions(repository, products);
     }
 
     // ---- sort -----------------------------------------------------------------------------
@@ -191,7 +145,6 @@ class CatalogSearchServiceTest {
         assertThat(service.search("   ", "relevance", 0, 20).items()).extracting(c -> c.title())
                 .containsExactly("Recent", "Old");
         verify(repository, never()).match(any(), any(), anyInt());
-        verifyNoInteractions(inventory);
     }
 
     @Test
@@ -213,7 +166,6 @@ class CatalogSearchServiceTest {
         // Folded: Bàn(ban) < Cốc(coc) < Đẹp(dep)
         assertThat(service.search("x", "title", 0, 20).items()).extracting(i -> i.title())
                 .containsExactly("Bàn", "Cốc", "Đẹp");
-        verifyNoInteractions(inventory);
     }
 
     // ---- text handling --------------------------------------------------------------------
@@ -223,7 +175,7 @@ class CatalogSearchServiceTest {
         var page = service.search("!!! &|", null, 0, 20);
         assertThat(page.items()).isEmpty();
         assertThat(page.totalElements()).isZero();
-        verifyNoInteractions(repository, products, inventory);
+        verifyNoInteractions(repository, products);
     }
 
     @Test
@@ -240,7 +192,6 @@ class CatalogSearchServiceTest {
         when(repository.match(any(), any(), anyInt())).thenReturn(List.of());
         when(repository.similar(any(SearchQuery.class), any(), anyDouble(), anyInt())).thenReturn(List.of(typo));
         everythingPublished();
-        when(inventory.availableQuantities(any())).thenReturn(Map.of());
 
         assertThat(service.search("ly nhuaa", null, 0, 20).items()).hasSize(1);
 
@@ -289,7 +240,6 @@ class CatalogSearchServiceTest {
                         list.get(4).productId()));
 
         assertThat(service.suggest("ly", 3)).extracting(s -> s.title()).containsExactly("Ly 1", "Ly 2", "Ly 3");
-        verifyNoInteractions(inventory);
     }
 
     // ---- card fields ----------------------------------------------------------------------

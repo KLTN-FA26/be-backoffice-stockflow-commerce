@@ -73,10 +73,11 @@ public final class SearchQueryNormalizer {
     }
 
     /**
-     * SKU codes keep their hyphens ({@code SOFA-3S-GREY}), so "sofa-3s-grey" and "sofa 3s grey" both
-     * have to be tried. Whitespace-only differences are the only fuzziness allowed here. The input as typed (its
-     * whitespace turned into hyphens) is tried first and keeps its {@code _} and {@code .}: {@code CUP_A-RED} is
-     * looked up as {@code cup_a-red}. The words joined by hyphens come second, for input typed with spaces.
+     * SKU codes keep their hyphens ({@code LY-GIAY-DEMO-12OZ-XANH}), so "ly-giay-demo-12oz-xanh" and
+     * "ly giay demo 12oz xanh" both have to be tried. Whitespace-only differences are the only fuzziness allowed here.
+     * The input as typed (its whitespace turned into hyphens) is tried first and keeps its {@code _} and {@code .}:
+     * {@code CUP_A-RED} is looked up as {@code cup_a-red}. The words joined by hyphens come second, for input typed
+     * with spaces.
      */
     private static List<String> skuKeys(String folded, List<String> terms) {
         Set<String> keys = new LinkedHashSet<>();

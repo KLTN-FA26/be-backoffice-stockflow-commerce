@@ -15,6 +15,7 @@ import com.stockflow.common.security.RequiresPermissionAspect;
 import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.storage.StoredFile;
 import com.stockflow.common.web.GlobalExceptionHandler;
+import com.stockflow.identity.api.IdentityService;
 import com.stockflow.product.internal.service.ProductMediaService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -52,6 +53,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -66,13 +69,15 @@ class ProductMediaHttpTest {
     @ImportAutoConfiguration({ServletWebServerFactoryAutoConfiguration.class,
             DispatcherServletAutoConfiguration.class, WebMvcAutoConfiguration.class,
             MultipartAutoConfiguration.class, JacksonAutoConfiguration.class, HttpMessageConvertersAutoConfiguration.class})
-    @Import({ProductMediaController.class, ProductAdminWebMapper.class, GlobalExceptionHandler.class,
+    @Import({ProductMediaController.class, ProductAdminWebMapper.class, ProductMediaResponses.class,
+            GlobalExceptionHandler.class,
             Messages.class, RequiresPermissionAspect.class, AuthenticatedUserArgumentResolver.class})
     static class Config {
         @Bean ProductMediaService productMediaService() { return mock(ProductMediaService.class); }
         @Bean StaticMessageSource messageSource() { return new StaticMessageSource(); }
         @Bean PermissionChecker permissionChecker() { return mock(PermissionChecker.class); }
         @Bean CurrentUserProvider currentUserProvider() { return mock(CurrentUserProvider.class); }
+        @Bean IdentityService identityService() { return mock(IdentityService.class); }
 
         @Bean WebMvcConfigurer resolvers(AuthenticatedUserArgumentResolver resolver) {
             return new WebMvcConfigurer() {
@@ -88,9 +93,10 @@ class ProductMediaHttpTest {
     @Autowired ProductMediaService media;
     @Autowired PermissionChecker permissions;
     @Autowired CurrentUserProvider users;
+    @Autowired IdentityService identity;
 
     @BeforeEach void resetMocks() {
-        reset(media, permissions, users);
+        reset(media, permissions, users, identity);
         when(users.current()).thenReturn(Optional.of(new CurrentUser(UUID.randomUUID(), "staff",
                 Set.of(), Set.of(), DataScope.ALL, Set.of())));
     }
@@ -129,6 +135,34 @@ class ProductMediaHttpTest {
         assertThat(response.statusCode()).isEqualTo(201);
         assertThat(response.body()).contains(id.toString(), "image/png", "sizeBytes")
                 .doesNotContain("private-key", "storageKey");
+        // The uploader is a username: shown as it is, and identity is not asked about it.
+        assertThat(response.body()).contains("\"uploadedByName\":\"staff\"").doesNotContain("publishedByName");
+        verifyNoInteractions(identity);
+    }
+
+    @Test void listNamesUploaderAndPublisherWithOneLookup() throws Exception {
+        UUID publisher = UUID.randomUUID();
+        UUID idUploader = UUID.randomUUID();
+        var file = new StoredFile("product-images/a.png", "a.png", "image/png", 12, Instant.EPOCH);
+        var published = new ProductMediaService.MediaView(UUID.randomUUID(), UUID.randomUUID(), "IMAGE", null, file,
+                List.of(), null, 0, true, true, Instant.EPOCH, publisher, "editor01", Instant.EPOCH, 0,
+                java.util.Map.of());
+        var byId = new ProductMediaService.MediaView(UUID.randomUUID(), UUID.randomUUID(), "IMAGE", null, file,
+                List.of(), null, 1, false, false, null, null, idUploader.toString(), Instant.EPOCH, 0,
+                java.util.Map.of());
+        when(media.list(any(), any())).thenReturn(List.of(published, byId));
+        when(identity.displayNames(any())).thenReturn(java.util.Map.of(publisher, "Trần Thị B", idUploader, "Lê Văn C"));
+
+        HttpResponse<String> response;
+        try (var client = HttpClient.newHttpClient()) {
+            response = client.send(HttpRequest.newBuilder(URI.create(mediaPath())).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+        }
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).contains("\"uploadedByName\":\"editor01\"", "\"publishedByName\":\"Trần Thị B\"",
+                "\"uploadedByName\":\"Lê Văn C\"");
+        verify(identity, times(1)).displayNames(any());
     }
 
     @Test void policyOversizeReturns413() throws Exception {

@@ -15,6 +15,8 @@ import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionService;
+import com.stockflow.product.api.CustomerSku;
+import com.stockflow.product.api.CustomerSkus;
 import com.stockflow.support.TestUsers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -216,8 +218,8 @@ class GetCustomerPriceToolTest {
             + "read as 10,000 cartons; the quantity description says so too")
     void measureAndCarton() {
         UomConversionService units = mock(UomConversionService.class);
-        when(units.conversionsOf(any())).thenReturn(java.util.Map.of("EVAL-LID-90", List.of(
-                unit("PCS", 1, true, false), unit("CARTON", 50, false, true))));
+        // The variant's one carton (01 BR-03): the base unit has no row of its own since V20261226000200.
+        when(units.conversionsOf(any())).thenReturn(java.util.Map.of("EVAL-LID-90", List.of(unit("CARTON", 50))));
         when(catalog.customerPrice(ABC.customerId(), "EVAL-LID-90")).thenReturn(Optional.of(new PriceSchedule(
                 "EVAL-LID-90", 100, List.of(new PriceSchedule.Tier(100, Money.vnd(1_750)),
                 new PriceSchedule.Tier(200, Money.vnd(1_650))), PriceSchedule.Measure.CARTON)));
@@ -251,9 +253,122 @@ class GetCustomerPriceToolTest {
         assertThat(answer.unitsPerCarton()).isNull();
     }
 
-    private static UomConversion unit(String code, int factor, boolean base, boolean shipping) {
-        return new UomConversion(UUID.randomUUID(), "EVAL-LID-90", code, factor, base, null, null, null, null, base,
-                true, 0, shipping);
+    private static UomConversion unit(String code, int factor) {
+        return new UomConversion(UUID.randomUUID(), "EVAL-LID-90", code, factor, null, null, null, null, true, 0);
+    }
+
+    /** ABC's own SKU drawn on the catalogue variant LY-KRAFT-12OZ, and the variant's standard price by carton. */
+    private CustomerSkus standardPrices() {
+        when(users.current()).thenReturn(Optional.of(TestUsers.builder().role(Role.SALES_STAFF).scope(DataScope.ALL)
+                .can("catalog-customer-prices", Action.READ).can("customer-customers", Action.READ)
+                .can("catalog-standard-prices", Action.READ).build()));
+        CustomerSkus skus = mock(CustomerSkus.class);
+        when(skus.find("LY-KRAFT-12OZ-ABC-001")).thenReturn(Optional.of(new CustomerSku(UUID.randomUUID(),
+                UUID.randomUUID(), "LY-KRAFT-12OZ-ABC-001", "Ly kraft 12oz in logo ABC", ABC.customerId(),
+                UUID.randomUUID(), UUID.randomUUID(), "LY-KRAFT-12OZ", "ACTIVE")));
+        when(skus.find("LY-KRAFT-12OZ")).thenReturn(Optional.empty());
+        when(catalog.customerPrice(eq(ABC.customerId()), anyString())).thenReturn(Optional.empty());
+        when(catalog.standardPrice("LY-KRAFT-12OZ")).thenReturn(Optional.of(new PriceSchedule("LY-KRAFT-12OZ", 50,
+                List.of(new PriceSchedule.Tier(50, Money.vnd(1_900)), new PriceSchedule.Tier(200, Money.vnd(1_700))),
+                PriceSchedule.Measure.CARTON)));
+        return skus;
+    }
+
+    @Test
+    @DisplayName("13 BR-04 (2026-11-26): without the customer's own price, the standard price of the variant its SKU "
+            + "was drawn on, said to be one - and the tier for the cartons asked read from it")
+    void standardPriceBehindTheCustomersSku() {
+        GetCustomerPriceTool withSkus = new GetCustomerPriceTool(catalog, customers, users, null, standardPrices());
+
+        GetCustomerPriceTool.Answer answer = withSkus.run(arguments("ABC", "ly-kraft-12oz-abc-001", 120));
+
+        assertThat(answer.priceKind()).isEqualTo(GetCustomerPriceTool.PriceKind.STANDARD_PRICE);
+        assertThat(answer.standardPriceOf()).isEqualTo("LY-KRAFT-12OZ");
+        assertThat(answer.sku()).isEqualTo("LY-KRAFT-12OZ-ABC-001");
+        assertThat(answer.measure()).isEqualTo("CARTON");
+        assertThat(answer.moq()).isEqualTo(50);
+        assertThat(answer.tierForQuantity().unitPrice()).isEqualTo(BigDecimal.valueOf(1_900));
+        assertThat(answer.note()).isNull();
+        assertThat(tool.spec().toString()).contains("STANDARD_PRICE", "not a price agreed with this customer");
+    }
+
+    @Test
+    @DisplayName("the customer's own price wins whenever there is one: the standard price is never read")
+    void ownPriceFirst() {
+        CustomerSkus skus = standardPrices();
+        when(catalog.customerPrice(ABC.customerId(), "LY-KRAFT-12OZ-ABC-001")).thenReturn(Optional.of(
+                new PriceSchedule("LY-KRAFT-12OZ-ABC-001", 100, List.of(new PriceSchedule.Tier(100, Money.vnd(1_650))),
+                        PriceSchedule.Measure.CARTON)));
+        GetCustomerPriceTool withSkus = new GetCustomerPriceTool(catalog, customers, users, null, skus);
+
+        GetCustomerPriceTool.Answer answer = withSkus.run(arguments("ABC", "LY-KRAFT-12OZ-ABC-001", 0));
+
+        assertThat(answer.priceKind()).isEqualTo(GetCustomerPriceTool.PriceKind.CUSTOMER_PRICE);
+        assertThat(answer.standardPriceOf()).isNull();
+        assertThat(answer.tiers()).hasSize(1);
+        verifyNoInteractions(skus);
+        org.mockito.Mockito.verify(catalog, org.mockito.Mockito.never()).standardPrice(anyString());
+    }
+
+    @Test
+    @DisplayName("asked about the catalogue variant itself: its standard price, with a note that the customer is "
+            + "quoted for its own SKU drawn on it")
+    void variantItself() {
+        GetCustomerPriceTool withSkus = new GetCustomerPriceTool(catalog, customers, users, null, standardPrices());
+
+        GetCustomerPriceTool.Answer answer = withSkus.run(arguments("ABC", "LY-KRAFT-12OZ", 0));
+
+        assertThat(answer.priceKind()).isEqualTo(GetCustomerPriceTool.PriceKind.STANDARD_PRICE);
+        assertThat(answer.standardPriceOf()).isEqualTo("LY-KRAFT-12OZ");
+        assertThat(answer.note()).contains("catalogue variant", "own SKU drawn on it");
+    }
+
+    @Test
+    @DisplayName("another customer's SKU gets no price, not even the standard one, and its owner is not named")
+    void anotherCustomersSku() {
+        CustomerSkus skus = standardPrices();
+        UUID otherCustomer = UUID.randomUUID();
+        when(skus.find("LY-KRAFT-12OZ-XYZ-004")).thenReturn(Optional.of(new CustomerSku(UUID.randomUUID(),
+                UUID.randomUUID(), "LY-KRAFT-12OZ-XYZ-004", "Ly kraft 12oz in logo XYZ", otherCustomer,
+                UUID.randomUUID(), UUID.randomUUID(), "LY-KRAFT-12OZ", "ACTIVE")));
+        GetCustomerPriceTool withSkus = new GetCustomerPriceTool(catalog, customers, users, null, skus);
+
+        GetCustomerPriceTool.Answer answer = withSkus.run(arguments("ABC", "LY-KRAFT-12OZ-XYZ-004", 100));
+
+        assertThat(answer.priceKind()).isNull();
+        assertThat(answer.tiers()).isEmpty();
+        assertThat(answer.note()).contains("not one of this customer's own SKUs", "never say whose");
+        org.mockito.Mockito.verify(catalog, org.mockito.Mockito.never()).standardPrice(anyString());
+    }
+
+    @Test
+    @DisplayName("a caller who may not open the standard-price screen is told one may exist, never what it is")
+    void standardPriceIsTheStandardPriceScreens() {
+        CustomerSkus skus = standardPrices();
+        when(users.current()).thenReturn(Optional.of(TestUsers.builder().role(Role.ACCOUNTANT).scope(DataScope.ALL)
+                .can("catalog-customer-prices", Action.READ).can("customer-customers", Action.READ).build()));
+        GetCustomerPriceTool withSkus = new GetCustomerPriceTool(catalog, customers, users, null, skus);
+
+        GetCustomerPriceTool.Answer answer = withSkus.run(arguments("ABC", "LY-KRAFT-12OZ-ABC-001", 100));
+
+        assertThat(answer.priceKind()).isNull();
+        assertThat(answer.tiers()).isEmpty();
+        assertThat(answer.note()).contains("catalog-standard-prices:READ", "never a price");
+        org.mockito.Mockito.verify(catalog, org.mockito.Mockito.never()).standardPrice(anyString());
+    }
+
+    @Test
+    @DisplayName("neither price: a note, never a price")
+    void neither() {
+        CustomerSkus skus = standardPrices();
+        when(catalog.standardPrice("LY-KRAFT-12OZ")).thenReturn(Optional.empty());
+        GetCustomerPriceTool withSkus = new GetCustomerPriceTool(catalog, customers, users, null, skus);
+
+        GetCustomerPriceTool.Answer answer = withSkus.run(arguments("ABC", "LY-KRAFT-12OZ-ABC-001", 100));
+
+        assertThat(answer.priceKind()).isNull();
+        assertThat(answer.tiers()).isEmpty();
+        assertThat(answer.note()).contains("no standard price", "no list or group price");
     }
 
     @Test

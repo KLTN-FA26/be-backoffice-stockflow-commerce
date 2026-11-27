@@ -28,14 +28,14 @@ class ShippingLabelSheetTest {
     private final LabelFonts fonts = new LabelFonts();
 
     private static ShippingLabel label(String lpn, String address, boolean rotatable) {
-        return new ShippingLabel("SO-20261113-0001", lpn, "SO-20261113-0001-C1", 1, "SOFA-3S-GREY", 1,
+        return new ShippingLabel("SO-20261113-0001", lpn, "SO-20261113-0001-C1", 1, "LY-GIAY-DEMO-12OZ-XANH", 1,
                 new BigDecimal("52.500"), new BigDecimal("306.375"), new BigDecimal("215"), new BigDecimal("95"),
                 new BigDecimal("90"), rotatable, "Nguyen Van An", "0900000001", address, "Kho TP.HCM",
-                "1 Đường Số 7, Quận 7, TP.HCM");
+                "1 Đường Số 7, Phường Tân Thuận, TP.HCM");
     }
 
     private static ShippingLabel label(String lpn) {
-        return label(lpn, "12 Lê Lợi, Phường Bến Nghé, Quận 1, TP.HCM, VN", true);
+        return label(lpn, "12 Lê Lợi, Phường Sài Gòn, TP.HCM, VN", true);
     }
 
     private static String text(byte[] pdf, int page) throws IOException {
@@ -97,24 +97,29 @@ class ShippingLabelSheetTest {
     void theWordsOnTheLabel() throws IOException {
         byte[] pdf = ShippingLabelSheet.render(fonts, List.of(label("LPN-20261113-000001")));
         String text = text(pdf, 1);
-        assertThat(text).contains("SO-20261113-0001").contains("SO-20261113-0001-C1").contains("label v1")
-                .contains("Nguyen Van An").contains("0900000001").contains("SKU  SOFA-3S-GREY").contains("QTY  1")
-                .contains("52.5 kg").contains("306.375 kg").contains("215 x 95 x 90 cm").contains("FROM / RETURN TO");
-        assertThat(text).as("a rotatable carton has no warning").doesNotContain("DO NOT ROTATE");
+        assertThat(text).contains("SO-20261113-0001").contains("SO-20261113-0001-C1").contains("nhãn / label v1")
+                .contains("Nguyen Van An").contains("0900000001").contains("MÃ HÀNG / SKU  LY-GIAY-DEMO-12OZ-XANH")
+                .contains("SL / QTY  1")
+                .contains("52.5 kg").contains("306.375 kg").contains("215 x 95 x 90 cm")
+                .contains("ĐƠN HÀNG / ORDER").contains("GIAO ĐẾN / SHIP TO").contains("NGƯỜI GỬI / FROM – RETURN TO")
+                .contains("KHỐI LƯỢNG / WEIGHT  52.5 kg").contains("KL QUY ĐỔI / DIM. WEIGHT  306.375 kg")
+                .contains("KÍCH THƯỚC / SIZE  215 x 95 x 90 cm");
+        assertThat(text).as("a rotatable carton has no warning").doesNotContain("DO NOT ROTATE")
+                .doesNotContain("KHÔNG XOAY");
     }
 
     @Test
     @DisplayName("a carton that must not be turned says so in a box")
     void aNonRotatableCarton() throws IOException {
         byte[] pdf = ShippingLabelSheet.render(fonts, List.of(label("LPN-20261113-000001", "1 Le Loi", false)));
-        assertThat(text(pdf, 1)).contains("DO NOT ROTATE");
+        assertThat(text(pdf, 1)).contains("KHÔNG XOAY / DO NOT ROTATE");
     }
 
     @Test
     @DisplayName("Vietnamese names and addresses are drawn with their diacritics")
     void vietnameseText() throws IOException {
         byte[] pdf = ShippingLabelSheet.render(fonts, List.of(label("LPN-20261113-000001")));
-        assertThat(text(pdf, 1)).contains("Lê Lợi").contains("Bến Nghé").contains("Đường Số 7");
+        assertThat(text(pdf, 1)).contains("Lê Lợi").contains("Sài Gòn").contains("Đường Số 7");
     }
 
     @Test

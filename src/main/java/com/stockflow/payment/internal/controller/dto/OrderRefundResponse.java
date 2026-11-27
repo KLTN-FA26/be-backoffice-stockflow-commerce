@@ -19,8 +19,17 @@ public record OrderRefundResponse(UUID orderId, @Schema(example = "SO-20261108-0
                                           + "một phần), REFUNDED (đã hoàn) - computed, never stored",
                                           allowableValues = {"NONE", "PENDING", "PARTIALLY_REFUNDED", "REFUNDED"})
                                   String refundStatus,
-                                  BigDecimal refundable, BigDecimal refunded, BigDecimal remaining,
-                                  List<Settlement> settlements, List<RefundRecordResponse> records) {
+                                  BigDecimal refundable, BigDecimal refunded,
+                                  @Schema(description = "refundable - refunded, never below zero: what the seller "
+                                          + "still owes the customer. The order does not close while it is above "
+                                          + "zero (TT-4)")
+                                  BigDecimal remaining,
+                                  List<Settlement> settlements, List<RefundRecordResponse> records,
+                                  @Schema(description = "WF-05 BE-51: what the order's fee items still owe - a "
+                                          + "cancellation fee a closure left - shown beside the refund so it is "
+                                          + "settled before the money goes out (docs 17 §4.10). Not taken off "
+                                          + "remaining; 0 for none")
+                                  BigDecimal feeOwed) {
 
     /**
      * One cancellation or closure: the money it found, the fee and how it was paid.
@@ -28,10 +37,28 @@ public record OrderRefundResponse(UUID orderId, @Schema(example = "SO-20261108-0
      * @param feeItemId the cancellation fee item the shortfall became (pay it like an installment); null when none
      */
     public record Settlement(UUID settlementId,
-                             @Schema(allowableValues = {"ORDER_CANCELLED", "REMAINDER_CLOSED"}) String kind,
+                             @Schema(description = "ORDER_CANCELLED (the order cancelled), REMAINDER_CLOSED (its "
+                                     + "rest closed), GOODS_RETURNED (a customer's return refunded), SHIPMENT_RETURNED "
+                                     + "(a shipment the carrier brought back, settled at its return receipt, or "
+                                     + "lost, WF-05 Q-2)", allowableValues = {"ORDER_CANCELLED", "REMAINDER_CLOSED",
+                                     "GOODS_RETURNED", "SHIPMENT_RETURNED"}) String kind,
                              BigDecimal collected, BigDecimal closed, BigDecimal reduced, BigDecimal surplus,
                              BigDecimal fee, BigDecimal feePercent, String feeReason, String feeDetail,
                              BigDecimal feeCovered, BigDecimal refundable, BigDecimal feeOwed, UUID feeItemId,
-                             Instant settledAt) {
+                             Instant settledAt,
+                             @Schema(description = "SHIPMENT_RETURNED: the shipment brought back or lost; null "
+                                     + "otherwise") UUID shipmentId,
+                             @Schema(description = "The part of closed that is the order's shipping fee waived, "
+                                     + "whole dong (WF-05 Q-19). SHIPMENT_RETURNED: the fee in proportion to the "
+                                     + "shipment's goods of the order's goods, or all that is left of it when the order "
+                                     + "ends with nothing delivered; REMAINDER_CLOSED: what the shipments brought back "
+                                     + "left of it, when the closure ends the order with nothing delivered; 0 otherwise")
+                             BigDecimal shippingFeeWaived,
+                             @Schema(description = "REMAINDER_CLOSED: what the installments paid before delivery of "
+                                     + "the batches the closure closed whole still owed above the goods closed - their "
+                                     + "share of the plate and shipping fees - moved onto the closure's fee item "
+                                     + "(feeItemId), due from the closure's day (audit r3 LM-3). Part of reduced; owed "
+                                     + "on the fee item beside feeOwed. 0 otherwise")
+                             BigDecimal carriedToFee) {
     }
 }

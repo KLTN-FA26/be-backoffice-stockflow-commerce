@@ -8,8 +8,10 @@ import com.stockflow.common.id.Identifiers;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -228,13 +230,13 @@ public final class Conversation extends AggregateRoot {
         requireNotClosed();
         Objects.requireNonNull(agentId, "agentId");
         if (agentId.equals(assignedAgentId)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The conversation is already theirs");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The conversation is already theirs").localized("refusal.chat.alreadyTheirs");
         }
         UUID previous = assignedAgentId;
         if (previous == null) {
             if (!by.supervisor()) {
                 throw new BusinessException(ErrorCode.CHAT_NOT_ASSIGNEE,
-                        "Only a chat supervisor assigns a conversation; take it yourself instead");
+                        "Only a chat supervisor assigns a conversation; take it yourself instead").localized("refusal.chat.supervisorAssigns");
             }
         } else if (!by.supervisor() && !previous.equals(by.userId())) {
             throw new BusinessException(ErrorCode.CHAT_NOT_ASSIGNEE);
@@ -372,24 +374,24 @@ public final class Conversation extends AggregateRoot {
      */
     public void changeStatus(Actor by, ConversationStatus target, String reason, Instant now, Duration reopenWindow) {
         requireStaff(by);
-        if (target == null || target.isInitial() || target == ConversationStatus.REOPENED
-                || target == ConversationStatus.AUTO_CLOSED || target == ConversationStatus.CLOSED) {
+        if (!askedForByHand(target)) {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED,
-                    "A conversation is not moved to " + target + " by hand");
+                    "A conversation is not moved to " + target + " by hand").localized("refusal.chat.notByHand", target);
         }
         if (!status.canMoveTo(target)) {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED,
-                    status + " -> " + target + " is not a move of the conversation (16 §5)");
+                    status + " -> " + target + " is not a move of the conversation (16 §5)")
+                    .localized("refusal.chat.notAMove", status, target);
         }
         if (status == ConversationStatus.ESCALATED && !by.supervisor()) {
             throw new BusinessException(ErrorCode.CHAT_NOT_ASSIGNEE,
-                    "An escalated conversation is the chat supervisor's to take further");
+                    "An escalated conversation is the chat supervisor's to take further").localized("refusal.chat.escalatedSupervisor");
         }
         requireInCharge(by);
         String why = reason == null || reason.isBlank() ? null : reason.strip();
         if (target == ConversationStatus.ESCALATED) {
             if (why == null) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Say why the conversation is escalated");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Say why the conversation is escalated").localized("refusal.chat.escalationReason");
             }
             escalationReason = why.length() > 1000 ? why.substring(0, 1000) : why;
         }
@@ -418,7 +420,7 @@ public final class Conversation extends AggregateRoot {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED, status + " -> CLOSED (16 §5)");
         }
         if (reopensAt(now)) {
-            throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED, "The reopen window is still open");
+            throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED, "The reopen window is still open").localized("refusal.chat.reopenWindowOpen");
         }
         closedAt = now;
         move(ConversationStatus.CLOSED, Actor.system(), now, null);
@@ -498,7 +500,7 @@ public final class Conversation extends AggregateRoot {
      */
     public void rate(Actor customer, int score, String comment, Instant now) {
         if (!customer.isCustomer()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the customer rates the conversation");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the customer rates the conversation").localized("refusal.chat.customerRates");
         }
         if (csatSubmittedAt != null) {
             throw new BusinessException(ErrorCode.CHAT_CSAT_ALREADY_GIVEN);
@@ -507,12 +509,12 @@ public final class Conversation extends AggregateRoot {
             throw new BusinessException(ErrorCode.CHAT_CSAT_NOT_OPEN);
         }
         if (score < 1 || score > 5) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A rating is 1 to 5 stars");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A rating is 1 to 5 stars").localized("refusal.chat.ratingRange");
         }
         String said = comment == null || comment.isBlank() ? null : SensitiveData.mask(comment.strip());
         if (said != null && said.length() > MAX_CSAT_COMMENT) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "A comment is at most " + MAX_CSAT_COMMENT + " characters");
+                    "A comment is at most " + MAX_CSAT_COMMENT + " characters").localized("refusal.chat.commentTooLong", MAX_CSAT_COMMENT);
         }
         csatScore = score;
         csatComment = said;
@@ -532,6 +534,46 @@ public final class Conversation extends AggregateRoot {
             throw new BusinessException(ErrorCode.CHAT_CONVERSATION_ENDED);
         }
         requireInCharge(agent);
+    }
+
+    /**
+     * Whether {@code agent} may act for the conversation towards the customer now - answer it, send transfer details,
+     * act on a card: what {@link #acceptAgentMessage} and {@link #requireInCharge(Actor, boolean)} (not even if ended)
+     * accept. Asked by the views so a client never offers what these would refuse with {@code CHAT_NOT_ASSIGNEE}.
+     */
+    public boolean answerableBy(Actor agent) {
+        return agent.isStaff() && !status.isEnded() && inCharge(agent);
+    }
+
+    /** Whether {@code agent} may take the conversation now: what {@link #claim} accepts. */
+    public boolean claimableBy(Actor agent) {
+        return agent.isStaff() && status != ConversationStatus.CLOSED && assignedAgentId == null;
+    }
+
+    /**
+     * Whether {@code by} may hand the conversation to someone: what {@link #handTo} accepts of the person asking - a
+     * supervisor always, the agent in charge their own. Whom it goes to is checked when they ask.
+     */
+    public boolean assignableBy(Actor by) {
+        return by.isStaff() && status != ConversationStatus.CLOSED && inCharge(by);
+    }
+
+    /**
+     * The statuses {@code by} may ask for from here ({@link #changeStatus}): the moves of 16 §5 that are asked for by
+     * hand, and none unless they are in charge - an escalated conversation only for a supervisor. Empty for anyone
+     * else, so the views offer exactly what {@code changeStatus} accepts.
+     */
+    public Set<ConversationStatus> movesOpenTo(Actor by) {
+        if (!by.isStaff() || (status == ConversationStatus.ESCALATED && !by.supervisor()) || !inCharge(by)) {
+            return Set.of();
+        }
+        Set<ConversationStatus> open = EnumSet.noneOf(ConversationStatus.class);
+        for (ConversationStatus target : status.next()) {
+            if (askedForByHand(target)) {
+                open.add(target);
+            }
+        }
+        return Set.copyOf(open);
     }
 
     /** Whether the first answer is late: none came, and it was due before {@code now} (BR-09). */
@@ -558,7 +600,8 @@ public final class Conversation extends AggregateRoot {
     private void move(ConversationStatus target, Actor by, Instant now, String note) {
         if (!status.canMoveTo(target)) {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED,
-                    status + " -> " + target + " is not a move of the conversation (16 §5)");
+                    status + " -> " + target + " is not a move of the conversation (16 §5)")
+                    .localized("refusal.chat.notAMove", status, target);
         }
         ConversationStatus from = status;
         status = target;
@@ -596,17 +639,25 @@ public final class Conversation extends AggregateRoot {
     }
 
     private void requireInCharge(Actor agent) {
-        if (agent.supervisor()) {
-            return;
-        }
-        if (assignedAgentId == null || !assignedAgentId.equals(agent.userId())) {
+        if (!inCharge(agent)) {
             throw new BusinessException(ErrorCode.CHAT_NOT_ASSIGNEE);
         }
     }
 
+    /** The agent in charge, or a supervisor: who answers the customer and moves the conversation along. */
+    private boolean inCharge(Actor agent) {
+        return agent.supervisor() || (assignedAgentId != null && assignedAgentId.equals(agent.userId()));
+    }
+
+    /** NEW, QUEUED, ASSIGNED, REOPENED, AUTO_CLOSED and CLOSED are reached by other methods, never asked for. */
+    private static boolean askedForByHand(ConversationStatus target) {
+        return target != null && !target.isInitial() && target != ConversationStatus.REOPENED
+                && target != ConversationStatus.AUTO_CLOSED && target != ConversationStatus.CLOSED;
+    }
+
     private void requireStaff(Actor actor) {
         if (!actor.isStaff()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "This is the staff's to do");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "This is the staff's to do").localized("refusal.chat.staffAction");
         }
     }
 
@@ -619,7 +670,7 @@ public final class Conversation extends AggregateRoot {
     private void requireStatus(ConversationStatus expected) {
         if (status != expected) {
             throw new BusinessException(ErrorCode.CHAT_TRANSITION_NOT_ALLOWED,
-                    "Expected a " + expected + " conversation, it is " + status);
+                    "Expected a " + expected + " conversation, it is " + status).localized("refusal.chat.expectedStatus", expected, status);
         }
     }
 

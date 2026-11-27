@@ -75,9 +75,14 @@ class QuoteServiceTest {
             mock(com.stockflow.order.internal.domain.TaxRates.class);
     private final com.stockflow.order.internal.domain.SkuProductionHistory production =
             mock(com.stockflow.order.internal.domain.SkuProductionHistory.class);
+    private final com.stockflow.identity.api.IdentityService identities =
+            mock(com.stockflow.identity.api.IdentityService.class);
+    private final com.stockflow.order.internal.domain.QuotePriceReviews priceReviews =
+            mock(com.stockflow.order.internal.domain.QuotePriceReviews.class);
     private final QuoteService service = new QuoteService(quotes, search, customers, units, quotedOrders,
             orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, events, products, customerSkus,
-            taxRates, production);
+            taxRates, production, mock(com.stockflow.design.api.SkuDesigns.class), identities,
+            new LineNames(products, customerSkus), priceReviews, BigDecimal.TEN);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
@@ -97,8 +102,10 @@ class QuoteServiceTest {
                 customer, QuoteStatus.SENT, 1, NOW.plusSeconds(3600), NOW, null, NOW, "sales", 7)));
         when(search.history(any())).thenReturn(List.of());
         ownedByTheCustomer(SKU);
-        // 4B-3: the products are STANDARD (10%) unless a test says otherwise; every SKU was produced before.
-        when(taxRates.all()).thenReturn(Map.of("STANDARD", new BigDecimal("10.00"), "REDUCED", new BigDecimal("5.00"),
+        standardPriceOfOne(customerSkus, catalog);
+        // 4B-3: the products are STANDARD (10%) unless a test says otherwise; every SKU was produced before. HĐ-7: the
+        // rates of the quote's own day, whatever day that is here.
+        when(taxRates.onDay(any())).thenReturn(Map.of("STANDARD", new BigDecimal("10.00"), "REDUCED", new BigDecimal("5.00"),
                 "EXEMPT", new BigDecimal("0.00")));
         when(products.taxClassesOf(anyCollection())).thenAnswer(call -> {
             Map<String, com.stockflow.product.api.TaxClass> classes = new java.util.HashMap<>();
@@ -113,20 +120,38 @@ class QuoteServiceTest {
             Map<String, List<UomConversion>> declared = new java.util.HashMap<>();
             for (Object sku : (java.util.Collection<?>) call.getArgument(0)) {
                 String code = ((Sku) sku).code();
-                declared.put(code, List.of(unit(code, UUID.randomUUID(), "EACH", 1, true),
-                        unit(code, code.equals(SKU) ? CARTON : UUID.nameUUIDFromBytes(code.getBytes()), "CARTON", 50,
-                                false)));
+                declared.put(code, List.of(
+                        unit(code, code.equals(SKU) ? CARTON : UUID.nameUUIDFromBytes(code.getBytes()), "CARTON", 50)));
             }
             return declared;
         });
     }
 
-    private static UomConversion unit(String sku, UUID id, String code, int factor, boolean base) {
-        return new UomConversion(id, sku, code, factor, base, null, null, null, null, false, true, 0, !base);
+    private static UomConversion unit(String sku, UUID id, String code, int factor) {
+        return new UomConversion(id, sku, code, factor, null, null, null, null, true, 0);
     }
 
     /** The customer's own SKUs, as {@code CustomerSkus.ownersOf} answers them. */
     private final Map<String, UUID> owned = new java.util.HashMap<>();
+
+    /**
+     * 14 BR-10: every SKU here is drawn on a variant whose standard price is 1 VND a piece from 1 carton, so a quote
+     * priced as these tests price it is sent rather than held for the Sales Manager - QuotePriceReviewTest holds them.
+     */
+    static void standardPriceOfOne(com.stockflow.product.api.CustomerSkus customerSkus,
+                                   com.stockflow.catalog.api.CatalogService catalog) {
+        org.mockito.Mockito.lenient().when(customerSkus.sourceSkusOf(org.mockito.ArgumentMatchers.anyCollection()))
+                .thenAnswer(call -> {
+                    Map<String, String> found = new java.util.HashMap<>();
+                    for (Object code : (java.util.Collection<?>) call.getArgument(0)) {
+                        found.put((String) code, "BASE-VARIANT");
+                    }
+                    return found;
+                });
+        org.mockito.Mockito.lenient().when(catalog.standardPrice("BASE-VARIANT")).thenReturn(Optional.of(
+                new com.stockflow.catalog.api.PriceSchedule("BASE-VARIANT", 1, List.of(
+                        new com.stockflow.catalog.api.PriceSchedule.Tier(1, com.stockflow.common.domain.Money.vnd(1))))));
+    }
 
     private void ownedByTheCustomer(String sku) {
         owned.put(sku, customer);
@@ -206,8 +231,7 @@ class QuoteServiceTest {
         assertThatThrownBy(() -> service.create(sales, create("CUP-PP-500", 20, tiers)))
                 .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.CUSTOMER_SKU_REQUIRED);
         ownedByTheCustomer("LY16-ACME-01");
-        when(units.conversionsOf(anyCollection())).thenReturn(Map.of("LY16-ACME-01",
-                List.of(unit("LY16-ACME-01", UUID.randomUUID(), "EACH", 1, true))));
+        when(units.conversionsOf(anyCollection())).thenReturn(Map.of());
         assertThatThrownBy(() -> service.create(sales, create("LY16-ACME-01", 20, tiers)))
                 .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.CARTON_SPEC_MISSING);
         verify(quotes, never()).save(any());
@@ -217,10 +241,11 @@ class QuoteServiceTest {
     void aLineStartsFromTheCustomersOwnPrice() {
         when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
         when(quotes.nextNumber(any())).thenReturn("QT-9");
-        // No price of the customer's own - and there is no other (13 BR-04): Sales enters the tiers.
+        // Neither a price of the customer's own nor a standard price behind the SKU (13 BR-04): Sales enters the tiers.
+        when(catalog.standardPrice("BASE-VARIANT")).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.create(sales, create(SKU, 20, null))).as("nothing to start from")
                 .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        verify(catalog).customerPrice(customer, SKU);
+        verify(catalog, org.mockito.Mockito.atLeastOnce()).customerPrice(customer, SKU);
 
         when(catalog.customerPrice(customer, SKU)).thenReturn(Optional.of(new PriceSchedule(SKU,
                 10, List.of(new PriceSchedule.Tier(10, Money.vnd(2100)),
@@ -399,6 +424,27 @@ class QuoteServiceTest {
     }
 
     @Test
+    void aQuoteTakesTheRatesInForceOnTheDayItIsDrawnUpNotTheClassesOwn() {
+        // HĐ-7: NĐ 174/2025 reduces STANDARD to 8% through 2026; NOW is 14/10/2026 in Vietnam.
+        when(taxRates.onDay(java.time.LocalDate.of(2026, 10, 14))).thenReturn(Map.of("STANDARD",
+                new BigDecimal("8.00"), "REDUCED", new BigDecimal("5.00"), "EXEMPT", new BigDecimal("0.00")));
+        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
+        when(quotes.nextNumber(any())).thenReturn("QT-9");
+        when(production.producedBefore(anyCollection())).thenReturn(Set.of());
+
+        Quotes.QuoteView view = service.create(sales, createWithFees(List.of(
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.PLATE_FEE, SKU, new BigDecimal("500000")),
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, new BigDecimal("300000")))));
+
+        assertThat(view.lines().getFirst().taxRate()).isEqualByComparingTo("8");
+        assertThat(view.fees()).extracting(Quotes.FeeView::taxRate).allSatisfy(rate ->
+                assertThat(rate).isEqualByComparingTo("8"));
+        // 2,000,000 of goods + 800,000 of fees at 8%: 160,000 + 40,000 + 24,000.
+        assertThat(view.proposed().tax()).isEqualByComparingTo("224000");
+        verify(taxRates).onDay(java.time.LocalDate.of(2026, 10, 14));
+    }
+
+    @Test
     void aPlateFeeIsForAFirstProductionOfASkuOnTheQuoteAndThereIsOneShippingFeeAtMost() {
         when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.create(sales, createWithFees(List.of(
@@ -442,5 +488,141 @@ class QuoteServiceTest {
         assertThat(placed.getValue().fees()).extracting(PlaceOrderCommand.Fee::kind, f -> f.amount().amount().longValue())
                 .containsExactly(org.assertj.core.groups.Tuple.tuple(com.stockflow.order.api.FeeKind.PLATE_FEE, 500_000L),
                         org.assertj.core.groups.Tuple.tuple(com.stockflow.order.api.FeeKind.SHIPPING_FEE, 300_000L));
+    }
+
+    @Test
+    void theCustomersListReadsTheSentValidityOfEveryRevisingRowInOneStatement() {
+        UUID revisingA = UUID.randomUUID();
+        UUID revisingB = UUID.randomUUID();
+        UUID sent = UUID.randomUUID();
+        Instant draftValidity = NOW.plusSeconds(86_400);
+        when(search.search(any(), any())).thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(
+                new QuoteSearch.Row(revisingA, "QT-A", customer, QuoteStatus.DRAFT, 2, draftValidity, NOW, null, NOW,
+                        "sales", 3),
+                new QuoteSearch.Row(revisingB, "QT-B", customer, QuoteStatus.DRAFT, 3, draftValidity, NOW, null, NOW,
+                        "sales", 5),
+                new QuoteSearch.Row(sent, "QT-C", customer, QuoteStatus.SENT, 1, draftValidity, NOW, null, NOW,
+                        "sales", 1))));
+        when(search.lastSentValidUntil(anyCollection())).thenReturn(Map.of(revisingA, NOW.plusSeconds(60),
+                revisingB, NOW.plusSeconds(120)));
+
+        List<Quotes.Row> rows = service.list(portal, new Quotes.Criteria(null, null, null, 0, 20, null)).items();
+
+        assertThat(rows).extracting(Quotes.Row::status).containsExactly(QuoteStatus.CHANGES_REQUESTED,
+                QuoteStatus.CHANGES_REQUESTED, QuoteStatus.SENT);
+        assertThat(rows).extracting(Quotes.Row::validUntil).containsExactly(NOW.plusSeconds(60), NOW.plusSeconds(120),
+                draftValidity);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Collection<UUID>> asked = ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(search).lastSentValidUntil(asked.capture());
+        assertThat(asked.getValue()).containsExactlyInAnyOrder(revisingA, revisingB);
+        // Nothing per row: no history and no quote loaded for a listed quote.
+        verify(search, never()).history(any());
+        verify(quotes, never()).findById(any());
+
+        service.list(sales, new Quotes.Criteria(null, null, null, 0, 20, null));
+        verify(search).lastSentValidUntil(any());   // staff list nothing as revising: still the one call above
+    }
+
+    @Test
+    void eachLineSaysWhetherItsSkuMayStillBeQuotedAskedOnceForTheWholeQuote() {
+        String stopped = "LY16-ACME-02";
+        ownedByTheCustomer(stopped);
+        Quote quote = stored(QuoteStatus.ACCEPTED, new Quote.Offer(NOW.plusSeconds(3600), null,
+                List.of(line(1, SKU, 20, 20, Money.vnd(2000)), line(2, stopped, 20, 20, Money.vnd(2000)))));
+        when(products.purchasability(anyCollection())).thenReturn(Map.of(SKU, com.stockflow.product.api.Purchasability
+                .PURCHASABLE, stopped, com.stockflow.product.api.Purchasability.PRODUCT_DISCONTINUED));
+
+        Quotes.QuoteView view = service.get(sales, quote.id());
+
+        assertThat(view.lines()).extracting(Quotes.LineView::purchasability).containsExactly(
+                com.stockflow.product.api.Purchasability.PURCHASABLE,
+                com.stockflow.product.api.Purchasability.PRODUCT_DISCONTINUED);
+        verify(products).purchasability(anyCollection());
+    }
+
+    @Test
+    void theCustomersHistoryHasNoDraftRowNoAccountAndOnlyTheirOwnWords() {
+        Quote quote = stored(QuoteStatus.CANCELLED);
+        UUID orderNumberHolder = UUID.randomUUID();
+        when(search.history(quote.id())).thenReturn(List.of(
+                new QuoteSearch.Transition(1, null, QuoteStatus.DRAFT, null, null, NOW, sales.userId()),
+                new QuoteSearch.Transition(1, QuoteStatus.DRAFT, QuoteStatus.SENT, null, null, NOW, sales.userId()),
+                new QuoteSearch.Transition(1, QuoteStatus.SENT, QuoteStatus.CHANGES_REQUESTED, "cheaper please",
+                        null, NOW, portalUser),
+                new QuoteSearch.Transition(2, QuoteStatus.CHANGES_REQUESTED, QuoteStatus.DRAFT, null, null, NOW,
+                        sales.userId()),
+                new QuoteSearch.Transition(2, QuoteStatus.DRAFT, QuoteStatus.CANCELLED, "internal: margin too low",
+                        null, NOW, orderNumberHolder)));
+
+        Quotes.QuoteView mine = service.get(portal, quote.id());
+        assertThat(mine.history()).extracting(Quotes.Transition::toStatus).containsExactly(QuoteStatus.SENT,
+                QuoteStatus.CHANGES_REQUESTED, QuoteStatus.CANCELLED);
+        assertThat(mine.history()).extracting(Quotes.Transition::reason).containsExactly(null, "cheaper please", null);
+        assertThat(mine.history()).extracting(Quotes.Transition::changedBy).containsOnlyNulls();
+
+        Quotes.QuoteView staff = service.get(sales, quote.id());
+        assertThat(staff.history()).hasSize(5);
+        assertThat(staff.history().getLast().reason()).isEqualTo("internal: margin too low");
+        assertThat(staff.history().getFirst().changedBy()).isEqualTo(sales.userId());
+    }
+
+    @Test
+    void aRowNamesItsCustomerAndTheOrderItBecameReadOnceForThePageAndNotADraftOrderToTheCustomer() {
+        UUID confirmed = UUID.randomUUID();
+        UUID drafted = UUID.randomUUID();
+        when(search.search(any(), any())).thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(
+                new QuoteSearch.Row(UUID.randomUUID(), "QT-A", customer, QuoteStatus.CONVERTED, 1, NOW, NOW, confirmed,
+                        NOW, "sales", 3),
+                new QuoteSearch.Row(UUID.randomUUID(), "QT-B", customer, QuoteStatus.CONVERTED, 1, NOW, NOW, drafted,
+                        NOW, "sales", 3),
+                new QuoteSearch.Row(UUID.randomUUID(), "QT-C", customer, QuoteStatus.SENT, 1, NOW.plusSeconds(60), NOW,
+                        null, NOW, "sales", 1))));
+        when(customers.labels(anyCollection())).thenReturn(Map.of(customer,
+                new com.stockflow.customer.api.CustomerLabel(customer, "Acme Coffee", "ACME")));
+        when(search.convertedOrders(anyCollection())).thenReturn(Map.of(
+                confirmed, new QuoteSearch.ConvertedOrderRef(confirmed, "SO-1", "CONFIRMED"),
+                drafted, new QuoteSearch.ConvertedOrderRef(drafted, "SO-2", "DRAFT")));
+
+        List<Quotes.Row> staff = service.list(sales, new Quotes.Criteria(null, null, null, 0, 20, null)).items();
+
+        assertThat(staff).extracting(Quotes.Row::customerName).containsOnly("Acme Coffee");
+        assertThat(staff).extracting(Quotes.Row::customerCode).containsOnly("ACME");
+        assertThat(staff).extracting(Quotes.Row::convertedOrderNumber).containsExactly("SO-1", "SO-2", null);
+        // One read of each for the page, never one per row.
+        verify(customers).labels(anyCollection());
+        verify(search).convertedOrders(anyCollection());
+
+        List<Quotes.Row> mine = service.list(portal, new Quotes.Criteria(null, null, null, 0, 20, null)).items();
+        assertThat(mine).extracting(Quotes.Row::convertedOrderNumber).containsExactly("SO-1", null, null);
+    }
+
+    @Test
+    void aQuoteNamesItsCustomerAndEachSkuForEveryoneAndWhoSentAndAnsweredItForTheBackOfficeOnly() {
+        Quote quote = stored(QuoteStatus.ACCEPTED);
+        when(customers.labels(anyCollection())).thenReturn(Map.of(customer,
+                new com.stockflow.customer.api.CustomerLabel(customer, "Acme Coffee", "ACME")));
+        when(identities.displayNames(anyCollection())).thenReturn(Map.of(sales.userId(), "Sales Person",
+                portalUser, "Portal Buyer"));
+        when(products.variantNamesOf(anyCollection())).thenReturn(Map.of(SKU, "Cup 12oz Acme"));
+        when(products.nameForSku(SKU)).thenReturn(Optional.of("Paper cup 12oz"));
+
+        Quotes.QuoteView staff = service.get(sales, quote.id());
+
+        assertThat(staff.customerName()).isEqualTo("Acme Coffee");
+        assertThat(staff.customerCode()).isEqualTo("ACME");
+        assertThat(staff.sentByName()).isEqualTo("Sales Person");
+        assertThat(staff.respondedByName()).isEqualTo("Portal Buyer");
+        assertThat(staff.lines()).extracting(Quotes.LineView::productName).containsExactly("Paper cup 12oz");
+        assertThat(staff.lines()).extracting(Quotes.LineView::variantName).containsExactly("Cup 12oz Acme");
+        // Every account the view names, in one read.
+        verify(identities).displayNames(anyCollection());
+
+        Quotes.QuoteView mine = service.get(portal, quote.id());
+        assertThat(mine.customerName()).isEqualTo("Acme Coffee");
+        assertThat(mine.sentByName()).isNull();
+        assertThat(mine.respondedByName()).isNull();
+        assertThat(mine.lines()).extracting(Quotes.LineView::productName).containsExactly("Paper cup 12oz");
+        verify(identities).displayNames(anyCollection());   // the customer's copy asked for no name
     }
 }

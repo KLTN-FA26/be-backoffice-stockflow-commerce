@@ -3,6 +3,7 @@ package com.stockflow.inventory.internal.domain;
 import com.stockflow.inventory.internal.domain.CartonFit.Carton;
 import com.stockflow.inventory.internal.domain.CartonFit.Space;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Bin;
+import com.stockflow.inventory.internal.domain.PutawayRanker.Lot;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Need;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Reason;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * kltn-docs 05 BR-03 / BR-04 and 06 §4.4 (team plan 5-4): a bin is suggested when the carton fits it dimension by
@@ -176,5 +178,93 @@ class PutawayRankerTest {
     @DisplayName("a carton nobody measured takes no volume and is not judged by size")
     void unmeasuredCarton() {
         assertThat(PutawayRanker.fits(Need.UNMEASURED, bin("B", "1"), holding("1"))).isTrue();
+    }
+
+    private static final Need BIG = new Need(new Carton(new BigDecimal("120"), new BigDecimal("40"),
+            new BigDecimal("30"), true), new BigDecimal("5"));
+
+    private static List<Need> three() {
+        return List.of(CARTON, CARTON, CARTON);
+    }
+
+    @Test
+    @DisplayName("11 §4.1: one carton of the group too big for the bin excludes the bin")
+    void oneCartonTooBigExcludesTheBin() {
+        List<Need> group = List.of(CARTON, BIG);
+        Bin bin = bin("B", "1");
+        assertThat(PutawayRanker.rank(group, Lot.of(group), List.of(bin), Map.of())).isEmpty();
+        assertThat(PutawayRanker.refusal(group, bin, Occupancy.EMPTY)).isEqualTo(Refusal.DOES_NOT_FIT);
+    }
+
+    @Test
+    @DisplayName("11 §4.1: the group's summed volume must fit the free room")
+    void summedVolumeOverFreeRoomExcludesTheBin() {
+        List<Need> group = three();
+        Bin bin = bin("B", "1");
+        assertThat(PutawayRanker.rank(group, Lot.of(group), List.of(bin), Map.of("B", holding("0.83")))).isEmpty();
+        assertThat(PutawayRanker.refusal(group, bin, holding("0.83"))).isEqualTo(Refusal.NO_ROOM);
+        List<Suggestion> out = PutawayRanker.rank(group, Lot.of(group), List.of(bin), Map.of("B", holding("0.82")));
+        assertThat(out).singleElement().satisfies(s ->
+                assertThat(s.freeVolumeM3()).isEqualByComparingTo("0.18"));
+    }
+
+    @Test
+    @DisplayName("11 §4.1: the group's summed weight must stay within the bin's limit")
+    void summedWeightOverLimitExcludesTheBin() {
+        List<Need> group = three();
+        Bin bin = new Bin("W", CUBE, null, new BigDecimal("20"));
+        Map<String, Occupancy> heavy = Map.of("W", new Occupancy(1, BigDecimal.ZERO, new BigDecimal("6"), false, false));
+        Map<String, Occupancy> light = Map.of("W", new Occupancy(1, BigDecimal.ZERO, new BigDecimal("5"), false, false));
+        assertThat(PutawayRanker.rank(group, Lot.of(group), List.of(bin), heavy)).isEmpty();
+        assertThat(PutawayRanker.refusal(group, bin, heavy.get("W"))).isEqualTo(Refusal.NO_ROOM);
+        assertThat(PutawayRanker.rank(group, Lot.of(group), List.of(bin), light)).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("docs#46: a bin that does not hold every lot of the group is SAME_SKU, not SAME_LOT")
+    void mixedLotsAreNotSameLot() {
+        List<Need> group = three();
+        Occupancy occ = new Occupancy(1, new BigDecimal("0.1"), BigDecimal.ZERO, true, false);
+        assertThat(PutawayRanker.rank(group, Lot.of(group), List.of(bin("B", "1")), Map.of("B", occ)))
+                .singleElement().satisfies(s -> assertThat(s.reason()).isEqualTo(Reason.SAME_SKU));
+    }
+
+    @Test
+    @DisplayName("a group of one ranks exactly as the single carton, and an unweighed carton is never weighed")
+    void aGroupOfOneRanksAsTheSingleCarton() {
+        List<Bin> bins = List.of(bin("A", "1"), bin("B", "0.5"), bin("C", null), bin("D", "1"), bin("E", "0.2"));
+        Map<String, Occupancy> occ = Map.of(
+                "A", new Occupancy(2, new BigDecimal("0.3"), BigDecimal.ZERO, true, true),
+                "B", holding("0.2"),
+                "C", new Occupancy(3, new BigDecimal("5"), BigDecimal.ZERO, true, false),
+                "D", new Occupancy(1, new BigDecimal("0.1"), BigDecimal.ZERO, false, false),
+                "E", holding("0.15"));
+        assertThat(PutawayRanker.rank(List.of(CARTON), Lot.of(CARTON), bins, occ))
+                .isEqualTo(PutawayRanker.rank(CARTON, Lot.of(CARTON), bins, occ));
+
+        Need unweighed = new Need(CARTON.carton(), null);
+        Bin limited = new Bin("L", CUBE, null, new BigDecimal("10"));
+        Map<String, Occupancy> over = Map.of("L", new Occupancy(20, BigDecimal.ZERO, new BigDecimal("12"), false, false));
+        assertThat(PutawayRanker.rank(List.of(unweighed), Lot.of(unweighed), List.of(limited), over)).hasSize(1);
+        assertThat(PutawayRanker.rank(unweighed, Lot.of(unweighed), List.of(limited), over)).hasSize(1);
+        assertThat(PutawayRanker.refusal(List.of(unweighed), limited, over.get("L"))).isNull();
+    }
+
+    @Test
+    @DisplayName("11 §4.1: empty bins are ranked by what takes the group's total, those that do not are excluded")
+    void emptyBinsRankedByTheGroupTotal() {
+        List<Need> group = three();
+        List<Bin> bins = List.of(bin("S", "0.15"), bin("M", "0.2"), bin("L", "1"));
+        assertThat(codes(PutawayRanker.rank(group, Lot.of(group), bins, Map.of()))).containsExactly("M", "L");
+    }
+
+    @Test
+    @DisplayName("an empty group is refused: every bin would take it")
+    void anEmptyGroupIsRefused() {
+        List<Bin> bins = List.of(bin("B1", "1"));
+        assertThatThrownBy(() -> PutawayRanker.rank(List.of(), Lot.of(CARTON), bins, Map.of()))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("at least one carton");
+        assertThatThrownBy(() -> PutawayRanker.refusal(List.of(), bins.get(0), Occupancy.EMPTY))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("at least one carton");
     }
 }

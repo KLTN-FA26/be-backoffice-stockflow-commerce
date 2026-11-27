@@ -23,7 +23,6 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -100,7 +99,12 @@ class InventoryCatalogIntegrationTest {
         assertThat(jdbc.queryForMap("select * from catalog.catalog_entry where sku=?", f.sku())).isEqualTo(entry);
     }
 
-    record Fixture(UUID product, UUID skuId, String sku, UUID itemId) {}
+    /**
+     * A catalogue product and its variant ({@code sku}, what the catalog lists), and a customer's SKU drawn on it
+     * ({@code stockSku}) with the inventory item an order of it made (owner decisions Q4, Q5, V20270105000100): a
+     * catalogue variant has no item and holds no stock, so what is stocked and described is the customer's SKU.
+     */
+    record Fixture(UUID product, UUID skuId, String sku, String stockSku, UUID itemId) {}
 
     int write(String sql, Object... args) {
         return transactions.execute(status -> jdbc.update(sql, args));
@@ -121,14 +125,14 @@ class InventoryCatalogIntegrationTest {
         write(
                 """
 insert into product.products(id,code,name,name_en,tax_class,slug,status,submitted_by,submitted_at,approved_by,approved_at,discontinued_at,
-                             brand_id,discontinue_reason)
-values (?,?,?,'Furniture','STANDARD',?,?,md5('demo:user:editor')::uuid,now(),
+                             discontinue_reason)
+values (?,?,?,'Paper cup','STANDARD',?,?,md5('demo:user:editor')::uuid,now(),
         md5('demo:user:approver')::uuid,now(),case when ?='DISCONTINUED' then now() end,
-        md5('demo:brand:NHAXINH')::uuid,case when ?='DISCONTINUED' then 'test fixture' end)
+        case when ?='DISCONTINUED' then 'test fixture' end)
 """,
                 product,
                 code,
-                "Test furniture",
+                "Test paper cup",
                 code.toLowerCase(),
                 status,
                 status,
@@ -145,8 +149,11 @@ values (?,?,?,'Furniture','STANDARD',?,?,md5('demo:user:editor')::uuid,now(),
                 sku,
                 product,
                 code);
-        UUID itemId = inventory.itemIdsOf(List.of(code)).get(code);
-        return new Fixture(product, sku, code, itemId);
+        String stockSku = com.stockflow.support.CustomerSkuRows.issueOn(jdbc, transactions,
+                com.stockflow.support.DemoData.CUSTOMER_ID,
+                new com.stockflow.support.ReferenceRows.ProductRow(product, sku, code), 2).sku();
+        UUID itemId = transactions.execute(s -> com.stockflow.support.CartonRows.item(jdbc, stockSku));
+        return new Fixture(product, sku, code, stockSku, itemId);
     }
 
     void gallery(Fixture f) {
@@ -160,26 +167,11 @@ values (?,?,'https://example.test/cover.jpg',true,now(),md5('demo:user:approver'
                 f.skuId());
     }
 
-    /** A row in no carton: only ever an emptied one ({@code quantity} 0) since V20261117000100. */
-    UUID stock(Fixture f, int quantity, Instant receipt) {
-        UUID id = UUID.randomUUID();
-        write(
-                """
-insert into inventory.stock_item(id,sku,location_code,lot_number,on_hand,reserved,status,received_at,created_at)
-values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
-""",
-                id,
-                f.sku(),
-                quantity,
-                receipt == null ? null : Timestamp.from(receipt));
-        return id;
-    }
-
-    /** One sealed carton of 2 units at HCM-A01-1-A; its stock row's id. */
+    /** One sealed carton of 2 units at HCM-A01-1-A; its id. */
     UUID carton(Fixture f, Instant receipt) {
-        // In a transaction: the pool does not auto-commit, and the carton and its row are checked together at commit.
-        return transactions.execute(status -> com.stockflow.support.CartonRows.stock(jdbc, f.sku(), "HCM-A01-1-A", 1,
-                2, null, receipt)).getFirst().stockItemId();
+        // In a transaction: the pool does not auto-commit.
+        return transactions.execute(status -> com.stockflow.support.CartonRows.stock(jdbc, f.stockSku(), "HCM-A01-1-A", 1,
+                2, null, receipt)).getFirst().id();
     }
 
     /** Describes the item with the logistics it already has: a write that advances the version and nothing else. */
@@ -193,22 +185,25 @@ values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
         var b = fixture("DRAFT");
         Instant received = Instant.parse("2026-01-02T00:00:00Z");
         // Since team plan 4C-2 only whole sealed cartons nothing holds are promised: two free cartons of 2 count; a
-        // held one and cartons not AVAILABLE do not, nor an emptied loose row (no row in no carton holds units since
-        // V20261117000100, ck_stock_item_whole_cartons).
+        // held one - a live allocation names it (ADR-0011) - and cartons not AVAILABLE do not.
         transactions.executeWithoutResult(s -> {
-            com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 2, 2, null, received);
-            UUID held = com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, received)
-                    .getFirst().stockItemId();
-            jdbc.update("update inventory.stock_item set reserved=2 where id=?", held);
+            com.stockflow.support.CartonRows.stock(jdbc, a.stockSku(), "HCM-A01-1-A", 2, 2, null, received);
+            UUID held = com.stockflow.support.CartonRows.stock(jdbc, a.stockSku(), "HCM-A01-1-A", 1, 2, null, received)
+                    .getFirst().id();
+            // Held for an order: one HELD allocation naming the carton is what "taken" is. Any order of the demo will do.
+            jdbc.update("""
+                    insert into inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id,
+                                                             reserved_at, status, sku, cartons, units_per_carton)
+                    select ?, ?, (select id from ordering.customer_order order by id limit 1), ?, ?, now(), 'HELD', ?, 1, 2
+                    """, UUID.randomUUID(), held, UUID.randomUUID(), UUID.randomUUID(), a.stockSku());
             for (String status : List.of("INBOUND", "BLOCKED")) {
-                com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, received, status);
+                com.stockflow.support.CartonRows.stock(jdbc, a.stockSku(), "HCM-A01-1-A", 1, 2, null, received, status);
             }
-            com.stockflow.support.CartonRows.stock(jdbc, b.sku(), "HCM-A01-1-A", 1, 10, null, received, "QUARANTINE");
+            com.stockflow.support.CartonRows.stock(jdbc, b.stockSku(), "HCM-A01-1-A", 1, 2, null, received, "QUARANTINE");
         });
-        stock(a, 0, Instant.parse("2026-01-01T00:00:00Z"));
-        var available = inventory.availableQuantities(Set.of(a.sku(), b.sku(), "MISSING-SKU"));
-        assertThat(available.get(a.sku())).isEqualTo(4L);
-        assertThat(available.getOrDefault(b.sku(), 0L)).isZero();
+        var available = inventory.availableQuantities(Set.of(a.stockSku(), b.stockSku(), "MISSING-SKU"));
+        assertThat(available.get(a.stockSku())).isEqualTo(4L);
+        assertThat(available.getOrDefault(b.stockSku(), 0L)).isZero();
         assertThat(available.getOrDefault("MISSING-SKU", 0L)).isZero();
     }
 
@@ -376,10 +371,15 @@ values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
         }
     }
 
+    /**
+     * The catalogue variant has no inventory item (V20270105000100); the customer's SKU drawn on it has one once
+     * ordered, versioned on its own: describing it moves its version, not the variant's.
+     */
     @Test
-    void canonicalVariantCreatesInventoryItemWithItsOwnVersion() {
+    void anOrderedCustomerSkusItemHasItsOwnVersionAndTheVariantNone() {
         var f = fixture("DRAFT");
         write("update product.variants set status='DRAFT' where id=?", f.skuId());
+        assertThat(inventory.itemIdsOf(List.of(f.sku()))).isEmpty();
         var initial = items.get(f.itemId());
         var saved = touch(f, initial.version());
         assertThat(saved.version()).isEqualTo(initial.version() + 1);

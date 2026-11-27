@@ -27,6 +27,11 @@ import java.util.UUID;
  * customer's own SKUs, which replaces every line; anything else about it ends as its status allows (cancelled,
  * expired).</p>
  *
+ * <p>A draft priced too far below its reference waits for the Sales Manager (kltn-docs 14 BR-10 as changed on
+ * 2026-11-26): {@link #submitForPriceReview} keeps it a DRAFT - so the customer, who never sees a draft, sees nothing of
+ * it - and locks it; {@link #approvePrice} sends it, {@link #rejectPrice} and {@link #withdrawPriceReview} hand it back
+ * to Sales. Which prices need it is the service's to measure ({@code QuotePriceCheck}); the quote only holds the state.</p>
+ *
  * <p>Every method checks before it changes anything, so a refused call leaves the quote as it was. The
  * CHECK constraints of {@code ordering.quote} mirror each invariant here.</p>
  */
@@ -35,6 +40,10 @@ public final class Quote {
     public static final int MAX_TEXT = 2000;
     public static final int MAX_CANCELLATION_REASON = 500;
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
+
+    /** How a validity is written in a message people read: the business day and time, in Vietnam. */
+    public static final java.time.format.DateTimeFormatter VALID_UNTIL = java.time.format.DateTimeFormatter
+            .ofPattern("dd/MM/yyyy HH:mm").withZone(java.time.ZoneId.of("Asia/Ho_Chi_Minh"));
 
     /**
      * The commercial content Sales edits while the quote is a draft. No payment term or deposit share since 4B-10: how
@@ -62,17 +71,20 @@ public final class Quote {
             Objects.requireNonNull(validUntil, "validUntil");
             terms = terms == null || terms.isBlank() ? null : terms.strip();
             if (terms != null && terms.length() > MAX_TEXT) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Terms are at most " + MAX_TEXT + " characters");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Terms are at most " + MAX_TEXT + " characters")
+                        .localized("refusal.quote.termsTooLong", MAX_TEXT);
             }
             if (lines == null || lines.isEmpty()) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote needs at least one line")
+                        .localized("refusal.quote.noLine");
             }
             var numbers = new HashSet<Integer>();
             var quoted = new HashSet<String>();
             boolean legacy = lines.getFirst().legacy();
             for (QuoteLine line : lines) {
                 if (!numbers.add(line.lineNo())) {
-                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + line.lineNo() + " appears twice");
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + line.lineNo() + " appears twice")
+                            .localized("refusal.quote.lineTwice", line.lineNo());
                 }
                 if (line.legacy() != legacy) {
                     throw new IllegalArgumentException("A quote's lines are all cartons of the customer's SKUs, or all "
@@ -83,7 +95,9 @@ public final class Quote {
                 if (!quoted.add(key)) {
                     throw new BusinessException(ErrorCode.VALIDATION_FAILED, line.legacy()
                             ? "The same design on blank " + line.sku().code() + " is quoted twice"
-                            : "SKU " + line.sku().code() + " is quoted twice; one line per SKU");
+                            : "SKU " + line.sku().code() + " is quoted twice; one line per SKU")
+                            .localized(line.legacy() ? "refusal.quote.legacyDesignTwice" : "refusal.quote.skuTwice",
+                                    line.sku().code());
                 }
             }
             lines = List.copyOf(lines);
@@ -99,21 +113,33 @@ public final class Quote {
                 }
                 if (fee.kind() == com.stockflow.order.api.FeeKind.SHIPPING_FEE) {
                     if (++shipping > 1) {
-                        throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote has one shipping fee at most");
+                        throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quote has one shipping fee at most")
+                                .localized("refusal.quote.oneShippingFee");
                     }
                 } else if (!onQuote.contains(fee.sku().code())) {
                     throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                            "A plate fee is for a SKU on the quote, not " + fee.sku().code());
+                            "A plate fee is for a SKU on the quote, not " + fee.sku().code())
+                            .localized("refusal.quote.plateFeeNotOnQuote", fee.sku().code());
                 } else if (!platedSkus.add(fee.sku().code())) {
                     throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                            "SKU " + fee.sku().code() + " has one plate fee at most");
+                            "SKU " + fee.sku().code() + " has one plate fee at most")
+                            .localized("refusal.quote.onePlateFee", fee.sku().code());
                 }
             }
+        }
+
+        /**
+         * 14 BR-07: the quantity of each priced SKU reaches its MOQ. A rule for writing an offer - drafting, revising,
+         * sending - and not for building one: an offer read back from the rows or from the quote's history is what was
+         * quoted, and a tier changed since (the WF-05 demo seed holds 5-carton lines under a 20-carton break) must not
+         * keep it from opening (owner decision, WF-02 r6 question 1).
+         */
+        void requireMoq() {
             Map<String, Integer> bySku = quantityBySku(lines, QuoteLine::quantity);
             for (QuoteLine line : lines) {
                 int quantity = bySku.get(line.sku().code());
                 if (line.priced() && quantity < line.moq()) {
-                    throw new BusinessException(ErrorCode.QUOTE_BELOW_MOQ,
+                    throw QuoteLine.belowMoq(line.lineNo(), line.sku().code(), quantity, line.moq(),
                             "Line %d: %d %s of %s on this quote, below its MOQ of %d".formatted(line.lineNo(), quantity,
                                     line.noun(), line.sku().code(), line.moq()));
                 }
@@ -164,6 +190,8 @@ public final class Quote {
     private String cancellationReason;
     private UUID convertedOrderId;
     private Instant convertedAt;
+    /** 14 BR-10: a draft waiting for the Sales Manager to approve its prices (ck_quote_price_review: only a DRAFT). */
+    private boolean priceReviewPending;
 
     private Quote(UUID id, String quoteNumber, UUID requestId, UUID customerId, QuoteStatus status, int revision,
                   Offer offer) {
@@ -183,6 +211,7 @@ public final class Quote {
     }
 
     public static Quote draft(UUID id, String quoteNumber, UUID requestId, UUID customerId, Offer offer) {
+        offer.requireMoq();
         return new Quote(id, quoteNumber, requestId, customerId, QuoteStatus.DRAFT, 1, offer);
     }
 
@@ -191,7 +220,20 @@ public final class Quote {
                                 int revision, Offer offer, Instant sentAt, UUID sentBy, Instant respondedAt,
                                 UUID respondedBy, String customerFeedback, String cancellationReason,
                                 UUID convertedOrderId, Instant convertedAt) {
+        return restore(id, quoteNumber, requestId, customerId, status, revision, offer, sentAt, sentBy, respondedAt,
+                respondedBy, customerFeedback, cancellationReason, convertedOrderId, convertedAt, false);
+    }
+
+    /** Rehydration from the rows, with whether the draft waits for its prices to be approved (14 BR-10). */
+    public static Quote restore(UUID id, String quoteNumber, UUID requestId, UUID customerId, QuoteStatus status,
+                                int revision, Offer offer, Instant sentAt, UUID sentBy, Instant respondedAt,
+                                UUID respondedBy, String customerFeedback, String cancellationReason,
+                                UUID convertedOrderId, Instant convertedAt, boolean priceReviewPending) {
+        if (priceReviewPending && status != QuoteStatus.DRAFT) {
+            throw new IllegalArgumentException("Only a draft waits for its prices to be approved");
+        }
         Quote quote = new Quote(id, quoteNumber, requestId, customerId, status, revision, offer);
+        quote.priceReviewPending = priceReviewPending;
         quote.sentAt = sentAt;
         quote.sentBy = sentBy;
         quote.respondedAt = respondedAt;
@@ -212,6 +254,8 @@ public final class Quote {
     public void revise(Offer replacement) {
         Objects.requireNonNull(replacement, "replacement");
         requireStatus(QuoteStatus.DRAFT, "edit");
+        requireNoPriceReview("edited");
+        replacement.requireMoq();
         offer = replacement;
     }
 
@@ -219,41 +263,107 @@ public final class Quote {
     public void send(UUID by, Instant now) {
         Objects.requireNonNull(by, "by");
         requireStatus(QuoteStatus.DRAFT, "send");
+        requireNoPriceReview("sent");
+        requireSendable(now);
+        status = QuoteStatus.SENT;
+        sentAt = now;
+        sentBy = by;
+    }
+
+    /**
+     * 14 BR-10: the draft, ready to be sent, waits for the Sales Manager instead - it stays a DRAFT, locked against
+     * edits until approved, rejected or withdrawn. Checked as {@link #send} is, so a quote that could not be sent is not
+     * put in front of the Sales Manager either.
+     */
+    public void submitForPriceReview(UUID by, Instant now) {
+        Objects.requireNonNull(by, "by");
+        requireStatus(QuoteStatus.DRAFT, "send");
+        requireNoPriceReview("sent");
+        requireSendable(now);
+        priceReviewPending = true;
+    }
+
+    /**
+     * 14 BR-10: the Sales Manager approved the prices; the quote is sent at once, as {@code sentBy} - the Sales account
+     * that asked, who follows it with the customer. Checked again as {@link #send}: the validity may have passed while it
+     * waited, and a refusal leaves it waiting.
+     */
+    public void approvePrice(UUID sentBy, Instant now) {
+        Objects.requireNonNull(sentBy, "sentBy");
+        requirePriceReview();
+        requireSendable(now);
+        priceReviewPending = false;
+        status = QuoteStatus.SENT;
+        sentAt = now;
+        this.sentBy = sentBy;
+    }
+
+    /** 14 BR-10: the Sales Manager rejected the prices; the draft is Sales' to edit again. */
+    public void rejectPrice() {
+        requirePriceReview();
+        priceReviewPending = false;
+    }
+
+    /** 14 BR-10: Sales takes the draft back from the Sales Manager to change it. */
+    public void withdrawPriceReview() {
+        requirePriceReview();
+        priceReviewPending = false;
+    }
+
+    /** What a quote must be to go to the customer: carton lines, priced and taxed, valid ahead, at or above the MOQ. */
+    private void requireSendable(Instant now) {
         requireCartonLines("sent");
+        offer.requireMoq();
         for (QuoteLine line : offer.lines()) {
             if (!line.priced()) {
                 throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED,
                         "Quote %s line %d has no price yet; enter its tiers before sending".formatted(quoteNumber,
-                                line.lineNo()));
+                                line.lineNo())).localized("refusal.quote.lineNotPriced", quoteNumber, line.lineNo());
             }
         }
         // 14 §4.1 step 3 (4B-3): every fee line has its amount, every line and fee line its VAT rate.
         for (QuoteFee fee : offer.fees()) {
             if (!fee.priced()) {
                 throw new BusinessException(ErrorCode.QUOTE_NOT_PRICED, ("Quote %s: the %s of %s has no amount yet; "
-                        + "enter it before sending").formatted(quoteNumber, fee.kind(), fee.sku().code()));
+                        + "enter it before sending").formatted(quoteNumber, fee.kind(), fee.sku().code()))
+                        .localized("refusal.quote.feeNotPriced", quoteNumber, fee.kind(), fee.sku().code());
             }
         }
         for (QuoteLine line : offer.lines()) {
             if (line.taxRate() == null) {
                 throw new BusinessException(ErrorCode.QUOTE_TAX_CLASS_MISSING, ("Quote %s line %d: the product of %s "
                         + "has no tax class; set it before sending").formatted(quoteNumber, line.lineNo(),
-                        line.sku().code()));
+                        line.sku().code())).localized("refusal.quote.lineTaxClassMissing", quoteNumber, line.lineNo(),
+                        line.sku().code());
             }
         }
         for (QuoteFee fee : offer.fees()) {
             if (fee.taxRate() == null) {
                 throw new BusinessException(ErrorCode.QUOTE_TAX_CLASS_MISSING, ("Quote %s: the product of %s has no "
                         + "tax class, so its plate fee has no VAT rate; set it before sending").formatted(quoteNumber,
-                        fee.sku().code()));
+                        fee.sku().code())).localized("refusal.quote.feeTaxClassMissing", quoteNumber, fee.sku().code());
             }
         }
         if (!offer.validUntil().isAfter(now)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Quote " + quoteNumber + " would be sent expired");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Quote " + quoteNumber + " would be sent expired")
+                    .localized("refusal.quote.sentExpired", quoteNumber, VALID_UNTIL.format(offer.validUntil()));
         }
-        status = QuoteStatus.SENT;
-        sentAt = now;
-        sentBy = by;
+    }
+
+    private void requireNoPriceReview(String verb) {
+        if (priceReviewPending) {
+            throw new BusinessException(ErrorCode.QUOTE_PRICE_REVIEW_PENDING, ("Quote %s is waiting for its prices to "
+                    + "be approved: it is not %s; withdraw it first").formatted(quoteNumber, verb))
+                    .localized("refusal.quote.priceReviewPending", quoteNumber);
+        }
+    }
+
+    private void requirePriceReview() {
+        if (!priceReviewPending) {
+            throw new BusinessException(ErrorCode.QUOTE_PRICE_REVIEW_NOT_PENDING,
+                    "Quote %s is not waiting for its prices to be approved".formatted(quoteNumber))
+                    .localized("refusal.quote.priceReviewNotPending", quoteNumber);
+        }
     }
 
     /**
@@ -271,7 +381,8 @@ public final class Quote {
         offer.lines().forEach(line -> known.add(line.id()));
         for (UUID lineId : asked.keySet()) {
             if (!known.contains(lineId)) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + lineId + " is not on quote " + quoteNumber);
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Line " + lineId + " is not on quote " + quoteNumber)
+                        .localized("refusal.quote.lineNotOnQuote", quoteNumber);
             }
         }
         Map<UUID, Integer> chosen = new HashMap<>();
@@ -279,7 +390,8 @@ public final class Quote {
             int quantity = asked.getOrDefault(line.id(), line.quantity());
             if (quantity < 1) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                        "Line " + line.lineNo() + " needs at least 1 carton");
+                        "Line " + line.lineNo() + " needs at least 1 carton")
+                        .localized("refusal.quote.atLeastOneCarton", line.lineNo());
             }
             chosen.put(line.id(), quantity);
         }
@@ -299,7 +411,8 @@ public final class Quote {
         String text = feedback == null ? "" : feedback.strip();
         if (text.isEmpty() || text.length() > MAX_TEXT) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "Asking for changes must say what to change, in at most " + MAX_TEXT + " characters");
+                    "Asking for changes must say what to change, in at most " + MAX_TEXT + " characters")
+                    .localized("refusal.quote.feedbackRequired", MAX_TEXT);
         }
         requireAnswerable(now, QuoteStatus.CHANGES_REQUESTED);
         status = QuoteStatus.CHANGES_REQUESTED;
@@ -339,10 +452,12 @@ public final class Quote {
         String text = reason == null ? "" : reason.strip();
         if (text.isEmpty() || text.length() > MAX_CANCELLATION_REASON) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "A cancellation must say why, in at most " + MAX_CANCELLATION_REASON + " characters");
+                    "A cancellation must say why, in at most " + MAX_CANCELLATION_REASON + " characters")
+                    .localized("refusal.quote.cancellationReasonRequired", MAX_CANCELLATION_REASON);
         }
         move(QuoteStatus.CANCELLED, "cancel");
         cancellationReason = text;
+        priceReviewPending = false;   // cancelled while it waited, it waits no more (the service closes the review)
     }
 
     /** ACCEPTED → CONVERTED: the one sales order this quote became. */
@@ -360,7 +475,7 @@ public final class Quote {
         if (offer.legacy()) {
             throw new BusinessException(ErrorCode.QUOTE_LINES_LEGACY, ("Quote %s was drafted on blanks and designs, "
                     + "before the customer's own SKUs: it is not %s. Revise a draft onto the customer's SKUs, or draft "
-                    + "a new quote").formatted(quoteNumber, verb));
+                    + "a new quote").formatted(quoteNumber, verb)).localized("refusal.quote.legacy", quoteNumber);
         }
     }
 
@@ -368,7 +483,8 @@ public final class Quote {
         Objects.requireNonNull(now, "now");
         if (status == QuoteStatus.SENT && !now.isBefore(offer.validUntil())) {
             throw new BusinessException(ErrorCode.QUOTE_EXPIRED,
-                    "Quote %s was valid until %s".formatted(quoteNumber, offer.validUntil()));
+                    "Quote %s was valid until %s".formatted(quoteNumber, offer.validUntil()))
+                    .localized("refusal.quote.expired", quoteNumber, VALID_UNTIL.format(offer.validUntil()));
         }
         if (!status.canTransitionTo(target)) {
             throw transition("answer", target);
@@ -390,7 +506,8 @@ public final class Quote {
 
     private BusinessException transition(String verb, QuoteStatus target) {
         return new BusinessException(ErrorCode.INVALID_QUOTE_TRANSITION,
-                "Cannot %s quote %s: it is %s, not a state that leads to %s".formatted(verb, quoteNumber, status, target));
+                "Cannot %s quote %s: it is %s, not a state that leads to %s".formatted(verb, quoteNumber, status, target))
+                .localized("refusal.quote.transition." + verb, quoteNumber, status);
     }
 
     public UUID id() { return id; }
@@ -402,12 +519,25 @@ public final class Quote {
     public Offer offer() { return offer; }
     public Instant sentAt() { return sentAt; }
 
+    /** 14 BR-10: whether this draft waits for the Sales Manager to approve its prices. */
+    public boolean priceReviewPending() { return priceReviewPending; }
+
     /**
      * Whether the customer has been shown this quote: everything once sent - an accepted quote Sales cancelled
-     * included, so the customer sees what became of it - but not a draft, nor one cancelled before it was sent.
+     * included, so the customer sees what became of it, and a revision Sales is writing after the customer asked for
+     * changes - but not a first draft, nor one cancelled before it was sent.
      */
     public boolean seenByCustomer() {
-        return status.seenByCustomer() || status == QuoteStatus.CANCELLED && sentAt != null;
+        return status.seenByCustomer() || (status == QuoteStatus.CANCELLED || status == QuoteStatus.DRAFT) && sentAt != null;
+    }
+
+    /**
+     * A revision Sales reopened after the customer asked for changes and has not sent yet (14 §4.1 step 4). The customer
+     * still has the quote: they see the offer they were last sent and their request, never the working draft, and
+     * answer nothing until the new revision is sent.
+     */
+    public boolean revisingSentQuote() {
+        return status == QuoteStatus.DRAFT && sentAt != null;
     }
     public UUID sentBy() { return sentBy; }
     public Instant respondedAt() { return respondedAt; }

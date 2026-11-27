@@ -34,6 +34,9 @@ public interface InstallmentBook {
     /** The order's installments, in the plan's order. */
     List<Installment> ofOrder(UUID orderId);
 
+    /** {@link #ofOrder} of several orders in one read, by order then seq. */
+    List<Installment> ofOrders(Collection<UUID> orderIds);
+
     /** The same, each row locked until the transaction ends, taken in id order. */
     List<Installment> lockOfOrder(UUID orderId);
 
@@ -56,6 +59,15 @@ public interface InstallmentBook {
      * nightly job would have to keep (WF-05 fix plan, section 8).
      */
     Overdue overdue(UUID customerId, LocalDate today);
+
+    /**
+     * WF-05 BE-49: writes down that the installment was announced overdue for {@code dueDate} - only while that is
+     * still its due date and it still owes, and only when no other transaction holds its row (a receipt paying it right
+     * now): such a one is left for the next scan rather than waited for, so the scan never deadlocks with a receipt.
+     *
+     * @return whether it was written: false - nothing to announce now
+     */
+    boolean markOverdueAnnounced(UUID installmentId, LocalDate dueDate);
 
     // ---- receipts ---------------------------------------------------------------------------------------------------
 

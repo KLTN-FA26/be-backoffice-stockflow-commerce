@@ -68,7 +68,7 @@ class OrderRemainderClosedListener {
                         pick.getId());
                 return;
             }
-            pick.cancel();
+            pick.cancel(clock.instant());
             picks.save(pick);
             pickLists.cancelOpenLines(pick);
             pack.ifPresent(found -> {

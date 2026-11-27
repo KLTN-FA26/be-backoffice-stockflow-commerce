@@ -1,9 +1,11 @@
 package com.stockflow.order;
 
+import com.stockflow.common.config.SellerProperties;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.storage.Checksums;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.contracts.ProductionOrderSent;
+import com.stockflow.notification.api.ProductionOrderDirectory;
 import com.stockflow.notification.internal.domain.Email;
 import com.stockflow.order.internal.domain.Producer;
 import com.stockflow.order.internal.domain.ProductionOrder;
@@ -35,8 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 4A-3 against the real database (kltn-docs 17 §4.3 steps 7, 10, 12-13, BR-23; 00 §6; QD-7): approving a production
- * order sends it - the slip drawn and kept, the producer e-mailed once with time-limited links that check the files on
+ * 4A-3 against the real database (kltn-docs 17 §4.3 steps 7, 10, 12-13, BR-23; 00 §6; QD-7): the coordinator sends a
+ * production order - the slip drawn and kept, the producer e-mailed once with time-limited links that check the files on
  * every use, the receiving warehouse's managers told in-app - and a sent production order that is cancelled or closed
  * tells its producer to stop, on the same channel.
  *
@@ -55,13 +57,24 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixtures {
 
     @Autowired ProductionSampleService samples;
+    @Autowired SellerProperties seller;
+    @Autowired ProductionOrderDirectory directory;
 
     // ---- scenarios --------------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("17 §4.3 step 7: approved, so sent - the slip kept, one e-mail to the producer, the warehouse told")
-    void approvalSendsIt() throws Exception {
-        ProductionOrder sent = approved(producer);
+    @DisplayName("the demo producers a slip names carry no demo wording (a capstone's papers must read as real)")
+    void demoProducersHavePlainNames() {
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.producer WHERE code LIKE 'DEMO-%'"
+                + " OR name ILIKE '%(demo)%'", Long.class)).isZero();
+        assertThat(jdbc.queryForList("SELECT code FROM ordering.producer WHERE code IN ('INDN', 'INLX')", String.class))
+                .containsExactlyInAnyOrder("INDN", "INLX");
+    }
+
+    @Test
+    @DisplayName("17 §4.3 step 7: sent by the coordinator - the slip kept, one e-mail to the producer, the warehouse told")
+    void sendingSendsIt() throws Exception {
+        ProductionOrder sent = sent(producer);
 
         assertThat(sent.status()).isEqualTo(ProductionOrderStatus.SENT);
         Map<String, Object> slip = jdbc.queryForMap(
@@ -71,17 +84,28 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         assertThat(slip.get("sha256")).as("the digest is the stored object's").isEqualTo(Checksums.sha256Hex(pdf));
         assertThat(slip.get("size_bytes")).isEqualTo((long) pdf.length);
         try (PDDocument doc = Loader.loadPDF(pdf)) {
-            assertThat(new PDFTextStripper().getText(doc)).contains("PHIẾU ĐƠN SẢN XUẤT", sent.code(), sku.sku(),
-                    "Dispatch Test Co", "Xưởng in thử", "Chị Lan - 0909123456 - " + producerEmail,
-                    "Warehouse " + a.code(), "7 Kho Street", "12 x 50 cái/thùng = 600 cái", "600 x 400 x 350 mm",
-                    sku.snapshotId().toString(), sku.checksum());
+            String text = new PDFTextStripper().getText(doc);
+            assertThat(text).contains("PHIẾU ĐẶT HÀNG SẢN XUẤT", sent.code(), seller.name(),
+                    "Cần hàng trước ngày", "Xưởng in thử", "Chị Lan - 0909123456 - " + producerEmail,
+                    "Warehouse " + a.code(), "7 Kho Street", "Thùng 600 x 400 x 350 mm");
+            assertThat(text.replaceAll("\\s+", "")).as("codes may wrap in their column")
+                    .contains(sku.sku(), sku.snapshotId().toString(), sku.checksum());
+            assertThat(text).as("a production paper: no customer, no money")
+                    .doesNotContain("Dispatch Test Co", "Đơn giá", "VND");
         }
 
         Email email = awaitMail(sent.code());
         assertThat(email.to()).containsExactly(producerEmail);
         assertThat(email.idempotencyKey()).isEqualTo("production-order:" + sent.id() + ":sent");
         assertThat(email.text()).contains("/api/v1/production-order-files/" + sent.id() + "/slip?expires=",
-                "/print-files/" + sku.snapshotId() + "?expires=");
+                "/print-files/" + sku.snapshotId() + "?expires=", "đính kèm")
+                .as("the e-mail names no price either (the fixture's order has one)").doesNotContain("Đơn giá");
+        assertThat(email.attachments()).as("the very slip that was stored, attached").singleElement()
+                .satisfies(attachment -> {
+                    assertThat(attachment.name()).isEqualTo(sent.code() + ".pdf");
+                    assertThat(attachment.contentType()).isEqualTo("application/pdf");
+                    assertThat(attachment.content()).isEqualTo(pdf);
+                });
         Await.until("the delivery is recorded", ASYNC, () -> !deliveries(sent.id(), "sent").isEmpty());
         assertThat(deliveries(sent.id(), "sent")).singleElement().satisfies(row -> {
             assertThat(row).containsEntry("status", "SENT").containsEntry("recipient", producerEmail)
@@ -106,7 +130,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         tx.executeWithoutResult(s -> events.publishEvent(new ProductionOrderSent(UUID.randomUUID(), sent.id(),
                 sent.code(), a.id(), sent.needByDate(), 12, BigDecimal.ONE, sent.sentAt())));
         Await.until("the redelivery completes", ASYNC, () -> pendingPublications(sent.id()) == 0);
-        assertThat(mailTo(producerEmail)).as("each approval sends one e-mail").hasSize(1);
+        assertThat(mailTo(producerEmail)).as("each send sends one e-mail").hasSize(1);
         assertThat(deliveries(sent.id(), "sent")).hasSize(1);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM notification.user_notification WHERE recipient_id = ? AND dedupe_key = ?""",
@@ -125,7 +149,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     @Test
     @DisplayName("17 §4.3 step 7: the e-mailed links work until their time, and check the file on every use")
     void linksCheckEverything() {
-        ProductionOrder sent = approved(producer);
+        ProductionOrder sent = sent(producer);
         Email email = awaitMail(sent.code());
         Link slip = link(email.text(), "/slip");
         Link print = link(email.text(), "/print-files/" + sku.snapshotId());
@@ -162,6 +186,20 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         assertThat(ErrorCode.PRODUCTION_ORDER_LINK_EXPIRED.httpStatus()).isEqualTo(410);
         assertThat(ErrorCode.PRODUCTION_ORDER_LINK_INVALID.httpStatus()).isEqualTo(403);
 
+        // BE-6: this design was confirmed with no image of the customer's, so the e-mail links none; a validly signed
+        // link to an image it does not place is 404, and the print file's link opens no image.
+        assertThat(email.text()).doesNotContain("/originals/");
+        UUID noSuchImage = UUID.randomUUID();
+        Link original = link(links.url(ProductionOrderDispatch.originalPath(sent.id(), sku.snapshotId(), noSuchImage),
+                Instant.now().plusSeconds(600)), "/originals/" + noSuchImage);
+        assertThatThrownBy(() -> dispatch.openOriginal(sent.id(), sku.snapshotId(), noSuchImage, original.expires(),
+                original.signature())).extracting(ProductionOrderDispatchIntegrationTest::code)
+                .isEqualTo(ErrorCode.NOT_FOUND);
+        assertThatThrownBy(() -> dispatch.openOriginal(sent.id(), sku.snapshotId(), noSuchImage, print.expires(),
+                print.signature())).as("the print file's link used for an image")
+                .extracting(ProductionOrderDispatchIntegrationTest::code)
+                .isEqualTo(ErrorCode.PRODUCTION_ORDER_LINK_INVALID);
+
         // The files checked on every use: a print file or a slip that changed in the store is not handed out.
         tamper(sku.printFileKey(), FileCategory.DESIGN_RENDER);
         assertThatThrownBy(() -> dispatch.openPrintFile(sent.id(), sku.snapshotId(), print.expires(),
@@ -174,6 +212,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         assertThatThrownBy(() -> dispatch.slipLink(sent.id())).as("staff are refused the changed slip too")
                 .extracting(ProductionOrderDispatchIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_SLIP_MISMATCH);
+        assertThat(directory.slipPdf(sent.id())).as("nor is a changed slip attached to a message").isEmpty();
     }
 
     /** An ACTIVE user assigned to warehouse A whose only role holds just the given permissions (none: a bare role). */
@@ -204,7 +243,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         UUID holder = holderOf("procurement-goods-receipts:CREATE");
         UUID bystander = holderOf("procurement-goods-receipts:READ");
 
-        ProductionOrder sent = approved(producer);
+        ProductionOrder sent = sent(producer);
 
         String key = "production-order-sent:" + sent.id();
         Await.until("the permission holder is told", ASYNC, () -> jdbc.queryForObject(
@@ -219,7 +258,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     @Test
     @DisplayName("17 §4.3 step 13: cancelled after it was sent - the producer is told to stop, and its links die")
     void cancelledAfterSent() {
-        ProductionOrder sent = approved(producer);
+        ProductionOrder sent = sent(producer);
         Email first = awaitMail(sent.code());
         Link slip = link(first.text(), "/slip");
         awaitRecorded(sent.id());
@@ -245,20 +284,20 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     @Test
     @DisplayName("17 §4.3 step 13: a production order cancelled before it was sent tells no producer anything")
     void cancelledBeforeSent() {
-        ProductionOrder pending = pending(producer);
+        ProductionOrder draft = drafted(producer);
 
-        productionOrders.cancel(pending.id(), pending.version(), "Hàng đã có", coordinator);
+        productionOrders.cancel(draft.id(), draft.version(), "Hàng đã có", coordinator);
 
-        assertThat(publications(com.stockflow.contracts.ProductionOrderStopped.class, pending.id())).isZero();
-        assertThat(publications(ProductionOrderSent.class, pending.id())).isZero();
+        assertThat(publications(com.stockflow.contracts.ProductionOrderStopped.class, draft.id())).isZero();
+        assertThat(publications(ProductionOrderSent.class, draft.id())).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.production_order_slip WHERE production_order_id = ?",
-                Long.class, pending.id())).isZero();
+                Long.class, draft.id())).isZero();
     }
 
     @Test
     @DisplayName("17 §4.3 step 12: closed after mass printing started - the producer is told to deliver nothing more")
     void closedAfterMassPrinting() {
-        ProductionOrder sent = approved(producer);
+        ProductionOrder sent = sent(producer);
         awaitMail(sent.code());
         awaitRecorded(sent.id());
         PrintSamples.massPrinting(productionOrders, samples, reread(sent.id()), coordinator,
@@ -273,7 +312,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     @Test
     @DisplayName("B31: the customer approved the sample - the producer is told once to mass print, with fresh links")
     void sampleApproved() {
-        ProductionOrder sent = approved(producer);
+        ProductionOrder sent = sent(producer);
         awaitMail(sent.code());
         assertThat(sent.sampleApprovalRequired()).as("BR-24: the SKU was never produced").isTrue();
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> dispatch.sampleApproved(reread(sent.id()),
@@ -298,7 +337,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     @Test
     @DisplayName("staff re-send the order: a new generation, a key of its own, fresh links")
     void resend() {
-        ProductionOrder sent = approved(producer);
+        ProductionOrder sent = sent(producer);
         Email first = awaitMail(sent.code());
         awaitRecorded(sent.id());
         Await.until("the first deliveries complete", ASYNC, () -> pendingPublications(sent.id()) == 0);
@@ -321,12 +360,12 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
 
         Producer handed = producers.register(producerCode(), new Producer.Details("Xưởng nhận phiếu tay", null, null,
                 null, Producer.Channel.PDF, 14, null));
-        ProductionOrder byHand = approved(handed);
+        ProductionOrder byHand = sent(handed);
         assertThatThrownBy(() -> dispatch.resend(byHand.id())).as("nothing is e-mailed to a producer handed the slip")
                 .extracting(ProductionOrderDispatchIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_RESEND_NOT_ALLOWED);
-        ProductionOrder pending = pending(producer);
-        assertThatThrownBy(() -> dispatch.resend(pending.id())).as("not sent yet")
+        ProductionOrder draft = drafted(producer);
+        assertThatThrownBy(() -> dispatch.resend(draft.id())).as("not sent yet")
                 .extracting(ProductionOrderDispatchIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_RESEND_NOT_ALLOWED);
     }
@@ -336,7 +375,7 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     void handedTheSlip() {
         Producer handed = producers.register(producerCode(), new Producer.Details("Xưởng nhận phiếu tay", null, null,
                 null, Producer.Channel.PDF, 14, null));
-        ProductionOrder sent = approved(handed);
+        ProductionOrder sent = sent(handed);
 
         Await.until("the message is settled", ASYNC, () -> !deliveries(sent.id(), "sent").isEmpty());
         assertThat(deliveries(sent.id(), "sent")).singleElement().satisfies(row -> assertThat(row)
@@ -350,36 +389,36 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     }
 
     @Test
-    @DisplayName("a slip drawn for an approval that does not commit is deleted from the store")
+    @DisplayName("a slip drawn for a send that does not commit is deleted from the store")
     void unadoptedSlipIsDeleted() throws Exception {
-        ProductionOrder pending = pending(producer);
+        ProductionOrder draft = drafted(producer);
         String key;
-        try (ProductionOrderDispatch.PreparedSlip slip = dispatch.prepareSlip(reread(pending.id()), approver,
+        try (ProductionOrderDispatch.PreparedSlip slip = dispatch.prepareSlip(reread(draft.id()),
                 Instant.now())) {
             key = slip.storageKey();
             assertThat(storage.exists(key)).isTrue();
             try (PDDocument doc = Loader.loadPDF(bytes(key))) {
-                assertThat(new PDFTextStripper().getText(doc)).contains(pending.code());
+                assertThat(new PDFTextStripper().getText(doc)).contains(draft.code());
             }
         }
-        assertThat(storage.exists(key)).as("never adopted by a committed approval").isFalse();
+        assertThat(storage.exists(key)).as("never adopted by a committed send").isFalse();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.production_order_slip WHERE production_order_id = ?",
-                Long.class, pending.id())).isZero();
+                Long.class, draft.id())).isZero();
     }
 
     @Test
-    @DisplayName("a stale approval is refused before any slip is drawn, and sends nothing")
-    void failedApprovalSendsNothing() {
-        ProductionOrder pending = pending(producer);
+    @DisplayName("a stale send is refused before any slip is drawn, and sends nothing")
+    void failedSendSendsNothing() {
+        ProductionOrder draft = drafted(producer);
 
-        assertThatThrownBy(() -> productionOrders.approve(pending.id(), pending.version() - 1, approver))
+        assertThatThrownBy(() -> productionOrders.send(draft.id(), draft.version() - 1, coordinator))
                 .extracting(ProductionOrderDispatchIntegrationTest::code).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
 
-        assertThat(reread(pending.id()).status()).isEqualTo(ProductionOrderStatus.PENDING_APPROVAL);
+        assertThat(reread(draft.id()).status()).isEqualTo(ProductionOrderStatus.DRAFT);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.production_order_slip WHERE production_order_id = ?",
-                Long.class, pending.id())).isZero();
-        assertThat(publications(ProductionOrderSent.class, pending.id())).isZero();
-        assertThatThrownBy(() -> dispatch.slipLink(pending.id()))
+                Long.class, draft.id())).isZero();
+        assertThat(publications(ProductionOrderSent.class, draft.id())).isZero();
+        assertThatThrownBy(() -> dispatch.slipLink(draft.id()))
                 .extracting(ProductionOrderDispatchIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_SLIP_NOT_FOUND);
     }

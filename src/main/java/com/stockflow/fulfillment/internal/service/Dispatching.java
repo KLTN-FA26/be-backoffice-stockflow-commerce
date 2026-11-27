@@ -30,7 +30,7 @@ public interface Dispatching {
     record LoadRow(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId, String carrierName,
                    String vehiclePlate, String driverName, int shipmentCount, int packageCount,
                    Instant loadingStartedAt, Instant dispatchedAt, long version, UUID loadPlanId, String loadPlanCode,
-                   Integer vehicleSeq, String waybillNo) { }
+                   Integer vehicleSeq, String waybillNo, String warehouseCode, String warehouseName) { }
 
     /**
      * A parcel still to take off a vehicle (SCRUM-392: its order was cancelled; SCRUM-474: its vehicle was called off
@@ -39,8 +39,9 @@ public interface Dispatching {
     record PendingUnload(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String reason,
                          Instant requestedAt, String reasonCode) { }
 
-    record LoadParcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                      UUID loadedBy) { }
+    /** {@code loadedByName}: the display name of {@code loadedBy}, who scanned it onto the vehicle; null if unknown. */
+    record LoadParcel(UUID packageId, String labelCode, String lpn, BigDecimal weightKg, boolean loaded, Instant loadedAt,
+                      UUID loadedBy, String loadedByName) { }
 
     /**
      * A shipment on the manifest.
@@ -50,7 +51,7 @@ public interface Dispatching {
     record LoadShipment(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, String status,
                         int packageCount, int loadedCount, List<LoadParcel> packages) { }
 
-    record LoadDetail(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId,
+    record LoadDetail(UUID loadId, String code, UUID warehouseId, String warehouseName, String status, UUID carrierId,
                       String carrierCode, String carrierName, String vehiclePlate, String driverName,
                       String driverPhone, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
                       UUID dispatchedBy, String dispatchedByName, String carrierRepresentative, String signatureRef,
@@ -60,14 +61,16 @@ public interface Dispatching {
                       Instant bookingCancelledAt, String bookingCancelReason, List<PendingUnload> pendingUnloads,
                       boolean carrierBookingToCancel, String cancelReasonCode, UUID replacementLoadId,
                       String replacementLoadCode, String waybillNo, String carrierConnectionType,
-                      CarrierBookingView carrierBooking, List<HandoverWarning> handoverWarnings) {
+                      CarrierBookingView carrierBooking, List<HandoverWarning> handoverWarnings,
+                      String loadingStartedByName, String bookedByName, String warehouseCode) {
 
         public LoadDetail {
             handoverWarnings = handoverWarnings == null ? List.of() : List.copyOf(handoverWarnings);
         }
 
         /** Without handover warnings: every answer but the start of loading. */
-        public LoadDetail(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId,
+        public LoadDetail(UUID loadId, String code, UUID warehouseId, String warehouseName, String status,
+                          UUID carrierId,
                           String carrierCode, String carrierName, String vehiclePlate, String driverName,
                           String driverPhone, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
                           UUID dispatchedBy, String dispatchedByName, String carrierRepresentative, String signatureRef,
@@ -78,24 +81,25 @@ public interface Dispatching {
                           List<PendingUnload> pendingUnloads, boolean carrierBookingToCancel, String cancelReasonCode,
                           UUID replacementLoadId, String replacementLoadCode, String waybillNo,
                           String carrierConnectionType, CarrierBookingView carrierBooking) {
-            this(loadId, code, warehouseId, status, carrierId, carrierCode, carrierName, vehiclePlate, driverName,
+            this(loadId, code, warehouseId, warehouseName, status, carrierId, carrierCode, carrierName, vehiclePlate, driverName,
                     driverPhone, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy, dispatchedByName,
                     carrierRepresentative, signatureRef, handoverNote, cancelledAt, cancelReason, shipmentCount,
                     expectedPackageCount, loadedPackageCount, version, shipments, loadPlanId, loadPlanCode, vehicleSeq,
                     vehicleTypeCode, bookedAt, bookedBy, bookingCancelledAt, bookingCancelReason, pendingUnloads,
                     carrierBookingToCancel, cancelReasonCode, replacementLoadId, replacementLoadCode, waybillNo,
-                    carrierConnectionType, carrierBooking, List.of());
+                    carrierConnectionType, carrierBooking, List.of(), null, null, null);
         }
 
         /** The same load with the warnings the start of loading found. */
         public LoadDetail withHandoverWarnings(List<HandoverWarning> warnings) {
-            return new LoadDetail(loadId, code, warehouseId, status, carrierId, carrierCode, carrierName, vehiclePlate,
+            return new LoadDetail(loadId, code, warehouseId, warehouseName, status, carrierId, carrierCode, carrierName, vehiclePlate,
                     driverName, driverPhone, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy,
                     dispatchedByName, carrierRepresentative, signatureRef, handoverNote, cancelledAt, cancelReason,
                     shipmentCount, expectedPackageCount, loadedPackageCount, version, shipments, loadPlanId,
                     loadPlanCode, vehicleSeq, vehicleTypeCode, bookedAt, bookedBy, bookingCancelledAt,
                     bookingCancelReason, pendingUnloads, carrierBookingToCancel, cancelReasonCode, replacementLoadId,
-                    replacementLoadCode, waybillNo, carrierConnectionType, carrierBooking, warnings);
+                    replacementLoadCode, waybillNo, carrierConnectionType, carrierBooking, warnings,
+                    loadingStartedByName, bookedByName, warehouseCode);
         }
     }
 
@@ -103,10 +107,17 @@ public interface Dispatching {
      * 4B-8 (kltn-docs 08 BR-11, 17 §4.4 step 17, 09 BR-18): an order on the vehicle whose goods may not leave yet, found
      * when loading starts - loading goes ahead; the handover will refuse the vehicle until the order may leave.
      *
-     * @param reasonCode why (ORDER_BALANCE_NOT_PAID, DELIVERY_BATCH_WINDOW_NOT_OPEN, ...)
+     * @param reasonCode  the first of {@code reasonCodes} (ORDER_BALANCE_NOT_PAID, DELIVERY_BATCH_WINDOW_NOT_OPEN, ...)
+     * @param reasonCodes every reason the order's goods may not leave now, the same list the handover's refusal gives
+     *                    (09 section 4.2 step 7: money owed and a window not yet open are both warned)
      */
-    record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, java.math.BigDecimal amountDue,
-                           String currency, Integer deliveryBatchSeq, java.time.LocalDate windowStart) { }
+    record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, List<String> reasonCodes,
+                           java.math.BigDecimal amountDue, String currency, Integer deliveryBatchSeq,
+                           java.time.LocalDate windowStart) {
+        public HandoverWarning {
+            reasonCodes = reasonCodes == null || reasonCodes.isEmpty() ? List.of(reasonCode) : List.copyOf(reasonCodes);
+        }
+    }
 
     /**
      * The load's latest order at an API_BOOKING carrier (3-4), null when it never had one.
@@ -273,17 +284,16 @@ public interface Dispatching {
     enum CarrierCancel {
         /** The booking CANCELLED and the load back to PLANNED, to be booked again. */
         UNBOOKED,
-        /** The booking CANCELLED while the vehicle was loading: the load cannot leave on that order. */
-        CANCELLED_WHILE_LOADING,
         /** The booking was no longer held: nothing changed. */
         NOT_HELD
     }
 
     /**
      * The carrier cancelled the order {@code bookingId} before the pickup (09 §4.5: "chuyến chưa ký bàn giao → về
-     * Planned, xoá thông tin đặt xe, báo Dispatch Staff"): the booking CANCELLED and, before loading, the load back to
-     * PLANNED; while loading, the load stays as it is and its handover is refused, the order being gone. The caller
-     * tells the dispatchers. Once the vehicle left, {@code INVALID_LOAD_TRANSITION}.
+     * Planned, xoá thông tin đặt xe, báo Dispatch Staff"; RTM-LOADCANCEL, RTM-LOADCANCEL2): the booking CANCELLED and the
+     * load back to PLANNED with the same layout; parcels already scanned onto the truck are to be scanned off back to the
+     * dispatch area before it is booked again. The caller tells the dispatchers. Once the vehicle left,
+     * {@code INVALID_LOAD_TRANSITION}.
      */
     CarrierCancel carrierOrderCancelled(UUID loadId, UUID bookingId, Instant at);
 
@@ -348,11 +358,19 @@ public interface Dispatching {
      * ({@link #overrideUnload}), and a new PLANNED load with the same manifest takes its place so another truck can be
      * booked. The plan and its other vehicles carry on. Cancelled already: answered as it is.
      *
+     * <p>{@code removedShipmentIds} (09 §4.2 step 9, BR-14; decided 2026-11-05): shipments of its manifest to take off
+     * with it - damaged, or an order's installment before delivery unpaid. Their parcels leave the plan
+     * ({@code REMOVED_FROM_VEHICLE}) and wait at the dispatch area once scanned off; the new load carries the rest on
+     * a layout recalculated for this vehicle alone, and there is no new load when nothing is left.</p>
+     *
      * @throws com.stockflow.common.error.BusinessException {@code LOAD_NOT_FOUND}; {@code INVALID_LOAD_TRANSITION}
-     *         (not LOADING); {@code INVALID_LOAD_PLAN_TRANSITION}; {@code VALIDATION_FAILED}
+     *         (not LOADING); {@code INVALID_LOAD_PLAN_TRANSITION}; {@code VALIDATION_FAILED} (also a shipment not on
+     *         the manifest); {@code LOAD_REMOVAL_SPLITS_SHIPMENT}; {@code LOAD_PLAN_RELAYOUT_INCOMPLETE};
+     *         {@code ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED}; {@code OPTIMISTIC_LOCK}
      */
     ControlledCancelResult cancelControlled(UUID loadId, com.stockflow.fulfillment.internal.domain.UnloadReasonCode code,
-                                            String note, CurrentUser actor);
+                                            String note, java.util.Collection<UUID> removedShipmentIds,
+                                            CurrentUser actor);
 
     /**
      * SCRUM-474 UNLOAD-DROP: drops a vehicle that has not loaded - its load still PLANNED, no truck booked - from its

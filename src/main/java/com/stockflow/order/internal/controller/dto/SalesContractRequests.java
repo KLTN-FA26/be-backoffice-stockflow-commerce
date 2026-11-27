@@ -25,7 +25,9 @@ public final class SalesContractRequests {
             Long version,
             @PositiveOrZero Integer freeSampleRounds,
             @Valid @Size(max = 20) List<Batch> deliverySchedule,
-            @Valid @Size(max = 20) List<Installment> paymentPlan) { }
+            @Valid @Size(max = 20) List<Installment> paymentPlan,
+            @jakarta.validation.constraints.Positive @jakarta.validation.constraints.Max(365)
+            Integer returnWindowDays) { }
 
     /** A delivery batch, in delivery order: its window (both days or neither) and its cartons. */
     public record Batch(LocalDate windowStart, LocalDate windowEnd, @Valid @Size(max = 200) List<BatchLine> lines) { }
@@ -49,4 +51,10 @@ public final class SalesContractRequests {
 
     /** Cancelling the contract before it is signed. */
     public record Cancellation(@NotNull Long version, @NotBlank @Size(max = 500) String reason) { }
+
+    /**
+     * 15 BR-11: accounting's decision on a contract waiting before it is sent, against the version read - the note an
+     * approval keeps, or the reason a refusal gives Sales.
+     */
+    public record CreditDecision(@NotNull Long version, @NotBlank @Size(max = 500) String note) { }
 }

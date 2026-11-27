@@ -17,9 +17,33 @@ import java.util.UUID;
 class CancellationRequestRepositoryAdapter implements CancellationRequestRepository, CancellationRequestSearch {
 
     private final OrderCancellationRequestJpaRepository jpa;
+    private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
 
-    CancellationRequestRepositoryAdapter(OrderCancellationRequestJpaRepository jpa) {
+    CancellationRequestRepositoryAdapter(OrderCancellationRequestJpaRepository jpa,
+                                         org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc) {
         this.jpa = jpa;
+        this.jdbc = jdbc;
+    }
+
+    @Override
+    public java.util.Map<UUID, OrderFacts> orderFacts(java.util.Collection<UUID> orderIds) {
+        if (orderIds == null || orderIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<UUID, OrderFacts> facts = new java.util.HashMap<>();
+        jdbc.query("""
+                SELECT id, order_number, customer_id, status, total_amount, currency, printing_started_at
+                  FROM ordering.customer_order WHERE id IN (:ids)""",
+                java.util.Map.of("ids", java.util.List.copyOf(orderIds)), rs -> {
+                    java.sql.Timestamp printing = rs.getTimestamp("printing_started_at");
+                    UUID id = rs.getObject("id", UUID.class);
+                    facts.put(id, new OrderFacts(id, rs.getString("order_number"),
+                            rs.getObject("customer_id", UUID.class), rs.getString("status"),
+                            rs.getBigDecimal("total_amount")
+                                    .setScale(0, java.math.RoundingMode.HALF_UP),
+                            rs.getString("currency"), printing == null ? null : printing.toInstant()));
+                });
+        return facts;
     }
 
     @Override

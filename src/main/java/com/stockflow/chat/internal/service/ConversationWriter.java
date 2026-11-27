@@ -221,6 +221,6 @@ public class ConversationWriter {
     }
 
     private ChatConversationView staffRow(Conversation c) {
-        return views.rows(List.of(c), null, Actor.agent(new UUID(0L, 0L), false)).get(0);
+        return views.staffBroadcastRow(c);
     }
 }

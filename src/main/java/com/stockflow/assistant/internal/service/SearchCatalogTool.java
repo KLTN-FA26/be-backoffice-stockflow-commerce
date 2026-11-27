@@ -14,7 +14,9 @@ import java.util.List;
  *
  * <p>{@code GET /api/v1/catalog/products} carries no permission — any signed-in user may search — so this tool carries
  * the assistant's own, the closest equivalent of "any signed-in back-office user". The results have no price and no
- * stock; the model combines them with {@code getStockLevels} for "is there any left".</p>
+ * stock; the model combines them with {@code getStockLevels} for "is there any left". Their SKUs are catalogue
+ * variants, which hold no stock since V20270105000100 (the goods are customers' own SKUs drawn on them), so
+ * {@code getStockLevels} given a variant lists its customers' SKUs' stock rather than answering NOT_FOUND.</p>
  *
  * <p><b>The first call when a product is named.</b> People ask about "the white 12 oz cup", the stock tools take a
  * SKU, and a SKU a model composes from the name is a guess that names nothing. So the description, like the system
@@ -37,8 +39,10 @@ class SearchCatalogTool implements AssistantTool {
                     + "best match first; truncated: true means more products matched than were returned. Only "
                     + "products published on the storefront are here: a SKU missing from the catalog may still be "
                     + "stocked, bought and sold, so never conclude from this tool that a SKU does not exist; when "
-                    + "nothing fits, ask the user for the SKU. No prices and no stock: use getStockLevels with a SKU "
-                    + "for stock.",
+                    + "nothing fits, ask the user for the SKU. No prices and no stock: the SKUs here are catalogue "
+                    + "variants, which hold no stock of their own - the goods are customers' own SKUs drawn on them. "
+                    + "For stock call getStockLevels with the variant's SKU: it lists the stock of the customers' SKUs "
+                    + "drawn on it.",
             ToolSchema.object()
                     .string("text", "What to search for, for example 'cốc giấy 12oz'")
                     .integer("limit", "How many products to return, 1 to " + MAX_ROWS)

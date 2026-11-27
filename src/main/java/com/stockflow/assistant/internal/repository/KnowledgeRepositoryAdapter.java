@@ -132,6 +132,21 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
     }
 
     @Override
+    public List<KnowledgeChunk> rules(java.util.Collection<String> anchors) {
+        if (anchors.isEmpty()) {
+            return List.of();
+        }
+        // A rule cut into passages is "15 BR-08", "15 BR-08 (2)", ...: the parts are found by the anchor's prefix.
+        return jdbc.query("""
+                        SELECT source, anchor, kind, title, body FROM assistant.knowledge_chunk
+                        WHERE kind = 'RULE' AND (anchor = ANY(:anchors) OR anchor LIKE ANY(:parts))
+                        ORDER BY anchor""",
+                new MapSqlParameterSource("anchors", anchors.toArray(String[]::new))
+                        .addValue("parts", anchors.stream().map(anchor -> anchor + " (%").toArray(String[]::new)),
+                CHUNK);
+    }
+
+    @Override
     public List<KnowledgeChunk> search(String query, int limit, int minMatched) {
         Set<String> words = KnowledgeSearch.words(query);
         List<String> anchors = KnowledgeSearch.namedRules(query);

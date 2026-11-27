@@ -46,7 +46,7 @@ import java.util.Set;
  * ({@code fulfillment-task-oversight:READ}), in their own warehouses; and, once picking is done (task PICKED, the goods
  * at the packing table), any packer of its warehouse ({@code fulfillment-packing:UPDATE}), who may take it there.
  * {@code pickingOf} applies the whole rule, so nothing is declared beside the screen's permission: warehouse staff, who
- * may open the assistant since V20261125000500 and hold no oversight, are served their own tasks and - seeded with
+ * may open the assistant since V20270106000500 and hold no oversight, are served their own tasks and - seeded with
  * packing - every PICKED task of their warehouse; a task they may not see gets the same note as an order without
  * one.</p>
  */
@@ -110,7 +110,8 @@ class GetOrderPickingTool implements AssistantTool {
         ScopeGuards.requireBackOffice(user);
         String number = arguments.text("orderNumber", 32);
         boolean readsOrders = user.can(ToolPermissions.SALES_ORDERS, Action.READ);
-        Optional<OrderSummary> order = orders.list(new ListOrdersQuery(0, 20, number, null, null, null, null, null))
+        Optional<OrderSummary> order = orders.list(new ListOrdersQuery(0, 20, number, null, null, null, null, null,
+                        OrderReach.limitOf(Optional.of(user))))
                 .items().stream()
                 .filter(candidate -> candidate.orderNumber().equalsIgnoreCase(number))
                 .findFirst();

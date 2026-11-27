@@ -33,14 +33,14 @@ class OrderCancellationListenerTest {
     private final PickListService pickLists = mock(PickListService.class);
     private final CartonCheckService cartonChecks = mock(CartonCheckService.class);
     private final OrderCancellationListener listener = new OrderCancellationListener(picks, packs, pickLists,
-            cartonChecks);
+            cartonChecks, java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC));
 
     private final UUID orderId = UUID.randomUUID();
     private final OrderCancelled event = new OrderCancelled(orderId, "SO-0001", UUID.randomUUID(), "RELEASED", "CUSTOMER",
             null, BigDecimal.ZERO, BigDecimal.ZERO, "VND", UUID.randomUUID(), NOW, BigDecimal.ZERO);
 
     private PickJpaEntity pick(PickStatus status) {
-        return new PickJpaEntity(UUID.randomUUID(), null, orderId, "SO-0001", WAREHOUSE, status);
+        return new PickJpaEntity(UUID.randomUUID(), orderId, "SO-0001", WAREHOUSE, status);
     }
 
     @Test

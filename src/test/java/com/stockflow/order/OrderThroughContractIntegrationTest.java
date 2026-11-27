@@ -18,7 +18,6 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderLine;
-import com.stockflow.order.internal.domain.OrderNumber;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.service.CreditHoldService;
 import com.stockflow.order.internal.service.CustomerOrders;
@@ -121,12 +120,21 @@ class OrderThroughContractIntegrationTest {
                 accountant));
     }
 
-    /** A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT: 2,200,000 with tax - as a converted quote. */
+    /** Accounting changes the limit afterwards (18 BR-02). */
+    private void lowerCredit(long limit) {
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE customer.credit_profile SET credit_limit = ? WHERE "
+                + "customer_id = ?", BigDecimal.valueOf(limit), customerId));
+    }
+
+    /**
+     * A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT: 2,200,000 with tax - as a converted quote. Numbered
+     * by the order sequence, which never hands a number out twice, not drawn at random from a range other classes share.
+     */
     private UUID draftOrder() {
         return tx.execute(s -> {
             OrderLine line = Order.line(Identifiers.newId(), new Sku(sku.sku()), 1000, Money.vnd(2_000), null)
                     .withCartons(sku.uomConversionId(), 20, 50).withTax(BigDecimal.TEN);
-            Order order = Order.draft(OrderNumber.of(today, 900_000 + ThreadLocalRandom.current().nextInt(49_999)),
+            Order order = Order.draft(orderRepository.nextOrderNumber(today),
                     customerId, Identifiers.newId(), List.of(line), Instant.now());
             return orderRepository.save(order).id().value();
         });
@@ -194,11 +202,15 @@ class OrderThroughContractIntegrationTest {
         asSales(() -> contracts.cancel(sales, orderId, sent.version(), "The customer wants another window"));
         assertThat(status(orderId)).as("14 §4.3 step 16: drawn up again").isEqualTo(OrderStatus.DRAFT);
         assertThat(jdbc.queryForObject("SELECT status FROM ordering.order_cancellation_request WHERE id = ?",
-                String.class, asked.requestId())).as("out of the customer's sight: the request closes")
-                .isEqualTo("EXPIRED");
+                String.class, asked.requestId())).as("17 §4.8 step 28: the order can still be cancelled, so the "
+                + "customer's request waits for Sales' decision").isEqualTo("PENDING");
         assertThat(jdbc.queryForObject("SELECT string_agg(to_status, '>' ORDER BY occurred_at, id) FROM "
                 + "ordering.order_status_history WHERE order_id = ?", String.class, orderId))
                 .contains("PENDING_CONTRACT").endsWith("DRAFT");
+        assertThat(jdbc.queryForObject("SELECT reason FROM ordering.order_status_history WHERE order_id = ? AND "
+                + "from_status = 'PENDING_CONTRACT' AND to_status = 'DRAFT'", String.class, orderId))
+                .as("the timeline says why, as CODE: note").isEqualTo("CONTRACT_CANCELLED: The customer wants another "
+                        + "window");
     }
 
     @Test
@@ -225,14 +237,46 @@ class OrderThroughContractIntegrationTest {
     }
 
     @Test
-    @DisplayName("15 BR-11: paying after delivery past the limit holds the order at signing; accounting decides")
-    void heldForCreditAndDecided() throws Exception {
+    @DisplayName("15 BR-11: past the limit, the contract waits for accounting before it is sent; approved, it is sent "
+            + "and signed without a hold")
+    void approvedBeforeSending() throws Exception {
         credit(1_000_000);
+        UUID orderId = draftOrder();
+        SalesContracts.ContractView waiting = sent(orderId, List.of(share("Deposit", "ON_SIGNING", "20"),
+                share("After delivery", "AFTER_DELIVERY", "80")));
+        assertThat(waiting.status()).as("not sent: it waits for accounting (2026-11-26)").isEqualTo("DRAFT");
+        assertThat(waiting.creditReview()).isEqualTo("PENDING");
+        assertThat(waiting.creditWarning().outcome()).isEqualTo("OVER_LIMIT");
+        assertThat(status(orderId)).isEqualTo(OrderStatus.DRAFT);
+
+        CurrentUser accounting = new CurrentUser(accountant, "accountant-" + accountant, Set.of(Role.ACCOUNTANT),
+                Set.of(), DataScope.ALL, Set.of(), Set.of());
+        SalesContracts.ContractView sent = WithCurrentUser.call(accounting, DataScope.ALL,
+                () -> contracts.approveCredit(accounting, orderId, waiting.version(), "Known customer"));
+        assertThat(sent.status()).isEqualTo("SENT");
+        assertThat(sent.sentBy()).as("sent as the Sales account that asked").isEqualTo(sales.userId());
+        assertThat(status(orderId)).isEqualTo(OrderStatus.PENDING_CONTRACT);
+
+        signed(orderId, sent);
+        assertThat(status(orderId)).as("no worse than approved: not held, it waits for the deposit on signing")
+                .isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(jdbc.queryForMap("SELECT outcome, pre_send_review_id FROM ordering.order_credit_check WHERE "
+                + "order_id = ? ORDER BY checked_at DESC LIMIT 1", orderId))
+                .containsEntry("outcome", "OVER_LIMIT")
+                .containsEntry("pre_send_review_id", sent.latestCreditReview().id());
+    }
+
+    @Test
+    @DisplayName("15 BR-11: paying after delivery past the limit at signing holds the order; accounting decides")
+    void heldForCreditAndDecided() throws Exception {
+        // Sent while the limit carried it, signed after accounting lowered it: held at signing as before.
+        credit(100_000_000);
         UUID approved = draftOrder();
         SalesContracts.ContractView sent = sent(approved, List.of(share("Deposit", "ON_SIGNING", "20"),
                 share("After delivery", "AFTER_DELIVERY", "80")));
-        assertThat(sent.creditWarning()).as("warned when sent, never refused").isNotNull();
-        assertThat(sent.creditWarning().outcome()).isEqualTo("OVER_LIMIT");
+        assertThat(sent.status()).isEqualTo("SENT");
+        assertThat(sent.creditWarning()).as("within the limit when sent").isNull();
+        lowerCredit(1_000_000);
         signed(approved, sent);
         OrderStatus held = status(approved);
         assertThat(held).isEqualTo(OrderStatus.ON_HOLD);
@@ -243,8 +287,12 @@ class OrderThroughContractIntegrationTest {
         assertThat(status(approved)).as("approved, it still waits for the deposit on signing")
                 .isEqualTo(OrderStatus.PENDING_PAYMENT);
 
+        lowerCredit(100_000_000);
         UUID refused = draftOrder();
-        signed(refused, sent(refused, List.of(share("After delivery", "AFTER_DELIVERY", "100"))));
+        SalesContracts.ContractView refusedSent = sent(refused, List.of(share("After delivery", "AFTER_DELIVERY",
+                "100")));
+        lowerCredit(1_000_000);
+        signed(refused, refusedSent);
         assertThat(status(refused)).isEqualTo(OrderStatus.ON_HOLD);
         // Its terms are its contract's: refusing credit cancels it - there is no other way to re-term it (4B-10).
         creditHolds.refuse(refused, "Too much owed", accountant);
@@ -268,7 +316,7 @@ class OrderThroughContractIntegrationTest {
                 CancellationReasonCode.CUSTOMER_REQUEST, "agreed with the customer", null, sales.userId())));
         assertThat(status(orderId)).isEqualTo(OrderStatus.CANCELLED);
         assertThat(jdbc.queryForObject("SELECT status || ':' || cancellation_reason FROM ordering.sales_contract WHERE "
-                + "order_id = ?", String.class, orderId)).isEqualTo("CANCELLED:Order cancelled: CUSTOMER_REQUEST");
+                + "order_id = ?", String.class, orderId)).as("the reason as the Vietnamese contract history reads it").isEqualTo("CANCELLED:Huỷ cùng đơn hàng: Khách yêu cầu");
         assertThatThrownBy(() -> asSales(() -> contracts.get(orderId)))
                 .extracting(OrderThroughContractIntegrationTest::code).isEqualTo(ErrorCode.SALES_CONTRACT_NOT_FOUND);
     }

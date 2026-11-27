@@ -28,7 +28,8 @@ WHAT IT CHECKS
   9    @Enumerated must be STRING - an ordinal enum breaks when constants are reordered
   10   the permission catalogue: every @RequiresPermission resource is declared by a
        @PermissionResource, and vice versa
-  11   Flyway version numbers are unique
+  11   Flyway version numbers are unique, and a migration this tree adds is newer than every one the
+       base already has (MIGRATION_BASE, else origin/develop; skipped when neither is in the clone)
   12   every @Table names a table some migration creates
   13   every @Scheduled method also carries @SchedulerLock
   14   @Transactional / @Scheduled / @ApplicationModuleListener methods are public, because a
@@ -265,6 +266,43 @@ for f in glob.glob(ROOT + "/src/main/resources/db/**/V*.sql", recursive=True):
 dups = [v for v, n in vers.items() if n > 1]
 if dups:
     problems.append(f"FLYWAY duplicate versions: {dups}")
+
+# 11b. A migration this tree adds is newer than every migration the base already has.
+#      Flyway does not run an older version out of order: once a database has run V..27, a V..26
+#      that arrives later fails validation at startup, and the deploy rolls back (25/11: #427 brought
+#      V20261226000300 after #444 had deployed V20261227000100, and every deploy failed for hours).
+#      Uniqueness (11) cannot see this, and the test suite cannot either - it migrates an empty
+#      database, where every order is fine. The base is MIGRATION_BASE when set (CI: the previous
+#      develop tip on a push, the target branch on a pull request), else origin/develop.
+def version_key(name):
+    return tuple(int(p) for p in re.split(r"[._]", name[1:]) if p.isdigit())
+
+def base_migration_versions(ref):
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", ROOT, "ls-tree", "-r", "--name-only", ref, "--",
+                              "src/main/resources/db/"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return {os.path.basename(p).split("__")[0] for p in out.splitlines()
+            if re.match(r"V[\d._]+__", os.path.basename(p)) and p.endswith(".sql")}
+
+explicit_base = os.environ.get("MIGRATION_BASE", "").strip()
+base_ref = explicit_base or "origin/develop"
+base_vers = base_migration_versions(base_ref)
+if base_vers is None:
+    if explicit_base:
+        # Set on purpose and not readable: fail, a check that cannot run must not pass quietly.
+        problems.append(f"FLYWAY ORDER: cannot read the migrations of MIGRATION_BASE={explicit_base} "
+                        f"(needs git and that commit in the clone, e.g. checkout fetch-depth: 0)")
+    else:
+        print(f"note: migration order not checked ({base_ref} not available)")
+elif base_vers:
+    newest = max(base_vers, key=version_key)
+    for v in sorted(set(vers) - base_vers, key=version_key):
+        if version_key(v) <= version_key(newest):
+            problems.append(f"FLYWAY ORDER: {v} is new here but older than {newest}, already on {base_ref}; "
+                            f"a database that ran {newest} refuses it - rename it above every existing version")
 
 # 12. SQL referenced tables exist in migrations
 sql = "\n".join(open(f).read() for f in glob.glob(ROOT + "/src/main/resources/db/**/*.sql", recursive=True))

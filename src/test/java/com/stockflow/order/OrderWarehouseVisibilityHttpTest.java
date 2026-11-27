@@ -89,8 +89,9 @@ class OrderWarehouseVisibilityHttpTest {
         return tx.execute(s -> orderRepository.save(com.stockflow.order.internal.domain.Order.draft(
                 com.stockflow.order.internal.domain.OrderNumber.of(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh")),
                         ORDER_NUMBERS.incrementAndGet()), DemoData.CUSTOMER_ID, Identifiers.newId(),
-                List.of(com.stockflow.order.internal.domain.Order.line(Identifiers.newId(), new Sku("SOFA-3S-GREY"), 1,
-                        Money.vnd(12_000_000), null)), java.time.Instant.now())).id().value());
+                List.of(com.stockflow.order.internal.domain.Order.line(Identifiers.newId(),
+                        new Sku(DemoData.SKU_STOCKED), 1, Money.vnd(12_000_000), null)), java.time.Instant.now()))
+                .id().value());
     }
 
     private UUID warehouse() {
@@ -138,6 +139,24 @@ class OrderWarehouseVisibilityHttpTest {
             mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + other + "/history"))
                     .andExpect(status().isNotFound());
         }
+    }
+
+    @Test
+    @DisplayName("A4: a released order names the warehouse it was released from, in the detail and in the list; an "
+            + "order not released yet names none")
+    void releasedOrderNamesItsWarehouse() throws Exception {
+        String code = jdbc.queryForObject("SELECT prefix FROM warehouse.warehouse WHERE id = ?", String.class, here);
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + releasedHere)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.warehouseId").value(here.toString()))
+                .andExpect(jsonPath("$.data.warehouseCode").value(code))
+                .andExpect(jsonPath("$.data.warehouseName").value("Visibility warehouse"));
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS).param("size", "200")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.orderId == '" + releasedHere + "')].warehouseCode").value(code))
+                .andExpect(jsonPath("$.data.items[?(@.orderId == '" + releasedHere + "')].warehouseName")
+                        .value("Visibility warehouse"));
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + shipsHere)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.warehouseCode").doesNotExist())
+                .andExpect(jsonPath("$.data.warehouseName").doesNotExist());
     }
 
     @Test

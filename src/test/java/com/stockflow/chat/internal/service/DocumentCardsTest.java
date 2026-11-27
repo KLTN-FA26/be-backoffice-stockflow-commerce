@@ -1,5 +1,6 @@
 package com.stockflow.chat.internal.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.stockflow.chat.api.PostedCard;
@@ -16,12 +17,14 @@ import com.stockflow.chat.internal.domain.MessageKind;
 import com.stockflow.chat.internal.domain.SenderType;
 import com.stockflow.chat.internal.domain.Visibility;
 import com.stockflow.contracts.EInvoiceIssued;
+import com.stockflow.contracts.QuoteStatusChanged;
 import com.stockflow.contracts.SalesContractStatusChanged;
 import com.stockflow.design.api.QuoteRequests;
 import com.stockflow.invoicing.api.IssuedEInvoices;
 import com.stockflow.order.api.ContractCards;
 import com.stockflow.order.api.QuoteCards;
 import com.stockflow.order.api.SampleRoundCards;
+import com.stockflow.payment.api.CompanyBankAccount;
 import com.stockflow.payment.api.CustomerInstallments;
 import com.stockflow.payment.api.PaymentService;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +35,7 @@ import org.mockito.ArgumentCaptor;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -60,6 +64,9 @@ class DocumentCardsTest {
     private final ContractCards contracts = mock(ContractCards.class);
     private final IssuedEInvoices einvoices = mock(IssuedEInvoices.class);
     private final QuoteRequests quoteRequests = mock(QuoteRequests.class);
+    private final CustomerInstallments installments = mock(CustomerInstallments.class);
+    private final PaymentService payments = mock(PaymentService.class);
+    private final QuoteCards quotes = mock(QuoteCards.class);
     private DocumentCards documents;
 
     private final UUID customer = UUID.randomUUID();
@@ -67,9 +74,8 @@ class DocumentCardsTest {
 
     @BeforeEach
     void setUp() {
-        documents = new DocumentCards(cards, messages, contexts, quoteRequests, mock(QuoteCards.class),
-                contracts, mock(SampleRoundCards.class), mock(CustomerInstallments.class), mock(PaymentService.class),
-                einvoices, json);
+        documents = new DocumentCards(cards, messages, contexts, quoteRequests, quotes,
+                contracts, mock(SampleRoundCards.class), installments, payments, einvoices, json);
         when(contexts.find(any())).thenAnswer(call -> Optional.of(new ContextResolver.Resolved(call.getArgument(0),
                 customer, "X", "ANY", null)));
         when(cards.post(any())).thenReturn(new PostedCard(UUID.randomUUID(), UUID.randomUUID(), 1));
@@ -187,6 +193,195 @@ class DocumentCardsTest {
         assertThat(router.agentFor(c, List.of())).contains(last);
         when(agents.agents()).thenReturn(Set.of());
         assertThat(router.agentFor(c, List.of(quote))).as("nobody: the queue").isEmpty();
+    }
+
+    private CustomerInstallments.Transfer transfer(UUID installment, String status, String outstanding) {
+        return new CustomerInstallments.Transfer(installment, customer, UUID.randomUUID(), "HD-1", order, "SO-1", 1,
+                "Đặt cọc khi ký", new BigDecimal("22680000"), new BigDecimal(outstanding), "VND",
+                LocalDate.of(2026, 11, 23), status, false, "HD-1 DOT1");
+    }
+
+    private ChatMessage cardIn(CardState state, UUID installment) {
+        ChatMessage open = card(CardKind.PAYMENT_INFO, "{\"installmentId\":\"" + installment + "\",\"reminder\":false}");
+        return new ChatMessage(open.id(), open.conversationId(), open.seq(), open.kind(), open.visibility(),
+                open.senderType(), null, null, null, open.contextId(),
+                new ChatMessage.Card(CardKind.PAYMENT_INFO, open.card().payloadJson(), state, null), open.sentAt(), null,
+                null, null, null, null);
+    }
+
+    @Test
+    @DisplayName("A2: a receipt voided after the card said paid opens the card again, owing, with its VietQR")
+    void voidReopensAPaidCard() {
+        UUID installment = UUID.randomUUID();
+        ChatMessage paid = cardIn(CardState.ACTED, installment);
+        when(messages.cardsOf(eq(customer), any(), any())).thenReturn(List.of(paid));
+        when(installments.transfer(installment)).thenReturn(Optional.of(transfer(installment, "DUE", "22680000")));
+        when(payments.companyBankAccount()).thenReturn(Optional.of(
+                new CompanyBankAccount("DEMO BANK", "0000000000", "DEMO STOCKFLOW", "970000")));
+
+        documents.paymentsChanged(customer);
+
+        ArgumentCaptor<JsonNode> payload = ArgumentCaptor.forClass(JsonNode.class);
+        verify(cards).update(eq(paid.id()), eq(CardState.OPEN), payload.capture(), any(), isNull(), isNull());
+        assertThat(payload.getValue().path("amount").decimalValue()).isEqualByComparingTo("22680000");
+        assertThat(payload.getValue().path("vietQr").isTextual()).isTrue();
+        verify(messages).cardsOf(eq(customer), any(), eq(EnumSet.of(CardState.OPEN, CardState.ACTED)));
+    }
+
+    @Test
+    @DisplayName("A1: an order cancelled - its card is CANCELLED and carries no VietQR, though money was left owing")
+    void cancelledOrderCardHasNoCode() {
+        UUID installment = UUID.randomUUID();
+        ChatMessage open = cardIn(CardState.OPEN, installment);
+        when(messages.cardsOf(eq(customer), any(), any())).thenReturn(List.of(open));
+        when(installments.transfer(installment)).thenReturn(Optional.of(transfer(installment, "CANCELLED", "12680000")));
+        when(payments.companyBankAccount()).thenReturn(Optional.of(
+                new CompanyBankAccount("DEMO BANK", "0000000000", "DEMO STOCKFLOW", "970000")));
+
+        documents.paymentsChanged(customer);
+
+        ArgumentCaptor<JsonNode> payload = ArgumentCaptor.forClass(JsonNode.class);
+        verify(cards).update(eq(open.id()), eq(CardState.CANCELLED), payload.capture(), any(), isNull(), isNull());
+        assertThat(payload.getValue().path("vietQr").isNull()).isTrue();
+    }
+
+    @Test
+    @DisplayName("a card already showing what is left is not touched: no update, so no conversation lock")
+    void unchangedCardIsLeftAlone() throws Exception {
+        UUID installment = UUID.randomUUID();
+        CustomerInstallments.Transfer paid = transfer(installment, "PAID", "0");
+        when(installments.transfer(installment)).thenReturn(Optional.of(paid));
+        when(payments.companyBankAccount()).thenReturn(Optional.of(
+                new CompanyBankAccount("DEMO BANK", "0000000000", "DEMO STOCKFLOW", "970000")));
+        String stored = json.writeValueAsString(documents.transferPayload(paid, false));
+        ChatMessage card = cardIn(CardState.ACTED, installment);
+        ChatMessage same = new ChatMessage(card.id(), card.conversationId(), card.seq(), card.kind(), card.visibility(),
+                card.senderType(), null, null, null, card.contextId(),
+                new ChatMessage.Card(CardKind.PAYMENT_INFO, stored, CardState.ACTED, null), card.sentAt(), null, null,
+                null, null, null);
+        when(messages.cardsOf(eq(customer), any(), any())).thenReturn(List.of(same));
+
+        documents.paymentsChanged(customer);
+
+        verify(cards, never()).update(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("WF-05 BE-04: an installment falling due again with a moved date posts no second card; the one posted "
+            + "shows the new date")
+    void dueAgainRedrawsTheCard() {
+        UUID installment = UUID.randomUUID();
+        ChatMessage open = cardIn(CardState.OPEN, installment);
+        CustomerInstallments.Transfer due = transfer(installment, "DUE", "22680000");
+        CustomerInstallments.Transfer moved = new CustomerInstallments.Transfer(due.installmentId(), due.customerId(),
+                due.contractId(), due.contractNumber(), due.orderId(), due.orderNumber(), due.seq(), due.name(),
+                due.amount(), due.outstanding(), due.currency(), LocalDate.of(2026, 12, 3), due.status(), false,
+                due.transferReference());
+        when(installments.transfer(installment)).thenReturn(Optional.of(moved));
+        when(messages.cardsAbout(new ContextRef(ContextKind.CONTRACT, moved.contractId()), CardKind.PAYMENT_INFO))
+                .thenReturn(List.of(open));
+        when(messages.cardsOf(eq(customer), any(), any())).thenReturn(List.of(open));
+
+        documents.installmentDue(new com.stockflow.contracts.InstallmentDue(installment, moved.contractId(), "HD-1",
+                order, customer, 1, LocalDate.of(2026, 12, 3), Instant.now()));
+
+        verify(cards, never()).post(any());
+        ArgumentCaptor<JsonNode> payload = ArgumentCaptor.forClass(JsonNode.class);
+        verify(cards).update(eq(open.id()), eq(CardState.OPEN), payload.capture(), any(), isNull(), isNull());
+        assertThat(payload.getValue().path("dueDate").asText()).isEqualTo("2026-12-03");
+    }
+
+    @Test
+    @DisplayName("B13: an installment turned overdue - its card says so, still payable with its code")
+    void overdueCard() {
+        UUID installment = UUID.randomUUID();
+        ChatMessage open = cardIn(CardState.OPEN, installment);
+        when(messages.cardsOf(eq(customer), any(), any())).thenReturn(List.of(open));
+        CustomerInstallments.Transfer due = transfer(installment, "DUE", "22680000");
+        when(installments.transfer(installment)).thenReturn(Optional.of(new CustomerInstallments.Transfer(
+                due.installmentId(), due.customerId(), due.contractId(), due.contractNumber(), due.orderId(),
+                due.orderNumber(), due.seq(), due.name(), due.amount(), due.outstanding(), due.currency(), due.dueDate(),
+                due.status(), true, due.transferReference())));
+        when(payments.companyBankAccount()).thenReturn(Optional.of(
+                new CompanyBankAccount("DEMO BANK", "0000000000", "DEMO STOCKFLOW", "970000")));
+
+        documents.paymentsChanged(customer);
+
+        ArgumentCaptor<JsonNode> payload = ArgumentCaptor.forClass(JsonNode.class);
+        verify(cards).update(eq(open.id()), eq(CardState.OPEN), payload.capture(), any(), isNull(), isNull());
+        assertThat(payload.getValue().path("overdue").asBoolean()).isTrue();
+        assertThat(payload.getValue().path("vietQr").isTextual()).isTrue();
+    }
+
+    @Test
+    @DisplayName("B1: a quote cancelled while revision 2 was a draft - revision 1's card ends too, on its own terms")
+    void earlierRevisionCardEnds() throws Exception {
+        UUID quote = UUID.randomUUID();
+        ContextRef ref = new ContextRef(ContextKind.QUOTE, quote);
+        when(quotes.quote(quote)).thenReturn(Optional.of(new QuoteCards.Card(quote, "QT-1", customer, "CANCELLED", 2,
+                Instant.now(), null, List.of(), new BigDecimal("999"), null, null, null, null, null, 7)));
+        ChatMessage first = card(CardKind.QUOTE,
+                "{\"quoteId\":\"" + quote + "\",\"revision\":1,\"status\":\"CHANGES_REQUESTED\",\"proposedTotal\":100}");
+        ChatMessage acted = new ChatMessage(first.id(), first.conversationId(), first.seq(), first.kind(),
+                first.visibility(), first.senderType(), null, null, null, first.contextId(),
+                new ChatMessage.Card(CardKind.QUOTE, first.card().payloadJson(), CardState.ACTED, null), first.sentAt(),
+                null, null, null, null, null);
+        when(messages.cardsAbout(ref, CardKind.QUOTE)).thenReturn(List.of(acted));
+
+        documents.quoteChanged(new QuoteStatusChanged(quote, "QT-1", customer, 2, "DRAFT", "CANCELLED", null,
+                Instant.now()));
+
+        ArgumentCaptor<JsonNode> payload = ArgumentCaptor.forClass(JsonNode.class);
+        verify(cards).update(eq(acted.id()), eq(CardState.CANCELLED), payload.capture(), any(), isNull(), any());
+        assertThat(payload.getValue().path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(payload.getValue().path("proposedTotal").asInt()).as("its own terms, not the unsent draft's")
+                .isEqualTo(100);
+    }
+
+    @Test
+    @DisplayName("BE-17: the contract sent - the order now the customer's - redraws the converted quote's card with "
+            + "the order; its state stays, and a signing does not redraw it")
+    void contractSentRedrawsTheQuoteCardWithTheOrder() {
+        UUID quote = UUID.randomUUID();
+        UUID contract = UUID.randomUUID();
+        ContextRef ref = new ContextRef(ContextKind.QUOTE, quote);
+        ChatMessage converted = card(CardKind.QUOTE, "{\"quoteId\":\"" + quote + "\",\"revision\":2,"
+                + "\"status\":\"CONVERTED\",\"convertedOrderId\":null}");
+        ChatMessage older = card(CardKind.QUOTE, "{\"quoteId\":\"" + quote + "\",\"revision\":1}");
+        when(messages.cardsAbout(ref, CardKind.QUOTE)).thenReturn(List.of(converted, older));
+        when(quotes.quoteOfOrder(order)).thenReturn(Optional.of(new QuoteCards.Card(quote, "QT-1", customer,
+                "CONVERTED", 2, Instant.now(), null, List.of(), new BigDecimal("999"), new BigDecimal("999"), order,
+                "SO-1", null, null, 7)));
+
+        documents.contractChanged(new SalesContractStatusChanged(contract, "HD-1", order, "SO-1", customer, "SENT",
+                UUID.randomUUID(), Instant.now()));
+
+        ArgumentCaptor<JsonNode> payload = ArgumentCaptor.forClass(JsonNode.class);
+        verify(cards).update(eq(converted.id()), isNull(), payload.capture(), eq(Actor.system()), isNull(), isNull());
+        assertThat(payload.getValue().path("convertedOrderId").asText()).isEqualTo(order.toString());
+        assertThat(payload.getValue().path("convertedOrderNumber").asText()).isEqualTo("SO-1");
+        verify(cards, never()).update(eq(older.id()), any(), any(), any(), any(), any());
+
+        documents.contractChanged(new SalesContractStatusChanged(contract, "HD-1", order, "SO-1", customer, "SIGNED",
+                UUID.randomUUID(), Instant.now()));
+        verify(quotes).quoteOfOrder(order);   // the SENT step only: signing does not change what the customer opens
+    }
+
+    @Test
+    @DisplayName("a card paid in full stays ACTED and draws no code")
+    void paidStaysActed() {
+        UUID installment = UUID.randomUUID();
+        ChatMessage paid = cardIn(CardState.ACTED, installment);
+        when(messages.cardsOf(eq(customer), any(), any())).thenReturn(List.of(paid));
+        when(installments.transfer(installment)).thenReturn(Optional.of(transfer(installment, "PAID", "0")));
+        when(payments.companyBankAccount()).thenReturn(Optional.of(
+                new CompanyBankAccount("DEMO BANK", "0000000000", "DEMO STOCKFLOW", "970000")));
+
+        documents.paymentsChanged(customer);
+
+        ArgumentCaptor<JsonNode> payload = ArgumentCaptor.forClass(JsonNode.class);
+        verify(cards).update(eq(paid.id()), eq(CardState.ACTED), payload.capture(), any(), isNull(), isNull());
+        assertThat(payload.getValue().path("vietQr").isNull()).isTrue();
     }
 
     private ChatMessage card(CardKind kind, String payload) {

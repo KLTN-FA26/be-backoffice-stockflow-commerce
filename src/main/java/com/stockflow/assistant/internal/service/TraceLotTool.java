@@ -96,7 +96,7 @@ class TraceLotTool implements AssistantTool {
     }
 
     @Override
-    @RequiresPermission(resource = ToolPermissions.INVENTORY_STOCK_MOVEMENTS, action = Action.READ,
+    @RequiresPermission(resource = ToolPermissions.LOT_TRACES, action = Action.READ,
             scope = DataScope.WAREHOUSE)
     public Answer run(ToolArguments arguments) {
         String number = arguments.text("lotNumber", 100);
@@ -112,7 +112,7 @@ class TraceLotTool implements AssistantTool {
         List<LotTraceView.OrderLeg> orders = view.orders().stream().sorted(MOST_RECENT_FIRST).toList();
         List<LotTraceView.Hold> live = view.holds().stream().filter(hold -> LIVE.equals(hold.status())).toList();
         return new Lot(view.sku(), view.lotNumber(), view.receivedAt(), view.origin(),
-                view.goodsReceiptNumber(), view.productionOrderCode(), view.receivedQuantity(),
+                view.productionOrderCode(), view.receivedQuantity(),
                 view.onHand(), view.available(), view.held(),
                 orders.size(), orders.size() > rows, orders.stream().limit(rows)
                         .map(o -> new OrderLeg(o.orderNumber(), o.picked(), o.putBack(), o.firstAt(), o.lastAt()))
@@ -139,7 +139,7 @@ class TraceLotTool implements AssistantTool {
      * @param holdsTotal    the live holds on the lot; closed ones are neither listed nor counted
      */
     record Lot(String sku, String lotNumber, Instant receivedAt, String origin,
-               String goodsReceiptNumber, String productionOrderCode, long receivedQuantity,
+               String productionOrderCode, long receivedQuantity,
                long onHand, long available, long held,
                int ordersTotal, boolean ordersTruncated, List<OrderLeg> orders,
                int balancesTotal, boolean balancesTruncated, List<Balance> balances,

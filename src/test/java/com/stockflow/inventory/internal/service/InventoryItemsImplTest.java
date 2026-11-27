@@ -18,7 +18,6 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -49,11 +48,12 @@ class InventoryItemsImplTest {
     private final InventoryItemsImpl service = new InventoryItemsImpl(policies, search, users, retirement);
 
     private static ItemLogistics logistics(String unit, String barcode) {
-        return new ItemLogistics(unit, barcode, BigDecimal.ONE, null, null, null, null, null, null, null, 1, 1);
+        return new ItemLogistics(unit, barcode);
     }
 
     private ItemRow row(long version, String unit) {
-        return new ItemRow(ID, SKU, version, logistics(unit, null));
+        return new ItemRow(ID, SKU, version, logistics(unit, null), UUID.randomUUID());
+
     }
 
     @BeforeEach

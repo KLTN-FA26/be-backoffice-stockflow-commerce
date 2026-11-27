@@ -27,7 +27,10 @@ public record CustomerOrderDetailResponse(
 
         @Schema(example = "UNDER_REVIEW", description = "What the customer reads: AWAITING_CONTRACT, AWAITING_PAYMENT, "
                 + "UNDER_REVIEW, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION (legacy), PREPARING, SHIPPING, DELIVERED, "
-                + "CANCELLED or RETURNED")
+                + "RETURN_REQUESTED (a return is being decided; the goods are still the customer's), CANCELLED, "
+                + "RETURNED (the order ended in a return and nothing of it stayed with the customer) or "
+                + "PARTIALLY_RETURNED (it ended in a return but the customer kept delivered goods). Parse tolerantly: "
+                + "more may come")
         String statusGroup,
 
         @Schema(example = "AWAITING_CREDIT_APPROVAL", description = "Set only while the order is ON_HOLD: "
@@ -49,8 +52,9 @@ public record CustomerOrderDetailResponse(
         List<TimelineEntry> timeline,
 
         @Schema(example = "NOT_SHIPPED", description = "NOT_SHIPPED, IN_TRANSIT, PARTIALLY_DELIVERED, DELIVERY_FAILED, "
-                + "DELIVERED or RETURNED - only what staff have recorded; nothing is tracked after handover to the "
-                + "carrier. Parse tolerantly: more may come")
+                + "DELIVERED, RETURNED or PARTIALLY_RETURNED (ended in a return, the customer kept delivered goods) - only "
+                + "what staff have recorded; nothing is tracked after handover to the carrier. Parse tolerantly: more may "
+                + "come")
         String deliveryState,
 
         @Schema(description = "What the customer may do now (G3-2): the portal shows these buttons instead of keeping "
@@ -73,7 +77,13 @@ public record CustomerOrderDetailResponse(
         BigDecimal taxAmount,
 
         @Schema(description = "4B-3: the plate fee of each SKU produced for the first time, and the shipping fee")
-        List<Fee> fees
+        List<Fee> fees,
+
+        @Schema(description = "R5-7: the quote the order was converted from; null for an order no quote became")
+        UUID sourceQuoteId,
+
+        @Schema(example = "QT-20261109-0007", description = "R5-7: that quote's number; set where sourceQuoteId is")
+        String sourceQuoteNumber
 ) {
 
     @Schema(name = "CustomerOrderFee")
@@ -87,6 +97,10 @@ public record CustomerOrderDetailResponse(
 
     @Schema(name = "CustomerOrderShipment")
     public record Shipment(
+            @Schema(description = "WF-05 TH-1: the id a return of this shipment's goods names (POST /api/v1/returns, "
+                    + "shipmentId) - required when the order was delivered in more than one shipment. Null only for "
+                    + "an order whose goods left as a whole with no shipment recorded; its return names none")
+            UUID shipmentId,
             @Schema(example = "SO-20261021-000123-S1", description = "Null for a shipment recorded before 2026-10-21")
             String shipmentCode,
             @Schema(example = "HANDED_OVER", description = "HANDED_OVER (with the carrier), DELIVERED, DELIVERY_FAILED or "
@@ -101,7 +115,35 @@ public record CustomerOrderDetailResponse(
             Instant outcomeAt,
             @Schema(example = "CUSTOMER_ABSENT", description = "Why a delivery failed: CUSTOMER_ABSENT, REFUSED, "
                     + "WRONG_ADDRESS, LOST, DAMAGED or OTHER; stays after a retry delivered it")
-            String failureReason) {
+            String failureReason,
+            @Schema(description = "WF-05 TH-1: what this shipment carried, line by line, and how much of each line a "
+                    + "return opened now against this shipment (POST /api/v1/returns with this shipmentId) may claim. "
+                    + "For the shipment made up from an order that left as a whole: the order's lines")
+            List<ShipmentLine> lines) {
+    }
+
+    @Schema(name = "CustomerOrderShipmentLine")
+    public record ShipmentLine(
+            @Schema(description = "The order line (lines[].lineId), as a return's lines[].orderLineId names it")
+            UUID orderLineId,
+            String sku,
+            @Schema(description = "Units of the line this shipment carried")
+            int quantity,
+            @Schema(description = "The most units of the line a return opened now against this shipment may claim: "
+                    + "what the shipment delivered less what the shipment's other returns (and the line's returns in "
+                    + "all) still claim - rejected, cancelled and expired returns claim nothing. The bound the return "
+                    + "itself enforces (RETURN_QUANTITY_EXCEEDED). 0 means none can be claimed now: the shipment is "
+                    + "not delivered, its return window has closed, the order takes no more returns on the portal, the "
+                    + "account is not active (RETURN_CUSTOMER_NOT_ACTIVE), a "
+                    + "return of this line is already open on this shipment (RETURN_LINE_ALREADY_OPEN), or every unit "
+                    + "is claimed. Above 0 is a ceiling, not a promise: a line printed to the customer's design "
+                    + "(designSnapshotId set) still comes back only for a named defect")
+            int returnableQuantity,
+            @Schema(description = "The name of the product the SKU belongs to, as on lines[]: the return form names "
+                    + "what it returns without a lookup; null for a SKU the catalogue does not know")
+            String productName,
+            @Schema(description = "The SKU's own (variant) name, as on lines[]; null for an unknown SKU")
+            String variantName) {
     }
 
     @Schema(name = "CustomerOrderCancellationRequest")
@@ -138,7 +180,17 @@ public record CustomerOrderDetailResponse(
             @Schema(description = "4B-3 (14 BR-21): the line's VAT rate; null on a line placed without VAT")
             BigDecimal taxRate,
             @Schema(description = "4B-3: the line's VAT, lineTotal x taxRate rounded to the dong")
-            BigDecimal taxAmount) {
+            BigDecimal taxAmount,
+            @Schema(description = "R5-3: the name of the design the SKU was made to; null for a SKU with no design")
+            String designName,
+            @Schema(description = "R5-3: a short-lived link showing that design's preview image; null when there is "
+                    + "none")
+            String previewUrl,
+            @Schema(description = "The name of the product the SKU belongs to: the customer does not know their SKUs "
+                    + "by code. Null for a SKU the catalogue does not know")
+            String productName,
+            @Schema(description = "The SKU's own (variant) name; null for an unknown SKU")
+            String variantName) {
     }
 
     @Schema(name = "CustomerOrderLineProduction")

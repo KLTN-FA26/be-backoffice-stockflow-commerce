@@ -1,5 +1,6 @@
 package com.stockflow.inventory.internal.service;
 
+import com.stockflow.support.StockedSkus;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
@@ -20,7 +21,6 @@ import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
-import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
@@ -68,20 +68,32 @@ class InventoryItemsIntegrationTest {
 
     private record Fixture(UUID productId, String sku, UUID itemId) {}
 
+    /**
+     * A product of the catalogue and a customer's SKU on its default variant, with the item the SKU's order made: only
+     * a customer's SKU has an item (owner decision Q5, V20270105000100).
+     */
     private Fixture fixture() {
         var created = ProductFixtures.draft(products, tax, suffix);
-        String sku = "FX-" + suffix;
+        String sku = ownSkuOf(created.productId(), "FX-" + suffix);
         return new Fixture(created.productId(), sku, itemId(sku));
+    }
+
+    /** A customer's SKU drawn on the catalogue variant {@code variantSku}, with its item; its code. */
+    private String ownSkuOf(UUID productId, String variantSku) {
+        String sku = variantSku + "-C";
+        tx.executeWithoutResult(s -> StockedSkus.customerSkuOf(jdbc,
+                com.stockflow.support.DemoData.CUSTOMER_ID, productId,
+                jdbc.queryForObject("select id from product.variants where sku = ?", UUID.class, variantSku), sku,
+                "Item fixture"));
+        return sku;
     }
 
     private UUID itemId(String sku) {
         return jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
     }
 
-    private ItemLogistics logistics(String unit, String barcode, String weightKg) {
-        return new ItemLogistics(unit, barcode, new BigDecimal(weightKg), new BigDecimal("8"), new BigDecimal("8"),
-                new BigDecimal("10"), new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"),
-                new BigDecimal("50"), 1, 50);
+    private ItemLogistics logistics(String unit, String barcode) {
+        return new ItemLogistics(unit, barcode);
     }
 
     private static ErrorCode codeOf(Runnable call) {
@@ -111,16 +123,16 @@ class InventoryItemsIntegrationTest {
     void describeBumpsTheVersion() {
         var f = fixture();
         var before = items.get(f.itemId());
-        var after = items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.120"));
+        var after = items.describe(f.itemId(), before.version(), logistics("EACH", null));
         assertThat(after.version()).isEqualTo(before.version() + 1);
-        assertThat(after.logistics().weightKg()).isEqualByComparingTo("0.120");
+
     }
 
     @Test
     void writesAuditTheItemIdNotTheVariant() {
         var f = fixture();
         var before = items.get(f.itemId());
-        items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.120"));
+        items.describe(f.itemId(), before.version(), logistics("EACH", null));
         Await.until("the audit row of the item", Duration.ofSeconds(10), () -> jdbc.queryForObject(
                 "select count(*) from platform.audit_log where resource_type = 'inventory-item' and resource_id = ?",
                 Long.class, f.itemId().toString()) > 0);
@@ -130,7 +142,7 @@ class InventoryItemsIntegrationTest {
     void writesNoProductHistory() {
         var f = fixture();
         var before = items.get(f.itemId());
-        items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.120"));
+        items.describe(f.itemId(), before.version(), logistics("EACH", null));
         assertThat(jdbc.queryForObject("""
                 select count(*) from product.product_change_log
                 where change_type in ('LOGISTICS','INVENTORY_CONTROL') and product_id = ?""",
@@ -142,23 +154,22 @@ class InventoryItemsIntegrationTest {
         var f = fixture();
         products.submit(f.productId(), editor);
         var before = items.get(f.itemId());
-        var after = items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.200"));
+        var after = items.describe(f.itemId(), before.version(), logistics("EACH", null));
         assertThat(after.version()).isEqualTo(before.version() + 1);
     }
 
     @Test
     void unitChangeWhileStockIsHeldIs409() {
         var f = fixture();
-        // A carton of five in stock (stock is whole cartons only, ck_stock_item_whole_cartons).
+        // A carton of five in stock: the carton is the stock (ADR-0011).
         tx.executeWithoutResult(s -> CartonRows.carton(jdbc, f.sku(), "HCM-A01-1-A", 5, null, Instant.now(),
                 "AVAILABLE"));
         var before = items.get(f.itemId());
         try {
-            assertThat(codeOf(() -> items.describe(f.itemId(), before.version(), logistics("BOX", null, "0.120"))))
+            assertThat(codeOf(() -> items.describe(f.itemId(), before.version(), logistics("BOX", null))))
                     .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
         } finally {
             tx.executeWithoutResult(s -> {
-                jdbc.update("delete from inventory.stock_item where sku = ?", f.sku());
                 jdbc.update("delete from inventory.stock_package where inventory_item_id = ?", f.itemId());
             });
         }
@@ -168,12 +179,12 @@ class InventoryItemsIntegrationTest {
     void duplicateBarcodeIs409() {
         var f = fixture();
         var extra = variants.add(f.productId(), new NewVariant("FX-" + suffix + "-16", "16oz", null, null));
-        UUID secondId = itemId(extra.sku());
+        UUID secondId = itemId(ownSkuOf(f.productId(), extra.sku()));
         String barcode = "893" + suffix.replaceAll("[^0-9]", "1");
         var first = items.get(f.itemId());
-        items.describe(f.itemId(), first.version(), logistics("EACH", barcode, "0.120"));
+        items.describe(f.itemId(), first.version(), logistics("EACH", barcode));
         var second = items.get(secondId);
-        assertThat(codeOf(() -> items.describe(secondId, second.version(), logistics("EACH", barcode, "0.120"))))
+        assertThat(codeOf(() -> items.describe(secondId, second.version(), logistics("EACH", barcode))))
                 .isEqualTo(ErrorCode.CONFLICT);
     }
 
@@ -181,8 +192,8 @@ class InventoryItemsIntegrationTest {
     void aStaleVersionIsOptimisticLock() {
         var f = fixture();
         var before = items.get(f.itemId());
-        items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.130"));
-        assertThat(codeOf(() -> items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.120"))))
+        items.describe(f.itemId(), before.version(), logistics("EACH", null));
+        assertThat(codeOf(() -> items.describe(f.itemId(), before.version(), logistics("EACH", null))))
                 .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
     }
 

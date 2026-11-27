@@ -20,7 +20,7 @@ class CustomerPriceTest {
     }
 
     private static CustomerPrice price(List<CustomerPrice.Tier> tiers) {
-        return new CustomerPrice(UUID.randomUUID(), UUID.randomUUID(), "SOFA-3S-GREY", tiers, null, 0);
+        return new CustomerPrice(UUID.randomUUID(), UUID.randomUUID(), "LY-GIAY-DEMO-12OZ-XANH", tiers, null, 0);
     }
 
     @Test

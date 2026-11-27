@@ -16,7 +16,16 @@ import java.util.UUID;
 public record InstallmentResponse(UUID installmentId, UUID contractId,
                                   @Schema(example = "HD-20261108-000007-1") String contractNumber,
                                   UUID orderId, @Schema(example = "SO-20261108-000007") String orderNumber,
-                                  UUID customerId, int seq, @Schema(example = "Đặt cọc") String name,
+                                  UUID customerId,
+                                  @Schema(description = "The customer's registered name, so staff who read the "
+                                          + "installment see whose it is without the customer profile; null when the "
+                                          + "customer record is gone")
+                                  String customerName,
+                                  @Schema(description = "The code the customer is known by (tax code, or KH + 8 "
+                                          + "characters of the id); null when the customer record is gone",
+                                          example = "0312345678")
+                                  String customerCode,
+                                  int seq, @Schema(example = "Thanh toán trước khi ký") String name,
                                   @Schema(description = "CANCELLATION_FEE: the part of a cancellation fee the "
                                           + "money collected did not cover (15 §4.6 step 18), paid like an installment. "
                                           + "FAILED_TRIP_FEE: the trip of a delivery the customer refused or "
@@ -47,7 +56,10 @@ public record InstallmentResponse(UUID installmentId, UUID contractId,
                                   @Schema(description = "What the customer writes in the transfer: contract number + "
                                           + "installment (15 §4.2 step 5)", example = "HD-20261108-000007-1 DOT1")
                                   String transferReference,
-                                  List<Receipt> receipts) {
+                                  List<Receipt> receipts,
+                                  @Schema(description = "R5-12: days past dueDate it is still owing, today in the "
+                                          + "business calendar; 0 when not overdue")
+                                  int daysOverdue) {
 
     /** A receipt with a line paying it. */
     public record Receipt(UUID receiptId, String reference, LocalDate receivedOn, BigDecimal amount,

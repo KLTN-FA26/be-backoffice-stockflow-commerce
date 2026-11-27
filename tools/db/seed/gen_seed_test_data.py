@@ -335,7 +335,7 @@ PRODUCTS = [
      [("8OZ", "8 oz", 0.006), ("12OZ", "12 oz", 0.008), ("16OZ", "16 oz", 0.011)]),
     ("LY-NHUA-PET", "Ly nhựa PET in logo", "LY-NHUA", "STANDARD", "parametric-cup", "DUNG_TICH",
      [("16OZ", "16 oz", 0.012), ("22OZ", "22 oz", 0.016)]),
-    ("HOP-BANH-KRAFT", "Hộp bánh giấy kraft in logo", "HOP-GIAY", "REDUCED", "parametric-bag", "KICH_THUOC",
+    ("HOP-BANH-KRAFT", "Hộp bánh giấy kraft in logo", "HOP-GIAY", "STANDARD", "parametric-bag", "KICH_THUOC",
      [("M", "Vừa 18x18 cm", 0.035)]),
     ("TUI-GIAY-QUAI", "Túi giấy quai xoắn in logo", "TUI-GIAY", "STANDARD", "parametric-bag", "KICH_THUOC",
      [("M", "Vừa 25x33 cm", 0.06), ("L", "Lớn 32x43 cm", 0.09)]),
@@ -375,8 +375,8 @@ for pcode, pname, cat, taxc, model, axis, variants in PRODUCTS:
             bleed_mm=2, shape_json={"type": "annular-sector" if cup else "rect"}, uv_mapping_json={"meshPart": "body"})
         VARIANT[sku] = dict(id=vid, product=pcode, product_id=pid, label=label, kg=kg, tax=taxc, name=pname,
                             template=tid)
-        raw(f"UPDATE inventory.inventory_items SET weight_kg = {kg}, length_cm = 9, width_cm = 9, height_cm = 11 "
-            f"WHERE sku = '{sku}';")
+        # kg is one cup's weight, used only to work out the full carton's weight below: the item has no weight or
+        # size of its own (V20261215000100, kltn-docs 01 BR-03).
 TAX_RATE = {"STANDARD": 10, "REDUCED": 5, "EXEMPT": 0}
 
 # ============================================================================ 4. customers
@@ -465,6 +465,7 @@ section("6. designs approved for customers, and the SKUs issued on them")
 # Pieces to a carton, by product; every carton is 60 x 40 x 50 cm.
 CARTON = {"LY-GIAY-2L": 1000, "LY-NHUA-PET": 500, "HOP-BANH-KRAFT": 300, "TUI-GIAY-QUAI": 200}
 SKU = {}       # customer sku -> facts
+VARIANT_CARTON = {}   # blank -> its one carton: every customer SKU drawn on it is packed in it (owner decision Q1)
 REVIEW_NOTE = "Đạt: 300 DPI, CMYK, chừa lề an toàn 3 mm"
 
 
@@ -521,28 +522,43 @@ def design(key, cust, blank, name, status, when, project=None):
 
 
 def customer_sku(cust, blank, suffix, name, when, project=None):
-    """The customer's own SKU drawn on the blank once its design is approved (kltn-docs 12 §4.5, 01 BR-03), sold and
-    stocked in cartons of its product's carton unit."""
+    """The customer's own SKU drawn on the blank once its design is approved (kltn-docs 12 §4.5, 01 BR-03), a row of
+    product.customer_skus (owner decision Q4, V20270105000100), sold and stocked in its blank's carton: the carton is
+    the catalogue variant's, declared once and shared by every customer SKU drawn on it (Q1, V20270104000100). The
+    approval makes no inventory item: the order that first names the SKU does (Q5, open_item)."""
     v = VARIANT[blank]
     sku = f"{blank}-{suffix}"
     d = design("d:" + sku, cust, blank, name, "APPROVED", when, project)
-    ins("product.variants", d["at"], id=uid("variant:" + sku), product_id=v["product_id"], sku=sku,
-        name=f"{v['name']} - {name}", status="ACTIVE", is_default=False, attribute_signature="OWNED-SKU:" + sku,
-        position=10, owner_customer_id=CUST[cust]["id"], design_snapshot_id=d["snapshot"], source_variant_id=v["id"])
+    ins("product.customer_skus", d["at"], id=uid("variant:" + sku), product_id=v["product_id"], variant_id=v["id"],
+        customer_id=CUST[cust]["id"], design_snapshot_id=d["snapshot"], sku=sku, name=f"{v['name']} - {name}",
+        status="ACTIVE")
     per = CARTON[v["product"]]
     barcode = "89" + f"{int(hashlib.md5(sku.encode()).hexdigest(), 16) % 10 ** 11:011d}"
-    raw(f"UPDATE inventory.inventory_items SET weight_kg = {v['kg']}, length_cm = 9, width_cm = 9, height_cm = 11, "
-        f"barcode = '{barcode}' WHERE sku = '{sku}';")
-    unit = uid("unit:" + sku)
     weight = round(per * v["kg"] + 0.6, 3)
-    ins("inventory.uom_conversions", d["at"], id=unit,
-        inventory_item_id=Raw(f"(SELECT id FROM inventory.inventory_items WHERE sku = '{sku}')"),
-        unit_of_measure="THUNG", factor=per, is_base=False, weight_kg=weight, length_cm=60, width_cm=40, height_cm=50,
-        default_purchase=False, active=True, default_shipping=True)
+    if blank not in VARIANT_CARTON:
+        VARIANT_CARTON[blank] = uid("unit:" + blank)
+        ins("inventory.uom_conversions", d["at"], id=VARIANT_CARTON[blank], variant_id=v["id"],
+            unit_of_measure="THUNG", factor=per, weight_kg=weight, length_cm=60, width_cm=40, height_cm=50,
+            active=True)
+    unit = VARIANT_CARTON[blank]
     SKU[sku] = dict(sku=sku, cust=cust, blank=blank, unit=unit, per=per, snapshot=d["snapshot"],
                     checksum=d["checksum"], tax=v["tax"], rate=TAX_RATE[v["tax"]], name=name, product=v["product"],
-                    weight=weight)
+                    weight=weight, barcode=barcode, variant=v["id"])
     return sku
+
+
+ITEMS = set()  # customer SKUs whose inventory item an order has made
+
+
+def open_item(sku, when):
+    """The inventory item of a customer's SKU, made when Sales converts the first quote naming it into an order (owner
+    decision Q5, InventoryService.openItems), packed as the variant it was drawn on."""
+    if sku in ITEMS:
+        return
+    ITEMS.add(sku)
+    s = SKU[sku]
+    ins("inventory.inventory_items", when, id=uid("item:" + sku), sku=sku, variant_id=s["variant"],
+        barcode=s["barcode"])
 
 
 PROJECT = uid("project:trasuamay")
@@ -635,7 +651,10 @@ SELLER = dict(seller_name="Công ty TNHH StockFlow Commerce", seller_tax_code="0
               seller_representative="Võ Hoàng Minh", seller_representative_title="Giám đốc")
 STAFF_OF = {"HAN": ("quanly.hn", "kho.hn1", "kho.hn2"), "BDG": ("quanly.bd", "kho.bd1", "kho.bd2")}
 NEXT_BIN = {"HAN": 0, "BDG": 0}
-STOCK = {}          # stock row id -> facts (sku, warehouse, location, on_hand, reserved, package, lpn, lot, status)
+# The stock, in memory: one entry per carton in or out of stock. The carton IS the stock (ADR-0011, V20261231000600):
+# the database keeps a stock status, a lot and a receipt date on inventory.stock_package and no quantity; on_hand and
+# reserved here are the generator's own arithmetic (a carton's count while it is in stock / while an order holds it).
+STOCK = {}          # key -> facts (sku, warehouse, location, on_hand, reserved, package, lpn, lot, status)
 ORDERS = []
 
 
@@ -737,6 +756,7 @@ class Order:
             contact_phone=c["phone"], tax_amount=self.tax, **ship)
         self.log(None, "DRAFT", when, U[sales], f"Chuyển từ báo giá {self.q['number']}")
         for ln in self.lines:
+            open_item(ln["sku"], when)
             ins("ordering.order_line", id=ln["id"], order_id=self.id, sku=ln["sku"], quantity=ln["units"],
                 unit_price=ln["price"], currency="VND", requested_delivery_date=(when + timedelta(days=30)).date(),
                 uom_conversion_id=ln["s"]["unit"], cartons=ln["cartons"], units_per_carton=ln["per"],
@@ -828,8 +848,8 @@ class Order:
             shipping_warehouse_chosen_by=U[by])
         commit()
 
-    def production(self, key, seq, producer, when, path, sample=False, waiver=None, price=None):
-        return ProductionOrder(self, key, seq, producer, when, path, sample, waiver, price)
+    def production(self, key, seq, producer, when, path, sample=False, waiver=None):
+        return ProductionOrder(self, key, seq, producer, when, path, sample, waiver)
 
     def hold(self, when):
         """Sales holds, at the shipping warehouse, the whole cartons each batch not released yet still lacks, as many
@@ -851,9 +871,10 @@ class Order:
                 if qty <= 0:
                     continue
                 rid = uid(f"hold:{self.key}:{b['seq']}:{ln['id']}:{len(ln['holds'])}")
-                ins("inventory.stock_reservation", id=rid, stock_item_id=None, order_id=self.id, root_request_id=rid,
-                    request_id=rid, quantity=qty, reserved_at=when, expires_at=None, status="HELD", sku=ln["sku"],
-                    warehouse_code=self.p)
+                # A hold counts cartons of the line's count (ADR-0011, V20261231000500); its units are derived.
+                ins("inventory.stock_reservation", id=rid, stock_package_id=None, order_id=self.id, root_request_id=rid,
+                    request_id=rid, cartons=qty // ln["per"], units_per_carton=ln["per"], reserved_at=when,
+                    status="HELD", sku=ln["sku"], warehouse_code=self.p)
                 ins("ordering.order_line_reservation", order_line_id=ln["id"], reservation_id=rid)
                 ins("ordering.delivery_batch_hold", when, reservation_id=rid, delivery_batch_id=b["id"],
                     order_id=self.id, order_line_id=ln["id"])
@@ -876,16 +897,16 @@ class Order:
             for h in [h for h in ln["holds"] if h["batch"] == seq and h["status"] == "HELD"]:
                 rows = sorted((r for r in STOCK.values() if r["sku"] == ln["sku"] and r["wh"] == self.p
                                and r["status"] == "AVAILABLE" and r["reserved"] == 0 and not r["staged"]
-                               and r["on_hand"] > 0), key=lambda r: (r["received"], r["lpn"]))
+                               and r["on_hand"] == ln["per"]), key=lambda r: (r["received"], r["lpn"]))
                 need = h["qty"]
                 for r in rows:
                     if need <= 0:
                         break
                     aid = uid(f"alloc:{h['id']}:{r['id']}")
-                    ins("inventory.stock_reservation", id=aid, stock_item_id=r["id"], order_id=self.id,
-                        root_request_id=h["id"], request_id=aid, quantity=r["on_hand"], reserved_at=when,
-                        expires_at=None, status="HELD", sku=ln["sku"], allocated_from_id=h["id"])
-                    upd("inventory.stock_item", r["id"], reserved=r["on_hand"])
+                    # The allocation names its carton; while it is HELD the carton is taken (no counter beside it).
+                    ins("inventory.stock_reservation", id=aid, stock_package_id=r["package"], order_id=self.id,
+                        root_request_id=h["id"], request_id=aid, cartons=1, units_per_carton=r["on_hand"],
+                        reserved_at=when, status="HELD", sku=ln["sku"], allocated_from_id=h["id"])
                     r["reserved"] = r["on_hand"]
                     need -= r["on_hand"]
                     ins("ordering.delivery_batch_hold", when, reservation_id=aid, delivery_batch_id=b["id"],
@@ -963,7 +984,7 @@ class ProductionOrder:
     """A production order for one delivery batch, at one producer (kltn-docs 17 §4.3, §5.3): drawn up as a DRAFT and
     moved only along ordering.production_order_status_transition."""
 
-    def __init__(self, o, key, seq, producer, when, path, sample, waiver, price):
+    def __init__(self, o, key, seq, producer, when, path, sample, waiver):
         self.o, self.key = o, key
         self.id = uid("po:" + key)
         self.code = next_no("PRD", when.date(), "PRD-{d}-{n:04d}")
@@ -976,7 +997,7 @@ class ProductionOrder:
             receiving_warehouse_id=WID[o.p], need_by_date=self.batch["start"] - timedelta(days=3), status="DRAFT",
             sample_approval_required=sample, sample_required_by_default=True,
             sample_waiver_reason=None if sample else (waiver or "Mẫu in đã được khách duyệt ở đơn trước"),
-            unit_price=price, currency="VND", note=f"Đợt {seq} của {o.contract_number}", drawn_up_by=U["dieuphoi"])
+            note=f"Đợt {seq} của {o.contract_number}", drawn_up_by=U["dieuphoi"])
         self.lines = []
         for ln, n in zip(o.lines, self.batch["cartons"]):
             if not n:
@@ -988,9 +1009,10 @@ class ProductionOrder:
             self.lines.append(dict(id=lid, line=ln, cartons=n, received=0))
         self.log(None, "DRAFT", when, U["dieuphoi"], "Lập đơn sản xuất")
         commit()
-        steps = {"PENDING_APPROVAL": self.submit, "SENT": self.send, "ACCEPTED": self.accept,
-                 "IN_PRODUCTION": self.start}
-        t = when
+        steps = {"SENT": self.send, "ACCEPTED": self.accept, "IN_PRODUCTION": self.start}
+        # One day after the draft, as when it was submitted and approved the day after: the coordinator now sends it
+        # with no approval step (V20261213000100), and the later steps keep their days.
+        t = when + timedelta(days=1)
         for step in path:
             t = t + timedelta(days=1)
             steps[step](t)
@@ -1007,12 +1029,8 @@ class ProductionOrder:
         self.status = to
         commit()
 
-    def submit(self, when):
-        self.move("PENDING_APPROVAL", when, U["dieuphoi"], "Gửi duyệt", submitted_at=when)
-
     def send(self, when):
-        self.move("SENT", when, U["truongkd"], "Duyệt và gửi xưởng", approved_by=U["truongkd"], approved_at=when,
-                  sent_at=when)
+        self.move("SENT", when, U["dieuphoi"], "Gửi xưởng", sent_by=U["dieuphoi"], sent_at=when)
         slip = stored_file("documents", uid("slip:" + self.key), "application/pdf", when, f"Phieu san xuat {self.code}")
         ins("ordering.production_order_slip", when, production_order_id=self.id, storage_key=slip["key"],
             sha256=slip["checksum"], size_bytes=slip["size"])
@@ -1087,13 +1105,15 @@ class ProductionOrder:
             for _ in range(n):
                 pkg = dict(id=uid(f"pkg:{rl}:{len(cartons)}"), lpn=lpn(when.date()), line=rl, ln=ln, pl=pl)
                 ins("inventory.stock_package", when, id=pkg["id"], lpn=pkg["lpn"], inventory_item_id=item,
-                    uom_conversion_id=ln["s"]["unit"], nominal_qty=ln["per"], received_qty=ln["per"],
+                    uom_conversion_id=ln["s"]["unit"], nominal_qty=ln["per"], counted_at=when,
                     location_code=rcv, status="RECEIVING", goods_receipt_line_id=rl)
                 cartons.append(pkg)
             pl["received"] += n
         commit()
         confirmed = when + timedelta(hours=2)
-        upd("procurement.goods_receipts", gid, status="CONFIRMED", confirmed_at=confirmed, confirmed_by=manager)
+        # Confirming moves a receipt straight on to IN_PUTAWAY, as GoodsReceipt.confirm does: CONFIRMED is never
+        # stored (V20261213000100 took it out of ck_goods_receipts_status).
+        upd("procurement.goods_receipts", gid, status="IN_PUTAWAY", confirmed_at=confirmed, confirmed_by=manager)
         upd("ordering.production_order_receipt", {"goods_receipt_id": gid}, status="CONFIRMED", settled_at=confirmed)
         for pl in self.lines:
             lot = uid(f"lot:{self.id}:{pl['line']['sku']}")
@@ -1104,18 +1124,17 @@ class ProductionOrder:
                     production_order_id=self.id, production_order_code=self.code)
         for pkg in cartons:
             ln = pkg["ln"]
-            upd("inventory.stock_package", pkg["id"], status="IN_STOCK")
+            # RECEIVING -> IN_STOCK: this is when a carton gets its stock status, its lot and its FIFO date.
+            upd("inventory.stock_package", pkg["id"], status="IN_STOCK", stock_status="INBOUND",
+                lot_id=pkg["pl"]["lot"], received_at=when)
             row = dict(id=uid("stock:" + pkg["id"]), sku=ln["sku"], wh=p, loc=rcv, on_hand=ln["per"], reserved=0,
                        status="INBOUND", package=pkg["id"], lpn=pkg["lpn"], lot=self.code, lot_id=pkg["pl"]["lot"],
                        received=when, staged=False)
             STOCK[row["id"]] = row
-            ins("inventory.stock_item", confirmed, id=row["id"], sku=ln["sku"], location_code=rcv,
-                lot_number=self.code, on_hand=ln["per"], reserved=0, status="INBOUND", received_at=when,
-                stock_package_id=pkg["id"], lot_id=row["lot_id"])
             ins("inventory.stock_movement", confirmed, id=uid("mv:receipt:" + pkg["id"]), movement_type="RECEIPT",
                 sku=ln["sku"], lot_number=self.code, from_location_code=None, to_location_code=rcv,
-                quantity=ln["per"], from_status=None, to_status="INBOUND", reference_type="GOODS_RECEIPT_LINE",
-                reference_id=pkg["line"], actor_id=manager, occurred_at=confirmed, to_stock_package_id=pkg["id"],
+                from_status=None, to_status="INBOUND", reference_type="GOODS_RECEIPT_LINE",
+                reference_id=pkg["line"], actor_id=manager, occurred_at=confirmed, stock_package_id=pkg["id"],
                 lot_id=row["lot_id"])
             pkg["row"] = row
         for pl in self.lines:
@@ -1135,11 +1154,10 @@ class ProductionOrder:
                     status="DONE", source="RECEIPT")
                 ins("inventory.stock_movement", t, id=uid("mv:putaway:" + pkg["id"]), movement_type="MOVE",
                     sku=row["sku"], lot_number=row["lot"], from_location_code=rcv, to_location_code=to,
-                    quantity=row["on_hand"], from_status="INBOUND", to_status="AVAILABLE",
+                    from_status="INBOUND", to_status="AVAILABLE",
                     reference_type="PUTAWAY_TASK", reference_id=task, actor_id=staff, occurred_at=t,
-                    from_stock_package_id=pkg["id"], to_stock_package_id=pkg["id"], lot_id=row["lot_id"])
-                upd("inventory.stock_package", pkg["id"], location_code=to)
-                upd("inventory.stock_item", row["id"], location_code=to, status="AVAILABLE")
+                    stock_package_id=pkg["id"], lot_id=row["lot_id"])
+                upd("inventory.stock_package", pkg["id"], location_code=to, stock_status="AVAILABLE")
                 row.update(loc=to, status="AVAILABLE")
             else:
                 ins("warehouse.putaway_task", confirmed, id=task, goods_receipt_id=gid,
@@ -1185,13 +1203,13 @@ class Pick:
     def _deduct(self, pl, when, frm):
         r, a = pl["row"], pl["alloc"]
         ins("inventory.stock_movement", when, id=uid("mv:pick:" + pl["id"]), movement_type="PICK", sku=r["sku"],
-            lot_number=r["lot"], from_location_code=frm, to_location_code=None, quantity=r["on_hand"],
+            lot_number=r["lot"], from_location_code=frm, to_location_code=None,
             from_status="AVAILABLE", to_status=None, reference_type="PICK_LINE", reference_id=pl["id"],
-            actor_id=self.picker, occurred_at=when, from_stock_package_id=r["package"], lot_id=r["lot_id"],
+            actor_id=self.picker, occurred_at=when, stock_package_id=r["package"], lot_id=r["lot_id"],
             order_id=self.o.id)
         upd("inventory.stock_reservation", a["id"], status="CONSUMED", closed_at=when)
-        upd("inventory.stock_item", r["id"], on_hand=0, reserved=0)
-        upd("inventory.stock_package", r["package"], status="CONSUMED", closed_at=when)
+        # Out of stock, so no stock status; the lot and the receipt date stay with the carton.
+        upd("inventory.stock_package", r["package"], status="CONSUMED", stock_status=None, closed_at=when)
         r.update(on_hand=0, reserved=0, consumed=True)
 
     def pick(self, when, count=None):
@@ -1205,11 +1223,10 @@ class Pick:
             if self.staging:
                 ins("inventory.stock_movement", t, id=uid("mv:stage:" + pl["id"]), movement_type="MOVE",
                     sku=r["sku"], lot_number=r["lot"], from_location_code=r["loc"], to_location_code=self.staging,
-                    quantity=r["on_hand"], from_status="AVAILABLE", to_status="AVAILABLE", reference_type="PICK_LINE",
-                    reference_id=pl["id"], actor_id=self.picker, occurred_at=t, from_stock_package_id=r["package"],
-                    to_stock_package_id=r["package"], lot_id=r["lot_id"], order_id=self.o.id)
+                    from_status="AVAILABLE", to_status="AVAILABLE", reference_type="PICK_LINE",
+                    reference_id=pl["id"], actor_id=self.picker, occurred_at=t, stock_package_id=r["package"],
+                    lot_id=r["lot_id"], order_id=self.o.id)
                 upd("inventory.stock_package", r["package"], location_code=self.staging)
-                upd("inventory.stock_item", r["id"], location_code=self.staging)
                 r.update(loc=self.staging, staged=True)
                 upd("fulfillment.pick_line", pl["id"], status="STAGED", staged_at=t,
                     staged_location_code=self.staging, **scanned)
@@ -1525,7 +1542,7 @@ def full_cycle(o, received, released, picked, checked, trip_key, dispatched, car
     """Batch 1 of `o` from production to the truck: produced, received, held, released, picked, checked, loaded and
     handed over. Returns the trip."""
     po = o.production(o.key + ":1", 1, "INHN" if o.p == "HAN" else "INSG", received - timedelta(days=12),
-                      ["PENDING_APPROVAL", "SENT", "IN_PRODUCTION"])
+                      ["SENT", "IN_PRODUCTION"])
     if o.status == "CONFIRMED":
         o.move("AWAITING_STOCK", received - timedelta(days=9), U[o.sales], "Chờ hàng từ xưởng in")
     po.receive(received, [pl["cartons"] for pl in po.lines])
@@ -1610,7 +1627,8 @@ RETURNED = o
 
 def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", note=None):
     """A customer's return (kltn-docs 16): REQUESTED, REJECTED, or approved and its cartons received back on a RETURN
-    receipt into the warehouse's QUARANTINE area (03 §4.2, BR-14), where they wait for a decision."""
+    receipt into the warehouse's QUARANTINE area (03 §4.2, BR-14), where they wait for a decision. It is against the
+    order's first delivered shipment (WF-05 TH-1), and its cartons come back sealed, counted whole (TH-4)."""
     rid = uid("return:" + key)
     number = next_no("RMA", when.date(), "RMA-{d}-{n:04d}")
     ln = o.lines[0]
@@ -1621,6 +1639,7 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
     decided = when + timedelta(days=1)
     approved = status not in ("REQUESTED", "REJECTED")
     ins("ordering.return_request", when, id=rid, rma_number=number, order_id=o.id, customer_id=o.c["id"],
+        shipment_id=sh["order_shipment"],
         status="AWAITING_RETURN" if approved else status, reason_code=reason, note=note, requested_at=when,
         decided_by=U["truongkd"] if status != "REQUESTED" else None,
         decided_at=decided if status != "REQUESTED" else None,
@@ -1658,26 +1677,31 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
         for pk in back:
             ins("procurement.goods_receipt_return_cartons", t, id=uid(f"gr-return-carton:{gid}:{pk['id']}"),
                 receipt_id=gid, stock_package_id=pk["package"], lpn=pk["lpn"], sku=ln["sku"], lot_number=pk["lot"],
-                quantity=pk["qty"], condition_note="Lỗi lệch màu in trên thân hộp", scanned_by=staff)
+                quantity=pk["qty"], counted_qty=pk["qty"], condition_note="Lỗi lệch màu in trên thân hộp",
+                scanned_by=staff)
         commit()
         for pk in back:
             r = pk["row"]
-            raw(f"SELECT set_config('stockflow.same_receipt_merge', '{r['id']}', true);")
-            upd("inventory.stock_package", pk["package"], status="IN_STOCK", location_code=qrt, closed_at=None)
-            upd("inventory.stock_item", r["id"], location_code=qrt, on_hand=pk["qty"], status="QUARANTINE")
+            # WF-05 Q-4 (V20261223000300): back on a return, the carton waits for the refund decision - in stock again
+            # as QUARANTINE (the status is named by what brings a carton back), with the lot and date it had.
+            upd("inventory.stock_package", pk["package"], status="IN_STOCK", stock_status="QUARANTINE",
+                location_code=qrt, closed_at=None, return_request_id=rid, return_ownership="PENDING")
             r.update(loc=qrt, on_hand=pk["qty"], status="QUARANTINE", consumed=False)
             ins("inventory.stock_movement", t, id=uid(f"mv:return:{gid}:{pk['id']}"), movement_type="RECEIPT",
                 sku=ln["sku"], lot_number=pk["lot"], from_location_code=None, to_location_code=qrt,
-                quantity=pk["qty"], from_status="QUARANTINE", to_status="QUARANTINE", reference_type="GOODS_RECEIPT",
-                reference_id=gid, actor_id=staff, occurred_at=t, to_stock_package_id=pk["package"],
+                from_status="QUARANTINE", to_status="QUARANTINE", reference_type="GOODS_RECEIPT",
+                reference_id=gid, actor_id=staff, occurred_at=t, stock_package_id=pk["package"],
                 lot_id=r["lot_id"], order_id=o.id)
-        raw("SELECT set_config('stockflow.same_receipt_merge', '', true);")
         upd("procurement.goods_receipts", gid, status="CLOSED", confirmed_at=t + timedelta(hours=1),
             confirmed_by=U[STAFF_OF[p][0]], closed_at=t + timedelta(hours=1))
-        commit()
+        # The return takes the goods in the receipt's own transaction (audit round 2 M1): no commit in between.
         upd("ordering.return_request", rid, status="RECEIVED", goods_receipt_id=gid, received_at=t + timedelta(hours=1),
             received_by=staff, receiving_location_code=qrt)
         upd("ordering.return_request_line", lid, received_quantity=units)
+        # WF-05 TH-3 (V20261202000300): every receipt that brought goods of the return, numbered; this one is the first.
+        ins("ordering.return_request_receipt", t + timedelta(hours=1), goods_receipt_id=gid, return_request_id=rid,
+            parcel=1, receipt_number=gnumber, receiving_location_code=qrt, received_by=staff,
+            received_at=t + timedelta(hours=1))
         hist.append(("AWAITING_RETURN", "RECEIVED", t + timedelta(hours=1), staff, f"Nhận lại {len(back)} thùng"))
         o.move("RETURNED", t + timedelta(hours=1), staff, f"Hàng hoàn theo {number} đã về kho")
     for k, (frm, to, at_, by, why) in enumerate(hist):
@@ -1776,7 +1800,7 @@ o.sign(T(10, 22, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 23, 10), "FT26296CTS0003")
 o.confirm(T(10, 23, 10, 30))
 o.ship_from(T(10, 23, 11), "sales2")
-po = o.production("S10:1", 1, "TANPHU", T(10, 24, 9), ["PENDING_APPROVAL", "SENT", "IN_PRODUCTION"])
+po = o.production("S10:1", 1, "TANPHU", T(10, 24, 9), ["SENT", "IN_PRODUCTION"])
 o.move("AWAITING_STOCK", T(10, 25, 9), U["sales2"], "Chờ hàng từ xưởng in")
 po.receive(T(11, 6, 8), [6])
 o.hold(T(11, 6, 12))
@@ -1800,7 +1824,7 @@ o.sign(T(10, 24, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 25, 10), "FT26298CPM0002")
 o.confirm(T(10, 25, 10, 30))
 o.ship_from(T(10, 25, 11))
-po = o.production("S9:1", 1, "INSG", T(10, 25, 14), ["PENDING_APPROVAL", "SENT", "ACCEPTED", "IN_PRODUCTION"])
+po = o.production("S9:1", 1, "INSG", T(10, 25, 14), ["SENT", "ACCEPTED", "IN_PRODUCTION"])
 o.move("AWAITING_STOCK", T(10, 27, 9), U["sales1"], "Chờ hàng từ xưởng in")
 po.receive(T(11, 7, 8), [6])
 o.hold(T(11, 7, 12))
@@ -1817,8 +1841,8 @@ o.sign(T(10, 22, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 23, 10), "FT26296KEM0003")
 o.confirm(T(10, 23, 10, 30))
 o.ship_from(T(10, 23, 11))
-po = o.production("S8:1", 1, "INHN", T(10, 24, 9), ["PENDING_APPROVAL", "SENT", "IN_PRODUCTION"])
-spare = o.production("S8:1b", 1, "TANPHU", T(10, 24, 10), ["PENDING_APPROVAL", "SENT", "IN_PRODUCTION"])
+po = o.production("S8:1", 1, "INHN", T(10, 24, 9), ["SENT", "IN_PRODUCTION"])
+spare = o.production("S8:1b", 1, "TANPHU", T(10, 24, 10), ["SENT", "IN_PRODUCTION"])
 o.move("AWAITING_STOCK", T(10, 25, 9), U["sales1"], "Chờ hàng từ xưởng in")
 po.receive(T(11, 7, 8), [8])
 spare.close(T(11, 7, 10), "Đã đủ hàng từ xưởng In Ly Giấy Hà Nội, hủy phần in thêm")
@@ -1838,7 +1862,7 @@ o.sign(T(10, 7, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 8, 10), "FT26281TSM0003")
 o.confirm(T(10, 8, 10, 30))
 o.ship_from(T(10, 8, 11))
-po = o.production("S7:1", 1, "INHN", T(10, 9, 9), ["PENDING_APPROVAL", "SENT", "ACCEPTED"], sample=True)
+po = o.production("S7:1", 1, "INHN", T(10, 9, 9), ["SENT", "ACCEPTED"], sample=True)
 o.move("AWAITING_STOCK", T(10, 12, 9), U["sales1"], "Chờ hàng từ xưởng in")
 po.sample_round(T(10, 14, 10))
 po.answer(T(10, 15, 9), True)
@@ -1846,7 +1870,7 @@ po.start(T(10, 16, 8))
 po.receive(T(11, 5, 8), [6])
 o.hold(T(11, 5, 12))
 po.receive(T(11, 9, 8), [2], put_away=0)
-po2 = o.production("S7:2", 2, "INHN", T(10, 20, 9), ["PENDING_APPROVAL", "SENT", "IN_PRODUCTION"],
+po2 = o.production("S7:2", 2, "INHN", T(10, 20, 9), ["SENT", "IN_PRODUCTION"],
                    waiver="Mẫu in đã duyệt ở đợt 1 cùng hợp đồng")
 
 # ---- a print sample sent back for a reprint, the second round waiting for the customer; batch 2 accepted
@@ -1859,12 +1883,12 @@ o.sign(T(10, 27, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 28, 10), "FT26301BMV0003")
 o.confirm(T(10, 28, 10, 30))
 o.ship_from(T(10, 28, 11), "sales2")
-po = o.production("S6:1", 1, "INSG", T(10, 29, 9), ["PENDING_APPROVAL", "SENT", "ACCEPTED"], sample=True)
+po = o.production("S6:1", 1, "INSG", T(10, 29, 9), ["SENT", "ACCEPTED"], sample=True)
 o.move("AWAITING_STOCK", T(10, 31, 9), U["sales2"], "Chờ hàng từ xưởng in")
 po.sample_round(T(11, 3, 10))
 po.answer(T(11, 4, 9), False, "Màu đỏ logo đậm hơn mẫu, xin in lại")
 po.sample_round(T(11, 7, 10), reprint="PRINT_DEFECT")
-o.production("S6:2", 2, "TANPHU", T(11, 1, 9), ["PENDING_APPROVAL", "SENT", "ACCEPTED"],
+o.production("S6:2", 2, "TANPHU", T(11, 1, 9), ["SENT", "ACCEPTED"],
              waiver="Dùng mẫu in của đợt 1 khi khách duyệt")
 
 # ---- sent to the producer, not accepted yet
@@ -1876,10 +1900,10 @@ o.sign(T(10, 30, 15))
 o.pay(1, o.plan[0]["amount"], T(10, 31, 10), "FT26304NEX0003")
 o.confirm(T(10, 31, 10, 30))
 o.ship_from(T(10, 31, 11), "sales2")
-o.production("S5:1", 1, "INSG", T(11, 6, 9), ["PENDING_APPROVAL", "SENT"])
+o.production("S5:1", 1, "INSG", T(11, 6, 9), ["SENT"])
 o.move("AWAITING_STOCK", T(11, 8, 9), U["sales2"], "Chờ hàng từ xưởng in")
 
-# ---- confirmed: a production order cancelled at a producer that stopped, its replacement waiting for approval,
+# ---- confirmed: a production order cancelled at a producer that stopped, its replacement still a draft,
 #      batch 2's still a draft
 o = Order("S4", "caphemoc", [(CPM_LY12, 20, 420)], T(11, 1, 10), "BDG")
 o.draw_up(T(11, 1, 15), [(date(2026, 11, 28), date(2026, 12, 1), [10]), (date(2026, 12, 12), date(2026, 12, 15), [10])],
@@ -1892,8 +1916,8 @@ o.confirm(T(11, 4, 10, 30))
 o.ship_from(T(11, 4, 11))
 old = o.production("S4:0", 1, "INCU", T(11, 5, 9), [])
 old.cancel(T(11, 5, 15), "Xưởng ngừng hợp tác, chuyển sang In Bao Bì Sài Gòn")
-o.production("S4:1", 1, "INSG", T(11, 6, 9), ["PENDING_APPROVAL"], price=320)
-o.production("S4:2", 2, "INSG", T(11, 8, 9), [], price=320)
+o.production("S4:1", 1, "INSG", T(11, 6, 9), [])
+o.production("S4:2", 2, "INSG", T(11, 8, 9), [])
 
 section("12. orders before production: draft, contract sent, payment pending, cancelled")
 # ---- cancelled after signing, before printing: the deposit settled back and refunded (15 §4.6, BR-14)
@@ -1914,8 +1938,10 @@ o.move("CANCELLED", T(10, 24, 10), U["truongkd"], "Khách hủy trước khi in"
 o.cancelled_at = T(10, 24, 10)
 
 
-def refund_cancelled(o, settled, refunded, reference):
-    """The cancelled order's money: everything collected is surplus, refundable in full (no fee before printing)."""
+def refund_cancelled(o, settled, refunded, reference, liquidated):
+    """The cancelled order's money: everything collected is surplus, refundable in full (no fee before printing). Once
+    it is paid back, the nightly run liquidates the signed contract (WF-05 Q-6): nothing was delivered, so LIQUIDATED,
+    never COMPLETED."""
     collected = sum(x["amount"] for x in o.payments if not x["void"])
     ins("payment.order_settlement", settled, id=uid("settlement:" + o.key), order_id=o.id, contract_id=o.contract,
         customer_id=o.c["id"], order_number=o.number, contract_number=o.contract_number, kind="ORDER_CANCELLED",
@@ -1926,9 +1952,11 @@ def refund_cancelled(o, settled, refunded, reference):
         order_number=o.number, amount=collected, currency="VND", refunded_on=refunded.date(), reference=reference,
         note="Hoàn tiền cọc do hủy đơn", status="RECORDED", recorded_by=U["ketoan"], recorded_at=refunded)
     commit()
+    upd("ordering.sales_contract", o.contract, status="LIQUIDATED", liquidated_at=liquidated)
+    commit()
 
 
-AFTER_MONEY = [lambda o=o: refund_cancelled(o, T(10, 24, 15), T(10, 26, 10), "HT26299NEX0001")]
+AFTER_MONEY = [lambda o=o: refund_cancelled(o, T(10, 24, 15), T(10, 26, 10), "HT26299NEX0001", T(10, 27, 1))]
 
 # ---- signed, the deposit not paid yet (due in a week); the customer asks to cancel, not decided
 o = Order("S3", "comtamsg", [(CTS_HOP, 8, 2200)], T(11, 3, 10), "BDG", sales="sales2")

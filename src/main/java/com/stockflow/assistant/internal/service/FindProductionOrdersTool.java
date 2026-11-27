@@ -30,9 +30,9 @@ import java.util.stream.Stream;
  * controller refuses a portal account ({@code ScopeGuards.requireBackOffice}), so this tool does too.</p>
  *
  * <p><b>No more of the sales order than the screen shows.</b> The production orders screen names its sales order by
- * id. A warehouse manager or a production coordinator reads production orders without {@code sales-orders:READ}, and
- * no screen of theirs tells them which order numbers exist: the order number comes back only to a caller who may read
- * orders, or to one who typed it to filter by it. The customer, the price and the print files are never returned:
+ * id. A role granted production orders without {@code sales-orders:READ} (none of the seeded ones since QD14 gave the
+ * Sales Manager the orders; a custom role may still be one) has no screen telling it which order numbers exist: the
+ * order number comes back only to a caller who may read orders, or to one who typed it to filter by it. The customer, the price and the print files are never returned:
  * none of it says how far the work is.</p>
  *
  * <p><b>Late, worked out here.</b> A small model compares dates badly, and "which are late?" is the question asked.

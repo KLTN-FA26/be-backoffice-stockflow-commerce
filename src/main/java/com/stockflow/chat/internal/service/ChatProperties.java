@@ -28,7 +28,6 @@ import java.util.Set;
  *                             it is closed for good (16 §5)
  * @param editWindow           how long its author may still edit or delete a message
  * @param customerNoticePeriod one notice to an offline customer per conversation per period, however many replies
- * @param draftQuoteValidity   how long a quote drawn up from a quote request card is valid, until Sales change it
  * @param slaJobBatch          conversations one run of an SLA job handles at most
  * @param typingInterval       at most one typing signal per person per conversation in this time; the rest are dropped
  * @param presenceTimeout      a staff socket silent this long (no heartbeat, no frame) shows the agent as away
@@ -46,7 +45,6 @@ public record ChatProperties(
         @DefaultValue("P14D") Duration reopenWindow,
         @DefaultValue("PT5M") Duration editWindow,
         @DefaultValue("PT1H") Duration customerNoticePeriod,
-        @DefaultValue("P14D") Duration draftQuoteValidity,
         @DefaultValue("100") int slaJobBatch,
         @DefaultValue("PT2S") Duration typingInterval,
         @DefaultValue("PT90S") Duration presenceTimeout,
@@ -62,7 +60,6 @@ public record ChatProperties(
         requirePositive(reopenWindow, "reopen-window");
         requirePositive(editWindow, "edit-window");
         requirePositive(customerNoticePeriod, "customer-notice-period");
-        requirePositive(draftQuoteValidity, "draft-quote-validity");
         requirePositive(typingInterval, "typing-interval");
         requirePositive(presenceTimeout, "presence-timeout");
         if (maxPageSize < 1 || slaJobBatch < 1) {

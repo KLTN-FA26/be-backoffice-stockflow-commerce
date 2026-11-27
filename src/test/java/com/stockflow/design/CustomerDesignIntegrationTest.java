@@ -80,6 +80,8 @@ class CustomerDesignIntegrationTest {
     private String templateId;
     private UUID owner;
     private UUID customerId;
+    /** The customer's project every design here is started in (BR-23.2). */
+    private String project;
 
     @BeforeEach
     void customizableProductWithAnActiveTemplateAndACustomer() throws Exception {
@@ -98,6 +100,8 @@ class CustomerDesignIntegrationTest {
         owner = account[0];
         customerId = account[1];
         as(owner);
+        project = data(mvc.perform(post("/api/v1/design-projects").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Quán A\"}")).andExpect(status().isCreated())).get("id").asText();
     }
 
     // ---- fixtures ----
@@ -145,7 +149,8 @@ class CustomerDesignIntegrationTest {
     private ResultActions start(String name) throws Exception {
         return mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku
-                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"" + name + "\"}"));
+                        + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"" + name + "\",\"projectId\":\"" + project
+                        + "\"}"));
     }
 
     private JsonNode started() throws Exception {
@@ -364,8 +369,10 @@ class CustomerDesignIntegrationTest {
     @Test
     void aDesignThatIsNoLongerADraftDoesNotChange() throws Exception {
         String id = started().get("id").asText();
-        tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE design.design_draft SET status = 'PENDING_REVIEW', review_requested_at = NOW() WHERE id = ?::uuid", id));
+        // Submitted from another tab: the status and the version both moved. The tab still holding version 0 is told
+        // the design is no longer a draft (FE request 2026-11-18 BE-15), not that it is stale - as a submission is.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_draft SET status = 'PENDING_REVIEW',"
+                + " review_requested_at = NOW(), version = version + 1 WHERE id = ?::uuid", id));
 
         save(id, 0, layout("")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DESIGN_NOT_DRAFT"));
@@ -404,7 +411,8 @@ class CustomerDesignIntegrationTest {
                         Identifiers.newId(), customerId, productId, owner);
             }
         });
-        var command = new CustomerDesignService.StartDesign(productId, sku, "CUP12-BODY", "Cùng lúc", null);
+        var command = new CustomerDesignService.StartDesign(productId, sku, "CUP12-BODY", "Cùng lúc",
+                UUID.fromString(project));
         CountDownLatch go = new CountDownLatch(1);
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
@@ -437,11 +445,12 @@ class CustomerDesignIntegrationTest {
     void whatCannotBeDesignedOnIsRefused() throws Exception {
         mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku
-                                + "\",\"templateCode\":\"NO-SUCH\",\"name\":\"x\"}"))
+                                + "\",\"templateCode\":\"NO-SUCH\",\"name\":\"x\",\"projectId\":\"" + project + "\"}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_NOT_FOUND"));
         mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku + "\",\"name\":\"x\"}"))
+                        .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku + "\",\"name\":\"x\","
+                                + "\"projectId\":\"" + project + "\"}"))
                 .andExpect(status().isBadRequest());
 
         tx.executeWithoutResult(s -> jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku));
@@ -471,7 +480,11 @@ class CustomerDesignIntegrationTest {
                 .content("{\"version\":" + version + "}")).andExpect(status().isOk());
         as(owner);
 
-        mvc.perform(get("/api/v1/designs/" + id + "/template")).andExpect(jsonPath("$.data.active").value(false));
+        // BE-11: no longer offered for new designs, still one this draft is submitted on (its variant is unchanged) -
+        // which the catalogue, listing only active templates, cannot tell the studio. This fixture has no carton.
+        mvc.perform(get("/api/v1/designs/" + id + "/template")).andExpect(jsonPath("$.data.active").value(false))
+                .andExpect(jsonPath("$.data.designable").value(true))
+                .andExpect(jsonPath("$.data.hasCartonSpec").value(false));
         save(id, 0, layout(text("t1"))).andExpect(status().isOk());
         start("Bản mới").andExpect(status().isNotFound());
     }
@@ -506,10 +519,12 @@ class CustomerDesignIntegrationTest {
         assertThat(storedLayout(copy)).isEqualTo(storedLayout(id));
         assertThat(jdbc.queryForObject("SELECT storage_key FROM design.design_asset WHERE draft_id = ?::uuid AND id = ?",
                 String.class, copy, logo)).startsWith("design-assets/");
+        // It is a revision of the approved design, and it is in the source's project (BR-23.3).
         mvc.perform(get("/api/v1/designs/" + copy + "/history"))
-                .andExpect(jsonPath("$.data.items[0].decision").value("DERIVED_FROM_SNAPSHOT"));
+                .andExpect(jsonPath("$.data.items[?(@.decision == 'DERIVED_FROM_SNAPSHOT')]").exists())
+                .andExpect(jsonPath("$.data.items[?(@.decision == 'ADDED_TO_PROJECT')]").exists());
         // The copy is a draft of its own: its layout saves, the approved one's does not move.
-        save(copy, 0, layout(image("i1", logo.toString()))).andExpect(status().isOk());
+        save(copy, revision.get("version").asLong(), layout(image("i1", logo.toString()))).andExpect(status().isOk());
         assertThat(storedLayout(id)).contains("t1");
 
         // Once the template is retired, the approved layout has nothing to be drawn on: no revision.
@@ -581,9 +596,10 @@ class CustomerDesignIntegrationTest {
         UUID approved = Identifiers.newId();
         UUID preview = Identifiers.newId();
         tx.executeWithoutResult(s -> {
+            // In the customer's project, so the revision has a project to be written into (BR-23.3).
             jdbc.update("INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, "
-                    + "current_artifacts, owner_user_id) VALUES (?, ?, ?, 'APPROVED', NOW(), '{}'::jsonb, ?)",
-                    approved, customerId, productId, owner);
+                    + "current_artifacts, owner_user_id, project_id) VALUES (?, ?, ?, 'APPROVED', NOW(), '{}'::jsonb, "
+                    + "?, ?::uuid)", approved, customerId, productId, owner, project);
             jdbc.update("INSERT INTO design.design_artifact (id, draft_id, storage_key, original_name, content_type, "
                     + "size_bytes, stored_at, checksum, created_at, artifact_role) VALUES (?, ?, "
                     + "'design-artifacts/2026/11/' || ? || '.png', 'preview.png', 'image/png', 10, NOW(), ?, NOW(), "

@@ -244,7 +244,7 @@ public class StaffChatService {
     public ChatConversationView attachContext(CurrentUser user, UUID conversationId, ContextRef ref) {
         Actor staff = callers.staff(user);
         if (ref == null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name the document: a kind and an id");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name the document: a kind and an id").localized("refusal.chat.contextIncomplete");
         }
         Conversation c = writer.lock(conversationId);
         contexts.requireOwnedBy(ref, c.customerId(), false);
@@ -300,6 +300,29 @@ public class StaffChatService {
                 .toList();
     }
 
+    /** How many colleagues the mention picker gets when the caller does not say. */
+    private static final int STAFF_PICKED = 20;
+
+    /**
+     * Colleagues a note may mention (16 §4.6 step 16), by name: every active staff member, the same people
+     * {@link #note} accepts in {@code mentions} (an account that is not a customer's). At most {@code limit} -
+     * {@value #STAFF_PICKED} when not given, never more than {@link com.stockflow.identity.api.IdentityService#MAX_STAFF_PICKED}:
+     * the picker narrows by typing.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatStaffView> staff(CurrentUser user, String nameQuery, Integer limit) {
+        callers.staff(user);
+        return agents.staff(nameQuery, limit == null ? STAFF_PICKED : limit).stream()
+                .map(member -> {
+                    List<ChatStaffView.Role> roles = member.roles().stream()
+                            .map(role -> new ChatStaffView.Role(role.code(), role.name())).toList();
+                    ChatStaffView.Role first = roles.isEmpty() ? null : roles.get(0);
+                    return new ChatStaffView(member.userId(), member.displayName(),
+                            first == null ? null : first.code(), first == null ? null : first.name(), roles);
+                })
+                .toList();
+    }
+
     /**
      * The CSAT survey card of a resolved conversation (16 §4.6 step 18), replacing one an earlier resolution left
      * unanswered; the customer rates on it, once ({@link ChatCardActions}).
@@ -328,7 +351,7 @@ public class StaffChatService {
                 .filter(account -> account.length() >= 6 && digits.contains(account))
                 .ifPresent(account -> {
                     throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Send the transfer details card instead"
-                            + " of typing the account number (16 BR-06)");
+                            + " of typing the account number (16 BR-06)").localized("refusal.chat.transferCardOnly");
                 });
     }
 
@@ -359,12 +382,12 @@ public class StaffChatService {
         Set<UUID> named = new LinkedHashSet<>(mentions);
         named.remove(null);
         if (named.size() > MAX_MENTIONS) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A note mentions at most " + MAX_MENTIONS);
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A note mentions at most " + MAX_MENTIONS).localized("refusal.chat.mentionsMax", MAX_MENTIONS);
         }
         Map<UUID, String> known = agents.names(named);
         for (UUID id : named) {
             if (!known.containsKey(id) || customers.findByUserId(id).isPresent()) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only staff are mentioned in a note");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only staff are mentioned in a note").localized("refusal.chat.mentionStaffOnly");
             }
         }
         return Set.copyOf(named);

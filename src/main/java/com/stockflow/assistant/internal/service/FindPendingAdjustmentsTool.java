@@ -65,8 +65,9 @@ class FindPendingAdjustmentsTool implements AssistantTool {
 
     private static final ToolSpec SPEC = new ToolSpec("findPendingAdjustments",
             "Stock adjustments waiting for approval (PENDING_APPROVAL), the oldest waiting first: the approver's queue "
-                    + "of the stock adjustment screen. Each: adjustment number, warehouse, bin, SKU, lot, quantityDelta "
-                    + "(units: negative takes stock off, positive adds it), reason (DAMAGED, LOST, FOUND, "
+                    + "of the stock adjustment screen. Each: adjustment number, warehouse, bin, SKU, lot, direction "
+                    + "(WRITE_OFF: the carton leaves stock whole; RESTOCK: a lost carton found comes back whole; never "
+                    + "a number of units), reason (DAMAGED, LOST, FOUND, "
                     + "DATA_CORRECTION, SCRAP, SAMPLE, OTHER, or COUNT_VARIANCE raised by a cycle count; EXPIRED and "
                     + "SUBCONTRACT_LOSS are legacy, nobody may ask for them any more, and appear only on an adjustment "
                     + "asked for before they were dropped), when it was asked for, daysWaiting, carton true when it "
@@ -142,7 +143,7 @@ class FindPendingAdjustmentsTool implements AssistantTool {
     }
 
     /**
-     * @param quantityDelta units, negative taking stock off
+     * @param direction     WRITE_OFF or RESTOCK: a carton is adjusted whole, never by units
      * @param daysWaiting   whole days since it was asked for, in Vietnam
      * @param requestedByMe the user asked for it, so may not approve it
      * @param carton        it changes the contents of one carton rather than loose stock
@@ -150,14 +151,14 @@ class FindPendingAdjustmentsTool implements AssistantTool {
      *                      ({@value FindOrdersTool#NOTE_LENGTH} characters)
      */
     record Row(String adjustmentNumber, String warehouseCode, String locationCode, String sku, String lotNumber,
-               int quantityDelta, String reason, Instant requestedAt, long daysWaiting, boolean requestedByMe,
+               String direction, String reason, Instant requestedAt, long daysWaiting, boolean requestedByMe,
                boolean carton, String note) {
 
         static Row of(StockAdjustmentSummary adjustment, UUID me, LocalDate today) {
             long waiting = adjustment.requestedAt() == null ? 0
                     : Math.max(0, ChronoUnit.DAYS.between(BusinessDate.of(adjustment.requestedAt()), today));
             return new Row(adjustment.number(), WarehouseScope.prefixOf(adjustment.locationCode()),
-                    adjustment.locationCode(), adjustment.sku(), adjustment.lotNumber(), adjustment.quantityDelta(),
+                    adjustment.locationCode(), adjustment.sku(), adjustment.lotNumber(), adjustment.direction() == null ? null : adjustment.direction().name(),
                     adjustment.reason() == null ? null : adjustment.reason().name(), adjustment.requestedAt(),
                     waiting, me != null && me.equals(adjustment.requestedBy()), adjustment.stockPackageId() != null,
                     TypedText.masked(adjustment.note(), FindOrdersTool.Hold::cut));

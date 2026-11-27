@@ -3,7 +3,8 @@
  *
  * <p>WBS 3.1 · database schema {@code product}
  *
- * <p><b>May depend on:</b> inventory, to validate and synchronously apply SKU control settings.
+ * <p><b>May depend on:</b> inventory, to validate and synchronously apply SKU control settings, and to answer its
+ * {@code inventory :: spi} question of what each SKU is called, for the carton label.
  * Identity resolves media audit usernames for the four-eyes check. Plus {@code common} and {@code
  * contracts}, which are available to every module.
  *
@@ -17,5 +18,5 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(
-        allowedDependencies = {"inventory :: api", "identity :: api"})
+        allowedDependencies = {"inventory :: api", "inventory :: spi", "identity :: api"})
 package com.stockflow.product;

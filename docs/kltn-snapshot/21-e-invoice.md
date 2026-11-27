@@ -37,7 +37,7 @@ Hoá đơn **không quyết định thanh toán**: các đợt thanh toán, côn
 | Trường | Mô tả | Bắt buộc |
 |--------|-------|----------|
 | **Shipment `Delivered`** | Từ [09](../../warehouse/09-shipping/README.md): mã shipment (thuộc đúng một đơn — [08](../../warehouse/08-packing/README.md) BR-03), các thùng LPN đã giao theo dòng đơn, **ngày giao thành công** (thời điểm hãng báo giao thành công — từ webhook, hoặc Quản lý kho ghi theo hãng báo lại) | Có |
-| **Dòng đơn & dòng phí** | Từ [14](../14-cart-and-order/README.md): SKU, tên hàng, số cái / thùng, **đơn giá / cái**, **thuế suất VAT** đã chốt của dòng; dòng phí khuôn / bản in, dòng phí vận chuyển (nếu có) kèm thuế suất | Có |
+| **Dòng đơn & dòng phí** | Từ [14](../14-cart-and-order/README.md): SKU, tên hàng, số cái / thùng, **đơn giá / cái**, **thuế suất VAT** đã chốt của dòng (thuế suất của hợp đồng — dùng để đối chiếu); dòng phí khuôn / bản in, dòng phí vận chuyển (nếu có) kèm thuế suất | Có |
 | **Thông tin bên mua** | Từ hồ sơ khách ([18](../18-customer-information/README.md)), chụp lại lúc tạo nháp: tên công ty, **mã số thuế**, địa chỉ trên hoá đơn, **email nhận hoá đơn** | Có (mã số thuế, email: bắt buộc trước khi phát hành — BR-06) |
 | **Cấu hình kết nối nhà cung cấp hoá đơn điện tử** | Môi trường, thông tin xác thực, tài khoản nhà cung cấp, mẫu số, ký hiệu hoá đơn | Có (cấu hình) |
 | Yêu cầu điều chỉnh / thay thế | Hoá đơn gốc, loại (điều chỉnh tăng / giảm / thông tin, thay thế), các dòng và số tiền chênh lệch (điều chỉnh) hoặc toàn bộ nội dung mới (thay thế), lý do | Khi điều chỉnh / thay thế |
@@ -71,15 +71,15 @@ Hoá đơn **không quyết định thanh toán**: các đợt thanh toán, côn
 1. Shipment chuyển `Delivered` ([09](../../warehouse/09-shipping/README.md) §4.3 — từ webhook của hãng hoặc Quản lý kho ghi tay) → hệ thống tạo **một hoá đơn gốc `Draft`** cho shipment đó, nếu shipment chưa có hoá đơn gốc còn hiệu lực (BR-01).
 2. Hệ thống điền sẵn:
    - **bên mua**: chụp từ hồ sơ khách ([18](../18-customer-information/README.md)) — tên công ty, mã số thuế, địa chỉ trên hoá đơn, email nhận hoá đơn;
-   - **dòng hàng**: gom các thùng của shipment theo dòng đơn — tên hàng (tên SKU), đơn vị tính **cái**, số lượng = số thùng × số cái / thùng, đơn giá / cái và **thuế suất đã chốt** của dòng đơn ([14](../14-cart-and-order/README.md) BR-21); tiền thuế = thành tiền dòng × thuế suất, làm tròn tới đồng; ghi chú số thùng;
+   - **dòng hàng**: gom các thùng của shipment theo dòng đơn — tên hàng (tên SKU), đơn vị tính **cái**, số lượng = số thùng × số cái / thùng, đơn giá / cái của dòng đơn và **thuế suất có hiệu lực tại ngày lập hoá đơn**; thuế suất này khác thuế suất đã chốt của dòng đơn ([14](../14-cart-and-order/README.md) BR-21) thì hoá đơn nháp gắn cờ `TAX_RATE_DIFFERS_FROM_CONTRACT` để Kế toán xem; tiền thuế = thành tiền dòng × thuế suất, làm tròn tới đồng; ghi chú số thùng;
    - **dòng phí** khuôn / bản in và phí vận chuyển của đơn (nếu có): đưa vào **hoá đơn gốc đầu tiên** của đơn;
    - **ngày lập** = ngày giao thành công của shipment, theo **thời điểm hãng báo giao thành công** (không phải thời điểm hệ thống nhận sự kiện).
 
    > ✅ Đã chốt 2026-11-06: thời điểm chuyển giao hàng — và là **ngày lập hoá đơn** — là khi **hãng vận chuyển báo giao thành công cho khách**: lấy thời điểm hãng báo trong sự kiện webhook; hãng không có webhook thì lấy ngày giao do Quản lý kho ghi theo thông tin hãng báo lại ([09](../../warehouse/09-shipping/README.md) §4.3, §4.5). Webhook về trễ không làm đổi ngày lập. Xem [open-questions G8](../../open-questions/README.md).
 
-   > ⚠️ Giả định: **dòng phí khuôn / bản in và dòng phí vận chuyển** nằm trên **hoá đơn gốc đầu tiên** của đơn, cùng thuế suất đã chốt của dòng phí; tổng các hoá đơn của đơn có thể lệch vài đồng so với tổng hợp đồng do làm tròn tiền thuế từng hoá đơn và không điều chỉnh phần lệch này. Xem [open-questions G9](../../open-questions/README.md).
+   > ⚠️ Giả định: **dòng phí khuôn / bản in và dòng phí vận chuyển** nằm trên **hoá đơn gốc đầu tiên** của đơn, theo thuế suất có hiệu lực tại ngày lập hoá đơn; tổng các hoá đơn của đơn có thể lệch vài đồng so với tổng hợp đồng do làm tròn tiền thuế từng hoá đơn và không điều chỉnh phần lệch này. Xem [open-questions G9](../../open-questions/README.md).
 
-   > ⚠️ Giả định: thuế suất trên hoá đơn lấy từ **thuế suất đã chốt vào dòng đơn**; nếu luật đổi thuế suất giữa ngày lập đơn và ngày giao thì xử lý theo câu hỏi đang mở. Xem [open-questions D34](../../open-questions/README.md).
+   > ✅ Đã chốt 2026-11-25: báo giá, đơn, hợp đồng và các đợt thanh toán dùng thuế suất **chốt ngày lập báo giá**; hoá đơn dùng thuế suất **có hiệu lực tại ngày lập hoá đơn** (theo luật). Hai thuế suất khác nhau → hoá đơn nháp gắn cờ `TAX_RATE_DIFFERS_FROM_CONTRACT` cho Kế toán; hệ thống **không tính lại** các đợt thanh toán, Kế toán xử lý phần chênh lệch ngoài hệ thống. PDF hợp đồng ghi phần chênh lệch tiền thuế được thanh toán thêm hoặc hoàn lại theo hoá đơn ([14](../14-cart-and-order/README.md) §4.3 bước 13). Xem [open-questions D34](../../open-questions/README.md).
 3. Hệ thống gửi thông báo **"hoá đơn nháp chờ phát hành"** cho Kế toán. Nháp chưa phát hành **sau 1 ngày** kể từ ngày lập → nhắc lại. Hoá đơn phát hành muộn vẫn mang **ngày lập = ngày giao thành công**, nên Kế toán cần phát hành sớm, tốt nhất trong ngày giao.
 
    > ⚠️ Giả định: mốc nhắc nháp tồn đọng là **1 ngày**; có thể cần nhắc ngay **trong ngày giao** để tránh lập hoá đơn lùi ngày, và cần xác nhận nhà cung cấp chấp nhận ngày lập trước ngày phát hành. Xem [open-questions G8](../../open-questions/README.md).
@@ -194,7 +194,7 @@ stateDiagram-v2
 - **BR-06:** **Thông tin bên mua bắt buộc trước khi phát hành:** tên công ty, **mã số thuế** (10 số, 10-3, hoặc 12 số với hộ kinh doanh — [18](../18-customer-information/README.md) BR-01), địa chỉ trên hoá đơn, **email nhận hoá đơn**. Thiếu thì chặn phát hành. Thông tin bên mua **chụp lại** vào hoá đơn; đổi hồ sơ khách sau đó không đổi hoá đơn đã phát hành.
 
   > ⚠️ Giả định: mọi khách đều nhận hoá đơn có mã số thuế (khách là doanh nghiệp / hộ kinh doanh có mã số thuế hoặc CCCD 12 số); **địa chỉ trên hoá đơn** lấy **địa chỉ xuất hoá đơn mặc định**, không có thì lấy **địa chỉ đăng ký kinh doanh**. Xem [open-questions G14](../../open-questions/README.md).
-- **BR-07:** **Thuế suất** trên hoá đơn gửi nhà cung cấp theo mã của nhà cung cấp cho các mức: 10%, 8%, 5%, 0%, **không chịu thuế (KCT)**, **không kê khai, tính nộp thuế (KKKNT)**; ánh xạ từ thuế suất đã chốt của dòng ([14](../14-cart-and-order/README.md) BR-21). Hoá đơn dùng **mẫu hoá đơn GTGT** và ký hiệu theo cấu hình.
+- **BR-07:** **Thuế suất** trên hoá đơn gửi nhà cung cấp theo mã của nhà cung cấp cho các mức: 10%, 8%, 5%, 0%, **không chịu thuế (KCT)**, **không kê khai, tính nộp thuế (KKKNT)**; ánh xạ từ thuế suất có hiệu lực tại ngày lập hoá đơn; khác thuế suất đã chốt của dòng ([14](../14-cart-and-order/README.md) BR-21) thì gắn cờ `TAX_RATE_DIFFERS_FROM_CONTRACT` (§4.1). Hoá đơn dùng **mẫu hoá đơn GTGT** và ký hiệu theo cấu hình.
 
   > ⚠️ Giả định: ánh xạ nhóm thuế của sản phẩm sang mã thuế suất của nhà cung cấp phụ thuộc việc làm rõ `EXEMPT` (KCT hay 0%) và mức 0% cho khách khu chế xuất. Xem [open-questions D35](../../open-questions/README.md).
 - **BR-08:** **Điều chỉnh / thay thế theo quy tắc nhà cung cấp:** điều chỉnh được nhiều lần; thay thế một lần cho mỗi hoá đơn gốc; hoá đơn đã điều chỉnh không thay thế được; hoá đơn đã bị thay thế không điều chỉnh được.
@@ -224,7 +224,7 @@ stateDiagram-v2
 | Hàng hoàn về kho (RTO) | Shipment chưa từng `Delivered` thì không có hoá đơn; không phải điều chỉnh |
 | Khách trả một phần số thùng của một lần giao | Điều chỉnh giảm đúng số thùng trả trên hoá đơn của shipment đó (⚠️ §4.4) |
 | Khách đổi tên công ty / địa chỉ sau khi hoá đơn đã phát hành | Hoá đơn cũ giữ nguyên (BR-06); hoá đơn sau dùng thông tin mới |
-| Thuế suất luật định đổi giữa ngày lập đơn và ngày giao | Theo câu hỏi đang mở D34 |
+| Thuế suất luật định đổi giữa ngày lập đơn và ngày giao | Hoá đơn dùng thuế suất tại ngày lập hoá đơn, gắn cờ `TAX_RATE_DIFFERS_FROM_CONTRACT`; các đợt thanh toán không tính lại, Kế toán xử lý phần chênh lệch ngoài hệ thống (§4.1; D34 ✅ 2026-11-25) |
 | Kế toán muốn gộp nhiều lần giao vào một hoá đơn | Không hỗ trợ: mỗi shipment một hoá đơn (BR-01) |
 
 ---
@@ -234,7 +234,7 @@ stateDiagram-v2
 | Module | Quan hệ |
 |--------|---------|
 | [09 · Shipping](../../warehouse/09-shipping/README.md) | Shipment `Delivered` (kèm ngày giao thành công) sinh hoá đơn nháp; kết quả giao bị sửa tay → huỷ nháp hoặc điều chỉnh giảm |
-| [14 · Quote, Order & Contract](../14-cart-and-order/README.md) | Dòng đơn (SKU, số cái / thùng, đơn giá / cái), dòng phí khuôn / bản in và phí vận chuyển, **thuế suất đã chốt** từng dòng (BR-21) |
+| [14 · Quote, Order & Contract](../14-cart-and-order/README.md) | Dòng đơn (SKU, số cái / thùng, đơn giá / cái), dòng phí khuôn / bản in và phí vận chuyển, **thuế suất đã chốt** từng dòng (BR-21) — dùng để đối chiếu với thuế suất tại ngày lập hoá đơn |
 | [15 · Payment](../15-payment/README.md) | Hoá đơn không ảnh hưởng đợt thanh toán, công nợ (BR-11); phí huỷ không xuất hoá đơn GTGT (BR-12); 15 xem danh sách hoá đơn của đơn để tham chiếu |
 | [17 · Order Management](../17-order-management/README.md) | Trả hàng được duyệt hoàn tiền → nháp điều chỉnh giảm; trang đơn ở cổng khách hiển thị hoá đơn và cho tải XML / PDF |
 | [18 · Customer Information](../18-customer-information/README.md) | Thông tin bên mua: tên công ty, mã số thuế, địa chỉ xuất hoá đơn / đăng ký kinh doanh, **email nhận hoá đơn** |

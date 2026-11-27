@@ -24,11 +24,12 @@ import java.util.UUID;
 /**
  * The only place an inventory item is edited. It locks the item and reads it once, then applies the rules: the version
  * check (a stale or shared version is {@code OPTIMISTIC_LOCK}), the unit of measure of stock already held, and barcode
- * uniqueness. There is no stock policy to check any more (team plan 5-5, kltn-docs 01 BR-17). The audit row names the item id: the same item is reached from any number of variants or none, so a variant id would
- * make its trail depend on the route taken. No product history is written and no product status is consulted; a
+ * uniqueness. There is no stock policy to check any more (team plan 5-5, kltn-docs 01 BR-17). The audit row names the item id: an item is a customer's SKU's, opened when an order first names it (owner decision
+ * Q5), and is reached from that SKU, its catalogue variant or none, so another id would make its trail depend on the
+ * route taken. No product history is written and no product status is consulted; a
  * product under review does not freeze its warehouse data.
  *
- * <p>A retired SKU does ({@link SkuRetirement}, #120): an {@code OBSOLETE} variant keeps its stock only to ship it or
+ * <p>A retired SKU does ({@link SkuRetirement}, #120): an {@code OBSOLETE} customer's SKU keeps its stock only to ship it or
  * adjust it away, so its item is still read like any other but an edit of its logistics is {@code VARIANT_OBSOLETE},
  * not a 404 that would say the item does not exist.</p>
  */
@@ -124,7 +125,7 @@ class InventoryItemsImpl implements InventoryItems {
             throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT,
                     "The unit of measure of %s cannot change while stock of it is held".formatted(sku));
         }
-        // The base unit row follows the item's code (V20261019000300); a packing unit cannot share it.
+        // The item's unit names its pieces; a packing unit must not be mistaken for it (tg_inventory_items_unit_code).
         if (!current.logistics().unitOfMeasure().equals(logistics.unitOfMeasure())
                 && policies.packingUnitUses(sku, logistics.unitOfMeasure())) {
             throw new BusinessException(ErrorCode.UOM_CONVERSION_DUPLICATE,

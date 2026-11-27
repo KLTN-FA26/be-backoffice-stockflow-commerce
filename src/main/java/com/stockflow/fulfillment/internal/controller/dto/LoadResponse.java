@@ -10,6 +10,8 @@ import java.util.UUID;
 /**
  * A load with its manifest: the shipments on it, their parcels and which are on the vehicle (kltn-docs 09 §4.2).
  *
+ * @param warehouseName        the load's warehouse (the dispatch warehouse the booking slip names); null only if the
+ *                             warehouse can no longer be read
  * @param expectedPackageCount the sealed parcels of the shipments on the manifest
  * @param loadedPackageCount   of those, scanned onto the vehicle
  * @param version              send it back with the handover
@@ -28,8 +30,12 @@ import java.util.UUID;
  * @param carrierBookingToCancel CANCELLED after it was booked (the plan reopened or cancelled, or the system called it
  *                             off with nothing left to carry - {@code cancelReason} "auto-cancelled: ..."): the
  *                             booking made with the carrier outside the system still exists - cancel it there
+ * @param loadingStartedByName the display name of {@code loadingStartedBy}; null before loading started or if unknown
+ * @param bookedByName         the display name of {@code bookedBy}; null while not booked or if unknown
+ * @param warehouseCode        the code (prefix) of {@code warehouseId}; null only if the warehouse can no longer be read
  */
-public record LoadResponse(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId,
+public record LoadResponse(UUID loadId, String code, UUID warehouseId, String warehouseName, String status,
+                           UUID carrierId,
                            String carrierCode, String carrierName, String vehiclePlate, String driverName,
                            String driverPhone, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
                            UUID dispatchedBy, String dispatchedByName, String carrierRepresentative,
@@ -44,14 +50,16 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String st
                            @JsonInclude(JsonInclude.Include.NON_NULL) String replacementLoadCode,
                            String waybillNo, String carrierConnectionType,
                            @JsonInclude(JsonInclude.Include.NON_NULL) CarrierBooking carrierBooking,
-                           @JsonInclude(JsonInclude.Include.NON_EMPTY) List<HandoverWarning> handoverWarnings) {
+                           @JsonInclude(JsonInclude.Include.NON_EMPTY) List<HandoverWarning> handoverWarnings,
+                           String loadingStartedByName, String bookedByName, String warehouseCode) {
 
     /**
      * 4B-8 (kltn-docs 08 BR-11, 09 BR-18): an order on the vehicle whose goods may not leave yet, answered when loading
-     * starts - the handover refuses the vehicle until it may.
+     * starts - the handover refuses the vehicle until it may. {@code reasonCodes} lists every reason (money owed and a
+     * window not yet open together), {@code reasonCode} is the first, kept for callers that read one.
      */
-    public record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, java.math.BigDecimal amountDue,
-                                  String currency,
+    public record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, List<String> reasonCodes,
+                                  java.math.BigDecimal amountDue, String currency,
                                   @JsonInclude(JsonInclude.Include.NON_NULL) Integer deliveryBatchSeq,
                                   @JsonInclude(JsonInclude.Include.NON_NULL) java.time.LocalDate windowStart) {
     }
@@ -79,7 +87,13 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String st
                            int packageCount, int loadedCount, List<Parcel> packages) {
     }
 
-    public record Parcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                         UUID loadedBy) {
+    /**
+     * @param lpn          the carton's LPN, the barcode on its shipping label (08 §4.3 step 6); a scan may carry it or
+     *                     labelCode
+     * @param loadedByName the display name of {@code loadedBy}, who scanned it onto the vehicle; null while not loaded
+     *                     or if unknown
+     */
+    public record Parcel(UUID packageId, String labelCode, String lpn, BigDecimal weightKg, boolean loaded,
+                         Instant loadedAt, UUID loadedBy, String loadedByName) {
     }
 }

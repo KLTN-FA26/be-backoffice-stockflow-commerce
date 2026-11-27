@@ -30,7 +30,9 @@ import java.util.Locale;
 import java.util.UUID;
 
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.not;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -46,7 +48,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({PostgresContainer.class, RedisContainer.class})
 @AutoConfigureMockMvc
 // The same properties and mock as FulfillmentTaskContextIntegrationTest, so the application context is shared.
-@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
+@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.upload-inspection.enabled=false",
+        "stockflow.catalog.projection-retry-ms=3600000"})
 class TaskCandidatesIntegrationTest {
 
     @Autowired MockMvc mvc;
@@ -55,6 +58,8 @@ class TaskCandidatesIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired com.stockflow.common.storage.FileStorage storage;
+    @Autowired org.springframework.context.ApplicationContext context;
+    @Autowired com.stockflow.order.api.OrderService orderService;
 
     private UUID north;
     private UUID south;
@@ -140,7 +145,7 @@ class TaskCandidatesIntegrationTest {
             for (int quantity : quantities) {
                 jdbc.update("""
                         INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                        VALUES (?, ?, 'SOFA-3S-GREY', ?, 10, 'VND')""", Identifiers.newId(), order, quantity);
+                        VALUES (?, ?, ?, ?, 10, 'VND')""", Identifiers.newId(), order, DemoData.SKU_STOCKED, quantity);
             }
         });
         return order;
@@ -153,7 +158,7 @@ class TaskCandidatesIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
                                                  design_checksum)
-                VALUES (?, ?, 'SOFA-3S-GREY', ?, 10, 'VND', ?, ?)""", Identifiers.newId(), order, quantity,
+                VALUES (?, ?, ?, ?, 10, 'VND', ?, ?)""", Identifiers.newId(), order, DemoData.SKU_STOCKED, quantity,
                 design.snapshotId(), design.checksum()));
     }
 
@@ -194,6 +199,71 @@ class TaskCandidatesIntegrationTest {
     }
 
     @Test
+    @DisplayName("07 BR-07 (WF04 G1): an order whose next delivery batch is released while it is PARTIALLY_FULFILLED "
+            + "is offered for a task - not before the batch is released, not once that batch has its task")
+    void anOrderWithALaterBatchReleasedIsListedUntilItsTaskIsOpen() throws Exception {
+        var orders = new com.stockflow.support.ConfirmedOrders(context);
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        UUID by = tx.execute(s -> ReferenceRows.user(entityManager));
+        UUID picker = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
+        var sku = com.stockflow.support.CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2);
+        com.stockflow.support.CustomerSkuRows.stock(jdbc, tx, sku.sku(), 8);
+        UUID orderId = orders.pay(orders.signedInBatches(customer, 2,
+                com.stockflow.support.ConfirmedOrders.Line.cartons(sku, 4, 6_000))).orderId();
+        orders.release(orderId, DemoData.WAREHOUSE_HCM, by);
+        List<UUID> batches = jdbc.queryForList("""
+                SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
+                 WHERE c.order_id = ? ORDER BY b.seq""", UUID.class, orderId);
+        String oc = token(coordinator, "SYSTEM_ADMIN");
+        String list = "/api/v1/fulfillment/task-candidates?warehouseId=" + DemoData.WAREHOUSE_HCM + "&size=200";
+
+        // Batch 1 released: the order is READY_TO_FULFILL with no task - listed, as before.
+        mvc.perform(get(list).header("Authorization", oc))
+                .andExpect(jsonPath("$.data.items[*].orderId").value(hasItem(orderId.toString())));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/fulfillment/tasks")
+                        .header("Authorization", oc).contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":\"" + orderId + "\",\"assignedUserId\":\"" + picker + "\"}"))
+                .andExpect(status().isCreated());
+        mvc.perform(get(list).header("Authorization", oc))
+                .andExpect(jsonPath("$.data.items[*].orderId").value(not(hasItem(orderId.toString()))));
+
+        // Batch 1 is packed and handed over in full; batch 2 is not released yet: nothing to open a task for.
+        orderService.markPacked(orderId, by);
+        UUID shipment = UUID.randomUUID();
+        com.stockflow.support.ShipmentRows.ready(jdbc, tx, orderId, shipment);
+        orderService.recordHandover(orderId, new com.stockflow.order.api.ShipmentHandover(shipment, List.of(
+                new com.stockflow.order.api.ShipmentHandover.Line(
+                        orderService.findById(orderId).orElseThrow().lines().getFirst().lineId(), 4)),
+                Instant.now(), by));
+        org.assertj.core.api.Assertions.assertThat(orders.status(orderId))
+                .isEqualTo(com.stockflow.order.api.OrderStatus.PARTIALLY_FULFILLED);
+        mvc.perform(get(list).header("Authorization", oc))
+                .andExpect(jsonPath("$.data.items[*].orderId").value(not(hasItem(orderId.toString()))));
+
+        // Batch 2 released, no task for it: the order is offered again (a task of its own, its batch only).
+        com.stockflow.support.WithCurrentUser.call(orders.sales(), com.stockflow.common.security.DataScope.ALL,
+                () -> context.getBean(com.stockflow.order.internal.service.OrderReleases.class)
+                        .release(orderId, DemoData.WAREHOUSE_HCM, by));
+        mvc.perform(get(list).header("Authorization", oc))
+                .andExpect(jsonPath("$.data.items[*].orderId").value(hasItem(orderId.toString())));
+        // ... and the manager of another warehouse does not see it.
+        mvc.perform(get("/api/v1/fulfillment/task-candidates?warehouseId=" + north)
+                        .header("Authorization", token(managerNorth, "WAREHOUSE_MANAGER")))
+                .andExpect(jsonPath("$.data.items[*].orderId").value(not(hasItem(orderId.toString()))));
+
+        // The task for batch 2 opens, and the order leaves the list again.
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/fulfillment/tasks")
+                        .header("Authorization", oc).contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":\"" + orderId + "\",\"assignedUserId\":\"" + picker + "\"}"))
+                .andExpect(status().isCreated());
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForList(
+                "SELECT delivery_batch_id FROM fulfillment.pick WHERE order_id = ? ORDER BY created_at, id",
+                UUID.class, orderId)).containsExactly(batches.get(0), batches.get(1));
+        mvc.perform(get(list).header("Authorization", oc))
+                .andExpect(jsonPath("$.data.items[*].orderId").value(not(hasItem(orderId.toString()))));
+    }
+
+    @Test
     @DisplayName("a warehouse manager reads the READY_TO_FULFILL orders of their warehouse, oldest release first")
     void managerSeesOwnWarehouse() throws Exception {
         UUID older = order("READY_TO_FULFILL", north, 5, 3, 4);
@@ -216,7 +286,7 @@ class TaskCandidatesIntegrationTest {
                     .andExpect(jsonPath("$.data.items[0].lineCount").value(2))
                     .andExpect(jsonPath("$.data.items[0].totalQuantity").value(7))
                     .andExpect(jsonPath("$.data.items[0].lines", hasSize(2)))
-                    .andExpect(jsonPath("$.data.items[0].lines[0].sku").value("SOFA-3S-GREY"))
+                    .andExpect(jsonPath("$.data.items[0].lines[0].sku").value(DemoData.SKU_STOCKED))
                     .andExpect(jsonPath("$.data.items[0].lines[0].printed").value(false));
         }
         // The sales order list is the manager's too, but limited to their warehouses' orders (OrderWarehouseVisibilityHttpTest).

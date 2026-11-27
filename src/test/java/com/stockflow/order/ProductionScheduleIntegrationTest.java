@@ -209,18 +209,17 @@ class ProductionScheduleIntegrationTest {
             UUID variant = Identifiers.newId();
             String code = product.sku() + "-C" + variant.toString().substring(24, 28).toUpperCase(Locale.ROOT);
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Printed cup', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), code, "OWNED-SKU:" + code, customerId, design.snapshotId(),
-                    product.variantId());
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Printed cup', 'ACTIVE', 0, NOW())""",
+                    variant, product.productId(), product.variantId(), customerId, design.snapshotId(), code);
+            // The order of the SKU made its inventory item (owner decision Q5); the test stocks or receives it.
+            UUID item = com.stockflow.support.CartonRows.item(jdbc, code);
             UUID carton = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
-                        weight_kg, length_cm, width_cm, height_cm, default_purchase, active, version, created_at,
-                        default_shipping)
-                    VALUES (?, ?, 'CARTON', ?, FALSE, 4.2, 60, 40, 35, FALSE, TRUE, 0, NOW(), TRUE)""",
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
+                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
+                    VALUES (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', ?, 4.2, 60, 40, 35, TRUE, 0, NOW())""",
                     carton, item, PER_CARTON);
             return new IssuedSku(code, design.snapshotId(), design.checksum(), carton);
         });
@@ -294,9 +293,8 @@ class ProductionScheduleIntegrationTest {
         return productionOrders.drawUp(orderId, batchSeq, producer.id(), coordinator);
     }
 
-    private ProductionOrder approved(ProductionOrder draft) {
-        ProductionOrder pending = productionOrders.submit(draft.id(), draft.version(), coordinator);
-        return productionOrders.approve(pending.id(), pending.version(), manager);
+    private ProductionOrder sent(ProductionOrder draft) {
+        return productionOrders.send(draft.id(), draft.version(), coordinator);
     }
 
     private void sql(String statement, Object... args) {
@@ -454,7 +452,7 @@ class ProductionScheduleIntegrationTest {
         ProductionOrder madeAtA = drawUp(atA, 1);
         ProductionOrder madeAtB = drawUp(atB, 1);
         sql("UPDATE ordering.production_order SET need_by_date = ? WHERE id = ?", today.minusDays(1), madeAtB.id());
-        approved(productionOrders.detail(madeAtB.id()).order());
+        sent(productionOrders.detail(madeAtB.id()).order());
         alerts.recompute(atB);
         alerts.recompute(atA);
         assertThat(openAlert(DelayAlertType.PRODUCTION_LATE, madeAtB.id())).isNotNull();
@@ -551,7 +549,7 @@ class ProductionScheduleIntegrationTest {
         alerts.recompute(orderId);
         assertThat(openAlert(DelayAlertType.PRODUCTION_LATE, draft.id())).as("a draft is with no producer").isNull();
 
-        ProductionOrder sent = approved(productionOrders.detail(draft.id()).order());
+        ProductionOrder sent = sent(productionOrders.detail(draft.id()).order());
         alerts.recompute(orderId);
         UUID late = openAlert(DelayAlertType.PRODUCTION_LATE, sent.id());
         assertThat(late).as("sent, past its need-by day").isNotNull();
@@ -562,7 +560,7 @@ class ProductionScheduleIntegrationTest {
                 DataAccessException.class).hasMessageContaining("ck_production_order_expected_completion");
         // Accepted the way the coordinator records it (4A-4): the database refuses the status written around it.
         productionOrders.accept(sent.id(), productionOrders.detail(sent.id()).order().version(), today.plusDays(5),
-                coordinator);
+                null, coordinator);
         alerts.recompute(orderId);
         UUID risk = openAlert(DelayAlertType.AT_RISK, sent.id());
         assertThat(risk).as("expected after the need-by day").isNotNull();
@@ -626,6 +624,11 @@ class ProductionScheduleIntegrationTest {
         assertThat(messages(salesUser, late)).isEqualTo(1);
         assertThat(asSales(() -> alerts.list(orderId, null, true, 0, 50).items())).extracting(AlertView::type)
                 .containsExactlyInAnyOrder(DelayAlertType.DELIVERY_LATE, DelayAlertType.PO_NEEDED);
+        // V20261209000400 (17 §3, BR-30): the list leaves DELIVERY_LATE out for a reader who does not follow delivery.
+        assertThat(asSales(() -> alerts.list(orderId, null, false, true, 0, 50).items())).extracting(AlertView::type)
+                .as("without DELIVERY_LATE").containsExactly(DelayAlertType.PO_NEEDED);
+        assertThat(asSales(() -> alerts.list(orderId, DelayAlertType.DELIVERY_LATE, false, true, 0, 50).items()))
+                .as("asked for by type, still left out").isEmpty();
 
         assertThatThrownBy(() -> sql("""
                 INSERT INTO ordering.delay_alert (id, type, delivery_batch_id, sales_order_id, opened_at)
@@ -652,7 +655,10 @@ class ProductionScheduleIntegrationTest {
                 "SALES_STAFF", "SYSTEM_ADMIN", "WAREHOUSE_MANAGER");
         assertThat(holders("production-schedule:VIEW_PAGE")).containsExactly("PRODUCTION_COORDINATOR",
                 "SALES_MANAGER", "SALES_STAFF", "SYSTEM_ADMIN", "WAREHOUSE_MANAGER");
-        assertThat(holders("delay-alerts:READ")).as("BR-30: DELIVERY_LATE is not the coordinator's")
+        assertThat(holders("delay-alerts:READ")).as("V20261209000400: the coordinator reads the alerts too (17 §3)")
+                .containsExactly("PRODUCTION_COORDINATOR", "SALES_MANAGER", "SALES_STAFF", "SYSTEM_ADMIN",
+                        "WAREHOUSE_MANAGER");
+        assertThat(holders("delivery-delay-alerts:READ")).as("BR-30: DELIVERY_LATE is not the coordinator's")
                 .containsExactly("SALES_MANAGER", "SALES_STAFF", "SYSTEM_ADMIN", "WAREHOUSE_MANAGER");
     }
 

@@ -196,15 +196,18 @@ class DispatchController {
             + "(SCRUM-474, 09 BR-14): its load is CANCELLED at once with the reason code (XE_HONG, SAI_XE, "
             + "KIEN_KHONG_VUA, KHAC) and note, its scanned parcels stay locked until each is scanned off "
             + "(POST .../unloads) or confirmed off (POST .../unload-overrides), and a PLANNED load with the same layout "
-            + "and manifest replaces it, to book with another truck; the plan and its other vehicles carry on. 409 "
-            + "INVALID_LOAD_TRANSITION (not LOADING), INVALID_LOAD_PLAN_TRANSITION; 400 "
+            + "and manifest replaces it, to book with another truck; the plan and its other vehicles carry on. "
+            + "removedShipmentIds (09 §4.2 step 9): shipments taken off with it leave the plan (REMOVED_FROM_VEHICLE) "
+            + "and the replacement carries the rest on a layout recalculated for this vehicle - none when nothing is "
+            + "left. 409 INVALID_LOAD_TRANSITION (not LOADING), INVALID_LOAD_PLAN_TRANSITION, "
+            + "LOAD_REMOVAL_SPLITS_SHIPMENT, LOAD_PLAN_RELAYOUT_INCOMPLETE, ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED; 400 "
             + "VALIDATION_FAILED. Again: answered as it is")
     @RequiresPermission(resource = FulfillmentResources.CONTROLLED_CANCELLATIONS, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<ControlledCancelResponse> cancelControlled(@PathVariable UUID loadId,
             @Valid @RequestBody ControlledCancelRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(dispatching.cancelControlled(loadId, request.reasonCode(),
-                request.note(), actor)));
+                request.note(), request.removedShipmentIds(), actor)));
     }
 
     @PostMapping("/{loadId}/plan-removal")

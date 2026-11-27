@@ -48,7 +48,7 @@ class LotTraceQueriesImpl implements LotTraceQueries {
     private static LotTraceView view(LotTrace trace) {
         LotTrace.Summary lot = trace.lot();
         return new LotTraceView(lot.sku(), lot.lotNumber(), lot.receivedAt(), lot.origin(),
-                lot.goodsReceiptNumber(), lot.productionOrderCode(),
+                lot.productionOrderCode(),
                 lot.receivedQuantity(), lot.onHand(), lot.available(), lot.held(),
                 trace.balances().stream()
                         .map(b -> new LotTraceView.Balance(b.locationCode(), b.status(), b.onHand(), b.held(),

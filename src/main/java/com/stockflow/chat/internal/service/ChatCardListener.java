@@ -7,6 +7,9 @@ import com.stockflow.contracts.DesignReviewed;
 import com.stockflow.contracts.DesignSubmittedForReview;
 import com.stockflow.contracts.EInvoiceIssued;
 import com.stockflow.contracts.InstallmentDue;
+import com.stockflow.contracts.InstallmentOverdue;
+import com.stockflow.contracts.OrderCancelled;
+import com.stockflow.contracts.OrderRemainderClosed;
 import com.stockflow.contracts.PaymentReceiptRecorded;
 import com.stockflow.contracts.PaymentReceiptVoided;
 import com.stockflow.contracts.ProductionOrderStopped;
@@ -63,6 +66,11 @@ class ChatCardListener {
     }
 
     @ApplicationModuleListener
+    public void on(com.stockflow.contracts.DesignProjectQuoteRequestReady event) {
+        cards.projectQuoteRequestChanged(event.requestId());
+    }
+
+    @ApplicationModuleListener
     public void on(QuoteStatusChanged event) {
         cards.quoteChanged(event);
     }
@@ -84,6 +92,42 @@ class ChatCardListener {
 
     @ApplicationModuleListener
     public void on(PaymentReceiptVoided event) {
+        cards.paymentsChanged(event.customerId());
+    }
+
+    /**
+     * An order cancelled takes its installments with it (4B-9): its transfer cards stop asking for money and lose their
+     * VietQR, or the customer could still pay an order that no longer exists.
+     */
+    @ApplicationModuleListener
+    public void on(OrderCancelled event) {
+        cards.paymentsChanged(event.customerId());
+    }
+
+    /**
+     * What was left of an order closed (4B-9, a delivery failure Sales cancelled included): its installments were
+     * reduced or cancelled, so its transfer cards show what is left, as for a cancelled order.
+     */
+    @ApplicationModuleListener
+    public void on(OrderRemainderClosed event) {
+        cards.paymentsChanged(event.customerId());
+    }
+
+    /**
+     * WF-05 Q-2 / Q-19: a shipment the carrier brought back, or lost, was settled - its value and its share of the
+     * shipping fee came off the order's installments - so its transfer cards show what is left, as for a closed rest.
+     */
+    @ApplicationModuleListener
+    public void on(com.stockflow.contracts.ShipmentReturnSettled event) {
+        cards.paymentsChanged(event.customerId());
+    }
+
+    /**
+     * An installment turned overdue (the nightly scan): its transfer cards say so, as the order page does - the card
+     * was written when it was posted or last paid, and kept saying "not overdue" (15 §4.3 step 11).
+     */
+    @ApplicationModuleListener
+    public void on(InstallmentOverdue event) {
         cards.paymentsChanged(event.customerId());
     }
 

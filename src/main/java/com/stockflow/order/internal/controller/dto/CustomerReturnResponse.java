@@ -18,6 +18,8 @@ public record CustomerReturnResponse(
         @Schema(example = "RMA-20261025-0001") String rmaNumber,
         UUID orderId,
         String orderNumber,
+        @Schema(description = "The delivery the returned goods came on; null for an order delivered at once")
+        UUID shipmentId,
         @Schema(example = "AWAITING_RETURN") String status,
         String reasonCode,
         String description,
@@ -38,10 +40,42 @@ public record CustomerReturnResponse(
         List<Discrepancy> discrepancies,
         List<Evidence> evidence,
         List<Step> history,
-        long version) implements ReturnView {
+        long version,
+        @Schema(description = "How the return ended once RESOLVED (WF-05 Q-4): REFUNDED, REFUSED (\"processed - no "
+                + "refund\", for refusalReason) or NOTHING_TO_REFUND; null before", allowableValues = {"REFUNDED",
+                "REFUSED", "NOTHING_TO_REFUND"})
+        String outcome,
+        @Schema(description = "Why goods that came back were not refunded, once RESOLVED: CUSTOMER_DAMAGE, "
+                + "NOT_DEFECTIVE, OUT_OF_POLICY or OTHER")
+        String refusalReason,
+        @Schema(description = "refusalReason as the customer reads it (Vietnamese)", example = "Hư hỏng do bảo quản/sử dụng")
+        String refusalReasonLabel,
+        @Schema(description = "The note Sales wrote for the customer beside the reason")
+        String refusalNote,
+        @Schema(description = "Whether the warehouse is counting a parcel of it on a DRAFT return receipt now (WF-05 "
+                + "BE-23): the return cannot be withdrawn meanwhile (409 RETURN_RECEIPT_DRAFT_OPEN), so the portal "
+                + "hides the withdraw button")
+        boolean receiptDraftOpen,
+        @Schema(description = "What the customer chose for their goods after a return that refunded nothing (WF-05 Q-4), "
+                + "as Sales recorded it: SEND_BACK or DESTROY_ON_BEHALF; null until recorded",
+                allowableValues = {"SEND_BACK", "DESTROY_ON_BEHALF"})
+        String custodyChoice) implements ReturnView {
 
+    /**
+     * @param productName the name of the product the SKU belongs to - the customer does not know their SKUs by code;
+     *                    null for a SKU the catalogue does not know
+     * @param variantName the SKU's own (variant) name; null for an unknown SKU
+     */
     public record Line(UUID id, UUID orderLineId, String sku, int requestedQuantity, Integer approvedQuantity,
-                       Integer receivedQuantity, int refundQuantity, BigDecimal refundAmount) {
+                       Integer receivedQuantity, int refundQuantity, BigDecimal refundAmount, String productName,
+                       String variantName) {
+
+        /** Without the SKU's names. */
+        public Line(UUID id, UUID orderLineId, String sku, int requestedQuantity, Integer approvedQuantity,
+                    Integer receivedQuantity, int refundQuantity, BigDecimal refundAmount) {
+            this(id, orderLineId, sku, requestedQuantity, approvedQuantity, receivedQuantity, refundQuantity,
+                    refundAmount, null, null);
+        }
     }
 
     public record Discrepancy(String kind, String sku, int quantity) {

@@ -27,6 +27,7 @@ import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderHoldState;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
@@ -65,7 +66,8 @@ import java.util.stream.Collectors;
 /**
  * The carton check and labelling station (team plan 4C-6): see {@link CartonChecks} for the contract and
  * {@link CartonCheck} for the rules. Also completes a session into a shipment ({@link #complete}, for
- * {@code FulfillmentService.completePacking}) and stops it when its order is cancelled ({@link #cancelForOrder}).
+ * {@code FulfillmentService.completePacking}), stops it when its order is cancelled ({@link #cancelForOrder}), and takes
+ * back the cartons of a shipment the warehouse manager cancelled before dispatch ({@link #removeCancelledShipment}).
  *
  * <p><b>Lock order</b>, as everywhere in fulfillment: the pick first ({@code SELECT … FOR UPDATE}), then the order (its
  * service takes the order's row lock: the first label, the completion). The station changes no stock (08 BR-10): a
@@ -81,7 +83,10 @@ class CartonCheckService implements CartonChecks {
 
     private static final Logger log = LoggerFactory.getLogger(CartonCheckService.class);
 
-    /** The order statuses the station may change cartons in: released, picking, or the rest of a split order. */
+    /**
+     * The order statuses the station may change cartons in: released, picking, or the rest of a split order - and
+     * AWAITING_STOCK only when Sales allowed its part held to go first ({@link #workable}; 08 §4.1 step 1).
+     */
     private static final Set<OrderStatus> WORKABLE = EnumSet.of(OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
             OrderStatus.PARTIALLY_FULFILLED);
     private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.IN_PROGRESS);
@@ -108,6 +113,11 @@ class CartonCheckService implements CartonChecks {
     /** A removed carton's line, for its hold; the hold then leaves its delivery batch (08 §4.2 step 4). */
     private final com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines;
     private final com.stockflow.order.api.OrderReservations orderReservations;
+    /** Holds the order for a removed carton, as a short pick report does. */
+    private final PickLists pickLists;
+    private final ForeignCartonReports foreignCartons;
+    /** Tells the warehouse managers and the order's Sales of an installment due before delivery still unpaid. */
+    private final PaymentDueReports paymentDueReports;
 
     @SuppressWarnings("java:S107")
     CartonCheckService(PickJpaRepository picks, PackJpaRepository packs, PackageJpaRepository packages,
@@ -116,7 +126,11 @@ class CartonCheckService implements CartonChecks {
                        WarehouseService warehouses, ShipmentTimeline timeline, Clock clock,
                        LoadPlanReleases loadPlans, PlanVehicles planVehicles, LabelledCartons labelledCartons,
                        com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines,
-                       com.stockflow.order.api.OrderReservations orderReservations) {
+                       com.stockflow.order.api.OrderReservations orderReservations, PickLists pickLists,
+                       ForeignCartonReports foreignCartons, PaymentDueReports paymentDueReports) {
+        this.paymentDueReports = paymentDueReports;
+        this.pickLists = pickLists;
+        this.foreignCartons = foreignCartons;
         this.labelledCartons = labelledCartons;
         this.pickLines = pickLines;
         this.orderReservations = orderReservations;
@@ -165,9 +179,14 @@ class CartonCheckService implements CartonChecks {
                 PageRequest.of(0, QUEUE_WORKING_SET, Sort.by(Sort.Direction.ASC, "pickedAt", "id"))).getContent();
         Map<UUID, OrderHoldState> states = orders.holdStates(candidates.stream().map(PickJpaEntity::getOrderId)
                 .toList()).stream().collect(Collectors.toMap(OrderHoldState::orderId, Function.identity()));
+        Set<UUID> replacing = replacingPicks(candidates.stream().filter(pick -> states.get(pick.getOrderId()) != null
+                && replacementStatus(states.get(pick.getOrderId()).status(), states.get(pick.getOrderId()).holdReason()))
+                .map(PickJpaEntity::getId).toList());
         List<PickJpaEntity> shown = candidates.stream()
                 .filter(pick -> states.get(pick.getOrderId()) != null
-                        && WORKABLE.contains(states.get(pick.getOrderId()).status()))
+                        && (workable(states.get(pick.getOrderId()).status(),
+                                states.get(pick.getOrderId()).allowPartialShipment())
+                        || replacing.contains(pick.getId())))
                 .toList();
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.ASC, "pickedAt", "id"));
         int from = (int) Math.min(pageable.getOffset(), shown.size());
@@ -188,15 +207,19 @@ class CartonCheckService implements CartonChecks {
         found.getContent().forEach(pick -> people.add(pick.getAssignedUserId()));
         packByPick.values().forEach(pack -> people.add(pack.getStartedBy()));
         Map<UUID, String> names = identities.displayNames(people.stream().filter(Objects::nonNull).distinct().toList());
+        Map<UUID, com.stockflow.warehouse.api.WarehouseView> warehouseById = warehouses.findWarehouses(
+                found.getContent().stream().map(PickJpaEntity::getWarehouseId).collect(Collectors.toSet()));
         return Pages.toResponse(found, pick -> {
             PackJpaEntity pack = packByPick.get(pick.getId());
+            var warehouse = warehouseById.get(pick.getWarehouseId());
             List<PackageJpaEntity> cartons = cartonsByPack.getOrDefault(pack.getId(), List.of());
             return new QueueRow(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
                     pack.getStatus().name(), pick.getPickedAt(), names.get(pick.getAssignedUserId()),
                     pack.getStartedBy(), names.get(pack.getStartedBy()), pack.getStartedAt(), cartons.size(),
                     (int) cartons.stream().filter(c -> c.getStatus() != PackageStatus.TO_CHECK).count(),
                     (int) cartons.stream().filter(c -> c.getStatus() == PackageStatus.LABELED).count(),
-                    shipmentsByPack.getOrDefault(pack.getId(), 0L).intValue());
+                    shipmentsByPack.getOrDefault(pack.getId(), 0L).intValue(), pick.getTaskNumber(),
+                    warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
         });
     }
 
@@ -205,7 +228,7 @@ class CartonCheckService implements CartonChecks {
     @Override
     public Session start(UUID taskId, CurrentUser actor) {
         Context ctx = forWork(taskId);
-        requireWorkable(ctx.order());
+        requireWorkable(ctx);
         CartonCheck check = load(ctx);
         if (check.start(actor.userId(), isManager(actor), clock.instant())) {
             log.info("Check of order {} started by {}", ctx.pick().getOrderNumber(), actor.userId());
@@ -227,10 +250,19 @@ class CartonCheckService implements CartonChecks {
     @Override
     public Session check(UUID taskId, String lpn, CurrentUser actor) {
         Context ctx = forWork(taskId);
-        requireWorkable(ctx.order());
+        requireWorkable(ctx);
         CartonCheck check = load(ctx);
         check.requireWorkable(actor.userId(), isManager(actor));
-        CartonCheck.Scan scan = check.check(lpn, actor.userId(), clock.instant());
+        CartonCheck.Scan scan;
+        try {
+            scan = check.check(lpn, actor.userId(), clock.instant());
+        } catch (BusinessException refused) {
+            if (refused.errorCode() == ErrorCode.CARTON_NOT_IN_TASK) {
+                // 08 §4.2 edge case, WF4-LPN-FOREIGN: refused as before, and the warehouse manager is told.
+                foreignCartons.report(ctx.pick(), lpn, actor.userId(), clock.instant());
+            }
+            throw refused;
+        }
         store.save(check, ctx.pack());
         if (!scan.repeated()) {
             log.info("Order {}: carton {} checked", ctx.pick().getOrderNumber(), scan.carton().lpn());
@@ -241,7 +273,7 @@ class CartonCheckService implements CartonChecks {
     @Override
     public Session label(UUID taskId, List<String> lpns, CurrentUser actor) {
         Context ctx = forWork(taskId);
-        requireWorkable(ctx.order());
+        requireWorkable(ctx);
         CartonCheck check = load(ctx);
         check.requireWorkable(actor.userId(), isManager(actor));
         List<CartonCheck.Carton> labeled = check.label(lpns, specs(check.cartons()), measures.divisor(),
@@ -265,7 +297,7 @@ class CartonCheckService implements CartonChecks {
         CartonCheck check = load(ctx);
         check.requireReprintable(actor.userId(), isManager(actor));
         CartonCheck.Carton carton = check.carton(lpn).orElse(null);
-        CartonCheck.Spec spec = carton == null ? null : specs(List.of(carton)).get(carton.sku());
+        CartonCheck.Spec spec = carton == null ? null : specs(List.of(carton)).get(carton.lpn());
         boolean planned = carton != null && carton.stored() && measures.planned(carton.id());
         CartonCheck.Carton reprinted = check.reprint(lpn, spec, measures.divisor(), planned, fromVersion);
         store.save(check, ctx.pack());
@@ -279,12 +311,19 @@ class CartonCheckService implements CartonChecks {
         Context ctx = forWork(taskId);
         CartonCheck check = load(ctx);
         check.requireWorkable(actor.userId(), isManager(actor));
+        boolean removedBefore = check.carton(lpn).filter(c -> c.status() == PackageStatus.REMOVED).isPresent();
         CartonCheck.Carton removed = check.remove(lpn, note, actor.userId(), clock.instant());
         store.save(check, ctx.pack());
         // 08 §4.2 step 4: the line lacks this carton now, handled as a shortage (07 §4.4) - its delivery batch no longer
         // counts the hold (17 §5.5), and the warehouse manager replaces it by reallocating the line. Idempotent.
         pickLines.findById(removed.pickLineId()).map(line -> line.getReservationId()).ifPresent(hold ->
                 orderReservations.cartonRemoved(ctx.order().orderId(), hold));
+        if (!removedBefore) {
+            // 07 §4.4 step 9, as a short pick report: the order stops (INVENTORY) at once, whatever stock there is. A
+            // reallocation that finds stock resumes it; one that does not keeps it (WF4-BE3-HOLD). Only a removal
+            // that happens now: a repeated request must not hold an order whose hold was resolved since.
+            pickLists.holdForRemovedCarton(taskId, removed.pickLineId(), actor);
+        }
         log.info("Order {}: carton {} removed as damaged; it waits in the put-back queue for quarantine",
                 ctx.pick().getOrderNumber(), removed.lpn());
         return view(ctx, check);
@@ -368,7 +407,7 @@ class CartonCheckService implements CartonChecks {
                     paymentDue(ctx.order()));
         }
         check.requireWorkable(actor.userId(), isManager(actor));
-        requireWorkable(ctx.order());
+        requireWorkable(ctx);
         Map<UUID, Integer> wanted = new LinkedHashMap<>();
         Map<UUID, String> skus = new HashMap<>();
         Map<UUID, Integer> closed = closedUnits(ctx.order());
@@ -383,6 +422,13 @@ class CartonCheckService implements CartonChecks {
         Instant now = clock.instant();
         // In part: the order is PARTIALLY_FULFILLED at once (08 §4.4 step 8; owner decision WF4-PF-STATUS, 2026-11-12),
         // not only when this part is handed over. In full: PACKED.
+        if (!completion.partial() && ctx.order().status() == OrderStatus.ON_HOLD) {
+            // RTM-RTDCANCEL step 5 (09 §5.1; 08 §5.1): the replacements of a shipment cancelled before dispatch are
+            // checked in full - requireWorkable let only that INVENTORY hold through - so the hold is resolved and the
+            // order goes back to the status it was held from (PACKED), then on with the packing as ever.
+            orders.resolveHold(ctx.order().orderId(), ("Replacement cartons of the shipment cancelled before dispatch "
+                    + "checked and labelled"), actor.userId());
+        }
         OrderSummary after = completion.partial()
                 ? orders.markPartlyPacked(ctx.order().orderId(), actor.userId())
                 : orders.markPacked(ctx.order().orderId(), actor.userId());
@@ -396,7 +442,13 @@ class CartonCheckService implements CartonChecks {
         store.save(check, ctx.pack());
         log.info("Order {}: shipment {} ready to dispatch, {} carton(s){}", ctx.pick().getOrderNumber(),
                 shipment.code(), shipment.packageCount(), completion.partial() ? ", part of the order" : "");
-        return new Completed(shipment.id(), after, paymentDue(after));
+        PaymentDue due = paymentDue(after);
+        if (due != null) {
+            // 08 §4.4 step 9, §2 (RTM-PAYNOTIFY): a warning on the answer, and the managers and Sales told in-app.
+            paymentDueReports.report(ctx.order().orderId(), ctx.order().orderNumber(), shipment.id(), shipment.code(),
+                    ctx.pick().getWarehouseId(), due.amount(), due.currency(), now);
+        }
+        return new Completed(shipment.id(), after, due);
     }
 
     /**
@@ -440,6 +492,43 @@ class CartonCheckService implements CartonChecks {
         }
         log.info("Check of cancelled order {}: {} carton(s) removed to the put-back queue", pick.getOrderNumber(),
                 removed.size());
+    }
+
+    /**
+     * The warehouse manager cancelled shipment {@code row} of this task before dispatch (kltn-docs 09 §5.1 "Cancelled";
+     * owner decision RTM-RTDCANCEL, 2026-11-19): its cartons leave it - the ones in {@code damaged} into quarantine, the
+     * others back onto a bin, both through the put-back queue, their labels void ({@link CartonCheck#cancelShipment}) -
+     * and a COMPLETED session is IN_PROGRESS again for the replacements (08 §5.1). Each carton is then handled as one
+     * removed at the station (08 §4.2 step 4): its hold no longer stands for its delivery batch
+     * ({@code OrderReservations.cartonRemoved}), and the order is held {@code INVENTORY} for the warehouse manager to
+     * reallocate the line ({@link PickLists#holdForCancelledShipment}). Called by {@link ShipmentCancellationService}
+     * under the pick's lock and the shipment's; the order's is taken last, by the hold.
+     *
+     * @return the cartons removed
+     */
+    public List<CartonCheck.Carton> removeCancelledShipment(PickJpaEntity pick, PackJpaEntity pack, OrderSummary order,
+                                                            ShipmentJpaEntity row, Set<UUID> damaged, String reason,
+                                                            CurrentUser actor) {
+        CartonCheck check = store.load(pack, order.orderId(), order.orderNumber());
+        List<CartonCheck.Carton> removed = check.cancelShipment(row.getId(), damaged, reason, actor.userId(),
+                clock.instant());
+        store.save(check, pack);
+        Map<UUID, UUID> holds = pickLines.findAllById(removed.stream().map(CartonCheck.Carton::pickLineId).toList())
+                .stream().filter(line -> line.getReservationId() != null).collect(Collectors.toMap(
+                        com.stockflow.fulfillment.internal.entity.PickLineJpaEntity::getId,
+                        com.stockflow.fulfillment.internal.entity.PickLineJpaEntity::getReservationId));
+        removed.forEach(carton -> {
+            UUID hold = holds.get(carton.pickLineId());
+            if (hold != null) {
+                orderReservations.cartonRemoved(order.orderId(), hold);
+            }
+        });
+        removed.forEach(carton -> pickLists.holdForCancelledShipment(pick.getId(), carton.pickLineId(), row.getCode(),
+                actor));
+        log.info("Order {}: shipment {} cancelled before dispatch - {} carton(s) to the put-back queue ({} damaged), "
+                + "the check {}", order.orderNumber(), row.getCode(), removed.size(), removed.stream()
+                .filter(c -> c.removalReason() == CartonCheck.RemovalReason.DAMAGED).count(), check.status());
+        return removed;
     }
 
     /**
@@ -531,8 +620,58 @@ class CartonCheckService implements CartonChecks {
         return check;
     }
 
+    /**
+     * {@link #requireWorkable(OrderSummary)}, with the one exception of RTM-RTDCANCEL (owner decision 2026-11-19; 09
+     * §5.1 steps 1-5, 08 §5.1, 07 §4.3 step 7): the check reopened for the replacement cartons of a shipment the
+     * warehouse manager cancelled before dispatch is worked while the order waits on the shortage hold that
+     * cancellation put on it ({@code ON_HOLD}, {@code INVENTORY}) - completing it in full resolves that hold
+     * ({@link #complete}) - or once it is {@code PACKED} again (a hold resolved by hand). Any other held order, and
+     * any other session, is refused as before.
+     */
+    private void requireWorkable(Context ctx) {
+        HoldReason reason = ctx.order().lifecycle() == null ? null : ctx.order().lifecycle().holdReason();
+        if (replacementStatus(ctx.order().status(), reason)
+                && !replacingPicks(List.of(ctx.pick().getId())).isEmpty()) {
+            return;
+        }
+        requireWorkable(ctx.order());
+    }
+
+    /** The order statuses a check reopened by a cancelled shipment is worked in (RTM-RTDCANCEL). */
+    private static boolean replacementStatus(OrderStatus status, HoldReason holdReason) {
+        return status == OrderStatus.PACKED || status == OrderStatus.ON_HOLD && holdReason == HoldReason.INVENTORY;
+    }
+
+    /**
+     * Of these tasks, the ones whose check is live (PENDING or IN_PROGRESS) and one of whose shipments was cancelled:
+     * only the warehouse manager's cancellation before dispatch leaves both (RTM-RTDCANCEL) - an order's cancellation
+     * cancels the session with its shipments. Two reads, whatever the number of tasks.
+     */
+    private Set<UUID> replacingPicks(Collection<UUID> pickIds) {
+        if (pickIds.isEmpty()) {
+            return Set.of();
+        }
+        Map<UUID, UUID> pickByPack = packs.findByPickIdIn(pickIds).stream()
+                .filter(pack -> QUEUED.contains(pack.getStatus()))
+                .collect(Collectors.toMap(PackJpaEntity::getId, PackJpaEntity::getPickId));
+        if (pickByPack.isEmpty()) {
+            return Set.of();
+        }
+        return shipments.findByPackIdIn(pickByPack.keySet()).stream()
+                .filter(row -> row.getStatus() == ShipmentStatus.CANCELLED)
+                .map(row -> pickByPack.get(row.getPackId())).collect(Collectors.toSet());
+    }
+
+    /**
+     * 08 §4.1 step 1: "Đơn còn Awaiting Stock chỉ hiện khi Sale đã cho phép giao một phần" - the part held of an order
+     * awaiting stock is checked only to go first (17 §4.5 step 18).
+     */
+    private static boolean workable(OrderStatus status, boolean partialShipmentAllowed) {
+        return WORKABLE.contains(status) || status == OrderStatus.AWAITING_STOCK && partialShipmentAllowed;
+    }
+
     private static void requireWorkable(OrderSummary order) {
-        if (!WORKABLE.contains(order.status())) {
+        if (!workable(order.status(), order.lifecycle() != null && order.lifecycle().allowPartialShipment())) {
             String why = order.status() == OrderStatus.ON_HOLD && order.lifecycle() != null
                     && order.lifecycle().holdReason() != null ? " (" + order.lifecycle().holdReason() + ")" : "";
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,
@@ -540,9 +679,9 @@ class CartonCheckService implements CartonChecks {
         }
     }
 
-    /** The carton spec of each SKU of these cartons ({@link CartonMeasures#specs}). */
+    /** The carton spec of each of these cartons, by LPN: the carton each was received in ({@link CartonMeasures#specs}). */
     private Map<String, CartonCheck.Spec> specs(Collection<CartonCheck.Carton> cartons) {
-        return measures.specs(cartons.stream().map(CartonCheck.Carton::sku).toList());
+        return measures.specs(cartons.stream().map(CartonCheck.Carton::lpn).toList());
     }
 
     /**
@@ -595,7 +734,7 @@ class CartonCheckService implements CartonChecks {
         if (!toLabel.isEmpty()) {
             Map<String, CartonCheck.Spec> specs = specs(toLabel);
             toLabel.forEach(c -> {
-                CartonCheck.Spec spec = specs.get(c.sku());
+                CartonCheck.Spec spec = specs.get(c.lpn());
                 if (spec == null || !spec.measured()) {
                     unmeasured.add(c.sku());
                 }

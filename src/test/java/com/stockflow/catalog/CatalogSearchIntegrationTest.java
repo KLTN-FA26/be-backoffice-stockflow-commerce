@@ -12,7 +12,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.catalog.internal.service.CatalogProjectionService;
 import com.stockflow.common.security.Role;
-import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
 
@@ -51,7 +50,6 @@ class CatalogSearchIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired CatalogProjectionService projection;
-    @Autowired InventoryService inventory;
     @Autowired ObjectMapper json;
 
     private final List<UUID> created = new ArrayList<>();
@@ -76,7 +74,7 @@ class CatalogSearchIntegrationTest {
                     values (?,?,?,?,'DRAFT',?)
                     """, id, "SRCH-" + id.toString().toUpperCase(Locale.ROOT), name, "srch-" + id, description);
             jdbc.update("insert into product.product_categories(id,product_id,category_id,is_primary)"
-                    + " values (?,?,md5('demo:cat:SOFA')::uuid,true)", UUID.randomUUID(), id);
+                    + " values (?,?,md5('demo:wf02:category:LY_GIAY')::uuid,true)", UUID.randomUUID(), id);
             jdbc.update("insert into product.variants(id,product_id,sku,name,status,attribute_signature)"
                     + " values (?,?,?,'Search fixture','ACTIVE','')", variant, id, sku);
             jdbc.update("""
@@ -117,7 +115,6 @@ class CatalogSearchIntegrationTest {
                 jdbc.update("delete from catalog.catalog_entry where product_id=?", id);
                 jdbc.update("delete from catalog.product_listing where product_id=?", id);
                 jdbc.update("delete from product.media where variant_id in (select id from product.variants where product_id=?)", id);
-                jdbc.update("delete from inventory.inventory_items where sku in (select sku from product.variants where product_id=?)", id);
                 jdbc.update("delete from product.variants where product_id=?", id);
                 jdbc.update("delete from product.product_categories where product_id=?", id);
                 jdbc.update("update product.products set status='DRAFT' where id=?", id);
@@ -196,9 +193,9 @@ class CatalogSearchIntegrationTest {
     }
 
     @Test
-    void theDemoCatalogueAnswersBanGo() throws Exception {
-        assertThat(titles(asCustomer(LIST, "q", "ban go"))).contains("Bàn ăn gỗ sồi");
-        assertThat(titles(asCustomer(LIST, "q", "bàn gỗ"))).contains("Bàn ăn gỗ sồi");
+    void theDemoCatalogueAnswersHopGiay() throws Exception {
+        assertThat(titles(asCustomer(LIST, "q", "hop giay"))).contains("Hộp giấy in logo");
+        assertThat(titles(asCustomer(LIST, "q", "hộp giấy"))).contains("Hộp giấy in logo");
     }
 
     @Test
@@ -276,19 +273,6 @@ class CatalogSearchIntegrationTest {
         publish(m + " cốc giấy", null, sku(m, 1));
         publish("Khay đựng", "Tương thích " + m, m.toUpperCase(Locale.ROOT)); // SKU is exactly the word typed
         assertThat(titles(asCustomer(LIST, "q", m))).containsExactly("Khay đựng", m + " cốc giấy");
-    }
-
-    @Test
-    void inStockOutranksOutOfStockWhenTextScoresAreEqual() throws Exception {
-        var demo = jdbc.queryForMap("select id, name, description from product.products where code='TABLE-OAK'");
-        long stock = inventory.availableQuantities(java.util.Set.of("TABLE-OAK-160")).getOrDefault("TABLE-OAK-160", 0L);
-        org.junit.jupiter.api.Assumptions.assumeTrue(stock > 0, "demo stock for TABLE-OAK-160 is needed");
-        // Same title and description as the demo table, no stock: scores tie on text, so stock decides.
-        UUID clone = publish((String) demo.get("name"), (String) demo.get("description"), ("CLONE-" + UUID.randomUUID()).toUpperCase(Locale.ROOT));
-        var out = body(asCustomer(LIST, "q", "ban an go soi").andExpect(status().isOk()));
-        var ids = new ArrayList<String>();
-        out.at("/data/items").forEach(n -> ids.add(n.get("productId").asText()));
-        assertThat(ids).containsSubsequence(demo.get("id").toString(), clone.toString());
     }
 
     @Test

@@ -3,10 +3,13 @@ package com.stockflow.invoicing.internal.service;
 import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceFixtures;
+import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
+import com.stockflow.invoicing.internal.domain.InvoiceSettings;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -20,22 +23,43 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * E0 M6, the owner's decision: issuing a draft is refused while an earlier-dated invoice waits, and the accountant is
- * told so on the invoice's own screen before trying. This pins what the screen is told.
+ * HĐ-2: a draft's screen names an earlier-dated invoice still to be issued under the series the draft would be sent
+ * under - a warning; only one at the provider keeps the draft back. This pins what the screen is told.
  */
 class EInvoiceEarlierPendingTest {
 
     private final EInvoiceRepository invoices = mock(EInvoiceRepository.class);
+    private final InvoiceSettings settings = mock(InvoiceSettings.class);
+    private final EInvoiceProviders providers = mock(EInvoiceProviders.class);
     private final EInvoiceQueryService service = new EInvoiceQueryService(invoices, mock(EInvoiceQueries.class),
-            mock(ProviderCallLog.class), mock(FileTransfers.class));
+            mock(ProviderCallLog.class), mock(FileTransfers.class), settings, providers);
+
+    @BeforeEach
+    void theSandboxIsInUse() {
+        when(settings.active()).thenReturn(new InvoiceSettings.Provider("SANDBOX", "SANDBOX", null, null, false,
+                false, 0));
+    }
 
     @Test
-    @DisplayName("a draft names the earlier-dated invoice that keeps it from being issued")
-    void aDraftNamesTheInvoiceItWaitsFor() {
+    @DisplayName("a draft names the earlier-dated invoice of the series in use for its year at the provider in use")
+    void aDraftNamesTheInvoiceOfItsSeries() {
         EInvoice.Snapshot draft = EInvoiceFixtures.draft().snapshot();
-        when(invoices.findEarlierUnissued(draft.id(), draft.issueDate())).thenReturn(Optional.of("EINV-EARLIER"));
+        when(settings.seriesInUse("SANDBOX", draft.issueDate().getYear()))
+                .thenReturn(Optional.of(EInvoiceFixtures.SERIES));
+        when(invoices.findEarlierUnissued(draft.id(), EInvoiceFixtures.SERIES, draft.issueDate()))
+                .thenReturn(Optional.of("EINV-EARLIER"));
 
         assertThat(service.earlierPending(draft)).contains("EINV-EARLIER");
+    }
+
+    @Test
+    @DisplayName("no series in use for the draft's year: nothing is named - issuing is refused for that instead")
+    void withoutASeriesNothingIsNamed() {
+        EInvoice.Snapshot draft = EInvoiceFixtures.draft().snapshot();
+        when(settings.seriesInUse("SANDBOX", draft.issueDate().getYear())).thenReturn(Optional.empty());
+
+        assertThat(service.earlierPending(draft)).isEmpty();
+        verify(invoices, never()).findEarlierUnissued(any(), any(), any());
     }
 
     @Test
@@ -44,6 +68,24 @@ class EInvoiceEarlierPendingTest {
         EInvoice.Snapshot issued = EInvoiceFixtures.in(EInvoiceStatus.ISSUED).snapshot();
 
         assertThat(service.earlierPending(issued)).isEmpty();
-        verify(invoices, never()).findEarlierUnissued(any(), any());
+        verify(invoices, never()).findEarlierUnissued(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Q-1 / HĐ-2: under a provider that dates an invoice the day it is sent (SePay), an older draft blocks "
+            + "nothing and is not named: it is dated today when it goes")
+    void underAProviderThatDatesTodayNothingIsNamed() {
+        when(settings.active()).thenReturn(new InvoiceSettings.Provider("SEPAY_EINVOICE", "SANDBOX", null, null, false,
+                true, 0));
+        EInvoiceProvider sepay = mock(EInvoiceProvider.class);
+        when(sepay.datesOnlyToday()).thenReturn(true);
+        when(providers.find("SEPAY_EINVOICE")).thenReturn(Optional.of(sepay));
+        EInvoice.Snapshot draft = EInvoiceFixtures.draft().snapshot();
+        when(settings.seriesInUse("SEPAY_EINVOICE", draft.issueDate().getYear()))
+                .thenReturn(Optional.of(EInvoiceFixtures.SERIES));
+        when(invoices.findEarlierUnissued(any(), any(), any())).thenReturn(Optional.of("EINV-EARLIER"));
+
+        assertThat(service.earlierPending(draft)).isEmpty();
+        verify(invoices, never()).findEarlierUnissued(any(), any(), any());
     }
 }

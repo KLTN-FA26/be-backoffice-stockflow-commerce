@@ -95,7 +95,7 @@ class AssistantProductionIntegrationTest {
         hcm = receivables.sent(DemoData.WAREHOUSE_HCM, 20, 50);
         UUID coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
         productionOrders.accept(hcm.productionOrderId(),
-                productionOrders.detail(hcm.productionOrderId()).order().version(), expected, coordinator);
+                productionOrders.detail(hcm.productionOrderId()).order().version(), expected, null, coordinator);
         away = receivables.sent(new StaffFixtures(jdbc, tx, entityManager).otherWarehouse().id(), 5, 50);
         hcmOrder = orderNumber(hcm.salesOrderId());
         awayOrder = orderNumber(away.salesOrderId());
@@ -141,12 +141,17 @@ class AssistantProductionIntegrationTest {
                 hcm.salesOrderId().toString(), away.productionCode(), awayOrder);
     }
 
+    /**
+     * QD14 (V20261227000400) gave the Sales Manager the orders, so every seeded role reading production orders now
+     * reads orders too, and the order number reaches all of them; the rule that keeps it from a caller who may not read
+     * orders and did not type it is {@code FindProductionOrdersToolTest}'s, since no seeded role exercises it any more.
+     */
     @Test
-    @DisplayName("the Sales Manager, who reads production orders but not orders, gets a production order by its code "
-            + "without its order's number, and the number only when they typed it")
-    void noOrderNumberWithoutSalesOrders() throws Exception {
+    @DisplayName("the Sales Manager, who reads orders since QD14, gets a production order by its code with its order's "
+            + "number")
+    void orderNumberForTheSalesManager() throws Exception {
         assertThat(granted("SALES_MANAGER", "production-orders:READ")).isTrue();
-        assertThat(granted("SALES_MANAGER", "sales-orders:READ")).isFalse();
+        assertThat(granted("SALES_MANAGER", "sales-orders:READ")).isTrue();
         UUID manager = staff("SALES_MANAGER");
         script(toolUse("toolu_code", arguments("OPEN", "", hcm.productionCode(), 30),
                         "toolu_typed", arguments("ANY", hcmOrder, "", 30)),
@@ -160,9 +165,9 @@ class AssistantProductionIntegrationTest {
         assertThat(outcome(conversation, "toolu_code")).isEqualTo("OK");
         assertThat(JsonPath.<List<String>>read(byCode, "$.productionOrders[*].code"))
                 .containsExactly(hcm.productionCode());
-        assertThat(JsonPath.<Map<String, Object>>read(byCode, "$.productionOrders[0]"))
-                .doesNotContainKey("salesOrderNumber");
-        assertThat(byCode).doesNotContain(hcmOrder);
+        assertThat(JsonPath.<List<String>>read(byCode, "$.productionOrders[*].salesOrderNumber"))
+                .containsExactly(hcmOrder);
+        assertThat(byCode).doesNotContain(awayOrder);
         assertThat(JsonPath.<List<String>>read(result(conversation, "toolu_typed"),
                 "$.productionOrders[*].salesOrderNumber")).containsExactly(hcmOrder);
     }

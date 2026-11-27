@@ -67,11 +67,16 @@ public final class PickList {
      * Where a put-back wants to go, as the warehouse map describes it; null fields for an unknown code.
      *
      * @param quarantine a QUARANTINE area: where a carton the check station removed as damaged goes (4C-6)
+     * @param overflow   an OVERFLOW area: where a carton goes when no bin takes it (07 BR-12); inventory judges that
      */
     public record PutBackTarget(String locationCode, UUID warehouseId, boolean bin, boolean usable,
-                                boolean quarantine) {
+                                boolean quarantine, boolean overflow) {
         public PutBackTarget(String locationCode, UUID warehouseId, boolean bin, boolean usable) {
-            this(locationCode, warehouseId, bin, usable, false);
+            this(locationCode, warehouseId, bin, usable, false, false);
+        }
+
+        public PutBackTarget(String locationCode, UUID warehouseId, boolean bin, boolean usable, boolean quarantine) {
+            this(locationCode, warehouseId, bin, usable, quarantine, false);
         }
     }
 
@@ -431,7 +436,8 @@ public final class PickList {
      * for a PICKED or STAGED line, only onto an active bin of the task's own warehouse - stock never changes warehouse,
      * a put-back least of all. A STAGED line's carton was never deducted: it is moved back from the staging area
      * ({@link PutBack#fromStaging}). Only a carton the line took whole goes back (a line picked loose before 4C-4 took
-     * part of one). Whether the carton fits the bin (BR-12, else an OVERFLOW area) is team plan 5-4's.
+     * part of one). Whether the carton fits the bin, or no bin takes it and an OVERFLOW area is the place (BR-12), is
+     * inventory's to judge when the carton moves.
      *
      * @throws BusinessException {@code NOT_FOUND}; {@code PUT_BACK_NOT_REQUIRED}, also for a loose line of before
      *         4C-4 (V20261113000400 stops on any still waiting); {@code PICK_ITEM_MISMATCH} for anything but the line's
@@ -457,19 +463,20 @@ public final class PickList {
     }
 
     /**
-     * As {@link #putBack(UUID, String, PutBackTarget, boolean, UUID, Instant)}; with {@code removedClosedRest}, the line's
-     * carton was removed at the check station because the rest of its order was closed (17 §4.8 step 33, WF4-CLOSE-REST
-     * 2026-11-13): it goes back onto an active bin of the task's warehouse although the task itself goes on - its
-     * labelled cartons are still delivered.
+     * As {@link #putBack(UUID, String, PutBackTarget, boolean, UUID, Instant)}; with {@code removedToBin}, the line's
+     * carton was removed while the task goes on and is good: the rest of its order was closed (17 §4.8 step 33,
+     * WF4-CLOSE-REST 2026-11-13), or its shipment was cancelled before dispatch and it was not marked damaged (09 §5.1,
+     * RTM-RTDCANCEL 2026-11-19). It goes back onto an active bin of the task's warehouse although the task itself goes
+     * on.
      */
     public PutBack putBack(UUID lineId, String scannedLpn, PutBackTarget target, boolean removedDamaged,
-                           boolean removedClosedRest, UUID actor, Instant now) {
+                           boolean removedToBin, UUID actor, Instant now) {
         PickLine line = requireLine(lineId);
         if (line.status() == PickLineStatus.PUT_BACK && lpnMatches(line, scannedLpn)) {
             return new PutBack(line, true);
         }
         boolean staged = line.status() == PickLineStatus.STAGED;
-        boolean queued = removedDamaged || removedClosedRest ? line.status() == PickLineStatus.PICKED
+        boolean queued = removedDamaged || removedToBin ? line.status() == PickLineStatus.PICKED
                 : status == PickStatus.CANCELLED && needsPutBack && (line.status() == PickLineStatus.PICKED || staged);
         if (!queued || line.pickedQty() == 0 || line.lpn() == null) {
             throw new BusinessException(ErrorCode.PUT_BACK_NOT_REQUIRED,
@@ -488,9 +495,11 @@ public final class PickList {
                 throw new BusinessException(ErrorCode.PUT_BACK_LOCATION_INVALID,
                         "A damaged carton goes into an active quarantine area of this task's warehouse");
             }
-        } else if (target == null || !target.bin() || !target.usable() || !warehouseId.equals(target.warehouseId())) {
+        } else if (target == null || !(target.bin() || target.overflow()) || !target.usable()
+                || !warehouseId.equals(target.warehouseId())) {
             throw new BusinessException(ErrorCode.PUT_BACK_LOCATION_INVALID,
-                    "Goods go back onto an active bin of this task's warehouse");
+                    "Goods go back onto an active bin of this task's warehouse, or into its OVERFLOW area when no bin "
+                            + "takes the carton");
         }
         line.putBack(target.locationCode(), actor, now);
         return new PutBack(line, false, staged, removedDamaged);

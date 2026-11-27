@@ -60,9 +60,10 @@ public interface ProductionScheduleQuery {
     }
 
     /**
-     * Alerts, newest first: of one sales order and type when given, open ones only when {@code openOnly}; with
-     * {@code warehouses} not null, only those whose warehouse - read where it lives now - is one of them.
+     * Alerts, newest first: of one sales order when given, of one of {@code types} only (an empty set finds nothing),
+     * open ones only when {@code openOnly}; with {@code warehouses} not null, only those whose warehouse - read where it
+     * lives now - is one of them.
      */
-    AlertPage alerts(UUID salesOrderId, DelayAlertType type, boolean openOnly, Collection<UUID> warehouses, int limit,
-                     long offset);
+    AlertPage alerts(UUID salesOrderId, Collection<DelayAlertType> types, boolean openOnly, Collection<UUID> warehouses,
+                     int limit, long offset);
 }

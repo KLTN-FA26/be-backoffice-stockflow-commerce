@@ -2,15 +2,18 @@ package com.stockflow.inventory.api;
 
 /**
  * Which level of the packaging rule chain produced a {@link PackagingSpec} (SCRUM-287, decision LP2-2), in the
- * order the resolver tries them.
+ * order the resolver tries them. The item's box and the item's unit were levels too, until the item lost its own
+ * measures (V20261215000100, kltn-docs 01 BR-03): only a carton is measured now.
  */
 public enum RuleLevel {
-    /** The unit the item marks as its default shipping unit. */
+    /**
+     * The item's one active carton (01 BR-03). The name is kept from the default shipping mark it replaced
+     * (V20261229000100): clients read it.
+     */
     DEFAULT_SHIPPING_UNIT,
-    /** The largest active packing unit that has its full size and weight. */
-    LARGEST_PACKING_UNIT,
-    /** The item's own box, times {@code packageCount} (a kit of N same-size boxes when N is above 1; LP2-5). */
-    ITEM_BOX,
-    /** The item's own unit size and weight. */
-    ITEM_UNIT
+    /**
+     * The largest active packing unit that has its full size and weight, when an item has several active units -
+     * which {@code uk_uom_conversions_one_carton} refuses, so not produced from the database's data.
+     */
+    LARGEST_PACKING_UNIT
 }

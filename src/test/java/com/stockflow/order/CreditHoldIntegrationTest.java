@@ -2,8 +2,10 @@ package com.stockflow.order;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.security.DataScope;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
+import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderService;
@@ -15,6 +17,8 @@ import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.TestUsers;
+import com.stockflow.support.WithCurrentUser;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -92,10 +96,19 @@ class CreditHoldIntegrationTest {
                 30, null));
     }
 
-    /** An order of 20,000,000 whose contract pays it all after delivery, drawn up, sent and signed. */
-    private UUID signedOnCredit() {
-        return confirmedOrders.signed(customer, afterDelivery(), ConfirmedOrders.Line.cartons(sku, 10, PRICE))
-                .orderId();
+    /** A draft order of 20,000,000 whose contract is not drawn up yet. */
+    private UUID draftOnCredit() {
+        return confirmedOrders.draft(customer, List.of(ConfirmedOrders.Line.cartons(sku, 10, PRICE)));
+    }
+
+    /**
+     * An order of 20,000,000 paid after delivery, held for credit when signed: sent while the customer's limit carried
+     * it - so nothing waited for accounting before sending (15 BR-11, 2026-11-26) - and signed after accounting lowered
+     * the limit to {@code limit}.
+     */
+    private UUID heldOnCredit(String limit) {
+        creditLimit(limit);
+        return confirmedOrders.signHeldForCredit(draftOnCredit(), afterDelivery()).orderId();
     }
 
     private OrderStatus status(UUID orderId) {
@@ -116,12 +129,18 @@ class CreditHoldIntegrationTest {
     @DisplayName("15 BR-03: within the limit CONFIRMED; over it ON_HOLD until approved; a note is required; once only")
     void creditLimit() {
         creditLimit("30000000");
+        // Both sent before either is signed: each fits the limit alone, so neither waits for accounting before it is
+        // sent (15 BR-11); signed one after the other, the second no longer fits.
+        UUID first = draftOnCredit();
+        UUID second = draftOnCredit();
+        long firstVersion = confirmedOrders.send(first, afterDelivery(), 1).version();
+        long secondVersion = confirmedOrders.send(second, afterDelivery(), 1).version();
 
-        UUID first = signedOnCredit();
+        confirmedOrders.signSent(first, firstVersion);
         assertThat(status(first)).isEqualTo(OrderStatus.CONFIRMED);
         assertThat(latestOutcome(first)).isEqualTo("WITHIN_LIMIT");
 
-        UUID second = signedOnCredit();
+        confirmedOrders.signSent(second, secondVersion);
         assertThat(status(second)).isEqualTo(OrderStatus.ON_HOLD);
         assertThat(orders.findById(second).orElseThrow().lifecycle().holdReason()).isEqualTo(HoldReason.CREDIT);
         assertThat(latestOutcome(second)).isEqualTo("OVER_LIMIT");
@@ -145,9 +164,7 @@ class CreditHoldIntegrationTest {
     @DisplayName("15 §4.3 step 10: refused, a held order is cancelled CREDIT_REJECTED and no longer counts")
     void refusal() {
         // A limit above zero: without one a contract may not pay after delivery at all (15 BR-12).
-        creditLimit("1000000");
-
-        UUID held = signedOnCredit();
+        UUID held = heldOnCredit("1000000");
         assertThat(status(held)).isEqualTo(OrderStatus.ON_HOLD);
         assertThat(codeOf(catchThrowable(() -> credit.refuse(held, "", accountant))))
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
@@ -162,16 +179,40 @@ class CreditHoldIntegrationTest {
     }
 
     @Test
+    @DisplayName("Sales cancel an order held for credit: the hold is closed on record, by them, with the reason")
+    void cancelledWhileHeldClosesTheHold() {
+        UUID held = heldOnCredit("1000000");
+        assertThat(status(held)).isEqualTo(OrderStatus.ON_HOLD);
+        UUID sales = tx.execute(s -> ReferenceRows.user(entityManager));
+
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(held,
+                new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST, "khách rút đơn", null, sales)));
+
+        assertThat(status(held)).isEqualTo(OrderStatus.CANCELLED);
+        var rows = jdbc.queryForList("""
+                SELECT reason, resolved_by, resolution_note FROM ordering.order_hold WHERE order_id = ?""", held);
+        assertThat(rows).isNotEmpty().allSatisfy(row -> {
+            assertThat(row.get("resolved_by")).as("no hold left waiting for a decision").isEqualTo(sales);
+            assertThat((String) row.get("resolution_note")).isEqualTo("Huỷ cùng đơn hàng: Khách yêu cầu - khách rút đơn");
+        });
+        assertThat(credit.heldOrders(0, 200).items()).doesNotContain(held);
+    }
+
+    @Test
     @DisplayName("two contracts of one customer signed at once are checked one after the other: one confirmed, one held")
     void concurrentSignaturesAreSerialised() throws Exception {
         creditLimit("30000000");
         confirmedOrders.sales();
         UUID a = confirmedOrders.draft(customer, List.of(ConfirmedOrders.Line.cartons(sku, 10, PRICE)));
         UUID b = confirmedOrders.draft(customer, List.of(ConfirmedOrders.Line.cartons(sku, 10, PRICE)));
+        // Both sent before either is signed, so each fits the limit alone when sent (15 BR-11): a send after the other
+        // was signed would wait for accounting, be approved and then pass at signing, and the race would test nothing.
+        long versionA = confirmedOrders.send(a, afterDelivery(), 1).version();
+        long versionB = confirmedOrders.send(b, afterDelivery(), 1).version();
         var pool = Executors.newFixedThreadPool(2);
         try {
-            Callable<UUID> signA = () -> confirmedOrders.sign(a, afterDelivery()).orderId();
-            Callable<UUID> signB = () -> confirmedOrders.sign(b, afterDelivery()).orderId();
+            Callable<UUID> signA = () -> confirmedOrders.signSent(a, versionA).orderId();
+            Callable<UUID> signB = () -> confirmedOrders.signSent(b, versionB).orderId();
             Future<UUID> first = pool.submit(signA);
             Future<UUID> second = pool.submit(signB);
             first.get();

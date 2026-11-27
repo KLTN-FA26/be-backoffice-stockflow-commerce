@@ -4,6 +4,7 @@ import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.ToolChannel;
 import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.security.CurrentUser;
 import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.composite.CompositeMeterRegistry;
@@ -33,15 +34,41 @@ import java.util.function.Supplier;
 public class AssistantTelemetry {
 
     /** For code built without a registry, tests among it: observations and meters that go nowhere. */
-    static final AssistantTelemetry NONE = new AssistantTelemetry(ObservationRegistry.NOOP,
+    public static final AssistantTelemetry NONE = new AssistantTelemetry(ObservationRegistry.NOOP,
             new CompositeMeterRegistry());
 
     private final ObservationRegistry observations;
     private final MeterRegistry meters;
+    private final FeatureUse featureUse;
 
     AssistantTelemetry(ObservationRegistry observations, MeterRegistry meters) {
+        this(observations, meters, FeatureUse.NONE);
+    }
+
+    /** @param featureUse where {@link #featureUsed} keeps its counts for the usage endpoint (contract §5.2) */
+    @org.springframework.beans.factory.annotation.Autowired
+    AssistantTelemetry(ObservationRegistry observations, MeterRegistry meters, FeatureUse featureUse) {
         this.observations = observations;
         this.meters = meters;
+        this.featureUse = featureUse;
+    }
+
+    /**
+     * One use of an assistant feature by {@code user} (contract §5.2), counted twice over: a Micrometer counter
+     * {@code assistant.feature.used{feature,role}} for the metrics backend, and {@link FeatureUse}'s daily count per
+     * feature, role and day, which the usage endpoint reads and which outlives a restart. Neither holds the user or what
+     * they asked. Never throws and never waits on the database: call it once the feature has answered.
+     *
+     * @param featureKey one of {@link FeatureUse#KEYS}
+     */
+    public void featureUsed(String featureKey, CurrentUser user) {
+        try {
+            meters.counter("assistant.feature.used", "feature", String.valueOf(featureKey),
+                    "role", FeatureUse.roleOf(user)).increment();
+        } catch (RuntimeException ignored) {
+            // A metric is never a reason to fail the feature it counts.
+        }
+        featureUse.record(featureKey, user);
     }
 
     /** One answer to one question, whichever model, tools and retries it took. */

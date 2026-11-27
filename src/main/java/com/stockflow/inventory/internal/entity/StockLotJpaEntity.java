@@ -11,15 +11,18 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * {@code inventory.stock_lot} (SCRUM-142): a lot as received. Written once when a receipt opens it (or by the
- * database for stock that arrived without one, as UNTRACED) and never changed, so there are no setters. A lot of goods
+ * {@code inventory.stock_lot} (SCRUM-142): a lot as received. Written once when a receipt opens it (UNTRACED for
+ * stock that arrived with no production order) and never changed, so there are no setters. A lot of goods
  * received against a production order (4A-5) is the production order's, opened by its first receipt.
  */
 @Entity
 @Table(name = "stock_lot", schema = "inventory")
 public class StockLotJpaEntity extends BaseEntity {
 
-    /** Where a lot's identity comes from; {@code ck_stock_lot_origin}. */
+    /**
+     * Where a lot's identity comes from; {@code ck_stock_lot_origin}. {@code GOODS_RECEIPT} is historical, no row holds
+     * it: V20261214000200 made such lots UNTRACED and the check refuses it.
+     */
     public enum Origin { GOODS_RECEIPT, PRODUCTION_ORDER, UNTRACED }
 
     @Column(name = "sku", nullable = false, length = 64, updatable = false)
@@ -35,12 +38,6 @@ public class StockLotJpaEntity extends BaseEntity {
     @Column(name = "origin_type", nullable = false, length = 16, updatable = false)
     private Origin origin;
 
-    @Column(name = "goods_receipt_id", updatable = false)
-    private UUID goodsReceiptId;
-
-    @Column(name = "goods_receipt_number", length = 30, updatable = false)
-    private String goodsReceiptNumber;
-
     @Column(name = "warehouse_id", updatable = false)
     private UUID warehouseId;
 
@@ -53,16 +50,8 @@ public class StockLotJpaEntity extends BaseEntity {
     protected StockLotJpaEntity() {
     }
 
-    public StockLotJpaEntity(UUID id, String sku, String lotNumber, Instant receivedAt,
-                             UUID goodsReceiptId, String goodsReceiptNumber, UUID warehouseId) {
+    private StockLotJpaEntity(UUID id) {
         super(id);
-        this.sku = sku;
-        this.lotNumber = lotNumber;
-        this.receivedAt = receivedAt;
-        this.origin = Origin.GOODS_RECEIPT;
-        this.goodsReceiptId = goodsReceiptId;
-        this.goodsReceiptNumber = goodsReceiptNumber;
-        this.warehouseId = warehouseId;
     }
 
     /**
@@ -71,11 +60,24 @@ public class StockLotJpaEntity extends BaseEntity {
      */
     public static StockLotJpaEntity ofProductionOrder(UUID id, String sku, Instant receivedAt, UUID warehouseId,
                                                       UUID productionOrderId, String productionOrderCode) {
-        StockLotJpaEntity lot = new StockLotJpaEntity(id, sku, productionOrderCode, receivedAt, null, null,
-                warehouseId);
+        StockLotJpaEntity lot = new StockLotJpaEntity(id);
+        lot.sku = sku;
+        lot.lotNumber = productionOrderCode;
+        lot.receivedAt = receivedAt;
+        lot.warehouseId = warehouseId;
         lot.origin = Origin.PRODUCTION_ORDER;
         lot.productionOrderId = productionOrderId;
         lot.productionOrderCode = productionOrderCode;
+        return lot;
+    }
+
+    /** The lot of goods received with no production order behind them: only what the receipt line said. */
+    public static StockLotJpaEntity untraced(UUID id, String sku, String lotNumber, Instant receivedAt) {
+        StockLotJpaEntity lot = new StockLotJpaEntity(id);
+        lot.sku = sku;
+        lot.lotNumber = lotNumber;
+        lot.receivedAt = receivedAt;
+        lot.origin = Origin.UNTRACED;
         return lot;
     }
 
@@ -83,8 +85,6 @@ public class StockLotJpaEntity extends BaseEntity {
     public String getLotNumber() { return lotNumber; }
     public Instant getReceivedAt() { return receivedAt; }
     public Origin getOrigin() { return origin; }
-    public UUID getGoodsReceiptId() { return goodsReceiptId; }
-    public String getGoodsReceiptNumber() { return goodsReceiptNumber; }
     public UUID getWarehouseId() { return warehouseId; }
     public UUID getProductionOrderId() { return productionOrderId; }
     public String getProductionOrderCode() { return productionOrderCode; }

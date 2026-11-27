@@ -5,7 +5,6 @@ import com.stockflow.common.error.ErrorCode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.EnumSet;
@@ -17,7 +16,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 4A-2 (kltn-docs 17 §5.3, BR-06, BR-23, BR-24, B33): a production order's life, decided by the aggregate; 4A-5
+ * 4A-2 (kltn-docs 17 §5.3, BR-06, BR-23, BR-24, B33): a production order's life, decided by the aggregate - the
+ * coordinator sends a draft straight to its producer, with no approval step (owner, 2026-11-20); 4A-5
  * (kltn-docs 03 BR-01, BR-02, BR-10, BR-15; 17 §4.3 step 11): what can be received against it, and what a receipt
  * does to it.
  */
@@ -25,6 +25,8 @@ class ProductionOrderTest {
 
     private static final Instant NOW = Instant.parse("2026-11-09T03:00:00Z");
     private static final UUID COORDINATOR = UUID.randomUUID();
+    private static final UUID SENDER = UUID.randomUUID();
+    /** A Sales Manager of before 2026-11-20, on the historical rows restored below. */
     private static final UUID MANAGER = UUID.randomUUID();
     private static final UUID LINE = UUID.randomUUID();
     private static final UUID LINE_A = UUID.randomUUID();
@@ -35,7 +37,7 @@ class ProductionOrderTest {
         return ProductionOrder.drawUp("PRD-20261109-0001", UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
                 UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1), firstTime,
                 List.of(new ProductionOrder.Line(UUID.randomUUID(), LINE, "CUP-12OZ-ACME", 8, 50, UUID.randomUUID(),
-                        "a".repeat(64), null, 0)), "VND", COORDINATOR, NOW);
+                        "a".repeat(64), null, 0)), COORDINATOR, NOW);
     }
 
     private static ErrorCode code(Throwable thrown) {
@@ -43,15 +45,16 @@ class ProductionOrderTest {
     }
 
     private static ProductionOrder.Draft draft(ProductionOrder order, int cartons, boolean sample, String waiver) {
-        return new ProductionOrder.Draft(order.producerId(), LocalDate.of(2026, 11, 28), new BigDecimal("1200"),
+        return new ProductionOrder.Draft(order.producerId(), LocalDate.of(2026, 11, 28),
                 "deliver before noon", sample, waiver, Map.of(LINE, new ProductionOrder.LineEdit(cartons, "label A")));
     }
 
     @Test
     @DisplayName("17 §5.3: the edges, and nothing more")
     void edges() {
-        assertThat(ProductionOrderStatus.DRAFT.next()).containsExactlyInAnyOrder(ProductionOrderStatus.PENDING_APPROVAL,
+        assertThat(ProductionOrderStatus.DRAFT.next()).containsExactlyInAnyOrder(ProductionOrderStatus.SENT,
                 ProductionOrderStatus.CANCELLED);
+        assertThat(ProductionOrderStatus.PENDING_APPROVAL.next()).as("history only since 2026-11-20").isEmpty();
         assertThat(ProductionOrderStatus.IN_PRODUCTION.cancellable()).as("BR-06: not once mass printing started")
                 .isFalse();
         for (ProductionOrderStatus terminal : EnumSet.of(ProductionOrderStatus.RECEIVED,
@@ -59,7 +62,7 @@ class ProductionOrderTest {
             assertThat(terminal.next()).isEmpty();
             assertThat(terminal.open()).isFalse();
         }
-        assertThat(ProductionOrderStatus.edges()).hasSize(18).contains("SAMPLE_PENDING>IN_PRODUCTION",
+        assertThat(ProductionOrderStatus.edges()).hasSize(15).contains("SAMPLE_PENDING>IN_PRODUCTION",
                 "PARTIALLY_RECEIVED>CLOSED");
     }
 
@@ -92,38 +95,98 @@ class ProductionOrderTest {
         assertThat(order.sampleApprovalRequired()).isFalse();
         assertThat(order.needByDate()).isEqualTo(LocalDate.of(2026, 11, 28));
 
-        order.submit(COORDINATOR, NOW);
+        order.send(COORDINATOR, NOW);
         assertThatThrownBy(() -> order.edit(draft(order, 5, true, null), Map.of(LINE, 8)))
-                .as("B33: settled once submitted").extracting(ProductionOrderTest::code)
+                .as("B33: settled once sent").extracting(ProductionOrderTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
     }
 
     @Test
-    @DisplayName("BR-23: approved by someone else, which sends it; returned with a reason")
-    void approvedBySomeoneElse() {
+    @DisplayName("17 §4.3 step 7: the coordinator sends a draft to its producer - who sent it and when, no approval")
+    void sendMovesADraftToSentAndRecordsWhoSentIt() {
         ProductionOrder order = drawn(false);
-        assertThatThrownBy(() -> order.approve(MANAGER, NOW)).extracting(ProductionOrderTest::code)
-                .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
-        order.submit(COORDINATOR, NOW);
-        assertThatThrownBy(() -> order.approve(COORDINATOR, NOW)).extracting(ProductionOrderTest::code)
-                .isEqualTo(ErrorCode.PRODUCTION_ORDER_SELF_APPROVAL);
-        assertThatThrownBy(() -> order.returnToDraft("  ", MANAGER, NOW)).extracting(ProductionOrderTest::code)
-                .isEqualTo(ErrorCode.VALIDATION_FAILED);
-        order.returnToDraft("wrong producer", MANAGER, NOW);
-        assertThat(order.status()).isEqualTo(ProductionOrderStatus.DRAFT);
-        assertThat(order.returnedReason()).isEqualTo("wrong producer");
+        order.pullChanges();
 
-        order.submit(COORDINATOR, NOW.plusSeconds(60));
-        order.approve(MANAGER, NOW.plusSeconds(120));
+        order.send(SENDER, NOW.plusSeconds(120));
+
         assertThat(order.status()).isEqualTo(ProductionOrderStatus.SENT);
-        assertThat(order.approvedBy()).isEqualTo(MANAGER);
+        assertThat(order.sentBy()).isEqualTo(SENDER);
         assertThat(order.sentAt()).isEqualTo(NOW.plusSeconds(120));
+        assertThat(order.approvedBy()).as("nobody approves it any more").isNull();
+        assertThat(order.approvedAt()).isNull();
+        assertThat(order.submittedAt()).isNull();
         assertThat(order.sentAndOpen()).isTrue();
+        assertThat(order.pullChanges()).singleElement().satisfies(change -> {
+            assertThat(change.from()).isEqualTo(ProductionOrderStatus.DRAFT);
+            assertThat(change.to()).isEqualTo(ProductionOrderStatus.SENT);
+            assertThat(change.by()).isEqualTo(SENDER);
+            assertThat(change.at()).isEqualTo(NOW.plusSeconds(120));
+        });
+    }
+
+    @Test
+    @DisplayName("17 §4.3 step 8: accepting keeps the coordinator's note, trimmed - who at the producer said it")
+    void acceptKeepsATrimmedNote() {
+        ProductionOrder order = stored(ProductionOrderStatus.SENT, false);
+
+        order.accept(NOW.atZone(java.time.ZoneOffset.UTC).toLocalDate().plusDays(5), "  anh Hùng, Zalo  ", COORDINATOR, NOW);
+
+        assertThat(order.status()).isEqualTo(ProductionOrderStatus.ACCEPTED);
+        assertThat(order.acceptanceNote()).isEqualTo("anh Hùng, Zalo");
+    }
+
+    @Test
+    @DisplayName("a blank or missing acceptance note is no note")
+    void aBlankNoteIsNoNote() {
+        LocalDate day = LocalDate.of(2026, 12, 20);
+        ProductionOrder blank = stored(ProductionOrderStatus.SENT, false);
+        blank.accept(day, "   ", COORDINATOR, NOW);
+        ProductionOrder none = stored(ProductionOrderStatus.SENT, false);
+        none.accept(day, null, COORDINATOR, NOW);
+
+        assertThat(blank.acceptanceNote()).isNull();
+        assertThat(none.acceptanceNote()).isNull();
+    }
+
+    @Test
+    @DisplayName("an acceptance note over 500 characters is refused, and the order stays SENT")
+    void aNoteOver500CharactersIsRefused() {
+        ProductionOrder order = stored(ProductionOrderStatus.SENT, false);
+
+        assertThatThrownBy(() -> order.accept(LocalDate.of(2026, 12, 20), "x".repeat(501), COORDINATOR, NOW))
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(order.status()).isEqualTo(ProductionOrderStatus.SENT);
+        assertThat(order.acceptanceNote()).isNull();
+    }
+
+    @Test
+    @DisplayName("only a draft is sent: a sent one, or one pending approval from before 2026-11-20, is refused")
+    void sendRefusesAnOrderThatIsNotADraft() {
+        ProductionOrder order = drawn(false);
+        order.send(SENDER, NOW);
+        assertThatThrownBy(() -> order.send(SENDER, NOW.plusSeconds(60))).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
+        assertThat(order.sentAt()).as("the first sending stays").isEqualTo(NOW);
+
+        ProductionOrder pending = stored(ProductionOrderStatus.PENDING_APPROVAL, false);
+        assertThatThrownBy(() -> pending.send(SENDER, NOW)).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
+        assertThat(pending.status()).isEqualTo(ProductionOrderStatus.PENDING_APPROVAL);
+        assertThat(pending.sentBy()).isNull();
+    }
+
+    @Test
+    @DisplayName("BR-23 rewritten: the coordinator who drew it up sends it - no second person")
+    void theCoordinatorWhoDrewItUpMaySendIt() {
+        ProductionOrder order = drawn(false);
+        order.send(order.drawnUpBy(), NOW);
+        assertThat(order.status()).isEqualTo(ProductionOrderStatus.SENT);
+        assertThat(order.sentBy()).isEqualTo(COORDINATOR);
     }
 
     @Test
     @DisplayName("R2, 17 §4.5 / BR-26: a moved window moves a DRAFT's needed-by date; the same date, or an order "
-            + "already submitted, keeps it")
+            + "already sent, keeps it")
     void followsAMovedWindowWhileADraft() {
         ProductionOrder order = drawn(false);
         assertThat(order.followWindow(LocalDate.of(2026, 12, 1))).as("the same date").isFalse();
@@ -131,12 +194,9 @@ class ProductionOrderTest {
         assertThat(order.followWindow(LocalDate.of(2026, 12, 20))).isTrue();
         assertThat(order.needByDate()).isEqualTo(LocalDate.of(2026, 12, 20));
 
-        order.submit(COORDINATOR, NOW);
-        assertThat(order.followWindow(LocalDate.of(2027, 1, 5))).as("submitted: the coordinator tells the producer")
+        order.send(COORDINATOR, NOW);
+        assertThat(order.followWindow(LocalDate.of(2027, 1, 5))).as("sent: the coordinator tells the producer")
                 .isFalse();
-        assertThat(order.needByDate()).isEqualTo(LocalDate.of(2026, 12, 20));
-        order.approve(MANAGER, NOW.plusSeconds(60));
-        assertThat(order.followWindow(LocalDate.of(2027, 1, 5))).as("sent").isFalse();
         assertThat(order.needByDate()).isEqualTo(LocalDate.of(2026, 12, 20));
     }
 
@@ -144,8 +204,7 @@ class ProductionOrderTest {
     @DisplayName("BR-06: cancelled before mass printing, closed after it - both with a reason")
     void cancelledOrClosed() {
         ProductionOrder sent = drawn(false);
-        sent.submit(COORDINATOR, NOW);
-        sent.approve(MANAGER, NOW);
+        sent.send(COORDINATOR, NOW);
         assertThatThrownBy(() -> sent.close("stopped", COORDINATOR, NOW)).extracting(ProductionOrderTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
         assertThatThrownBy(() -> sent.cancel(null, COORDINATOR, NOW)).extracting(ProductionOrderTest::code)
@@ -156,8 +215,8 @@ class ProductionOrderTest {
 
         ProductionOrder printing = new ProductionOrder(UUID.randomUUID(), "PRD-20261109-0002", UUID.randomUUID(),
                 UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1),
-                ProductionOrderStatus.IN_PRODUCTION, false, false, null, null, "VND", null, COORDINATOR, NOW, MANAGER,
-                NOW, null, NOW, NOW, null, null, null, null, null, null, List.of(), 3L);
+                ProductionOrderStatus.IN_PRODUCTION, false, false, null, null, COORDINATOR, NOW, MANAGER,
+                NOW, null, NOW, MANAGER, NOW, null, null, null, null, null, null, List.of(), 3L);
         assertThatThrownBy(() -> printing.cancel("too late", COORDINATOR, NOW)).extracting(ProductionOrderTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
         printing.close("the producer stopped before delivering anything", COORDINATOR, NOW);
@@ -165,15 +224,19 @@ class ProductionOrderTest {
         assertThat(printing.closingReason()).isEqualTo("the producer stopped before delivering anything");
     }
 
-    /** A production order as stored in {@code status}, two lines: 8 cartons of 50 and 2 of 50, none received. */
+    /**
+     * A production order as stored in {@code status}, two lines: 8 cartons of 50 and 2 of 50, none received - sent, when
+     * it was, the way it was before 2026-11-20 (approved by the Sales Manager, who is its sender).
+     */
     private static ProductionOrder stored(ProductionOrderStatus status, boolean sample) {
         boolean sent = status != ProductionOrderStatus.DRAFT && status != ProductionOrderStatus.PENDING_APPROVAL;
         boolean started = status == ProductionOrderStatus.IN_PRODUCTION
                 || status == ProductionOrderStatus.PARTIALLY_RECEIVED || status == ProductionOrderStatus.RECEIVED;
         return new ProductionOrder(UUID.randomUUID(), "PRD-20261109-0003", UUID.randomUUID(), UUID.randomUUID(),
                 UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1), status, sample,
-                sample, null, null, "VND", null, COORDINATOR, sent ? NOW : null, sent ? MANAGER : null,
-                sent ? NOW : null, null, sent ? NOW : null, started ? NOW : null, null, null, null, null, null, null,
+                sample, null, null, COORDINATOR, sent ? NOW : null, sent ? MANAGER : null,
+                sent ? NOW : null, null, sent ? NOW : null, sent ? MANAGER : null, started ? NOW : null, null, null,
+                null, null, null, null,
                 List.of(new ProductionOrder.Line(LINE_A, LINE, "CUP-12OZ-ACME", 8, 50, UUID.randomUUID(),
                                 "a".repeat(64), null, 0),
                         new ProductionOrder.Line(LINE_B, UUID.randomUUID(), "LID-12OZ-ACME", 2, 50, UUID.randomUUID(),
@@ -317,9 +380,73 @@ class ProductionOrderTest {
         UUID elsewhere = UUID.randomUUID();
         assertThat(order.receiveAt(elsewhere)).isTrue();
         assertThat(order.receivingWarehouseId()).isEqualTo(elsewhere);
-        order.submit(COORDINATOR, NOW);
-        order.approve(MANAGER, NOW);
+        order.send(COORDINATOR, NOW);
         assertThat(order.receiveAt(UUID.randomUUID())).as("sent: delivered where it was sent to").isFalse();
         assertThat(order.receivingWarehouseId()).isEqualTo(elsewhere);
+    }
+
+    // ---- replacements (SCRUM-839, 17 §4.13, BR-31) ----------------------------------------------------------------
+
+    private static ProductionOrder.Replacement writtenOff(int cartons) {
+        return new ProductionOrder.Replacement(UUID.randomUUID(), java.util.stream.IntStream.range(0, cartons)
+                .mapToObj(i -> new ProductionOrder.WriteOff(UUID.randomUUID(), "CUP-12OZ-ACME")).toList());
+    }
+
+    private static ProductionOrder replacement(int cartons, ProductionOrder.Replacement replacement) {
+        return ProductionOrder.drawUpReplacement("PRD-20261109-0002", UUID.randomUUID(), UUID.randomUUID(),
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1),
+                List.of(new ProductionOrder.Line(UUID.randomUUID(), LINE, "CUP-12OZ-ACME", cartons, 50,
+                        UUID.randomUUID(), "a".repeat(64), null, 0)), replacement, COORDINATOR, NOW);
+    }
+
+    @Test
+    @DisplayName("a replacement is a DRAFT of kind REPLACEMENT, no print sample by default, naming what it makes up")
+    void replacementDrawnUp() {
+        ProductionOrder.Replacement made = writtenOff(2);
+        ProductionOrder order = replacement(2, made);
+
+        assertThat(order.kind()).isEqualTo(ProductionOrderKind.REPLACEMENT);
+        assertThat(order.status()).isEqualTo(ProductionOrderStatus.DRAFT);
+        assertThat(order.sampleApprovalRequired()).isFalse();
+        assertThat(order.sampleRequiredByDefault()).isFalse();
+        assertThat(order.replacement()).contains(made);
+        assertThat(drawn(false).kind()).isEqualTo(ProductionOrderKind.STANDARD);
+        assertThat(drawn(false).replacement()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a replacement makes no more cartons of a SKU than were written off of it, drawn up or edited")
+    void replacementWithinItsWriteOffs() {
+        assertThatThrownBy(() -> replacement(3, writtenOff(2))).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.PRODUCTION_ORDER_EXCEEDS_WRITE_OFFS);
+        ProductionOrder order = replacement(1, writtenOff(2));
+        assertThat(order.maxCartons(Map.of(LINE, 5))).as("the write-offs cap what the batch lacks")
+                .containsEntry(LINE, 2);
+        assertThat(order.maxCartons(Map.of(LINE, 1))).as("and the batch caps the write-offs").containsEntry(LINE, 1);
+        assertThat(drawn(false).maxCartons(Map.of(LINE, 5))).as("a standard one: what the batch lacks")
+                .containsEntry(LINE, 5);
+
+        assertThatThrownBy(() -> order.edit(new ProductionOrder.Draft(order.producerId(), order.needByDate(), null,
+                false, null, Map.of(LINE, new ProductionOrder.LineEdit(3, null))), Map.of(LINE, 5)))
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_EXCEEDS_WRITE_OFFS);
+        order.edit(new ProductionOrder.Draft(order.producerId(), order.needByDate(), null, false, null,
+                Map.of(LINE, new ProductionOrder.LineEdit(2, null))), order.maxCartons(Map.of(LINE, 5)));
+        assertThat(order.lines().getFirst().cartons()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("a replacement names at least one write-off, each once, and makes only SKUs written off")
+    void replacementNamesItsWriteOffs() {
+        assertThatThrownBy(() -> new ProductionOrder.Replacement(UUID.randomUUID(), List.of()))
+                .extracting(ProductionOrderTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        UUID twice = UUID.randomUUID();
+        assertThatThrownBy(() -> new ProductionOrder.Replacement(UUID.randomUUID(), List.of(
+                new ProductionOrder.WriteOff(twice, "CUP-12OZ-ACME"), new ProductionOrder.WriteOff(twice,
+                        "CUP-12OZ-ACME")))).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        ProductionOrder.Replacement otherSku = new ProductionOrder.Replacement(UUID.randomUUID(), List.of(
+                new ProductionOrder.WriteOff(UUID.randomUUID(), "BOWL-ACME")));
+        assertThatThrownBy(() -> replacement(1, otherSku)).extracting(ProductionOrderTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
 }

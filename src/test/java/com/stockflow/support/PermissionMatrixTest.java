@@ -82,6 +82,10 @@ class PermissionMatrixTest {
     private static final Map<String, String> OWN_DATA_ONLY = Map.ofEntries(
             Map.entry("GET /api/v1/customers/me", "the caller's own profile (resolved from the token, no id taken from the request)"),
             Map.entry("PUT /api/v1/customers/me", "edits the caller's own profile (resolved from the token)"),
+            Map.entry("GET /api/v1/customers/me/addresses", "the caller's own addresses (customer resolved from the "
+                    + "token, no id taken from the request)"),
+            Map.entry("GET /api/v1/customers/me/legal-profile", "R5-10: the caller's own legal profile, read-only (the "
+                    + "customer resolved from the token; no id is taken from the request)"),
             Map.entry("GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)"),
             Map.entry("POST /api/v1/designs/mine", "starts a design for the caller's own customer (resolved from the "
                     + "token; no customer id is taken from the request)"),
@@ -89,10 +93,14 @@ class PermissionMatrixTest {
                     + "query)"),
             Map.entry("POST /api/v1/design-projects", "starts a project for the caller's own customer (resolved from "
                     + "the token; no customer id is taken from the request)"),
+            Map.entry("GET /api/v1/design-fonts", "the fonts the design studio offers (BE-18): a fixed system list, no "
+                    + "customer's data at all"),
             Map.entry("GET /api/v1/orders/me", "the caller's own orders, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/returns/me", "the caller's own returns, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/orders/credit-position/me", "the caller's own credit, selected by the customer profile of "
                     + "the token (4B-10: replaces GET /orders/payment-terms)"),
+            Map.entry("GET /api/v1/installments/me/debt-reconciliation", "the record reconciling the caller's own debt, "
+                    + "drawn from the books of the customer profile of the token; it takes a period, no customer id"),
             Map.entry("GET /api/v1/installments/me", "the caller's own installments, selected by the customer profile of the "
                     + "token (4B-6)"),
             Map.entry("GET /api/v1/einvoices/me", "the e-invoices issued to the caller's own customer, selected by the "
@@ -109,7 +117,13 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/chat/me/conversations", "the caller's own conversations (F-13), selected by the "
                     + "customer profile of the token; a document filter only narrows them"),
             Map.entry("GET /api/v1/chat/me/conversations/unread-count", "the caller's own chat badge (F-13): counts "
-                    + "over the conversations of the token's customer profile, read by the token's subject"));
+                    + "over the conversations of the token's customer profile, read by the token's subject"),
+            Map.entry("POST /api/v1/chat/socket-tickets", "a socket ticket for the caller's own token (BE-12): it "
+                    + "carries that token's claims and nothing taken from the request"),
+            Map.entry("POST /api/v1/credit-requests", "QĐ-A: a credit request for the caller's own customer, resolved "
+                    + "from the token; a customerId in the body is ignored for a portal account"),
+            Map.entry("GET /api/v1/credit-requests/mine", "QĐ-A: the caller's own credit requests, selected by the "
+                    + "customer profile of the token"));
 
     /**
      * Handlers with neither {@code @RequiresPermission} nor {@code @PreAuthorize}. They are open to anyone signed in
@@ -124,6 +138,8 @@ class PermissionMatrixTest {
                     "public: Resend's delivery reports; the Svix signature is the authorisation (permitAll for POST, SCRUM-352)"),
             Map.entry("POST /api/v1/fulfillment/carrier-webhooks/{carrierCode}",
                     "public: carriers' webhooks; the carrier's configured header or HMAC signature is the authorisation (permitAll for POST, 3-5)"),
+            Map.entry("POST /api/v1/bank-transactions/webhooks/{provider}",
+                    "public: the bank feed's webhook (SePay); its HMAC signature or API key is the authorisation (permitAll for POST, credit plan part C)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
             Map.entry("GET /api/v1/production-order-files/{id}/slip",
                     "public: a producer's link to its production order slip; the HMAC-signed, time-limited link is the "
@@ -131,6 +147,10 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/production-order-files/{id}/print-files/{designSnapshotId}",
                     "public: a producer's link to a print file of its production order; the signed link is the "
                             + "authorisation, the file's recorded digest checked before it is handed out (permitAll for GET, 4A-3)"),
+            Map.entry("GET /api/v1/production-order-files/{id}/print-files/{designSnapshotId}/originals/{assetId}",
+                    "public: a producer's link to a customer's original image of a design of its production order; the "
+                            + "signed link is the authorisation, the image's recorded digest checked before it is handed "
+                            + "out (permitAll for GET, FE request 2026-11-18 BE-6)"),
             Map.entry("GET /api/v1/catalog/categories",
                     "any signed-in user: the storefront category navigation, visible categories only (SCRUM-171)"),
             Map.entry("GET /api/v1/catalog/products", "any signed-in user: published storefront catalog, no private data"),
@@ -204,6 +224,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}", "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/layouts", "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/vehicles/{seq}/layout", "fulfillment-load-plans:READ"),
+            Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/vehicles/{seq}/loading-sheet.pdf",
+                    "fulfillment-load-plans:READ"),
             Map.entry("GET /api/v1/fulfillment/load-plans/{loadPlanId}/reconciliation", "fulfillment-load-plans:READ"),
             Map.entry("POST /api/v1/fulfillment/load-plans", "fulfillment-load-plans:CREATE"),
             Map.entry("PUT /api/v1/fulfillment/load-plans/{loadPlanId}/inputs", "fulfillment-load-plans:UPDATE"),
@@ -254,6 +276,19 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/carrier-events/{eventId}/resolution", "fulfillment-carrier-events:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/delivery-outcome-correction",
                     "fulfillment-delivery-corrections:UPDATE"),
+            // 09B G12 (09 edge "hoàn hàng khi còn Handed Over"): the warehouse manager corrects the failure reason.
+            Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/failure-reason-correction",
+                    "fulfillment-delivery-corrections:UPDATE"),
+            // RTM-RTDCANCEL (V20261207010600, 09 §5.1): the warehouse manager cancels a shipment waiting for dispatch.
+            Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/cancellation",
+                    "fulfillment-shipment-cancellations:UPDATE"),
+            // 09B G13 (V20261207010100): Sales read an order's POD and waybill files to send the customer.
+            Map.entry("GET /api/v1/fulfillment/orders/{orderId}/delivery-documents",
+                    "fulfillment-delivery-documents:READ"),
+            Map.entry("GET /api/v1/fulfillment/orders/{orderId}/delivery-documents/pod-files/{fileId}/download-url",
+                    "fulfillment-delivery-documents:READ"),
+            Map.entry("GET /api/v1/fulfillment/orders/{orderId}/delivery-documents/waybill-files/{fileId}/download-url",
+                    "fulfillment-delivery-documents:READ"),
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/pod-files", "fulfillment-delivery-outcomes:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/pod-files/uploads",
                     "fulfillment-delivery-outcomes:UPDATE"),
@@ -273,8 +308,23 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/shipments/{shipmentId}/delivery-outcome", "fulfillment-delivery-outcomes:UPDATE"),
             Map.entry("POST /api/v1/customers/{customerId}/status", "customer-status:APPROVE"),
             Map.entry("GET /api/v1/catalog/products/availability", "catalog-storefront:READ"),
+            // QĐ-A (V20270102000100): born permission-guarded; listed so the guards cannot drift.
+            Map.entry("POST /api/v1/credit-requests/{id}/recommendation", "customer-credit-requests:UPDATE"),
+            Map.entry("POST /api/v1/credit-requests/{id}/approval", "customer-credit-requests:APPROVE"),
+            Map.entry("POST /api/v1/credit-requests/{id}/rejection", "customer-credit-requests:APPROVE"),
+            Map.entry("POST /api/v1/credit-requests/{id}/withdrawal", "customer-credit-requests:CREATE"),
             // Was sales-orders:READ + back office; its own code so ACCREAD does not open the queue.
-            Map.entry("GET /api/v1/orders/cancellation-requests", "sales-order-cancellations:READ"));
+            Map.entry("GET /api/v1/orders/cancellation-requests", "sales-order-cancellations:READ"),
+            // Contract §4.1, §5 (V20270107000400): born permission-guarded; listed so the guards cannot drift. The
+            // explanation of an error code reveals no data, so the panel's permission is enough; the review of other
+            // people's answers and the usage counts have resources of their own.
+            Map.entry("GET /api/v1/assistant/error-explanations/{errorCode}", "assistant-conversations:READ"),
+            Map.entry("GET /api/v1/assistant/feedback", "assistant-feedback:READ"),
+            Map.entry("GET /api/v1/assistant/usage", "assistant-usage:READ"),
+            // Contract 3.3 (review 27/11): a draft to a producer is the Production Coordinator's, as sending and
+            // following up a production order are (production-orders:UPDATE); reading the follow-ups is not enough.
+            Map.entry("POST /api/v1/assistant/production-follow-ups/{productionOrderId}/message-draft",
+                    "production-orders:UPDATE"));
 
     /**
      * Who holds each permission that replaced a role list, as seeded: exactly the roles the list let through, which
@@ -329,6 +379,17 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-carrier-events:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 3-6, kltn-docs 09 §4.3 step 5: the warehouse manager corrects an outcome the carrier reported wrongly.
             Map.entry("fulfillment-delivery-corrections:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // RTM-RTDCANCEL, kltn-docs 09 §5.1 "Cancelled": the warehouse manager cancels a shipment before dispatch.
+            // SCRUM-716 (V20261227000100; kltn-docs 12 BR-03, 01 §5.2): every Sales Staff member, the Sales Manager and
+            // the coordinator look a customer's own SKUs up; Sales block one; only the Sales Manager unblocks or retires.
+            Map.entry("product-variants:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("product-variants:UPDATE", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("product-variants:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-shipment-cancellations:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // 09B G13, kltn-docs 09 §2: Sales send the customer the POD / waybill file; never the customer (BR-05).
+            Map.entry("fulfillment-delivery-documents:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.SYSTEM_ADMIN)),
             // 4B-1, kltn-docs 18 BR-03: Sales sets the default payment schedule; an instalment after delivery is
             // accounting's.
             Map.entry("customer-payment-schedules:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.ACCOUNTANT,
@@ -362,14 +423,53 @@ class PermissionMatrixTest {
                     Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("payment-refunds:CREATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             Map.entry("payment-refunds:UPDATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // 2026-11-14 plan, BE2 (V20261126000100): the receipts' Excel file, for the accounting software (15 BR-06), is
+            // the accountant's, as recording and voiding them are.
+            Map.entry("payment-receipts:EXPORT", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // QĐ-A (V20270102000100): the customer (OWN) and Sales ask for credit; Sales give their opinion; only the
+            // accountant decides; the back office opens the screens.
+            Map.entry("customer-credit-requests:VIEW_PAGE", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("customer-credit-requests:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("customer-credit-requests:CREATE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("customer-credit-requests:UPDATE", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("customer-credit-requests:APPROVE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // BE2-B (15 §2, §4.3): receivables are read by the accountant, Sales and the Sales Manager; exported - every
+            // customer's debt at once - by the accountant and the Sales Manager.
+            Map.entry("reporting-receivables:VIEW_PAGE", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER,
+                    Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-receivables:READ", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SALES_STAFF,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-receivables:EXPORT", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // BE2-C (20 §4.7): the stock summary is read by the warehouse manager (their warehouses), the Sales Manager
+            // and the accountant; exported by the warehouse manager and the accountant.
+            Map.entry("reporting-stock-summary:VIEW_PAGE", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-stock-summary:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-stock-summary:EXPORT", Set.of(Role.WAREHOUSE_MANAGER, Role.ACCOUNTANT,
+                    Role.SYSTEM_ADMIN)),
             // 4B-7, kltn-docs 17 §4.2 step 2: Sales chooses the shipping warehouse; those who follow the order read it.
             Map.entry("sales-order-shipping-warehouses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            // WF04 G2 (V20261204006100; kltn-docs 17 §2, §3 "Khách / Sale ... đổi địa chỉ"): Sales change the address.
+            Map.entry("sales-order-addresses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.WAREHOUSE_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
-            // 4A-2, kltn-docs 17 §4.3, BR-23: the coordinator draws production orders up, the Sales Manager approves.
+            // 4A-2, kltn-docs 17 §4.3: the coordinator draws production orders up and sends them; since V20261213000200
+            // nobody approves one (production-orders:APPROVE is gone) and the Sales Manager is told of each one sent.
             Map.entry("production-orders:CREATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("production-orders:UPDATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
-            Map.entry("production-orders:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("production-order-sends:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261213000200 (kltn-docs 12 §4.4, §4.10): the Production Coordinator reviews the customers' designs,
+            // and reads what they review; the Sales Manager no longer does.
+            Map.entry("design-designs:APPROVE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("design-designs:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("design-designs:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             // 4A-4, kltn-docs 13 BR-13: the customer sees and answers their own print samples on the storefront.
             Map.entry("production-samples:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("production-samples:APPROVE", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
@@ -382,7 +482,10 @@ class PermissionMatrixTest {
             Map.entry("production-schedule:VIEW_PAGE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SALES_MANAGER,
                     Role.SALES_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("delay-alerts:READ", Set.of(Role.SALES_MANAGER, Role.SALES_STAFF, Role.WAREHOUSE_MANAGER,
-                    Role.SYSTEM_ADMIN)),
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            // V20261209000400 (17 §3, BR-30): DELIVERY_LATE is listed to, and told to, those who follow delivery.
+            Map.entry("delivery-delay-alerts:READ", Set.of(Role.SALES_MANAGER, Role.SALES_STAFF,
+                    Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 4A-1, kltn-docs 17 §4.3 and 00 §2.1 (2026-11-07): the Production Coordinator keeps the producers.
             Map.entry("sales-producers:CREATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("sales-producers:UPDATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
@@ -391,9 +494,58 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261230000100 (kltn-docs 13 BR-04, 2026-11-26): the Sales Manager keeps the variants' standard prices; Sales
+            // read them to quote. No customer: a price is seen only on a quote, order or contract.
+            Map.entry("catalog-standard-prices:VIEW_PAGE", Set.of(Role.SALES_MANAGER, Role.SALES_STAFF,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("catalog-standard-prices:READ", Set.of(Role.SALES_MANAGER, Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            Map.entry("catalog-standard-prices:CREATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("catalog-standard-prices:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("catalog-standard-prices:DELETE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261230000200 (kltn-docs 14 BR-10, 2026-11-26): the prices of a quote held for approval are the Sales
+            // Manager's to approve or reject - not Sales', who sent it, nor the customer's.
+            Map.entry("sales-quote-price-approvals:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("catalog-storefront:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
-            Map.entry("platform-actuator:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("platform-actuator:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261209000100 (permission review 2026-11-20, A1; kltn-docs 00 §2.1): running the system is the System
+            // Admin's; the Sales Manager kept the actuator only because it reached it before the permission existed.
+            Map.entry("platform-actuator:READ", Set.of(Role.SYSTEM_ADMIN)),
+            Map.entry("platform-actuator:UPDATE", Set.of(Role.SYSTEM_ADMIN)),
+            // V20261209000200 (permission review 2026-11-20, A3; kltn-docs 20 §3): the Accountant reads the stock
+            // adjustments too; deciding one stays with the warehouse manager.
+            Map.entry("inventory-stock-adjustments:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("inventory-stock-adjustments:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261222000100 (owner, 2026-11-23): the Accountant views and prints the 01-VT voucher of a return
+            // receipt - the chief accountant signs it and accounting books returned goods from it - but never writes
+            // a receipt: counting, confirming and cancelling stay the warehouse's.
+            Map.entry("procurement-goods-receipts:VIEW_PAGE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("procurement-goods-receipts:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("procurement-goods-receipts:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("procurement-goods-receipts:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("procurement-return-receipt-approvals:APPROVE", Set.of(Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            // WF-05 audit round 2 M4 (V20261223000330; Q-11, docs 03 §4.2 step 10): the warehouse records goods kept in
+            // custody for the customer on a return - the dock's write; Sales kept it. No customer.
+            Map.entry("sales-rma-custody:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            // WF-05 audit round 3 RAD-3 (V20261224000310; Q-11, TH-6): the list of goods kept on custody notes is the
+            // warehouse's and Sales'; recording that the goods left as chosen is the warehouse manager's.
+            Map.entry("sales-rma-custody:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            Map.entry("sales-rma-custody:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // WF-05 demo D-8 (V20261224000350; Q-21, HĐ-7): a product's VAT group, in any status - the accountant, who
+            // meets a product without one on an invoice draft, and the Sales Manager, who owns the catalogue.
+            Map.entry("product-tax-class:UPDATE", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20261209000300 (permission review 2026-11-20, A2; kltn-docs 20 §3): the lot trace report is the
+            // warehouse's, Sales' (customer care) and the coordinator's; the ledger itself stays the warehouse's.
+            Map.entry("inventory-lot-traces:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SALES_STAFF, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("inventory-stock-movements:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-cancellations:READ", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             // F-13 (V20261124000300, kltn-docs 16 §2): the customer (its own, scope OWN) and Sales chat; the Sales
             // Manager supervises - assigns from the queue, takes escalations.
@@ -402,15 +554,29 @@ class PermissionMatrixTest {
             Map.entry("chat-supervision:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("chat-canned-responses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             // The warehouse manager reads the orders of their warehouses only (V20261115000200, 5-7 review M1).
-            Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ACCOUNTANT,
+            // The Sales Manager reads orders and quotes, never writes them (V20261227000100, WF-02 QĐ14).
+            Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER, Role.ACCOUNTANT,
                     Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF,
+            Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.ACCOUNTANT, Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // WH-READ-COORD (V20261023000500): the release dialog needs a warehouse to pick.
             // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
             Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
                     Role.SALES_STAFF,
-                    Role.SALES_MANAGER, Role.SYSTEM_ADMIN)));
+                    Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // BE1 (V20261125000100, kltn-docs 06 §2): the capacity board - the warehouse manager, Sales choosing a
+            // shipping warehouse, the coordinator drawing up and the Sales Manager approving a production order.
+            Map.entry("warehouse-capacity:VIEW_PAGE", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_STAFF,
+                    Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("warehouse-capacity:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_STAFF,
+                    Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            // BE3-B (V20261127000100, kltn-docs 00 §2.5): the audit trail names people - the System Admin alone reads it.
+            Map.entry("platform-audit-logs:READ", Set.of(Role.SYSTEM_ADMIN)),
+            Map.entry("platform-audit-logs:VIEW_PAGE", Set.of(Role.SYSTEM_ADMIN)),
+            // AQ-16, contract §5 (V20270107000400): other people's questions are the System Admin's alone; the usage
+            // counts, which name nobody, the Sales Manager's too.
+            Map.entry("assistant-feedback:READ", Set.of(Role.SYSTEM_ADMIN)),
+            Map.entry("assistant-usage:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -425,9 +591,11 @@ class PermissionMatrixTest {
                 Map.entry("PUT /api/v1/customers/{customerId}/addresses/{addressId}", address),
                 Map.entry("PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}"),
                 Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),
-                // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design.
-                Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_SOFA
-                        + "\",\"sku\":\"SOFA-3S-GREY\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
+                // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design;
+                // a design is started in the victim's project (BR-23.2), which only the project's owner check refuses.
+                Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_CUP
+                        + "\",\"sku\":\"LY-GIAY-DEMO-12OZ\",\"templateCode\":\"BODY\",\"name\":\"stolen\","
+                        + "\"projectId\":\"" + victimProject + "\"}"),
                 Map.entry("PUT /api/v1/designs/{id}/name", "{\"version\":0,\"name\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/archive", "{\"version\":0}"),
                 Map.entry("POST /api/v1/designs/{id}/technical-review-requests", "{\"version\":0}"),
@@ -453,10 +621,10 @@ class PermissionMatrixTest {
                         + "\"inter\",\"sizePt\":24,\"color\":\"#1F2937\",\"align\":\"center\",\"lineHeight\":1.2}}"),
                 Map.entry("POST /api/v1/design-projects/{id}/preflight-failures", "{\"items\":[{\"designId\":\""
                         + victimDesign + "\",\"issues\":[{\"rule\":\"ON_SEAM\"}]}]}"),
-                Map.entry("POST /api/v1/designs/{id}/clones", "{\"variantSku\":\"SOFA-3S-BLUE\",\"document\":{"
-                        + "\"schemaVersion\":1,\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-BLUE\",\"surfaces\":{}}}"),
+                Map.entry("POST /api/v1/designs/{id}/clones", "{\"variantSku\":\"LY-GIAY-DEMO-12OZ-CLONE\",\"document\":{"
+                        + "\"schemaVersion\":1,\"templateCode\":\"BODY\",\"sku\":\"LY-GIAY-DEMO-12OZ-CLONE\",\"surfaces\":{}}}"),
                 Map.entry("PUT /api/v1/designs/{id}/document", "{\"version\":0,\"document\":{\"schemaVersion\":1,"
-                        + "\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-GREY\",\"surfaces\":{}}}"),
+                        + "\"templateCode\":\"BODY\",\"sku\":\"LY-GIAY-DEMO-12OZ\",\"surfaces\":{}}}"),
                 // SCRUM-448 / R1: valid bodies, so only the owner check can refuse the victim's quote and order.
                 Map.entry("POST /api/v1/quotes/{quoteId}/acceptance", "{\"version\":0}"),
                 Map.entry("POST /api/v1/quotes/{quoteId}/change-request", "{\"version\":0,\"feedback\":\"stolen\"}"),
@@ -472,13 +640,30 @@ class PermissionMatrixTest {
                 Map.entry("POST /api/v1/designs/{designId}/assets", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"),
                 Map.entry("POST /api/v1/returns/{returnId}/evidence/uploads", uploadSlot),
                 Map.entry("POST /api/v1/returns/{returnId}/evidence", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"),
+                // WF-05 Q-11: custody notes are the back office's; a valid body, so the guard - not validation - answers.
+                Map.entry("POST /api/v1/returns/{returnId}/custody/uploads", uploadSlot),
+                Map.entry("POST /api/v1/returns/{returnId}/custody", "{\"uploadId\":\"" + UUID.randomUUID()
+                        + "\",\"sku\":\"SKU-X\",\"quantity\":1}"),
+                // WF-05 Q-4: the customer's choice for goods held for them is recorded by Sales; a valid body, so the
+                // back-office guard - not validation - answers the customer who holds sales-rmas:UPDATE.
+                Map.entry("POST /api/v1/returns/{returnId}/custody-choice", "{\"choice\":\"SEND_BACK\",\"version\":0}"),
+                // Audit r3 RAD-3: the customer's choice for a custody note's goods is Sales' to record, never theirs.
+                Map.entry("POST /api/v1/returns/{returnId}/custody/{evidenceId}/choice", "{\"choice\":\"SEND_BACK\"}"),
                 // 4A-4: a well-formed reprint request, so only the owner check can refuse another customer's round.
                 Map.entry("POST /api/v1/customer/production-samples/{roundId}/reprint-request",
                         "{\"note\":\"stolen\"}"),
                 // F-13 (kltn-docs 16 BR-02): a conversation of the attacker's own, about the victim's order - only the
                 // owner check of the context can refuse it.
                 Map.entry("POST /api/v1/chat/me/conversations", "{\"contextKind\":\"ORDER\",\"contextId\":\""
-                        + victimOrder + "\",\"text\":\"stolen\"}"));
+                        + victimOrder + "\",\"text\":\"stolen\"}"),
+                // QĐ-A (V20270102000100): a well-formed credit request naming the victim - filed for the attacker's
+                // own customer whatever the body names, so the answer must not carry the victim's id; and valid
+                // bodies on someone else's request, so only the owner check can refuse them.
+                Map.entry("POST /api/v1/credit-requests", "{\"customerId\":\"" + victimCustomer
+                        + "\",\"requestedLimit\":1000,\"requestedTermDays\":30,\"salesNote\":\"stolen\"}"),
+                Map.entry("POST /api/v1/credit-requests/{id}/withdrawal", "{\"version\":0}"),
+                Map.entry("POST /api/v1/credit-requests/{id}/files/uploads", uploadSlot),
+                Map.entry("POST /api/v1/credit-requests/{id}/files", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"));
     }
 
 
@@ -517,7 +702,7 @@ class PermissionMatrixTest {
                     victimAddress, victimCustomer);
             jdbc.update("""
                     INSERT INTO design.design_draft (id, customer_id, product_id, owner_user_id, status, created_at, current_artifacts)
-                    VALUES (?, ?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", victimDesign, victimCustomer, DemoData.PRODUCT_SOFA, victimUser);
+                    VALUES (?, ?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", victimDesign, victimCustomer, DemoData.PRODUCT_CUP, victimUser);
             // The victim's design project (2F-9), holding their design.
             jdbc.update("""
                     INSERT INTO design.design_project (id, customer_id, owner_user_id, name, status, created_at)
@@ -527,7 +712,7 @@ class PermissionMatrixTest {
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, version, created_at, hold_reason)
                     VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW(), 'CREDIT')""",
                     victimOrder, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)), victimCustomer, UUID.randomUUID());
-            jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'TABLE-OAK-160', 1, 1000, 'VND')",
+            jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'LY-GIAY-DEMO-12OZ-XANH', 1, 1000, 'VND')",
                     Identifiers.newId(), victimOrder);
             // The victim's own quote, sent to them (SCRUM-448).
             int n = ThreadLocalRandom.current().nextInt(1_000_000);
@@ -545,7 +730,7 @@ class PermissionMatrixTest {
             UUID victimQuoteLine = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
-                    VALUES (?, ?, 1, 'SOFA-3S-GREY', ?, 1)""", victimQuoteLine, victimQuote, snapshot);
+                    VALUES (?, ?, 1, ?, ?, 1)""", victimQuoteLine, victimQuote, DemoData.BLANK_CUP, snapshot);
             jdbc.update("INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price) VALUES (?, 1, 1000)",
                     victimQuoteLine);
         });
@@ -682,11 +867,11 @@ class PermissionMatrixTest {
     void theOwnerOfTheSameRowsIsServed() throws Exception {
         SecuredMvc http = new SecuredMvc(mvc, decoder);
         // The victim's quote is a valid row its owner reads (B-6a): the 404 the attacker gets is the owner check, not a
-        // broken fixture.
+        // broken fixture. So is its PDF, drawn from the same read (a quote drafted before cartons, QD-16).
         for (String path : List.of("/api/v1/orders/" + victimOrder, "/api/v1/orders/me/" + victimOrder,
                 "/api/v1/orders/me/" + victimOrder + "/delivery-batches",
                 "/api/v1/designs/" + victimDesign, "/api/v1/customers/" + victimCustomer + "/addresses",
-                "/api/v1/quotes/" + victimQuote)) {
+                "/api/v1/quotes/" + victimQuote, "/api/v1/quotes/" + victimQuote + "/document")) {
             assertThat(http.asCustomer(victimUser, MockMvcRequestBuilders.get(path)).andReturn().getResponse().getStatus())
                     .as("the owner reading " + path).isEqualTo(200);
         }
@@ -781,6 +966,8 @@ class PermissionMatrixTest {
         handlers().forEach(h -> byKey.put(h.key(), h));
         Map<String, String> expected = Map.of(
                 "POST /api/v1/orders/{orderId}/release", "sales-order-releases:UPDATE",
+                // WF4-OVERDUE-WARN: what the release dialog shows when it opens - behind the release permission itself.
+                "GET /api/v1/orders/{orderId}/release-warnings", "sales-order-releases:UPDATE",
                 "GET /api/v1/orders/{orderId}/delivery-batches", "sales-order-delivery-batches:READ",
                 "GET /api/v1/orders/me/{orderId}/delivery-batches", "sales-orders:READ",
                 "POST /api/v1/orders/{orderId}/delivery-batches/{batchId}/window-change", "sales-contracts:UPDATE",
@@ -817,7 +1004,6 @@ class PermissionMatrixTest {
         Map<String, String> expected = Map.of(
                 "GET /api/v1/orders/delivery-failures", "sales-orders:READ",
                 "GET /api/v1/orders/{orderId}/delivery-failures", "sales-orders:READ",
-                "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/redelivery", "sales-order-holds:UPDATE",
                 "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/cancellation",
                 "sales-order-cancellations:UPDATE",
                 // WF-05 review F6.1: what came back with no case yet is cancelled under the same permission.
@@ -838,6 +1024,102 @@ class PermissionMatrixTest {
         assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
                 .doesNotContain(PermissionCode.parse("sales-order-holds:UPDATE"),
                         PermissionCode.parse("sales-order-cancellations:UPDATE"));
+    }
+
+    /**
+     * BE1 (kltn-docs 06 §2, §4.6): both capacity-board reads need {@code warehouse-capacity:READ} with scope ALL - so the
+     * warehouse manager, whose own scope is WAREHOUSE, is narrowed to their warehouses in the service - and warehouse
+     * staff, the accountant and the customer hold no part of it. Editing the utilization factor is the warehouse's own
+     * {@code PUT /warehouses/{id}}, {@code warehouse-warehouses:UPDATE}.
+     */
+    @Test
+    void theWarehouseCapacityEndpointsNeedTheirPermission() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/warehouse-capacity", "warehouse-capacity:READ",
+                "GET /api/v1/warehouse-capacity/{warehouseId}", "warehouse-capacity:READ",
+                "PUT /api/v1/warehouses/{warehouseId}", "warehouse-warehouses:UPDATE");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        for (Role role : List.of(Role.WAREHOUSE_STAFF, Role.ACCOUNTANT, Role.CUSTOMER)) {
+            assertThat(roles.resolve(List.of(role.authority())).permissions()).as(role.name())
+                    .doesNotContain(PermissionCode.parse("warehouse-capacity:READ"),
+                            PermissionCode.parse("warehouse-capacity:VIEW_PAGE"));
+        }
+    }
+
+    /**
+     * 2026-11-14 plan, BE2: each report reads with its own resource's READ and exports with its EXPORT; the receipts'
+     * total reads as the list does and their file is {@code payment-receipts:EXPORT}. The stock summary keeps the
+     * default scope (ALL), which is what narrows a WAREHOUSE-scoped manager to their warehouses. The customer holds
+     * none of them; a salesperson reads receivables but does not export them; the warehouse manager reads stock, not
+     * debts.
+     */
+    @Test
+    void theReportEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/reports/receivables", "reporting-receivables:READ",
+                "GET /api/v1/reports/receivables/export", "reporting-receivables:EXPORT",
+                "GET /api/v1/reports/stock-summary", "reporting-stock-summary:READ",
+                "GET /api/v1/reports/stock-summary/export", "reporting-stock-summary:EXPORT",
+                "GET /api/v1/payment-receipts", "payment-receipts:READ",
+                "GET /api/v1/payment-receipts/summary", "payment-receipts:READ",
+                "GET /api/v1/payment-receipts/export", "payment-receipts:EXPORT");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        List<PermissionCode> all = expected.values().stream().distinct().map(PermissionCode::parse).toList();
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions()).doesNotContainAnyElementsOf(all);
+        assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
+                .contains(PermissionCode.parse("reporting-receivables:READ"))
+                .doesNotContain(PermissionCode.parse("reporting-receivables:EXPORT"),
+                        PermissionCode.parse("reporting-stock-summary:READ"),
+                        PermissionCode.parse("payment-receipts:EXPORT"));
+        assertThat(roles.resolve(List.of(Role.WAREHOUSE_MANAGER.authority())).permissions())
+                .contains(PermissionCode.parse("reporting-stock-summary:READ"),
+                        PermissionCode.parse("reporting-stock-summary:EXPORT"))
+                .doesNotContain(PermissionCode.parse("reporting-receivables:READ"),
+                        PermissionCode.parse("payment-receipts:EXPORT"));
+    }
+
+    /**
+     * BE3: the printed documents are reads of what they print - a quote's PDF needs what reading the quote needs (the
+     * customer reaches it too, refused another's by the owner check {@link #aCustomerCannotReachAnotherCustomersData}
+     * exercises), a shipment's delivery note what reading the shipment needs (and its warehouse) - and the audit trail
+     * is a resource of its own that only the System Admin holds (kltn-docs 00 §2.5).
+     */
+    @Test
+    void theDocumentAndAuditLogEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/quotes/{quoteId}/document", "sales-quotes:READ",
+                "GET /api/v1/fulfillment/shipments/{shipmentId}/delivery-note", "fulfillment-shipments:READ",
+                "GET /api/v1/audit-logs", "platform-audit-logs:READ",
+                "GET /api/v1/audit-logs/{auditLogId}", "platform-audit-logs:READ");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
+                .contains(PermissionCode.parse("sales-quotes:READ"))
+                .doesNotContain(PermissionCode.parse("fulfillment-shipments:READ"),
+                        PermissionCode.parse("platform-audit-logs:READ"));
     }
 
     /**
@@ -959,8 +1241,38 @@ class PermissionMatrixTest {
     }
 
     /**
+     * WF-02 QĐ14, QĐ15 (V20261227000100): the Sales Manager opens the quotes and orders a chat card links to, and the
+     * Accountant the customer whose credit limit they set - READ only, so drawing up a quote, changing an order and
+     * changing a customer stay refused.
+     */
+    @Test
+    void salesManagerReadsQuotesAndOrdersAndTheAccountantReadsCustomers() throws Exception {
+        SecuredMvc http = new SecuredMvc(mvc, decoder);
+        UUID manager = tx.execute(s -> ReferenceRows.user(entityManager));
+        UUID accountant = tx.execute(s -> ReferenceRows.user(entityManager));
+        // A customer of its own: the lists are read for the guard, not for the seed's quotes (the WF-05 seed has
+        // quotes below their first price break, which the staff list answers 409 for).
+        String ofOne = "?customerId=" + tx.execute(s -> ReferenceRows.customer(entityManager));
+        assertThat(http.asRole(Role.SALES_MANAGER, manager, MockMvcRequestBuilders.get("/api/v1/quotes" + ofOne))
+                .andReturn().getResponse().getStatus()).as("quotes as SALES_MANAGER").isEqualTo(200);
+        assertThat(http.asRole(Role.SALES_MANAGER, manager, MockMvcRequestBuilders.get("/api/v1/orders" + ofOne))
+                .andReturn().getResponse().getStatus()).as("orders as SALES_MANAGER").isEqualTo(200);
+        assertThat(http.asRole(Role.ACCOUNTANT, accountant, MockMvcRequestBuilders.get("/api/v1/customers/"
+                + victimCustomer)).andReturn().getResponse().getStatus()).as("a customer as ACCOUNTANT").isEqualTo(200);
+        assertThat(roles.resolve(List.of(Role.SALES_MANAGER.authority())).permissions())
+                .contains(PermissionCode.parse("sales-quotes:VIEW_PAGE"), PermissionCode.parse("sales-orders:VIEW_PAGE"))
+                .doesNotContain(PermissionCode.parse("sales-quotes:CREATE"), PermissionCode.parse("sales-quotes:UPDATE"),
+                        PermissionCode.parse("sales-orders:CREATE"), PermissionCode.parse("sales-orders:UPDATE"));
+        assertThat(roles.resolve(List.of(Role.ACCOUNTANT.authority())).permissions())
+                .contains(PermissionCode.parse("customer-customers:VIEW_PAGE"))
+                .doesNotContain(PermissionCode.parse("customer-customers:UPDATE"),
+                        PermissionCode.parse("customer-customers:CREATE"));
+    }
+
+    /**
      * SCRUM-474 5b (V20261029004000): the staff user-management screen picks roles and warehouses, so every role that
-     * can read users also reads roles and warehouses - READ only.
+     * can read users also reads roles and warehouses - READ only. Since V20261129000100 that is SYSTEM_ADMIN alone:
+     * staff accounts, roles and permissions are the administrator's (kltn-docs 00 §2.5.3 item 7, decided 2026-11-07).
      */
     @Test
     void everyRoleThatReadsUsersAlsoReadsRolesAndWarehouses() {
@@ -968,16 +1280,30 @@ class PermissionMatrixTest {
         List<Role> holders = Arrays.stream(Role.values())
                 .filter(role -> roles.resolve(List.of(role.authority())).permissions().contains(users))
                 .toList();
-        assertThat(holders).containsExactlyInAnyOrder(Role.SALES_MANAGER, Role.SYSTEM_ADMIN);
+        assertThat(holders).containsExactly(Role.SYSTEM_ADMIN);
         for (Role role : holders) {
             assertThat(roles.resolve(List.of(role.authority())).permissions()).as(role.name())
                     .contains(PermissionCode.parse("identity-roles:READ"),
                             PermissionCode.parse("warehouse-warehouses:READ"));
         }
-        assertThat(roles.resolve(List.of(Role.SALES_MANAGER.authority())).permissions())
-                .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
-                        PermissionCode.parse("warehouse-warehouses:CREATE"),
-                        PermissionCode.parse("warehouse-warehouses:UPDATE"));
+    }
+
+    /**
+     * V20261129000100: only SYSTEM_ADMIN manages staff accounts, roles and permissions (kltn-docs 00 §2.5.3 item 7),
+     * and every staff role reads its own inbox - the Production Coordinator was left without it.
+     */
+    @Test
+    void onlyTheAdministratorManagesAccountsAndEveryStaffRoleReadsItsInbox() {
+        for (Role role : Role.values()) {
+            Set<PermissionCode> granted = roles.resolve(List.of(role.authority())).permissions();
+            boolean identityGrant = granted.stream().anyMatch(code -> code.toString().startsWith("identity-users:")
+                    || code.toString().startsWith("identity-roles:") || code.toString().startsWith("identity-rbac:"));
+            assertThat(identityGrant).as(role.name() + " manages accounts").isEqualTo(role == Role.SYSTEM_ADMIN);
+            assertThat(granted).as(role.name() + " reads its inbox").contains(
+                    PermissionCode.parse("notification-notifications:VIEW_PAGE"),
+                    PermissionCode.parse("notification-notifications:READ"),
+                    PermissionCode.parse("notification-notifications:UPDATE"));
+        }
     }
 
     @Test

@@ -20,21 +20,23 @@ public interface VariantJpaRepository extends BaseJpaRepository<VariantJpaEntity
 
     List<VariantJpaEntity> findBySkuIn(java.util.Collection<String> skus);
 
-    Optional<VariantJpaEntity> findByDesignSnapshotId(UUID designSnapshotId);
+    /** {@code [sku, name]} of each variant among {@code skus}: a projection, so a label sheet loads no entity. */
+    @Query("select v.sku, v.name from VariantJpaEntity v where v.sku in :skus")
+    List<Object[]> namesBySku(@Param("skus") java.util.Collection<String> skus);
 
-    List<VariantJpaEntity> findByDesignSnapshotIdIn(java.util.Collection<UUID> designSnapshotIds);
+    /** {@code [sku, id]} of each variant among {@code skus}: a projection, for inventory's carton lookups. */
+    @Query("select v.sku, v.id from VariantJpaEntity v where v.sku in :skus")
+    List<Object[]> idsBySku(@Param("skus") java.util.Collection<String> skus);
 
-    long countByProductIdAndOwnerCustomerId(UUID productId, UUID ownerCustomerId);
+    /** {@code [id, rotatable]} of each variant among {@code ids}: a projection (owner decision Q9). */
+    @Query("select v.id, v.rotatable from VariantJpaEntity v where v.id in :ids")
+    List<Object[]> rotatableById(@Param("ids") java.util.Collection<java.util.UUID> ids);
 
-    /** The SKUs among {@code skus} that belong to a customer other than {@code customerId}. */
-    @Query("select v.sku from VariantJpaEntity v where upper(v.sku) in :skus and v.ownerCustomerId is not null "
-            + "and v.ownerCustomerId <> :customerId")
-    List<String> ownedByOthers(@Param("skus") java.util.Collection<String> skus, @Param("customerId") UUID customerId);
-
-    /** A customer's own SKUs by product, then position; of one product when {@code productId} is set. */
-    @Query("select v from VariantJpaEntity v where v.ownerCustomerId = :customerId "
-            + "and (:productId is null or v.productId = :productId) order by v.productId, v.position, v.id")
-    List<VariantJpaEntity> ownedBy(@Param("customerId") UUID customerId, @Param("productId") UUID productId);
+    /** {@code [sku, product name, variant name]} of each variant among {@code skus}, in one query. */
+    @Query("""
+            select v.sku, p.name, v.name from VariantJpaEntity v, ProductJpaEntity p
+             where p.id = v.productId and v.sku in :skus""")
+    List<Object[]> itemNamesBySku(@Param("skus") java.util.Collection<String> skus);
 
     List<VariantJpaEntity> findByProductIdAndStatus(UUID productId, VariantStatus status);
 

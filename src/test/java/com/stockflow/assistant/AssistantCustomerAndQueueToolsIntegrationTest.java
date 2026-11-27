@@ -200,21 +200,22 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
     // ------------------------------------------------------------------------------------------------- customers
 
     @Test
-    @DisplayName("the accountant, who may not list customers, names one exactly - by the tax code typed with a blank "
-            + "- and is shown no names for a fragment")
+    @DisplayName("the production coordinator, who reads orders but may not list customers, names one exactly - by the "
+            + "tax code typed with a blank - and is shown no names for a fragment")
     void customersNamedExactlyByWhoMayNotListThem() throws Exception {
-        assertThat(granted("ACCOUNTANT", "sales-orders:READ")).isTrue();
-        assertThat(granted("ACCOUNTANT", "customer-customers:READ"))
-                .as("the accountant does not search the customer list under the seeded grants").isFalse();
+        // The Accountant lists customers since QD15 (V20261227000400); the coordinator reads orders and still does not.
+        assertThat(granted("PRODUCTION_COORDINATOR", "sales-orders:READ")).isTrue();
+        assertThat(granted("PRODUCTION_COORDINATOR", "customer-customers:READ"))
+                .as("the coordinator does not search the customer list under the seeded grants").isFalse();
         Customers customers = customers();
-        UUID accountant = staff("ACCOUNTANT");
+        UUID coordinator = staff("PRODUCTION_COORDINATOR");
         String spaced = customers.taxCode().substring(0, 3) + "." + customers.taxCode().substring(3);
         script(toolUse(call("toolu_fragment", "findOrders", orders("In Ly " + tag)),
                         call("toolu_tax", "findOrders", orders(spaced))),
                 answer("Cần tên đầy đủ hoặc mã số thuế."));
-        String conversation = start(Role.ACCOUNTANT, accountant);
+        String conversation = start(Role.PRODUCTION_COORDINATOR, coordinator);
 
-        http.asRole(Role.ACCOUNTANT, accountant, ask(conversation, "Đơn của khách In Ly " + tag + "?"))
+        http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, ask(conversation, "Đơn của khách In Ly " + tag + "?"))
                 .andExpect(status().isOk());
 
         String fragment = result(conversation, "toolu_fragment");
@@ -238,17 +239,17 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
     void capitalsAreFoundByTheirName() throws Exception {
         String registered = "CÔNG TY TNHH IN BAO BÌ ĐẠI PHÁT " + tag;
         customer(registered, null);
-        UUID accountant = staff("ACCOUNTANT");
+        UUID coordinator = staff("PRODUCTION_COORDINATOR");
         String typed = "Công ty TNHH In Bao Bì Đại Phát " + tag;
         script(toolUse(call("toolu_capitals", "findOrders", orders(typed))), answer("Khách chưa có đơn nào."));
-        String conversation = start(Role.ACCOUNTANT, accountant);
+        String conversation = start(Role.PRODUCTION_COORDINATOR, coordinator);
 
-        http.asRole(Role.ACCOUNTANT, accountant, ask(conversation, "Đơn của " + typed + "?"))
+        http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, ask(conversation, "Đơn của " + typed + "?"))
                 .andExpect(status().isOk());
 
         assertThat(outcome(conversation, "toolu_capitals")).isEqualTo("OK");
         assertThat(named(conversation, JsonPath.read(result(conversation, "toolu_capitals"), "$.customer")))
-                .as("found by the exact name, the only way an accountant may name a customer").isEqualTo(registered);
+                .as("found by the exact name, the only way a role that may not list customers names one").isEqualTo(registered);
         assertThat(jdbc.queryForObject("SELECT lower('ĐẠI PHÁT' COLLATE \"C\") <> 'đại phát'", Boolean.class))
                 .as("what the C locale's lower() does to Vietnamese capitals, and why the search may not rely on it")
                 .isTrue();
@@ -370,27 +371,34 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
     @DisplayName("a role without a screen's permission is DENIED, told which permission, and sees no row")
     void deniedWithoutTheScreensPermission() throws Exception {
         assertThat(granted("ACCOUNTANT", "fulfillment-pick-lists:READ")).isFalse();
-        assertThat(granted("ACCOUNTANT", "procurement-goods-receipts:READ")).isFalse();
         assertThat(granted("ACCOUNTANT", "catalog-customer-prices:READ")).isFalse();
+        // The Accountant reads goods receipts since V20261222000100 (it signs the return receipt's voucher); Sales do not.
+        assertThat(granted("SALES_STAFF", "procurement-goods-receipts:READ")).isFalse();
         assertThat(granted("WAREHOUSE_MANAGER", "catalog-customer-prices:READ")).isFalse();
         Customers customers = customers();
         String sku = ownPrice(customers.abc());
         UUID accountant = staff("ACCOUNTANT");
         script(toolUse(call("toolu_tasks", "findFulfillmentTasks", tasks("ANY", 50)),
-                        call("toolu_receipts", "findGoodsReceipts", receipts("ANY", "", 50)),
                         call("toolu_price", "getCustomerPrice", price(customers.abcName(), sku, 100))),
                 answer("Bạn chưa có quyền xem các dữ liệu này."));
         String asked = start(Role.ACCOUNTANT, accountant);
-        http.asRole(Role.ACCOUNTANT, accountant, ask(asked, "Kho còn task nào, phiếu nhập nào, giá ly bao nhiêu?"))
+        http.asRole(Role.ACCOUNTANT, accountant, ask(asked, "Kho còn task nào, giá ly bao nhiêu?"))
                 .andExpect(status().isOk());
 
         assertThat(outcome(asked, "toolu_tasks")).isEqualTo("DENIED");
         assertThat(result(asked, "toolu_tasks")).startsWith("NOT_PERMITTED").contains("fulfillment-pick-lists:READ");
-        assertThat(outcome(asked, "toolu_receipts")).isEqualTo("DENIED");
-        assertThat(result(asked, "toolu_receipts")).contains("procurement-goods-receipts:READ");
         assertThat(outcome(asked, "toolu_price")).isEqualTo("DENIED");
         assertThat(result(asked, "toolu_price")).contains("catalog-customer-prices:READ")
                 .doesNotContain("1400", customers.abcName());
+
+        UUID seller = staff("SALES_STAFF");
+        script(toolUse(call("toolu_receipts", "findGoodsReceipts", receipts("ANY", "", 50))),
+                answer("Bạn chưa có quyền xem phiếu nhập."));
+        String sold = start(Role.SALES_STAFF, seller);
+        http.asRole(Role.SALES_STAFF, seller, ask(sold, "Kho còn phiếu nhập nào?")).andExpect(status().isOk());
+
+        assertThat(outcome(sold, "toolu_receipts")).isEqualTo("DENIED");
+        assertThat(result(sold, "toolu_receipts")).contains("procurement-goods-receipts:READ");
 
         UUID manager = staff("WAREHOUSE_MANAGER", here);
         script(toolUse(call("toolu_manager_price", "getCustomerPrice", price(customers.abcName(), sku, 100))),
@@ -407,7 +415,7 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
     // ------------------------------------------------------------------------------------------------- AQ-02
 
     @Test
-    @DisplayName("warehouse staff (V20261125000500) and the production coordinator (V20261125000200) may open the "
+    @DisplayName("warehouse staff (V20270106000500) and the production coordinator (V20270106000200) may open the "
             + "assistant; a portal customer still may not")
     void theFloorRolesMayAsk() throws Exception {
         for (String role : List.of("WAREHOUSE_STAFF", "PRODUCTION_COORDINATOR")) {
@@ -481,7 +489,7 @@ class AssistantCustomerAndQueueToolsIntegrationTest {
                     order, number, DemoData.CUSTOMER_ID, UUID.randomUUID(), warehouse, releasedBy);
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                    VALUES (?, ?, 'SOFA-3S-GREY', 1, 1000, 'VND')""", Identifiers.newId(), order);
+                    VALUES (?, ?, ?, 1, 1000, 'VND')""", Identifiers.newId(), order, DemoData.SKU_STOCKED);
             UUID pick = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, assigned_user_id,

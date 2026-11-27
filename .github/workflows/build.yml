@@ -37,7 +37,9 @@ jobs:
     # Integration tests start Postgres through Testcontainers, which needs a Docker socket. The
     # ubuntu runner has one; a container-based runner would not.
     # The suite alone takes about 17 minutes (5,175 tests on 02/11); 20 cut green runs short.
-    timeout-minutes: 30
+    # On 24/11 it was 6,242 tests and 22.5 minutes, about 25 for the job on a normal runner. A slow
+    # runner is 35-40% slower on every test alike; 30 then cancelled four healthy PR runs mid-suite.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +70,10 @@ jobs:
           python-version: '3.12'
 
       - name: Static checks (verify.py)
+        env:
+          # The migrations a new one must be newer than (check 11b): on a push to develop, develop as
+          # it was before the push - what the VPS may already have run; on a pull request, its target.
+          MIGRATION_BASE: ${{ github.event_name == 'push' && github.event.before || format('origin/{0}', github.base_ref) }}
         run: python3 tools/verify.py
 
       # ---------------------------------------------------------------------

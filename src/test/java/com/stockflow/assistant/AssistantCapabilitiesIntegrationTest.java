@@ -64,7 +64,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>{@link #GRANTED} is the matrix of the seeded grants for the tools that existed when it was last brought up to date
  * (the 2026-11 rescope, ADR-0010: the eight roles of the baseline, warehouse staff opened to the assistant by
- * V20261125000500, findProductionOrders against outside producers and findEInvoices added; the low-stock, expiry,
+ * V20270106000500, findProductionOrders against outside producers and findEInvoices added; the low-stock, expiry,
  * purchasing, supplier, reorder, credit, transfer and return tools gone with the features they read). A tool added
  * later is still covered by the context and the enforcement cases, which compare against the endpoint's own answer;
  * add it to the tables when its grants are decided.</p>
@@ -102,6 +102,7 @@ class AssistantCapabilitiesIntegrationTest {
             Map.entry("getStockLots", "{\"sku\":\"" + SKU + "\"}"),
             // No dash: not a location's shape, so a warehouse-limited user gets NOT_FOUND, not another warehouse.
             Map.entry("lookupScan", "{\"code\":\"NOSUCHLABEL\"}"),
+            Map.entry("investigateCarton", "{\"lpn\":\"LPN-NOSUCHCARTON\"}"),
             Map.entry("searchCatalog", "{\"text\":\"sofa\",\"limit\":3}"),
             Map.entry("searchKnowledge", "{\"query\":\"custom printed return defective\"}"),
             Map.entry("traceLot", "{\"lotNumber\":\"NO-SUCH-LOT\",\"sku\":\"\"}"));
@@ -115,11 +116,13 @@ class AssistantCapabilitiesIntegrationTest {
             Map.entry("traceLot", "PARTIAL"), Map.entry("getOrderPicking", "PARTIAL"),
             Map.entry("findProductionOrders", "PARTIAL"), Map.entry("findFulfillmentTasks", "PARTIAL"),
             Map.entry("findGoodsReceipts", "PARTIAL"), Map.entry("findPendingAdjustments", "PARTIAL"),
-            Map.entry("findShipments", "PARTIAL"), Map.entry("lookupScan", "PARTIAL"));
+            Map.entry("findShipments", "PARTIAL"), Map.entry("lookupScan", "PARTIAL"),
+            Map.entry("investigateCarton", "PARTIAL"));
 
     /**
      * The tools of {@link #KNOWN} each seeded persona may use (identity.role_permission of the baseline after the
-     * rescope, plus V20261125000200 and V20261125000500).
+     * rescope, the read grants of V20261209000200, V20261222000100 and V20261227000400, plus V20270106000200 and
+     * V20270106000500).
      */
     private static final Map<Persona, Set<String>> GRANTED = granted();
 
@@ -150,20 +153,23 @@ class AssistantCapabilitiesIntegrationTest {
         granted.put(new Persona(Role.SYSTEM_ADMIN, false), KNOWN);
         granted.put(new Persona(Role.WAREHOUSE_MANAGER, true), Set.of("findFulfillmentTasks", "findGoodsReceipts",
                 "findOrder", "findOrders", "findPendingAdjustments", "findProductionOrders", "findShipments",
-                "getOrderPicking", "getSalesSummary", "getStockLevels", "getStockLots", "lookupScan", "searchCatalog",
-                "searchKnowledge", "traceLot"));
-        // Floor staff read stock and their own tasks, never orders (V20261125000500).
+                "getOrderPicking", "getSalesSummary", "getStockLevels", "getStockLots", "investigateCarton",
+                "lookupScan", "searchCatalog", "searchKnowledge", "traceLot"));
+        // Floor staff read stock and their own tasks, never orders (V20270106000500).
         granted.put(new Persona(Role.WAREHOUSE_STAFF, true), Set.of("findFulfillmentTasks", "findGoodsReceipts",
                 "findPendingAdjustments", "findShipments", "getOrderPicking", "getStockLevels", "getStockLots",
-                "lookupScan", "searchCatalog", "searchKnowledge", "traceLot"));
+                "investigateCarton", "lookupScan", "searchCatalog", "searchKnowledge", "traceLot"));
+        // Sales and the coordinator read the lot trace report since V20261209000300.
         granted.put(new Persona(Role.SALES_STAFF, false), Set.of("findOrder", "findOrders", "findProductionOrders",
-                "getCustomerPrice", "searchCatalog", "searchKnowledge"));
-        granted.put(new Persona(Role.SALES_MANAGER, false), Set.of("findEInvoices", "findProductionOrders",
-                "getCustomerPrice", "getSalesSummary", "searchCatalog", "searchKnowledge"));
-        granted.put(new Persona(Role.ACCOUNTANT, false), Set.of("findEInvoices", "findOrder", "findOrders",
-                "getSalesSummary", "searchCatalog", "searchKnowledge"));
+                "getCustomerPrice", "searchCatalog", "searchKnowledge", "traceLot"));
+        // The Sales Manager reads quotes and orders since QD14 (V20261227000400).
+        granted.put(new Persona(Role.SALES_MANAGER, false), Set.of("findEInvoices", "findOrder", "findOrders",
+                "findProductionOrders", "getCustomerPrice", "getSalesSummary", "searchCatalog", "searchKnowledge"));
+        // The Accountant reads stock adjustments (V20261209000200) and goods receipts (V20261222000100).
+        granted.put(new Persona(Role.ACCOUNTANT, false), Set.of("findEInvoices", "findGoodsReceipts", "findOrder",
+                "findOrders", "findPendingAdjustments", "getSalesSummary", "searchCatalog", "searchKnowledge"));
         granted.put(new Persona(Role.PRODUCTION_COORDINATOR, false), Set.of("findOrder", "findOrders",
-                "findProductionOrders", "searchCatalog", "searchKnowledge"));
+                "findProductionOrders", "searchCatalog", "searchKnowledge", "traceLot"));
         return granted;
     }
 
@@ -362,13 +368,20 @@ class AssistantCapabilitiesIntegrationTest {
     }
 
     /** A placed, unpaid order: no warehouse has a pick task for it. */
+    /**
+     * A signed order shipping from HCM: a warehouse manager of HCM reads the orders of their warehouses only, as the
+     * order list shows them (OrderReach).
+     */
     private String order() {
         String number = "SO-20991230-" + ThreadLocalRandom.current().nextInt(100_000, 1_000_000);
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                     currency, placed_at, version, created_at)
-                VALUES (?, ?, ?, ?, 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW())""",
-                Identifiers.newId(), number, DemoData.CUSTOMER_ID, UUID.randomUUID()));
+                                                     currency, placed_at, contract_signed_at, shipping_warehouse_id,
+                                                     shipping_warehouse_chosen_at, shipping_warehouse_chosen_by,
+                                                     version, created_at)
+                VALUES (?, ?, ?, ?, 'PENDING_PAYMENT', 1000, 'VND', NOW(), NOW(), ?, NOW(),
+                        (SELECT id FROM identity.app_user ORDER BY created_at LIMIT 1), 0, NOW())""",
+                Identifiers.newId(), number, DemoData.CUSTOMER_ID, UUID.randomUUID(), DemoData.WAREHOUSE_HCM));
         return number;
     }
 

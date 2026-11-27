@@ -38,14 +38,35 @@ public interface CustomerOrders {
         AWAITING_STOCK,
         /** Legacy: an order released with lines printed in house; no order enters IN_PRODUCTION any more. */
         IN_PRODUCTION,
-        PREPARING, SHIPPING, DELIVERED, CANCELLED, RETURNED
+        PREPARING, SHIPPING, DELIVERED,
+        /**
+         * RETURN_REQUESTED ("Đang yêu cầu trả hàng"): a return of the delivered goods is being decided. Apart from
+         * RETURNED so the customer is not told goods came back that are still with them.
+         */
+        RETURN_REQUESTED,
+        CANCELLED,
+        /**
+         * The order ended in a return (RETURNED, REFUNDED, PARTIALLY_REFUNDED, or CLOSED without completing) and nothing
+         * of it stayed with the customer: no shipment delivered, or every delivered unit received back.
+         */
+        RETURNED,
+        /**
+         * BE-35 (contract F-2): the order ended in a return as {@link #RETURNED} does, but the customer kept goods - a
+         * delivered shipment while the carrier brought another back, or a return of part of what was delivered. Apart
+         * from RETURNED so the customer is not told goods came back that are still with them.
+         */
+        PARTIALLY_RETURNED
     }
 
     /**
      * Where the parcels are, as far as staff have recorded it. With several shipments (G4-Q3) it sums them up
-     * (kltn-docs 09 BR-05): PARTIALLY_DELIVERED once one arrived while another has not.
+     * (kltn-docs 09 BR-05): PARTIALLY_DELIVERED once one arrived while another has not. {@code PARTIALLY_RETURNED}
+     * (BE-35): the order ended in a return and the customer kept goods, as {@link StatusGroup#PARTIALLY_RETURNED} -
+     * RETURNED would say the goods they hold came back.
      */
-    enum DeliveryState { NOT_SHIPPED, IN_TRANSIT, PARTIALLY_DELIVERED, DELIVERY_FAILED, DELIVERED, RETURNED }
+    enum DeliveryState {
+        NOT_SHIPPED, IN_TRANSIT, PARTIALLY_DELIVERED, DELIVERY_FAILED, DELIVERED, RETURNED, PARTIALLY_RETURNED
+    }
 
     /**
      * What the customer may do with the order now, so the portal does not keep its own copy of the rules (G3-2):
@@ -92,10 +113,22 @@ public interface CustomerOrders {
     record Production(ProductionState state, int goodQuantity) {
     }
 
-    /** @param taxRate the line's VAT rate (4B-3); null, with {@code taxAmount}, on a line placed without VAT */
+    /**
+     * @param taxRate     the line's VAT rate (4B-3); null, with {@code taxAmount}, on a line placed without VAT
+     * @param productName the name of the product the SKU belongs to; null for a SKU the product module does not know
+     * @param variantName the SKU's own (variant) name; null for an unknown SKU
+     */
     record Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
                 UUID designSnapshotId, Production production, Integer cartons, Integer unitsPerCarton,
-                BigDecimal taxRate, BigDecimal taxAmount) {
+                BigDecimal taxRate, BigDecimal taxAmount, String productName, String variantName) {
+
+        /** Without the SKU's names. */
+        public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
+                    UUID designSnapshotId, Production production, Integer cartons, Integer unitsPerCarton,
+                    BigDecimal taxRate, BigDecimal taxAmount) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, designSnapshotId, production, cartons, unitsPerCarton,
+                    taxRate, taxAmount, null, null);
+        }
     }
 
     /**
@@ -125,12 +158,32 @@ public interface CustomerOrders {
      * One shipment of the order as the customer reads it (G4-2a, kltn-docs 09 BR-05): from its handover to the carrier
      * on. Who handed it over or recorded its outcome, the note on a failure, the money it carries: none of it is here.
      *
+     * @param shipmentId    the shipment a return is opened against (WF-05 TH-1): an order delivered in several needs it
+     *                      named ({@code RETURN_SHIPMENT_REQUIRED}), and this is where the customer reads it. Null for
+     *                      the one shipment made up from the order's milestones, which a return needs no id for
      * @param shipmentCode  null for a shipment recorded before G4-2a (as are packageCount 0 and the carrier)
      * @param failureReason set once a delivery failed (kept after a retry delivered it, as the history does)
+     * @param lines         what the shipment carried, line by line, and what of it a return may still claim
      */
-    record Shipment(String shipmentCode, com.stockflow.order.api.OrderShipmentStatus status, int packageCount,
+    record Shipment(UUID shipmentId, String shipmentCode, com.stockflow.order.api.OrderShipmentStatus status,
+                    int packageCount,
                     String carrierName, Instant handedOverAt, Instant outcomeAt,
-                    com.stockflow.order.api.DeliveryFailureReason failureReason) {
+                    com.stockflow.order.api.DeliveryFailureReason failureReason, List<ShipmentLine> lines) {
+
+        public Shipment {
+            lines = lines == null ? List.of() : List.copyOf(lines);
+        }
+    }
+
+    /**
+     * One order line of one shipment (WF-05 TH-1): the units the shipment carried, and how many of them a return the
+     * customer opens on the portal now against that shipment may claim - from the rule opening the return applies
+     * ({@code ReturnRequest.claimable}), so the portal bounds its form by it instead of keeping a copy.
+     *
+     * @param returnableQuantity 0 when none can be claimed now: not delivered, the window closed, a return of the line
+     *                           already open on the shipment, or every unit claimed by other returns
+     */
+    record ShipmentLine(UUID orderLineId, String sku, int quantity, int returnableQuantity) {
     }
 
     /**

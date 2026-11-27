@@ -23,6 +23,7 @@ import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.ShipmentRows;
 import com.stockflow.support.TestUsers;
+import com.stockflow.support.VatOfTheDay;
 import com.stockflow.support.WithCurrentUser;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.AfterEach;
@@ -59,9 +60,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * order is completed by {@link OrderSettlementService} - what the nightly job calls. The one thing a test cannot wait
  * for is time: the return window is passed by moving {@code delivered_at} back eight days.</p>
  *
- * <p>The goods: 4 cartons of 50 at 2,000 a piece, 10% VAT - 400,000 + 40,000 = 440,000 - two cartons a batch. The
- * money: 40% on signing (176,000), 30% ten days after batch 1 (132,000), 30% twenty days after the whole order
- * (132,000).</p>
+ * <p>The goods: 4 cartons of 50 at 2,000 a piece at the STANDARD VAT rate of the day, as a quote drawn up today fixes
+ * it (HĐ-7: 8% through 2026, 10% after) - at 10%, 400,000 + 40,000 = 440,000 - two cartons a batch. The money: 40% on
+ * signing, 30% ten days after batch 1, 30% twenty days after the whole order.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -164,15 +165,18 @@ class Wf05DeliveryToCompletionIntegrationTest {
     @DisplayName("DS-05a: signed, both batches delivered, a draft per shipment, issued, the installments after delivery "
             + "due then paid, seven days on - the order and its contract are COMPLETED, and not a step earlier")
     void fromTheSignatureToCompleted() {
+        // At the STANDARD rate of the day, as a quote drawn up today fixes it (HĐ-7: 8% through 2026, then 10%).
+        BigDecimal standard = VatOfTheDay.standard(jdbc);
+        BigDecimal perBatch = VatOfTheDay.tax(200_000, standard).add(BigDecimal.valueOf(200_000));
         // 1. The contract is signed: 40% on signing, 30% after batch 1, 30% after the whole order; two batches.
         ConfirmedOrders.Signed signed = confirmedOrders.sign(confirmedOrders.draft(customer,
-                List.of(ConfirmedOrders.Line.cartons(sku, 4, PRICE).withTax(BigDecimal.TEN))), List.of(
+                List.of(ConfirmedOrders.Line.cartons(sku, 4, PRICE).withTax(standard))), List.of(
                 new SalesContracts.Installment("Deposit", "ON_SIGNING", null, new BigDecimal("40"), 0, null),
                 new SalesContracts.Installment("After batch 1", "AFTER_DELIVERY", null, new BigDecimal("30"), 10, 1),
                 new SalesContracts.Installment("After all", "AFTER_DELIVERY", null, new BigDecimal("30"), 20, null)), 2);
         orderId = signed.orderId();
         assertThat(contractStatus()).isEqualTo("SIGNED");
-        assertThat(signed.total()).isEqualByComparingTo("440000");
+        assertThat(signed.total()).isEqualByComparingTo(perBatch.multiply(BigDecimal.TWO));
         assertThat(status()).as("the deposit on signing is awaited").isEqualTo(OrderStatus.PENDING_PAYMENT);
         confirmedOrders.pay(signed);
         assertThat(status()).isEqualTo(OrderStatus.CONFIRMED);
@@ -189,7 +193,8 @@ class Wf05DeliveryToCompletionIntegrationTest {
         EInvoice.Snapshot firstDraft = draftOf(first);
         assertThat(firstDraft.status()).isEqualTo(EInvoiceStatus.DRAFT);
         assertThat(firstDraft.contractNumber()).isEqualTo(signed.contractNumber());
-        assertThat(firstDraft.grandTotal()).as("two cartons at 100,000 and 10%").isEqualByComparingTo("220000");
+        assertThat(firstDraft.grandTotal()).as("two cartons at 100,000 and the contract's rate, the day's")
+                .isEqualByComparingTo(perBatch);
         assertThat(firstDraft.warnings()).isEmpty();
         EInvoice.Snapshot firstIssued = FirstSend.issue(issuance, queries, firstDraft.id(), firstDraft.version(), accountant);
         assertThat(firstIssued.status()).isEqualTo(EInvoiceStatus.ISSUED);
@@ -227,7 +232,7 @@ class Wf05DeliveryToCompletionIntegrationTest {
         // 3, 4 again: the second delivery's draft, issued under the next number.
         EInvoice.Snapshot secondDraft = draftOf(second);
         assertThat(secondDraft.id()).isNotEqualTo(firstDraft.id());
-        assertThat(secondDraft.grandTotal()).isEqualByComparingTo("220000");
+        assertThat(secondDraft.grandTotal()).isEqualByComparingTo(perBatch);
         assertThat(jdbc.queryForObject("SELECT sum(grand_total) FROM invoicing.einvoice WHERE order_id = ?",
                 BigDecimal.class, orderId)).as("the invoices of the deliveries add up to the contract")
                 .isEqualByComparingTo(signed.total());

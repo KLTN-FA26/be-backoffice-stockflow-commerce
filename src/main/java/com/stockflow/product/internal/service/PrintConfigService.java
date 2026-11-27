@@ -15,6 +15,7 @@ import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.TemplateModel3d;
 import com.stockflow.product.internal.domain.ModelFileRules;
 import com.stockflow.product.internal.domain.PrintConfigRules;
+import com.stockflow.product.internal.domain.PrintFacts;
 import com.stockflow.product.internal.domain.VariantStatus;
 import com.stockflow.product.internal.entity.CustomizationTemplateJpaEntity;
 import com.stockflow.product.internal.entity.PrintAreaJpaEntity;
@@ -58,6 +59,11 @@ import java.util.stream.Collectors;
  * pure {@link PrintConfigRules}, which also computes the print areas; everything else is a fact about its variant and
  * product. Saving replaces the areas whole - they are derived, never edited one by one - and a template is born
  * inactive, so a half-entered one is never offered to a customer.</p>
+ *
+ * <p>A template carries two versions. {@code version} is the optimistic lock and moves with every write. The print
+ * version ({@link PrintConfig#printVersion}) moves only when an edit changes what customers' files are drawn on
+ * ({@link PrintFacts}): renaming, activating, deactivating - including the variant's template retired by another's
+ * activation - and attaching a reference die-line leave it, so designs waiting for review stay approvable.</p>
  *
  * <p>Every write takes the product lock first, then the template's: the same order as every other write of a product,
  * and what makes "one active template per variant" (activation retires the one active before it) safe under two
@@ -154,7 +160,7 @@ public class PrintConfigService implements PrintConfigs {
         VariantJpaEntity variant = variantOf(productId, variantId);
         requireWritable(product, variant);
         if (draft.code() == null || !CODE.matcher(draft.code()).matches()) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID,
+            throw PrintConfigRules.invalid("code", "Pattern",
                     "A template code is 1 to 50 capital letters, digits or hyphens");
         }
         if (templates.existsByVariantIdAndCode(variantId, draft.code())) {
@@ -203,6 +209,7 @@ public class PrintConfigService implements PrintConfigs {
         VariantJpaEntity variant = variantOf(productId, variantId);
         requireWritable(product, variant);
         CustomizationTemplateJpaEntity template = lockTemplate(variantId, templateId, version);
+        PrintFacts before = PrintFacts.of(assemble(List.of(template), Map.of(variantId, variant)).get(0));
         var computed = computeAreas(draft);
         TemplateModel3d current = PrintConfigPersistenceMapper.model3d(template);
         List<TemplateModel3d.Surface> requested = draft.surfaces() == null ? null
@@ -225,6 +232,13 @@ public class PrintConfigService implements PrintConfigs {
             PreparedFiles.PreparedFile file = prepared.single();
             template.attachModelFile(file.file().key(), file.file().originalName(), file.sha256());
         }
+        // The edit as it will be stored, areas included, against the template as it was: only a change customers'
+        // files are drawn on outdates them.
+        PrintFacts after = PrintFacts.of(PrintConfigPersistenceMapper.toConfig(template, productId, variant.getSku(),
+                PrintConfigPersistenceMapper.toRows(templateId, computed)));
+        if (!after.equals(before)) {
+            template.movePrintVersion(PrintFacts.next(template.getPrintVersion()));
+        }
         templates.saveAndFlush(template);
         if (prepared != null) {
             prepared.adopt();
@@ -246,13 +260,11 @@ public class PrintConfigService implements PrintConfigs {
         VariantJpaEntity variant = variantOf(productId, variantId);
         requireWritable(product, variant);
         CustomizationTemplateJpaEntity template = lockTemplate(variantId, templateId, version);
-        if (template.getModelParams() == null) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID,
-                    "Enter the product model before activating the template");
-        }
-        if (template.getModelFileKey() == null) {
+        // A template written before files were required may lack its model, its file or both: either way the fix is
+        // the same - upload the .glb with its measurements - so the answer is the same 409 (FE request 2026-11-17 B-2).
+        if (template.getModelParams() == null || template.getModelFileKey() == null) {
             throw new BusinessException(ErrorCode.PRINT_CONFIG_MODEL_FILE_REQUIRED,
-                    "Upload the template's 3D model file before activating it");
+                    "Upload the template's 3D model file (.glb) with its measurements before activating it");
         }
         requireComplete(PrintConfigPersistenceMapper.model3d(template).surfaces(),
                 areas.findByTemplateIdInOrderByTemplateIdAscSortOrderAsc(List.of(templateId)).stream()
@@ -342,7 +354,7 @@ public class PrintConfigService implements PrintConfigs {
             return List.of();
         }
         List<VariantJpaEntity> active = variants.findByProductIdOrderByPositionAscIdAsc(productId).stream()
-                .filter(v -> v.getStatus() == VariantStatus.ACTIVE && v.getOwnerCustomerId() == null)
+                .filter(v -> v.getStatus() == VariantStatus.ACTIVE)
                 .toList();
         if (active.isEmpty()) {
             return List.of();
@@ -378,7 +390,7 @@ public class PrintConfigService implements PrintConfigs {
     public boolean designable(UUID templateId) {
         return templates.findById(templateId)
                 .flatMap(template -> variants.findById(template.getVariantId()))
-                .filter(variant -> variant.getStatus() == VariantStatus.ACTIVE && variant.getOwnerCustomerId() == null)
+                .filter(variant -> variant.getStatus() == VariantStatus.ACTIVE)
                 .flatMap(variant -> products.findById(variant.getProductId()))
                 .filter(product -> product.getKind() == ProductKind.CUSTOMIZABLE
                         && (product.getStatus() == ProductStatus.APPROVED || product.getStatus() == ProductStatus.PUBLISHED))
@@ -389,10 +401,10 @@ public class PrintConfigService implements PrintConfigs {
 
     private void describe(CustomizationTemplateJpaEntity template, Draft draft) {
         if (draft.name() == null || draft.name().isBlank() || draft.name().length() > 255) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID, "A template needs a name of at most 255 characters");
+            throw PrintConfigRules.invalid("name", "Size", "A template needs a name of at most 255 characters");
         }
         if (draft.model() == null) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID, "A template needs the product model");
+            throw PrintConfigRules.invalid("model", "NotNull", "A template needs the product model");
         }
         PrintConfigRules.Limits limits = PrintConfigRules.requireValid(draft.limits());
         template.describe(draft.name().trim(), limits.minDpi(), limits.colorMode(),
@@ -404,7 +416,7 @@ public class PrintConfigService implements PrintConfigs {
     /** The print areas of {@code draft}'s model, checked before anything is written. */
     private static List<PrintArea> computeAreas(Draft draft) {
         if (draft.model() == null) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID, "A template needs the product model");
+            throw PrintConfigRules.invalid("model", "NotNull", "A template needs the product model");
         }
         return PrintConfigRules.areas(draft.model(), draft.areaSpecs());
     }

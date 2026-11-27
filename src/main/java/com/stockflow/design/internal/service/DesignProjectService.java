@@ -1,5 +1,6 @@
 package com.stockflow.design.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
@@ -14,6 +15,7 @@ import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.domain.DesignWorkflow;
 import com.stockflow.design.internal.domain.ProjectEventType;
 import com.stockflow.design.internal.domain.ProjectStatus;
+import com.stockflow.design.internal.domain.QuoteRequestStatus;
 import com.stockflow.design.internal.entity.DesignDecisionJpaEntity;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
 import com.stockflow.design.internal.entity.DesignProjectEventJpaEntity;
@@ -23,12 +25,15 @@ import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
 import com.stockflow.design.internal.repository.DesignProjectAssetJpaRepository;
 import com.stockflow.design.internal.repository.DesignProjectEventJpaRepository;
 import com.stockflow.design.internal.repository.DesignProjectJpaRepository;
+import com.stockflow.design.internal.repository.DesignProjectQuoteRequestLineJpaRepository;
+import com.stockflow.design.internal.repository.DesignProjectQuoteRequestJpaRepository;
 import jakarta.persistence.EntityManager;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -39,12 +44,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * A customer's design projects (kltn-docs 12 §4.9, §5.4; BR-17, BR-22; B42): created, renamed and closed by their owner,
- * holding designs of that customer - at most {@value DesignProjectRules#MAX_DESIGNS}, archived ones not counted. A
- * design joins when it is started in the project, when its owner adds it, or when it is a revision of a design in an
- * open project; it leaves when its owner removes it, never while it waits for review. Joining or leaving changes
- * nothing else about the design.
+ * holding designs of that customer - at most {@value DesignProjectRules#MAX_DESIGNS}, archived ones not counted. Every
+ * new design is written into a project (BR-23.2, BR-23.3): one started in it, or a revision or a clone the caller
+ * puts in it or that follows its source there. An existing design joins when its owner adds it, from no project or
+ * moved from another open project of theirs. It never leaves for no project: a design is taken out of one only by
+ * moving it into another (BR-23.4). A design waiting for review, or named by an open quote request of its
+ * project, stays where it is. Joining or moving changes nothing else about the design.
  *
- * <p>Only the owner sees a project (BR-17); the Sales Manager and the sales staff see its name alone, on a review round
+ * <p>Only the owner sees a project (BR-17); the coordinator and the sales staff see its name alone, on a review round
  * and on a project quote request. Every write takes the project's row lock first, then a design's: the order a batch
  * locks them in.</p>
  */
@@ -54,16 +61,13 @@ public class DesignProjectService {
 
     private static final Set<ProjectStatus> LISTED = EnumSet.allOf(ProjectStatus.class);
 
-    /** Why a revision or a clone stands alone: the source's project is closed. */
-    public static final String NOT_JOINED_ARCHIVED = "PROJECT_ARCHIVED";
-    /** Why a revision or a clone stands alone: the source's project holds the most designs it may (B42). */
-    public static final String NOT_JOINED_FULL = "PROJECT_FULL";
-
     private final DesignProjectJpaRepository projects;
     private final DesignDraftJpaRepository drafts;
     private final DesignProjectAssetJpaRepository assets;
     private final DesignProjectEventJpaRepository history;
     private final DesignDecisionJpaRepository decisions;
+    private final DesignProjectQuoteRequestLineJpaRepository quoteRequestLines;
+    private final DesignProjectQuoteRequestJpaRepository quoteRequests;
     private final CustomerService customers;
     private final DraftViews views;
     private final EntityManager entityManager;
@@ -71,13 +75,17 @@ public class DesignProjectService {
 
     public DesignProjectService(DesignProjectJpaRepository projects, DesignDraftJpaRepository drafts,
                                 DesignProjectAssetJpaRepository assets, DesignProjectEventJpaRepository history,
-                                DesignDecisionJpaRepository decisions, CustomerService customers, DraftViews views,
-                                EntityManager entityManager, Clock clock) {
+                                DesignDecisionJpaRepository decisions,
+                                DesignProjectQuoteRequestLineJpaRepository quoteRequestLines,
+                                DesignProjectQuoteRequestJpaRepository quoteRequests, CustomerService customers,
+                                DraftViews views, EntityManager entityManager, Clock clock) {
         this.projects = projects;
         this.drafts = drafts;
         this.assets = assets;
         this.history = history;
         this.decisions = decisions;
+        this.quoteRequestLines = quoteRequestLines;
+        this.quoteRequests = quoteRequests;
         this.customers = customers;
         this.views = views;
         this.entityManager = entityManager;
@@ -141,6 +149,14 @@ public class DesignProjectService {
     /**
      * Closed for good (BR-22, B42), once none of its designs waits for review. The designs are locked first, so a
      * submission that committed before is seen; one submitted after is the design's own, used on its own.
+     *
+     * <p>An open quote request of the project (BR-25) stays open and goes on to its quote - so only once every design
+     * on it is approved: a line returned for changes could no longer be fixed or dropped in a closed project. Locked
+     * after the designs, as every writer of the request locks it (project, designs, request).</p>
+     *
+     * @throws BusinessException 409 {@code DESIGN_PROJECT_HAS_PENDING}; 409
+     *         {@code PROJECT_HAS_UNAPPROVED_QUOTE_REQUEST} with {@code details.requestId} and {@code details.designIds}
+     *         for an open request naming a design not approved
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#id")
     public ProjectView archive(UUID id, UUID actor, long version) {
@@ -153,41 +169,97 @@ public class DesignProjectService {
             throw new BusinessException(ErrorCode.DESIGN_PROJECT_HAS_PENDING,
                     "A design of this project waits for review; close the project once it is decided");
         }
+        requireOpenRequestApproved(id);
         project.archive(clock.instant());
         projects.saveAndFlush(project);
         record(project, actor, ProjectEventType.PROJECT_ARCHIVED, project.getName());
         return view(project);
     }
 
+    /** The project's open quote request, locked: every design on it approved, or the project does not close. */
+    private void requireOpenRequestApproved(UUID projectId) {
+        quoteRequests.findOpen(projectId).flatMap(found -> quoteRequests.lockById(found.getId())).ifPresent(request -> {
+            entityManager.refresh(request);
+            if (request.getStatus() != QuoteRequestStatus.OPEN) {
+                return;
+            }
+            List<String> waiting = quoteRequests.unapprovedDesigns(request.getId()).stream().map(UUID::toString)
+                    .toList();
+            if (!waiting.isEmpty()) {
+                throw new BusinessException(ErrorCode.PROJECT_HAS_UNAPPROVED_QUOTE_REQUEST, waiting.size()
+                        + " design(s) of the project's open quote request are not approved; drop them or close the "
+                        + "request first", List.of(), Map.of("requestId", request.getId().toString(),
+                        "designIds", waiting), "refusal.design.projectHasUnapprovedQuoteRequest", waiting.size());
+            }
+        });
+    }
+
     /**
-     * Adds one of the owner's designs (§4.9 step 28, BR-17): not archived, in no other project, of the project's
-     * customer. Adding a design already in it changes nothing.
+     * Adds one of the owner's designs, not archived, of the project's customer (§4.9 step 28, BR-17, BR-23.4): one in
+     * no project, or one moved here from another of the owner's projects. Adding a design already in it changes
+     * nothing.
+     *
+     * <p>A move takes the design out of work its project has under way, so the source must be open (a closed project
+     * keeps its designs as they were when it closed, BR-22), the design must not wait for review (its round is the
+     * source's) and no open quote request of the source may name it (the sales staff answer that request over the
+     * designs it names). Both projects are locked in ascending id order, so two moves in opposite directions cannot
+     * deadlock, and the design after them; the source's lock also orders the move against a quote request asked over
+     * that project, which takes the same lock first. The design's history records both steps, in the order they
+     * happen: {@code REMOVED_FROM_PROJECT} naming the source, then {@code ADDED_TO_PROJECT} naming this project.</p>
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#id")
     public ProjectView addDesign(UUID id, UUID actor, UUID designId) {
-        DesignProjectJpaEntity project = lockActive(id, actor);
+        authenticated(actor);
+        UUID from = drafts.projectIdOf(designId);
+        DesignProjectJpaEntity project;
+        DesignProjectJpaEntity source = null;
+        if (from == null || from.equals(id)) {
+            project = lock(id, actor);
+        } else if (id.compareTo(from) < 0) {
+            project = lock(id, actor);
+            source = lock(from, actor);
+        } else {
+            source = lock(from, actor);
+            project = lock(id, actor);
+        }
+        DesignProjectRules.requireActive(project.getStatus());
         DesignDraftJpaEntity draft = lockOwnDesign(designId, actor, project);
-        if (id.equals(draft.getProjectId())) {
+        if (!Objects.equals(from, draft.getProjectId())) {
+            // Read before the locks: the design changed project since, and the project now holding it is not locked.
+            throw new BusinessException(ErrorCode.CONFLICT, "The design moved to another project meanwhile; try again");
+        }
+        if (id.equals(from)) {
             return view(project);
         }
-        DesignProjectRules.requireJoinable(draft.getStatus(), draft.getProjectId());
-        join(project, draft, actor);
+        DesignProjectRules.requireJoinable(draft.getStatus(), from);
+        if (source != null) {
+            requireMovableOutOf(source, designId);
+        }
+        DesignProjectRules.requireRoomForDesign(drafts.countInProject(id));
+        draft.joinProject(id);
+        drafts.saveAndFlush(draft);
+        if (source != null) {
+            decide(draft, actor, DesignDecisionType.REMOVED_FROM_PROJECT, "Project " + from);
+        }
+        decide(draft, actor, DesignDecisionType.ADDED_TO_PROJECT, "Project " + id);
         return view(project);
     }
 
-    /** Removes a design from the project (§4.9 step 28): never one waiting for review (BR-17). */
-    @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#id")
-    public ProjectView removeDesign(UUID id, UUID actor, UUID designId) {
-        DesignProjectJpaEntity project = lockActive(id, actor);
-        DesignDraftJpaEntity draft = lockOwnDesign(designId, actor, project);
-        if (!id.equals(draft.getProjectId())) {
-            throw new BusinessException(ErrorCode.NOT_FOUND);
+    /**
+     * The project a design moves out of (BR-23.4): open, and asking no quote over the design (FE request 2026-11-25,
+     * point A). Each refusal names the source in {@code details.projectId}.
+     */
+    private void requireMovableOutOf(DesignProjectJpaEntity source, UUID designId) {
+        Map<String, Object> details = Map.of("projectId", source.getId());
+        if (source.getStatus() != ProjectStatus.ACTIVE) {
+            throw new BusinessException(ErrorCode.DESIGN_PROJECT_ARCHIVED,
+                    "The design's project is closed; its designs stay in it", List.of(), details);
         }
-        DesignProjectRules.requireNotPending(draft.getStatus());
-        draft.leaveProject();
-        drafts.saveAndFlush(draft);
-        decide(draft, actor, DesignDecisionType.REMOVED_FROM_PROJECT, "Project " + id);
-        return view(project);
+        if (quoteRequestLines.inOpenRequest(designId)) {
+            throw new BusinessException(ErrorCode.DESIGN_IN_OPEN_QUOTE_REQUEST,
+                    "An open quote request of the design's project names it; it stays there until that is answered",
+                    List.of(), details);
+        }
     }
 
     /** The project's history, the newest first, to its owner. */
@@ -200,42 +272,75 @@ public class DesignProjectService {
     }
 
     /**
-     * A design just started in the project (§4.1 step 3), in the caller's transaction: the project open, the owner's,
-     * of the design's customer, with room.
+     * The project a new design is started in (§4.1 step 3, BR-23.2), locked in the caller's transaction before the
+     * design is written: the owner's, of {@code customerId}, open and with room. Checked first so that a design is
+     * never left without a project because its project refused it after it was saved; and locked before the
+     * customer's draft limit is, the order every path that writes a new design into a project keeps.
      */
-    void joinOnStart(DesignDraftJpaEntity draft, UUID projectId, UUID actor) {
-        DesignProjectJpaEntity project = lockActive(projectId, actor);
-        if (!project.getCustomerId().equals(draft.getCustomerId())) {
+    DesignProjectJpaEntity lockForNewDesign(UUID projectId, UUID actor, UUID customerId) {
+        DesignProjectJpaEntity project = lock(projectId, actor);
+        if (!project.getCustomerId().equals(customerId)) {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
-        join(project, draft, actor);
+        DesignProjectRules.requireActive(project.getStatus());
+        DesignProjectRules.requireRoomForDesign(drafts.countInProject(projectId));
+        return project;
     }
 
     /**
-     * A revision joins the project of the design it revises while that project is open (§4.7, BR-22); a closed
-     * project takes it not, and it stands on its own. So it does when the project is full (B42): revising is never
-     * refused for the project's sake - the customer may move it in once a place is free. Whether the source is still in
-     * that project is read again under the project's lock, which removing a design takes too.
-     *
-     * <p>A clone of a design (FE request 2026-11-13 E-3) joins the same way. The answer says why the new design stands
-     * alone: {@link #NOT_JOINED_ARCHIVED} or {@link #NOT_JOINED_FULL}; {@code null} when it joined, or when the source
-     * has left the project meanwhile and there is no project to join.</p>
+     * Writes a new design into the project {@link #lockForNewDesign} locked for it: in it from its first version, so it
+     * is never, even within its own transaction, a design of no project, and its version starts at 0 as any new
+     * design's does.
      */
-    String joinRevision(DesignDraftJpaEntity revision, UUID sourceId, UUID sourceProjectId, UUID actor) {
-        DesignProjectJpaEntity project = projects.lockById(sourceProjectId)
+    void writeNew(DesignProjectJpaEntity project, DesignDraftJpaEntity draft, UUID actor) {
+        draft.joinProject(project.getId());
+        drafts.saveAndFlush(draft);
+        decide(draft, actor, DesignDecisionType.ADDED_TO_PROJECT, "Project " + project.getId());
+    }
+
+    /**
+     * The project a revision or a clone of {@code sourceId} is written into (§4.7, FE request 2026-11-13 E-3, BR-23.3),
+     * locked as {@link #lockForNewDesign} locks one - before the customer's draft limit and before anything is
+     * written: {@code requested} when the caller names one, any open project of theirs with room, the source's or
+     * another; otherwise the source's own while it is open and has room. A closed or full source project refuses the
+     * new design, naming itself in {@code details.projectId} so the studio can offer another. Nothing is written then:
+     * a new design never stands in no project, where B42 as first built let a revision or a clone stand alone when
+     * its source's project was closed or full.
+     *
+     * <p>Which project the source is in is read again under that project's lock, which moving a design takes too: a
+     * source moved meanwhile is a conflict to try again, rather than a second project locked out of order. A source in
+     * no project - a design started before every design had to be in one - has none to lend, so the caller names one.
+     * </p>
+     */
+    DesignProjectJpaEntity lockForCopy(UUID sourceId, UUID requested, UUID actor, UUID customerId) {
+        if (requested != null) {
+            return lockForNewDesign(requested, actor, customerId);
+        }
+        UUID sourceProject = drafts.projectIdOf(sourceId);
+        if (sourceProject == null) {
+            String message = "The design is in no project; projectId names the project to write the new design into";
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, message,
+                    List.of(new FieldError("projectId", message, "NotNull")));
+        }
+        DesignProjectJpaEntity project = projects.lockById(sourceProject)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        // The lock read may hand back a copy this transaction loaded before: read the row as it is now.
         entityManager.refresh(project);
-        if (!sourceProjectId.equals(drafts.projectIdOf(sourceId))) {
-            return null;
+        if (!sourceProject.equals(drafts.projectIdOf(sourceId))) {
+            throw new BusinessException(ErrorCode.CONFLICT, "The design moved to another project meanwhile; try again");
         }
+        Map<String, Object> details = Map.of("projectId", sourceProject);
         if (project.getStatus() != ProjectStatus.ACTIVE) {
-            return NOT_JOINED_ARCHIVED;
+            throw new BusinessException(ErrorCode.DESIGN_PROJECT_ARCHIVED,
+                    "The design's project is closed; name an open project to put the new design in", List.of(),
+                    details);
         }
-        if (drafts.countInProject(sourceProjectId) >= DesignProjectRules.MAX_DESIGNS) {
-            return NOT_JOINED_FULL;
+        if (drafts.countInProject(sourceProject) >= DesignProjectRules.MAX_DESIGNS) {
+            throw new BusinessException(ErrorCode.DESIGN_PROJECT_FULL, "The design's project holds at most "
+                    + DesignProjectRules.MAX_DESIGNS + " designs; name another project to put the new design in",
+                    List.of(), details);
         }
-        join(project, revision, actor);
-        return null;
+        return project;
     }
 
     /**
@@ -317,13 +422,6 @@ public class DesignProjectService {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
         return draft;
-    }
-
-    private void join(DesignProjectJpaEntity project, DesignDraftJpaEntity draft, UUID actor) {
-        DesignProjectRules.requireRoomForDesign(drafts.countInProject(project.getId()));
-        draft.joinProject(project.getId());
-        drafts.saveAndFlush(draft);
-        decide(draft, actor, DesignDecisionType.ADDED_TO_PROJECT, "Project " + project.getId());
     }
 
     private ProjectView view(DesignProjectJpaEntity p) {

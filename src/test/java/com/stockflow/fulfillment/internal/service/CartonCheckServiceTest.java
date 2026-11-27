@@ -1,7 +1,6 @@
 package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
@@ -50,6 +49,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -77,17 +77,32 @@ class CartonCheckServiceTest {
     private final LoadPlanReleases loadPlans = mock(LoadPlanReleases.class);
     private final PlanVehicles planVehicles = mock(PlanVehicles.class);
     private final CartonMeasures measures = new CartonMeasures(itemControls,
-            mock(com.stockflow.fulfillment.internal.repository.PickLineJpaRepository.class),
             mock(PackageJpaRepository.class), planMembers,
             mock(com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository.class), 6000);
+    /** Every carton asked about was received in this carton (they are all SKU-A here): the spec by LPN. */
+    private static org.mockito.stubbing.Answer<java.util.Map<String, CartonSpec>> everyLpn(CartonSpec spec) {
+        return call -> {
+            java.util.Map<String, CartonSpec> specs = new java.util.HashMap<>();
+            java.util.Collection<String> lpns = call.getArgument(0);
+            if (lpns != null) {   // null while Mockito re-stubs with any()
+                lpns.forEach(lpn -> specs.put(lpn, spec));
+            }
+            return specs;
+        };
+    }
+
     private final LabelledCartons labelledCartons = mock(LabelledCartons.class);
     private final com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines =
             mock(com.stockflow.fulfillment.internal.repository.PickLineJpaRepository.class);
     private final com.stockflow.order.api.OrderReservations orderReservations =
             mock(com.stockflow.order.api.OrderReservations.class);
+    private final PickLists pickLists = mock(PickLists.class);
+    private final ForeignCartonReports foreignCartons = mock(ForeignCartonReports.class);
+    private final PaymentDueReports paymentDueReports = mock(PaymentDueReports.class);
     private final CartonCheckService service = new CartonCheckService(picks, packs, mock(PackageJpaRepository.class),
             shipments, store, orders, measures, payments, identities, mock(WarehouseService.class), timeline,
-            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons, pickLines, orderReservations);
+            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons, pickLines, orderReservations,
+            pickLists, foreignCartons, paymentDueReports);
 
     private final UUID worker = UUID.randomUUID();
     private final UUID otherWorker = UUID.randomUUID();
@@ -111,7 +126,7 @@ class CartonCheckServiceTest {
 
     @BeforeEach
     void aPickedTaskWithTwoCartonsOfOneLine() {
-        pick = new PickJpaEntity(UUID.randomUUID(), null, orderId, "SO-0001", WAREHOUSE, PickStatus.PENDING);
+        pick = new PickJpaEntity(UUID.randomUUID(), orderId, "SO-0001", WAREHOUSE, PickStatus.PENDING);
         pick.assign(worker, NOW.minusSeconds(300));
         pick.start(worker, NOW.minusSeconds(240));
         pick.complete(worker, NOW.minusSeconds(120));
@@ -125,7 +140,7 @@ class CartonCheckServiceTest {
                 new CartonCheck.PickedCarton(UUID.randomUUID(), "LPN-1", lineId, "SKU-A", null, 10),
                 new CartonCheck.PickedCarton(secondPickLine, "LPN-2", lineId, "SKU-A", null, 10)));
         orderIs(order(OrderStatus.PICKING, BigDecimal.ZERO));
-        when(itemControls.cartonSpec(new Sku("SKU-A"))).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10,
+        when(itemControls.cartonSpecsOfLpns(any())).thenAnswer(everyLpn(new CartonSpec("SKU-A", "CARTON", 10,
                 new BigDecimal("60"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("12"), true)));
         when(payments.installmentStanding(any())).thenReturn(InstallmentStanding.none(orderId));
         when(shipments.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
@@ -173,7 +188,7 @@ class CartonCheckServiceTest {
         @Test
         @DisplayName("a label that fails (no carton spec size) locks nothing")
         void refusedLabelDoesNotLock() {
-            when(itemControls.cartonSpec(any())).thenReturn(Optional.empty());
+            when(itemControls.cartonSpecsOfLpns(any())).thenReturn(java.util.Map.of());
             started();
             service.check(pick.getId(), "LPN-1", actor);
 
@@ -230,6 +245,12 @@ class CartonCheckServiceTest {
             assertThat(done.paymentDue().amount()).isEqualByComparingTo("150000");
             assertThat(done.paymentDue().currency()).isEqualTo("VND");
             assertThat(done.shipmentId()).isNotNull();
+            // RTM-PAYNOTIFY: the warehouse managers and the order's Sales are told, once for this shipment
+            org.mockito.Mockito.verify(paymentDueReports).report(org.mockito.ArgumentMatchers.eq(orderId),
+                    any(), org.mockito.ArgumentMatchers.eq(done.shipmentId()), any(),
+                    org.mockito.ArgumentMatchers.eq(WAREHOUSE),
+                    org.mockito.ArgumentMatchers.argThat(a -> a.compareTo(new BigDecimal("150000")) == 0),
+                    org.mockito.ArgumentMatchers.eq("VND"), any());
         }
 
         @Test
@@ -256,6 +277,7 @@ class CartonCheckServiceTest {
 
             assertThat(done.paymentDue()).isNull();
             assertThat(done.shipmentId()).isNotNull();
+            org.mockito.Mockito.verifyNoInteractions(paymentDueReports);
         }
     }
 
@@ -375,6 +397,27 @@ class CartonCheckServiceTest {
             assertThat(check.carton("LPN-2").orElseThrow().status()).isEqualTo(PackageStatus.REMOVED);
             verify(orderReservations).cartonRemoved(orderId, hold);
         }
+
+        @Test
+        @DisplayName("WF4-BE3-HOLD: the order is held INVENTORY at the removal, as a short pick report holds it")
+        void theOrderIsHeldAtOnce() {
+            started();
+
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+
+            verify(pickLists).holdForRemovedCarton(pick.getId(), secondPickLine, actor);
+        }
+
+        @Test
+        @DisplayName("a repeated removal changes nothing: it does not hold an order whose hold was resolved since")
+        void aRepeatedRemovalDoesNotHoldAgain() {
+            started();
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+
+            verify(pickLists, times(1)).holdForRemovedCarton(pick.getId(), secondPickLine, actor);
+        }
     }
 
     @Nested
@@ -446,7 +489,7 @@ class CartonCheckServiceTest {
             service.complete(pick.getId(), PackingCompletion.whole(), actor);
             CartonCheck.Carton one = check.carton("LPN-1").orElseThrow();
             check.saved();   // the store wrote the cartons (mocked here)
-            when(itemControls.cartonSpec(new Sku("SKU-A"))).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10,
+            when(itemControls.cartonSpecsOfLpns(any())).thenAnswer(everyLpn(new CartonSpec("SKU-A", "CARTON", 10,
                     new BigDecimal("70"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("14"), true)));
 
             service.reprint(pick.getId(), "LPN-1", null, actor);
@@ -455,7 +498,7 @@ class CartonCheckServiceTest {
 
             when(planMembers.findByPackageIdInAndActiveTrue(List.of(one.id()))).thenReturn(List.of(
                     mock(com.stockflow.fulfillment.internal.entity.LoadPlanPackageJpaEntity.class)));
-            when(itemControls.cartonSpec(new Sku("SKU-A"))).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10,
+            when(itemControls.cartonSpecsOfLpns(any())).thenAnswer(everyLpn(new CartonSpec("SKU-A", "CARTON", 10,
                     new BigDecimal("80"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("15"), true)));
             service.reprint(pick.getId(), "LPN-1", null, actor);
             assertThat(one.lengthCm()).as("planned: frozen").isEqualByComparingTo("70");
@@ -484,7 +527,7 @@ class CartonCheckServiceTest {
         @Test
         @DisplayName("a task still being picked or staged is PACKING_NOT_READY")
         void notReady() {
-            PickJpaEntity staged = new PickJpaEntity(pick.getId(), null, orderId, "SO-0001", WAREHOUSE,
+            PickJpaEntity staged = new PickJpaEntity(pick.getId(), orderId, "SO-0001", WAREHOUSE,
                     PickStatus.STAGED);
             when(picks.lockById(pick.getId())).thenReturn(Optional.of(staged));
 
@@ -510,12 +553,24 @@ class CartonCheckServiceTest {
 
             assertThat(refusal(() -> service.check(pick.getId(), "LPN-OF-ANOTHER-ORDER", actor)).errorCode())
                     .isEqualTo(ErrorCode.CARTON_NOT_IN_TASK);
+            // WF4-LPN-FOREIGN: besides the refusal, the warehouse manager is told (through the reporter).
+            org.mockito.Mockito.verify(foreignCartons).report(pick, "LPN-OF-ANOTHER-ORDER", actor.userId(), NOW);
+        }
+
+        @Test
+        @DisplayName("a carton of the task, or another refusal, reports nothing to the manager")
+        void ownCartonReportsNothing() {
+            started();
+
+            service.check(pick.getId(), "LPN-1", actor);
+
+            org.mockito.Mockito.verifyNoInteractions(foreignCartons);
         }
 
         @Test
         @DisplayName("the session lists the SKUs whose carton spec has no size, so the screen can say why labelling stops")
         void sessionNamesUnmeasuredSkus() {
-            when(itemControls.cartonSpec(any())).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10, null,
+            when(itemControls.cartonSpecsOfLpns(any())).thenAnswer(everyLpn(new CartonSpec("SKU-A", "CARTON", 10, null,
                     null, null, null, true)));
 
             var session = service.start(pick.getId(), actor);

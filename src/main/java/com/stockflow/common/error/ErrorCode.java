@@ -44,6 +44,11 @@ public enum ErrorCode {
     PRODUCT_IN_USE("The product is referenced by stock, production orders, orders or designs", 409),
     PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
     CUSTOMER_PRICE_NOT_FOUND("This customer has no own price for the SKU", 404),
+    /** 13 BR-04 (2026-11-26): the variant has no standard price. */
+    STANDARD_PRICE_NOT_FOUND("This variant has no standard price", 404),
+    /** 13 BR-04, BR-05: a standard price is a catalogue variant's; a customer's own SKU has the customer's price. */
+    STANDARD_PRICE_VARIANT_REQUIRED("A standard price is set for a variant of the catalogue, not a customer's own SKU",
+            409),
     /** P7: a customer group (customer.segment) that does not exist. */
     SEGMENT_NOT_FOUND("Customer group not found", 404),
     MALFORMED_REQUEST("The request body could not be read", 400),
@@ -108,7 +113,6 @@ public enum ErrorCode {
     /** No such unit of measure on this SKU's inventory item (docs 01 UoM conversion). */
     UOM_CONVERSION_NOT_FOUND("No such unit of measure on this SKU", 404),
     /** No such sales unit on this variant (docs 01 BR-11). */
-    SALES_UNIT_NOT_FOUND("No such sales unit on this variant", 404),
 
     /** Credentials were correct but the account is LOCKED or DISABLED. Distinct from UNAUTHORIZED,
      *  which covers "wrong username or password" without revealing the account exists. */
@@ -174,13 +178,21 @@ public enum ErrorCode {
     CHAT_DESIGN_NOT_APPROVED("The design is not approved yet; a quote follows its approval", 409),
     /** The inventory item already has a unit with this code (its base unit included). */
     UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
+    /** 01 BR-03: one active carton per SKU ({@code uk_uom_conversions_one_carton}); the other is retired first. */
+    UOM_CARTON_ALREADY_DECLARED("This SKU already has a carton unit; retire it before declaring another", 409),
+    /**
+     * Owner decision Q1 (2026-11-26): a customer's own SKU is packed in its catalogue variant's carton and has none of
+     * its own; a carton write named by a customer's SKU's code would change every customer's carton of the variant
+     * ({@code UomConversionServiceImpl}; the database cannot tell, both resolve to the variant since V20270105000100).
+     */
+    UOM_CARTON_OF_CUSTOMER_SKU("A customer's own SKU is packed in its variant's carton; declare cartons on the variant",
+            409),
     /**
      * The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11); a unit
      * a document counts in keeps its factor and code and is not deleted (BR-10, V20261020000600).
      */
     UOM_CONVERSION_IN_USE("This unit of measure is the base unit, is still sold in, or is used by a document", 409),
     /** The variant already sells in this unit. */
-    SALES_UNIT_DUPLICATE("The variant already sells in this unit", 409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
     /** The destination already holds this SKU and lot in another status (stock of two statuses does not merge). */
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
@@ -227,8 +239,6 @@ public enum ErrorCode {
     RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
     /** Kltn-docs 03 BR-12: every unit received is in a carton; units outside one are not received. */
     RECEIPT_LINE_NOT_IN_CARTONS("Every unit of a receipt line must be in a carton", 422),
-    /** Kltn-docs 03 BR-13: a carton holds the SKU's standard count; one of another count is not received. */
-    RECEIPT_PACKAGE_NOT_STANDARD("A carton must hold the SKU's standard count", 422),
     /** SCRUM-92: no putaway task with this id. */
     PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
     /** SCRUM-92: the task has been put away completely; nothing is left to move. */
@@ -251,6 +261,11 @@ public enum ErrorCode {
      * no longer fits, or a bin holding more volume than it has. The details list the bins and cartons; move them first.
      */
     CARTONS_WOULD_NOT_FIT("This change would leave cartons that no longer fit where they stand", 409),
+    /**
+     * kltn-docs 06 BR-04: a bin, a shelf, an area or a warehouse is not made INACTIVE while cartons still stand there.
+     * The details give the count and list the first cartons; move them first. BLOCKED and MAINTENANCE stay allowed.
+     */
+    LOCATION_HOLDS_CARTONS("This place still holds cartons; move them first", 409),
     /** kltn-docs 05 BR-13: a carton goes to the OVERFLOW area only when no bin of its warehouse takes it. */
     PUTAWAY_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it away into a bin", 409),
     /** Kltn-docs 05 §4.5: no putaway trip with this id. */
@@ -297,6 +312,18 @@ public enum ErrorCode {
     /** 4B-3 (kltn-docs 14 BR-17): a SKU produced for the first time is sent with its plate fee. */
     QUOTE_PLATE_FEE_MISSING("A SKU on this quote is produced for the first time and has no plate fee; edit the quote",
             409),
+    /** QD4 (kltn-docs 14 BR-17): the plate is charged once; a SKU produced since the draft was edited has none. */
+    QUOTE_PLATE_FEE_REORDER("A SKU on this quote was produced before and still has a plate fee; edit the quote", 409),
+    /**
+     * 14 BR-10 (2026-11-26): a quote waiting for the Sales Manager to approve its prices is neither edited nor sent;
+     * Sales withdraws it first.
+     */
+    QUOTE_PRICE_REVIEW_PENDING("This quote is waiting for its prices to be approved; withdraw it to change it", 409),
+    /** 14 BR-10: there is no price approval waiting on this quote to approve, reject or withdraw. */
+    QUOTE_PRICE_REVIEW_NOT_PENDING("This quote is not waiting for its prices to be approved", 409),
+    /** 14 BR-10, as a product approval (01 §2): whoever sent a quote for approval does not approve or reject it. */
+    QUOTE_PRICE_REVIEW_SELF("The prices of a quote are approved by someone other than whoever sent it for approval",
+            403),
     /** 4B-4 (kltn-docs 14 §4.3): the order has no live sales contract, or no contract by that id. */
     SALES_CONTRACT_NOT_FOUND("No sales contract for this order", 404),
     /** 4B-4 (14 BR-12): one live contract per order. */
@@ -307,6 +334,18 @@ public enum ErrorCode {
     SALES_CONTRACT_ORDER_NOT_CARTONS("A sales contract schedules cartons of the customer's own SKUs; this order has lines not ordered in cartons", 409),
     /** 4B-4 (14 §5.2, BR-14): the contract's state machine. */
     SALES_CONTRACT_STATUS_INVALID("The sales contract is not in a status that allows this", 409),
+    /**
+     * 15 BR-11 (2026-11-26): a contract waiting for accounting to approve the customer's credit is neither edited nor
+     * sent; Sales withdraws it first.
+     */
+    CONTRACT_CREDIT_REVIEW_PENDING("This contract is waiting for accounting to approve the customer's credit; "
+            + "withdraw it to change it", 409),
+    /** 15 BR-11: there is no credit review waiting on this contract to approve, refuse or withdraw. */
+    CONTRACT_CREDIT_REVIEW_NOT_PENDING("This contract is not waiting for accounting to approve the customer's credit",
+            409),
+    /** 15 BR-11, four eyes: whoever sent a contract for the credit review does not decide it. */
+    CONTRACT_CREDIT_REVIEW_SELF("The credit of a contract is decided by someone other than whoever sent it for review",
+            403),
     /** 4B-4 (14 BR-23): batches, windows and cartons; the field errors name each rule broken. */
     DELIVERY_SCHEDULE_INVALID("The delivery schedule breaks a rule of the contract", 409),
     /** 4B-4 (14 BR-13): installments adding up to the total with tax; the field errors name each rule broken. */
@@ -327,6 +366,12 @@ public enum ErrorCode {
     PRODUCTION_ORDER_NOTHING_SHORT("The delivery batch lacks nothing to produce", 409),
     /** 4A-2: a line makes no more than its delivery batch lacks. */
     PRODUCTION_ORDER_EXCEEDS_SHORTAGE("A line makes more cartons than the delivery batch lacks", 409),
+    /** SCRUM-839 (17 §4.13, BR-31): a replacement names posted DAMAGED write-offs of the lot of the one it replaces. */
+    PRODUCTION_ORDER_WRITE_OFF_INVALID("Not a posted damaged write-off of a carton of the production order replaced", 409),
+    /** SCRUM-839 (17 BR-31): a write-off is made up by one live replacement production order. */
+    PRODUCTION_ORDER_WRITE_OFF_MADE_UP("The write-off is already made up by another replacement production order", 409),
+    /** SCRUM-839 (17 BR-31): a replacement makes no more cartons of a SKU than were written off. */
+    PRODUCTION_ORDER_EXCEEDS_WRITE_OFFS("A replacement production order makes more cartons than were written off", 409),
     /**
      * 4A-5 (kltn-docs 03 BR-01, BR-15): goods are received against a production order IN_PRODUCTION or
      * PARTIALLY_RECEIVED - or SENT / ACCEPTED when no print sample is to be approved first - and nothing else.
@@ -389,6 +434,8 @@ public enum ErrorCode {
      * handed over; the one named is not the next.
      */
     DELIVERY_BATCH_NOT_NEXT("This is not the order's next delivery batch to release", 409),
+    /** 4B-8 (17 BR-29): every delivery batch of the order is released already - there is nothing left to release. */
+    DELIVERY_BATCH_ALL_RELEASED("Every delivery batch of this order is released already", 409),
     /** 4B-8 (09 BR-04, 17 BR-29): a batch's goods leave from the first day of its delivery window. */
     DELIVERY_BATCH_WINDOW_NOT_OPEN("This delivery batch's window has not opened yet", 409),
     /** 4B-8 (17 BR-28): a window moves only while no carton of the batch was handed over. */
@@ -416,6 +463,12 @@ public enum ErrorCode {
     EINVOICE_NOT_DRAFT("Only a draft e-invoice can be changed", 409),
     /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code or address is missing, so the invoice is not issued. */
     EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code and address are needed before the invoice is issued", 409),
+    /**
+     * HĐ-8, kltn-docs 21 BR-06 and §4.2 step 4: the buyer has no e-mail to receive the invoice, so it is not issued until
+     * Sales records one on the customer and the accountant refreshes the buyer. Apart from the name, tax code and address
+     * because it is the business rule, not the law (legal review WF05-E0 L7: not invoice content), and the client tells
+     * the two apart.
+     */
     /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
     EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
     /**
@@ -427,10 +480,22 @@ public enum ErrorCode {
     /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
     EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
     /**
-     * WF-05 E2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same year dated earlier is still to be
-     * issued; issuing this one first would give it the lower number, and numbers would run against the dates.
+     * HĐ-1: the provider does not list this template code and symbol among the account's templates (SePay:
+     * {@code GET /v1/provider-accounts/{id}}, {@code templates}), so every invoice sent under it would be refused.
      */
-    EINVOICE_OLDER_DRAFT_PENDING("An invoice dated earlier is still to be issued; issue that one first, or void it", 409),
+    EINVOICE_SERIES_NOT_AT_PROVIDER("The e-invoice provider does not offer this template code and symbol on the account", 409),
+    /**
+     * WF-05 E2, HĐ-2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same provider and series dated
+     * earlier is at the provider and may already hold the next number; sending this one now could give it the lower
+     * number against the dates. A draft or a rejected invoice dated earlier no longer refuses anything. The name is
+     * older than the rule and kept: clients match on it.
+     */
+    EINVOICE_OLDER_DRAFT_PENDING("An invoice of the same series dated earlier is still at the provider; wait for its result, then issue this one", 409),
+    /**
+     * HĐ-7: a line of the invoice is at 0%, which here only the tax class EXEMPT (not subject to VAT, KCT) produces; an
+     * invoice at 0% would declare zero-rated goods instead, and no provider adapter can state KCT yet.
+     */
+    EINVOICE_TAX_EXEMPT_NOT_SUPPORTED("A line of the invoice is not subject to VAT (tax class EXEMPT), which cannot be issued yet; correct the product's tax class and draw the invoice up again", 409),
     /** WF-05 E2: the e-invoice is not issued, so it has no XML or PDF yet. */
     EINVOICE_NOT_ISSUED("The e-invoice is not issued yet", 409),
     /** WF-05 E2: the e-invoice provider is not configured, or did not answer; nothing is known about the transaction until it is asked again. */
@@ -439,12 +504,31 @@ public enum ErrorCode {
     EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE("The e-invoice provider's account is not stored yet", 409),
     /** WF-05 E3: an invoice at the provider is sent as a new transaction only when the provider no longer remembers the old one and confirms it holds no such invoice. */
     EINVOICE_RESUBMISSION_REFUSED("The e-invoice cannot be sent as a new transaction: the provider may hold it", 409),
+    /**
+     * HĐ-1: an invoice stuck at the provider is taken back (to REJECTED, reopenable) only when it has waited longer than
+     * the provider can still be working on it and the provider, asked now, has no record of it.
+     */
+    EINVOICE_WITHDRAWAL_REFUSED("The e-invoice cannot be taken back from the provider: it is too recent, or the provider may hold it", 409),
+    /**
+     * HĐ-1: an invoice whose last attempt was refused on the provider's processing report alone - its look-up never
+     * confirmed anything - is sent again under a new transaction only once the provider can no longer be working on
+     * the old one and, asked again, does not show it issued or in progress. Sent sooner, both could become invoices.
+     */
     /** WF-05 E3+E4: the provider in use writes every invoice as an original, so a correction sent to it would be a second invoice. */
     EINVOICE_PROVIDER_CANNOT_CORRECT("The e-invoice provider in use cannot issue adjustments or replacements yet; the correction is kept as a draft", 409),
+    /**
+     * HĐ-5: an adjustment or replacement goes through the provider that issued the invoice it corrects - only it knows
+     * that invoice - and that provider is no longer usable here (no implementation, no account, or no series in use for
+     * the year).
+     */
+    EINVOICE_ORIGINAL_PROVIDER_UNAVAILABLE("The provider that issued the original e-invoice is not usable any more; the correction is not sent to another provider", 409),
     /** WF-05 E4 (TT 91 Điều 10): only an issued invoice still in force is adjusted, replaced or notified as drawn up wrongly. */
     EINVOICE_NOT_IN_FORCE("Only an issued e-invoice that is still in force can be corrected", 409),
-    /** WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced again. */
-    EINVOICE_CORRECTION_FORM_FIXED("This e-invoice is already being corrected in the other form; the form first used is kept", 409),
+    /**
+     * WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced
+     * again. Q-9: an error on a replacement is corrected by a new replacement, never an adjustment.
+     */
+    EINVOICE_CORRECTION_FORM_FIXED("This e-invoice is already being corrected in the other form; the form first used is kept - an error on a replacement is corrected by a new replacement", 409),
     /** WF-05 E4: the correction asked for is not one the law gives for this invoice (an adjustment of an adjustment, a return that adds, an agreement where none is asked). */
     EINVOICE_CORRECTION_NOT_APPLICABLE("This correction does not apply to this e-invoice", 409),
     /** WF-05 E4 (TT 91 Điều 10 khoản 1 điểm b): the correction of an error is not sent without the written agreement with the buyer. */
@@ -455,8 +539,17 @@ public enum ErrorCode {
     EINVOICE_ERROR_NOTICE_NOT_FOUND("Notice of an e-invoice drawn up wrongly not found", 404),
     /** WF-05 E4: a notice of this invoice is still on its way, or the notice asked about is already answered. */
     EINVOICE_ERROR_NOTICE_NOT_SENDABLE("This notice cannot be recorded or sent now: another one of the invoice is still open, or it is already answered", 409),
-    /** 4B-4, WF-05 E2: stockflow.seller.* is blank in this deployment; no contract or invoice names a seller. */
-    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts and invoices cannot be drawn up", 503),
+    /**
+     * HĐ-6: the provider that issued the invoice has no call for a 04/SS-HĐĐT notice (SePay's API has none; Viettel's
+     * adapter sends none), so the notice is filed on the provider's or the tax authority's portal by hand, and nothing
+     * here records it as sent.
+     */
+    EINVOICE_ERROR_NOTICE_NOT_SUPPORTED("The e-invoice provider cannot send a notice of an invoice drawn up wrongly; file form 04/SS-HDDT on the provider's or the tax authority's portal", 409),
+    /**
+     * 4B-4, WF-05 E2, BE3-A: stockflow.seller.* is blank in this deployment; no quote PDF, contract or invoice names a
+     * seller.
+     */
+    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; quotes, contracts and invoices cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
      * of the customer's own SKUs - not a stock variant or a blank. Another customer's SKU answers VARIANT_NOT_FOUND.
@@ -493,12 +586,24 @@ public enum ErrorCode {
     RETURN_QUANTITY_EXCEEDED("More units than can still be returned from this order line", 409),
     /** One open return per order line: the open one is decided first. */
     RETURN_LINE_ALREADY_OPEN("This order line already has an open return", 409),
+    /**
+     * WF-05 TH-1: a return is against one delivered shipment; the order was delivered in several, and none was named.
+     */
+    RETURN_SHIPMENT_REQUIRED("Name the delivery the returned goods came on", 422),
+    /** WF-05 TH-1 (Luật Thương mại Điều 44): only goods of a shipment the customer received come back. */
+    RETURN_SHIPMENT_NOT_DELIVERED("This shipment has not been delivered; its goods cannot be returned", 409),
     /** BR-RMA-002: goods printed to the customer's design come back only when defective. */
     RETURN_CUSTOM_ITEM_NOT_DEFECTIVE("Custom-printed goods are returned only when defective", 409),
     /** SCRUM-243 (B2B plan 2026-10-06): returns are taken for defects and delivery faults, not a change of mind. */
     RETURN_REASON_NOT_ACCEPTED("Returns are accepted for defects and delivery faults only", 409),
     /** 03 §12: the return's status has no such step. */
     RETURN_INVALID_TRANSITION("This return cannot do that in its current status", 409),
+    /**
+     * WF-05 TH-3: a parcel of the return's goods is already in the warehouse, so the return is not withdrawn - that
+     * would leave those goods in quarantine with nothing refunded. Sales mark the goods complete instead.
+     */
+    RETURN_GOODS_PARTLY_RECEIVED("Some goods of this return are already back; it can no longer be withdrawn - mark "
+            + "its goods complete instead", 409),
     /** A defect is approved on evidence: at least one photo of the problem. */
     RETURN_EVIDENCE_REQUIRED("Add at least one photo of the problem before the return is approved", 409),
     RETURN_EVIDENCE_LIMIT_REACHED("This return has as many photos as it may hold", 409),
@@ -512,8 +617,9 @@ public enum ErrorCode {
     /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves. */
     RETURN_CUSTOMER_NOT_ACTIVE("The customer account is not active", 409),
     /**
-     * Team plan 4D-3 (kltn-docs 15 §4.5): a return is refunded against the order's installments; an order paid any
-     * other way (a checkout order of before contracts) has none, and its return is refunded outside the system.
+     * Team plan 4D-3 (kltn-docs 15 §4.5): a return is refunded against the order's installments. An order with none had
+     * nothing paid in the system and is refunded at 0 (WF-05 TH-2); this answers only a refund worth something that
+     * finds no installment to settle against - a defect, never the normal answer.
      */
     RETURN_REFUND_NO_INSTALLMENTS("This order is not paid through a contract's installments; refund it outside the "
             + "system", 409),
@@ -525,6 +631,12 @@ public enum ErrorCode {
     ORDER_NOT_ON_HOLD("This order is not on hold", 409),
     /** G3-2: a credit hold is decided through credit approval, not resolved like the others. */
     ORDER_CREDIT_HOLD_USE_APPROVAL("A credit hold is decided through credit approval", 409),
+    /** WF-05 GH-2: the order's completion is paused already; release that hold first. */
+    ORDER_COMPLETION_ALREADY_HELD("This order's completion is already paused", 409),
+    /** WF-05 GH-2: releasing a completion hold on an order whose completion is not paused. */
+    ORDER_COMPLETION_NOT_HELD("This order's completion is not paused", 409),
+    /** WF-05 GH-2: an order completed, closed, cancelled or refunded has no completion left to pause. */
+    ORDER_COMPLETION_HOLD_NOT_APPLICABLE("This order can no longer be completed, so there is nothing to pause", 409),
     /**
      * WF-05 fix plan, section 2: a hold for a failed delivery is lifted by deciding its delivery failure case - deliver
      * again, or cancel what was not delivered - not resolved with a note.
@@ -555,12 +667,16 @@ public enum ErrorCode {
     ORDER_SHIPMENT_QUANTITY_EXCEEDED("More than this order line has left to ship", 409),
     /** G3-2: a shipment outcome its status does not allow (kltn-docs 09 §5). */
     ORDER_SHIPMENT_INVALID_TRANSITION("This shipment cannot move to that status now", 409),
-    /** SCRUM-431, kltn-docs 15 §4.3 step 4: an overdue customer gets no new credit until they pay. */
-    CUSTOMER_CREDIT_OVERDUE("The customer has overdue receivables", 409),
     /** 4B-6: no installment with that id (for a customer: none of theirs). */
     INSTALLMENT_NOT_FOUND("Installment not found", 404),
     /** 4B-6, 15 BR-05: a paid or cancelled installment takes no more money. */
     INSTALLMENT_NOT_PAYABLE("This installment is paid or cancelled; it takes no more money", 409),
+    /**
+     * The assistant's payment reminder (work features 2.2): an installment with no due day yet, or due beyond the
+     * collections list's week, owes nothing to chase - a letter would ask the customer for money not owed yet.
+     */
+    INSTALLMENT_NOT_DUE_SOON("This installment is not due within the week; there is nothing to remind the customer "
+            + "of yet", 409),
     /** 4B-6, 15 BR-05: a receipt pays installments of its own customer only. */
     INSTALLMENT_CUSTOMER_MISMATCH("This installment belongs to another customer", 409),
     /**
@@ -581,6 +697,12 @@ public enum ErrorCode {
     /** 4B-6, 15 BR-13: the void leaves a confirmed order short of its installment on signing; the accountant agrees to hold it. */
     PAYMENT_RECEIPT_VOID_NEEDS_HOLD("Voiding this receipt leaves a confirmed order unpaid: confirm putting it on hold",
             409),
+    /** Credit plan 2026-11-26 part C: no transfer the bank feed reported with that id. */
+    BANK_TRANSACTION_NOT_FOUND("Bank transfer not found", 404),
+    /** Part C: only a transfer waiting for review is assigned or ignored; it was applied or ignored already. */
+    BANK_TRANSACTION_NOT_OPEN("This bank transfer was already dealt with", 409),
+    /** Part C, 15 BR-05: the installments a transfer is assigned to are paid no more than the transfer brought. */
+    BANK_TRANSACTION_OVER_ASSIGNED("The installments are assigned more than this transfer brought", 409),
     /** 4B-9, 15 BR-14: a refund recorded is never more than what the order still has to refund. */
     REFUND_EXCEEDS_REFUNDABLE("This refund is more than the order still has to refund", 409),
     /** 4B-9: no refund record with that id. */
@@ -589,10 +711,28 @@ public enum ErrorCode {
     REFUND_RECORD_ALREADY_VOIDED("This refund record is already voided", 409),
     /** 4B-9: one outgoing bank statement line, one live refund record. */
     REFUND_REFERENCE_IN_USE("This bank statement line is already recorded as a refund", 409),
+    /** QĐ-A (2026-11-26): no credit request with that id (for a customer: none of theirs). */
+    CREDIT_REQUEST_NOT_FOUND("Credit request not found", 404),
+    /** QĐ-A: one credit request is open per customer at a time. */
+    CREDIT_REQUEST_ALREADY_OPEN("This customer already has an open credit request", 409),
+    /** QĐ-A: the step does not fit the request's status (an opinion once given, a decision on one not waiting). */
+    CREDIT_REQUEST_INVALID_TRANSITION("This credit request cannot do that in its status", 409),
+    /** QĐ-A, 18 BR-02: whoever decides neither filed the request nor gave Sales' opinion on it. */
+    CREDIT_REQUEST_SELF_DECISION("A credit request is decided by someone other than whoever filed it or gave Sales' "
+            + "opinion", 409),
+    /** QĐ-A, plan §5 question 3: the limit granted is at most the one asked; a higher one is a new request. */
+    CREDIT_REQUEST_ABOVE_REQUESTED("The limit granted cannot be above the limit asked", 409),
+    /** QĐ-A: a credit request is withdrawn by whoever filed it. */
+    CREDIT_REQUEST_NOT_FILER("Only whoever filed this credit request may withdraw it", 403),
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
     ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
+    /**
+     * kltn-docs 17 §4.7 step 24, BR-16; 08 BR-04: the delivery address no longer changes - a carton of the order is
+     * labelled, or the order is in a status where only something else changes (a contract sent, packed and later).
+     */
+    ORDER_ADDRESS_LOCKED("The delivery address of this order can no longer change", 409),
     /** SCRUM-466: a task is picked in one warehouse; the order's stock is held in more than one, or elsewhere. */
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */
@@ -624,6 +764,11 @@ public enum ErrorCode {
     CYCLE_COUNT_LINE_COUNTED_BY_OTHER("This line was counted by someone else; only the assignee may count it again", 403),
     /** Submitting a count that still has uncounted lines. */
     CYCLE_COUNT_LINE_NOT_COUNTED("Some lines are not counted yet", 409),
+    /**
+     * A line stated found with an LPN that is not its carton's (kltn-docs 20 §4.2 b4): found means the line's own carton
+     * was scanned, as a pick line is confirmed only by its own LPN (07 BR-10).
+     */
+    CYCLE_COUNT_LPN_MISMATCH("The scanned carton is not this line's carton", 409),
     /** A slot already held by an open count. */
     CYCLE_COUNT_SLOT_BUSY("This stock slot is already on an open count", 409),
     /** A manual move out of or into a slot a cycle count holds (SCRUM-146). */
@@ -674,6 +819,11 @@ public enum ErrorCode {
     RETURN_CARTON_NOT_OF_SOURCE("This carton did not leave on the shipment or order the receipt is for", 409),
     /** Team plan 4D-2 (kltn-docs 03 §4.2 step 10): a carton still in the warehouse has not come back. */
     RETURN_CARTON_IN_WAREHOUSE("This carton is in the warehouse; it has not come back", 409),
+    /**
+     * WF-05 TH-4 (kltn-docs 20 BR-14): a carton that came back opened - fewer units in it than its label - is not whole,
+     * so it never goes back on sale; it is only written off.
+     */
+    RETURN_CARTON_OPENED("This carton came back opened; it can only be written off, not released", 409),
     /** Team plan 4C-3 (20 §4.3, BR-05): one adjustment of a carton waits for approval at a time. */
     STOCK_PACKAGE_ADJUSTMENT_PENDING("Another adjustment of this carton is waiting for approval", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
@@ -692,6 +842,8 @@ public enum ErrorCode {
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
+    /** kltn-docs 07 BR-12: a carton goes back into OVERFLOW only when no bin of its warehouse takes it. */
+    PUT_BACK_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it back onto a bin", 409),
     /**
      * Kltn-docs 11 BR-09, 20 BR-20 (team plan 4C-5): a staging area holds cartons picked for an order; stock enters it
      * only by picking, and leaves it only when the task moves to dispatch or by the put-back - never by hand.
@@ -704,6 +856,18 @@ public enum ErrorCode {
      * its cartons in the staging area; the task moves to dispatch once the hold is resolved.
      */
     PICK_ORDER_ON_HOLD("The order is on hold; its cartons stay in the staging area until the hold is resolved", 409),
+    /**
+     * Kltn-docs 07 §4.1 step 2, 17 §4.4 step 15: the part held of an order awaiting stock is picked to the staging area,
+     * or to dispatch only when Sales allowed the order to ship in parts.
+     */
+    PICK_AWAITING_STOCK_DESTINATION("An order awaiting stock is picked to the staging area, or to dispatch only when "
+            + "a partial shipment is allowed", 409),
+    /**
+     * Kltn-docs 07 §4.3 step 8: a staged task moves to dispatch once its order is ready to go - held in full, or allowed
+     * to ship in parts.
+     */
+    PICK_AWAITING_STOCK_NOT_READY("The order still awaits stock; its cartons stay in the staging area until the rest "
+            + "arrives or a partial shipment is allowed", 409),
     /** G4-5 (docs 08 step 1): packing starts once picking is complete. */
     PACKING_NOT_READY("Picking must finish before packing starts", 409),
     /** G4-5: another packer took this order at the packing table; a warehouse manager may step in. */
@@ -730,6 +894,12 @@ public enum ErrorCode {
     CARTON_SPEC_UNMEASURED("The SKU's carton spec has no size or weight: no shipping label can print", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
+    /** Docs 09 §4.3 step 2: the delivery time a manager records is when the carrier delivered, so never in the future. */
+    SHIPMENT_DELIVERY_TIME_IN_FUTURE("The delivery time cannot be in the future", 422),
+    /** Docs 09 §4.3 step 2: a shipment cannot be delivered before it was handed over to the carrier. */
+    SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER("The delivery time cannot be before the shipment was handed over", 422),
+    /** Docs 09 §4.3 step 3: a retried delivery comes after the failure it follows. */
+    SHIPMENT_DELIVERY_TIME_BEFORE_FAILURE("The delivery time cannot be before the failed delivery it follows", 422),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow
     /** G4-2a: a load (manifest) of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
     LOAD_NOT_FOUND("Load not found", 404),
@@ -751,6 +921,8 @@ public enum ErrorCode {
     LOAD_ESTIMATE_PACKAGING_MISSING("No line has an item with a size and weight to estimate its cartons", 422),
     LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE("This order cannot be estimated in its current status, or has nothing left to ship", 409),
     LOAD_ESTIMATE_SOURCE_UNSUPPORTED("This kind of source cannot be estimated yet", 400),
+    /** Docs 09 §4.0 step 1 (RTM-ESTWH, 18/11): an order is estimated only once its shipping warehouse is chosen. */
+    LOAD_ESTIMATE_WAREHOUSE_NOT_CHOSEN("Choose the order's shipping warehouse before estimating its load", 409),
     LOAD_ESTIMATE_TOO_MANY_CARTONS("The order has too many cartons to estimate at once", 422),
     VEHICLE_TYPE_INACTIVE("This vehicle type is no longer in use", 409),
     INVALID_LOAD_TRANSITION("The load cannot do that in its current status", 409),
@@ -758,6 +930,8 @@ public enum ErrorCode {
     /** A load plan of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
     LOAD_PLAN_NOT_FOUND("Load plan not found", 404),
     LOAD_PLAN_VEHICLE_NOT_FOUND("This vehicle is not in the load plan", 404),
+    /** Docs 09 §4.2 step 9: the shipment taken out of a plan has no parcel the plan holds. */
+    LOAD_PLAN_SHIPMENT_NOT_IN_PLAN("This shipment is not in the load plan", 404),
     /** Docs 09 §5: the plan's status does not allow the step. */
     INVALID_LOAD_PLAN_TRANSITION("The load plan cannot do that in its current status", 409),
     /** Docs 09 BR-09: a parcel belongs to at most one load plan that is not cancelled. */
@@ -824,6 +998,12 @@ public enum ErrorCode {
      */
     ORDER_DELIVERY_NOT_CORRECTABLE("This delivery can no longer be corrected", 409),
     /**
+     * WF-05 (gap after TH-1): a delivery with a return request against it, open or resolved, is not corrected to a
+     * failure - the customer claimed for goods they received, and the return's refund, quarantine and invoice
+     * adjustment all stand on that delivery.
+     */
+    ORDER_DELIVERY_HAS_RETURN("This delivery has a return request against it and cannot be corrected to a failure", 409),
+    /**
      * 4B-1 (18 BR-03, 14 BR-13): an instalment after delivery needs the customer's credit approved by accounting with a
      * limit above 0 - and that credit is not taken away while the default schedule still uses it.
      */
@@ -860,6 +1040,24 @@ public enum ErrorCode {
      */
     LOAD_PLAN_VEHICLE_SHARES_ORDER("This vehicle carries parcels of an order that also left on another "
             + "vehicle: it cannot be dropped from the plan", 409),
+    /** 09 §4.4 (RTM-WAYBILLFILE): a waybill file is attached to a load booked with a carrier, not cancelled. */
+    LOAD_NOT_BOOKED("This load has no carrier booked: a waybill file is attached once the vehicle is booked", 409),
+    /** 09 BR-16: a booked load changes carrier only through a cancelled booking (with its reason) and a new one. */
+    LOAD_CARRIER_CHANGE_NEEDS_CANCEL("This load is booked with another carrier: cancel that booking first", 409),
+    /**
+     * 09 §4.2 step 9, BR-09, BR-14: a shipment taken off a vehicle under a controlled cancel goes whole - one with
+     * parcels on another vehicle of the plan would be left half in it.
+     */
+    LOAD_REMOVAL_SPLITS_SHIPMENT("This shipment also has parcels on another vehicle of the plan: it cannot be taken "
+            + "off this one alone", 409),
+    /** 09 §4.2 step 9, BR-14: the vehicle recalculated for the parcels it keeps could not place every one of them. */
+    LOAD_PLAN_RELAYOUT_INCOMPLETE("The parcels left on this vehicle could not all be placed again", 409),
+    /**
+     * 09 edge "hoàn hàng khi còn Handed Over": the failure reason is corrected until the goods are received back and
+     * their delivery failure case is opened on it (the case keeps the reason it was opened with).
+     */
+    SHIPMENT_FAILURE_REASON_LOCKED("The returned goods were received and their case opened: the failure reason no "
+            + "longer changes", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),
@@ -882,6 +1080,13 @@ public enum ErrorCode {
     PRINT_CONFIG_SURFACES_INVALID("The 3D model's surfaces do not match the template's print areas", 422),
     /** A customer SKU is issued only from an ordinary ACTIVE variant of an approved or published product (B20). */
     CUSTOMER_SKU_SOURCE_UNAVAILABLE("This variant cannot have customer SKUs now", 409),
+    /** No customer's own SKU has this id ({@code product.customer_skus}, V20270105000100). */
+    CUSTOMER_SKU_NOT_FOUND("Customer SKU not found", 404),
+    /**
+     * A customer's SKU moves ACTIVE - BLOCKED - OBSOLETE ({@code CustomerSkuStatus}); OBSOLETE is final, and one goes on
+     * sale again only while its product is on sale and the variant it was drawn on is ACTIVE.
+     */
+    INVALID_CUSTOMER_SKU_TRANSITION("This customer SKU cannot move to that status right now", 409),
     /** A customer holds at most 50 drafts at once (kltn-docs 12 B37); deleting one makes room. */
     DESIGN_DRAFT_LIMIT_REACHED("You already have the most drafts allowed; delete one first", 409),
     /** Only a draft is renamed, laid out or deleted (kltn-docs 12 BR-07, BR-08, BR-16). */
@@ -893,15 +1098,28 @@ public enum ErrorCode {
     DESIGN_FILES_OUTDATED("Render the design's files again from its current layout", 409),
     /**
      * The print file of a design being approved is not what the press needs: not a PDF, or not one page per print
-     * area of the bleed box's size (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
+     * area (a bag: one page, its flat sheet) whose BleedBox is the bleed box's size and whose TrimBox, if declared, is
+     * the trim (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
      */
     DESIGN_PRINT_FILE_INVALID("The design's print file does not fit its template", 409),
     /** A design holds at most 100 images (Design Studio plan 2F-4). */
     DESIGN_ASSET_LIMIT_REACHED("This design already has the most images allowed", 409),
     /**
-     * A quote is asked on an approved design on its own; a draft asks with its submission (kltn-docs 12 §4.8).
+     * A quote is asked on an approved design on its own; a draft asks with its submission (kltn-docs 12 §4.8). Sales
+     * answer a quote request with a quote only once every design on it is approved and has its customer SKU (14 BR-22,
+     * 16 BR-11) - the chat's card answers that with its own {@code CHAT_DESIGN_NOT_APPROVED}.
      */
     DESIGN_NOT_APPROVED("This design is not approved", 409),
+    /**
+     * A quote request closed without a quote drawn from it (Sales settled it otherwise, or its design was deleted) is
+     * not quoted: the customer asks again. One closed by a quote answers that quote instead.
+     */
+    DESIGN_QUOTE_REQUEST_CLOSED("This quote request is closed", 409),
+    /**
+     * A project quote request a quote already answered takes no change (kltn-docs 12 BR-25): the quote is what Sales
+     * answered, so the customer asks a new request instead - answered from the open request, never the quoted one.
+     */
+    QUOTE_REQUEST_ALREADY_QUOTED("This quote request already has a quote", 409),
     /** A closed design project takes no design, batch or quote request; it never reopens (kltn-docs 12 BR-22, B42). */
     DESIGN_PROJECT_ARCHIVED("This design project is closed", 409),
     /** A design project holds at most 20 designs, archived ones not counted (kltn-docs 12 B42). */
@@ -910,10 +1128,24 @@ public enum ErrorCode {
     DESIGN_PROJECT_LIBRARY_FULL("This design project's library already has the most files allowed", 409),
     /** A design project closes only once none of its designs waits for review (kltn-docs 12 BR-22). */
     DESIGN_PROJECT_HAS_PENDING("A design of this project waits for review", 409),
-    /** A design belongs to one project at most (kltn-docs 12 BR-17). */
+    /**
+     * A design project closes with its open quote request only once every design on it is approved: the request goes
+     * on to its quote (kltn-docs 12 BR-22, 2026-11-25). A line waiting for review or returned for changes is dropped,
+     * or the request closed, first.
+     */
+    PROJECT_HAS_UNAPPROVED_QUOTE_REQUEST("The project's open quote request names a design not approved yet", 409),
+    /**
+     * A design belonged to one project at most and never moved (kltn-docs 12 BR-17). No longer thrown: a design moves
+     * between its owner's open projects (BR-23.4). Kept for the clients that know it.
+     */
     DESIGN_IN_ANOTHER_PROJECT("This design belongs to another project", 409),
-    /** A design waiting for review neither leaves its project nor moves to another (kltn-docs 12 BR-17). */
+    /** A design waiting for review does not move to another project (kltn-docs 12 BR-17, BR-23.4). */
     DESIGN_PENDING_IN_PROJECT("A design waiting for review stays in its project", 409),
+    /**
+     * A design an open quote request of its project names stays in that project until the sales staff answer the
+     * request (BR-23.4; FE request 2026-11-25, point A): the request asks over the project's designs.
+     */
+    DESIGN_IN_OPEN_QUOTE_REQUEST("An open quote request of its project names this design", 409),
     /**
      * A design is cloned only onto another ACTIVE variant of its own product (FE request 2026-11-13 E-3; BR-01, BR-02):
      * not onto its own variant, nor one of another product, nor one that cannot be designed on.
@@ -1024,6 +1256,120 @@ public enum ErrorCode {
      * did not pass, with its {@code issues} or the {@code roles} of files to render again.
      */
     DESIGN_BATCH_PREFLIGHT_FAILED("Some designs did not pass the print checks; none was submitted", 422),
+    /**
+     * An XLSX export over {@code XlsxTable.MAX_ROWS} rows on a sheet (2026-11-14 plan, BE2): refused rather than cut,
+     * since a file that silently stops at a limit reads as complete. The client narrows the filter.
+     */
+    EXPORT_TOO_LARGE("The export has too many rows; narrow the filter", 422),
+
+    // ---- WF-05 full fix (decisions of 2026-11-23): every refusal the six fix groups add, declared once here so no
+    // group edits this file or the message bundles. Each names the defect (BE-nn) and decision (Q-n) it serves.
+
+    /**
+     * BE-17, Q-12: a shipment's lost part is closed only for a DELIVERY_FAILED shipment whose failure reason is LOST
+     * and whose units the order still owes - not delivered, not brought back, not closed already.
+     */
+    ORDER_SHIPMENT_NOT_LOST_CLOSABLE("This shipment cannot be closed as lost: only a failed delivery the carrier "
+            + "reported lost, whose goods are still owed, is closed this way", 409),
+    /** BE-17, Q-12: closing a lost shipment needs the carrier's confirmation of the loss, as a file. */
+    ORDER_SHIPMENT_LOSS_EVIDENCE_REQUIRED("Attach the carrier's confirmation that the parcel is lost", 400),
+    /**
+     * BE-33, Q-20: a receipt paying an installment due on signing or before delivery is not voided once goods it let
+     * leave were handed over to a carrier - it is what let the vehicle go. A wrong receipt is corrected by an
+     * adjusting entry in the accounting software (Luật Kế toán Điều 27).
+     */
+    PAYMENT_RECEIPT_VOID_AFTER_HANDOVER("This receipt paid for goods that were already handed over to the carrier; it "
+            + "can no longer be voided - correct it with an adjusting entry", 409),
+    /**
+     * BE-07, Q-5: an e-invoice whose provider state is UNCONFIRMED is withdrawn only with the provider support's written
+     * answer (its ticket number or text) as evidence.
+     */
+    EINVOICE_WITHDRAWAL_EVIDENCE_REQUIRED("The provider's written answer is needed to withdraw this e-invoice: enter "
+            + "the support ticket number or its reply", 409),
+    /**
+     * BE-08, BE-10, Q-8: what the accountant entered from the provider's portal (number, symbol, date) does not match
+     * what the provider's look-up holds now.
+     */
+    EINVOICE_PORTAL_RECORD_MISMATCH("What was entered from the provider's portal does not match what the provider "
+            + "holds for this invoice", 409),
+    /** BE-08, BE-10, Q-8: an XML or PDF handed in from the provider's portal is not that invoice, or cannot be read. */
+    EINVOICE_PORTAL_FILE_INVALID("The file from the provider's portal is not this invoice's, or cannot be read", 422),
+    /**
+     * BE-10, Q-8: a reduction for a failed delivery is voided as unsendable only when it really cannot be sent - its
+     * provider unusable, unable to correct, or refusing it again and again.
+     */
+    EINVOICE_REVERSAL_STILL_SENDABLE("This reduction can still be issued through its provider; issue it instead of "
+            + "voiding it", 409),
+    /**
+     * BE-10, Q-8, Q-9: a reduction made on the provider's portal is recorded only for an invoice whose reduction cannot
+     * go through the system - its unsendable reduction voided, or a replacement the provider does not adjust.
+     */
+    EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE("A reduction made on the provider's portal is recorded only when the "
+            + "system cannot send it", 409),
+    /**
+     * BE-11: "reduce for the failed delivery" applies only to an issued invoice in force whose delivery is not
+     * delivered now and that is not reduced already.
+     */
+    EINVOICE_REVERSAL_NOT_APPLICABLE("This e-invoice's delivery is not failed, or the invoice is already reduced", 409),
+    /**
+     * BE-25: checked again at manual issue, the draft carries warnings the accountant has not acknowledged;
+     * {@code details.warnings} lists them.
+     */
+    EINVOICE_DRAFT_OUT_OF_DATE("The draft has new warnings since it was drawn up; review and acknowledge them, then "
+            + "issue it", 409),
+    /** Q-10, Q-1: a draft issued by hand after its delivery day is dated today and needs a reason. */
+    EINVOICE_LATE_ISSUE_REASON_REQUIRED("This invoice is issued after its delivery day; give the reason it is late",
+            400),
+    /**
+     * BE-09, Q-9: the provider does not adjust a replacement invoice (SePay: 422), and a return or a failed delivery is
+     * corrected by an adjustment (TT 91/2026 Điều 10 khoản 5 điểm c.1): the accountant does it outside the system and
+     * records it. An error on a replacement is still corrected by another replacement
+     * ({@link #EINVOICE_CORRECTION_FORM_FIXED}).
+     */
+    EINVOICE_REPLACEMENT_NOT_ADJUSTABLE("A replacement invoice cannot be adjusted through its provider; reduce it on "
+            + "the provider's portal and record the result", 409),
+    /**
+     * BE-54, Q-22 (BR-09): the provider's last known quota is zero, so nothing is sent; drafts stay DRAFT and the
+     * automatic issue resumes once invoices are bought.
+     */
+    EINVOICE_QUOTA_EXHAUSTED("The e-invoice plan has no invoices left; buy more on the provider's portal, then issue",
+            409),
+    /**
+     * BE-12, Q-4: a refund proposed at 0 while units are refundable - refused by policy - names its reason from the
+     * fixed list (CUSTOMER_DAMAGE, NOT_DEFECTIVE, OUT_OF_POLICY, OTHER).
+     */
+    RETURN_REFUSAL_REASON_REQUIRED("Give the reason nothing is refunded", 400),
+    /** BE-23, Q-11: goods are marked complete, or a return expires, only when no draft return receipt of it is open. */
+    RETURN_RECEIPT_DRAFT_OPEN("A return receipt of this return is still being counted; confirm or cancel it first", 409),
+    /**
+     * BE-22, Q-11: a return receipt takes only cartons of a SKU the return approved; other goods are kept in custody
+     * on the return request, not received into stock.
+     */
+    RETURN_CARTON_NOT_CLAIMED("This carton holds goods the return did not approve; record them in custody on the "
+            + "return request instead", 409),
+    /**
+     * Q-11 (audit round 3, RAD-3): goods kept in custody on a return leave only as the customer chose, and Sales have not
+     * recorded that choice yet.
+     */
+    RETURN_CUSTODY_CHOICE_REQUIRED("Sales have not recorded what the customer chose for these goods yet", 409),
+    /** BE-43, Q-18: loose units go no further than what the return approved and has not received yet. */
+    RETURN_LOOSE_EXCEEDS_APPROVED("More loose units than the return approved and has not received yet", 409),
+    /** BE-43, Q-18: loose units are recorded with a photo. */
+    RETURN_LOOSE_PHOTO_REQUIRED("Add a photo of the loose units", 400),
+    /**
+     * Q-18: a return receipt holding an opened carton or loose units is confirmed by a warehouse manager
+     * ({@code procurement-return-receipt-approvals:APPROVE}).
+     */
+    RETURN_RECEIPT_MANAGER_CONFIRMATION_REQUIRED("This receipt holds opened cartons or loose units; a warehouse "
+            + "manager confirms it", 403),
+    /** Q-18: such a receipt is confirmed by someone other than who counted it. */
+    RETURN_RECEIPT_SELF_CONFIRMATION("A return receipt is confirmed by someone other than who counted it", 409),
+    /**
+     * BE-18, Q-15: the portal decides per delivery - this one was already settled by a return; a further claim is
+     * Sales'.
+     */
+    RETURN_SHIPMENT_NOT_RETURNABLE("This delivery was already settled by a return; ask Sales to open a further claim",
+            409),
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),

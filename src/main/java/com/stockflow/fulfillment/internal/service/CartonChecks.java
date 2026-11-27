@@ -105,10 +105,14 @@ public interface CartonChecks {
      * @param cartonCount  the cartons the session holds, not removed
      * @param checkedCount of them, scanned (CHECKED or LABELED)
      * @param labeledCount of them, labelled
+     * @param taskNumber   the task's human number {@code PK-yyyyMMdd-nnnn}
+     * @param warehouseCode the code (prefix) of {@code warehouseId}; null only if the warehouse is unknown
+     * @param warehouseName the name of {@code warehouseId}; null only if the warehouse is unknown
      */
     record QueueRow(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId, String status, Instant pickedAt,
                     String pickerName, UUID startedBy, String startedByName, Instant startedAt, int cartonCount,
-                    int checkedCount, int labeledCount, int shipmentCount) { }
+                    int checkedCount, int labeledCount, int shipmentCount, String taskNumber, String warehouseCode,
+                    String warehouseName) { }
 
     /**
      * One order line at the station, in units and cartons.

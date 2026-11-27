@@ -22,4 +22,11 @@ class WarehouseDirectoryAdapter implements WarehouseDirectory {
     public Optional<String> prefixOf(UUID warehouseId) {
         return warehouses.findWarehouse(warehouseId).map(WarehouseView::prefix);
     }
+
+    @Override
+    public java.util.Map<String, UUID> warehousesOf(java.util.Collection<String> locationCodes) {
+        java.util.Map<String, UUID> warehouseOf = new java.util.HashMap<>();
+        warehouses.findLocations(locationCodes).forEach(l -> warehouseOf.put(l.locationCode(), l.warehouseId()));
+        return warehouseOf;
+    }
 }

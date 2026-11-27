@@ -28,6 +28,17 @@ public interface StockAdjustmentQueries {
      * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for a sort the screen does not
      *         allow
      */
+    default PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
+                                                            int page, int size, String sort) {
+        return adjustments(status, sku, location, null, page, size, sort);
+    }
+
+    /**
+     * As above, kept to one warehouse: the adjustments of the locations whose code starts with its prefix (06 BR-13),
+     * for the assistant's work queue narrowed to the warehouse a manager runs a shift at.
+     *
+     * @param warehousePrefix the warehouse's code prefix; null for every warehouse the caller may see
+     */
     PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
-                                                    int page, int size, String sort);
+                                                    String warehousePrefix, int page, int size, String sort);
 }

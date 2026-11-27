@@ -95,6 +95,10 @@ public final class StorageKeys {
      * stored - which the key carries ({@link #extensionFor} of the type the bytes were checked against). The uploader
      * chooses the name, not what opens it: a JPEG named {@code invoice.pdf} whose bytes also parse as a PDF would
      * otherwise reach the accountant's PDF reader without ever having been checked as a PDF. Null for a blank name.
+     *
+     * <p>A key stored before its type had an extension here (a 3D model saved before {@code .glb} was listed, FE
+     * request 2026-11-17 N-1) carries none; when its category accepts exactly one type, the bytes were checked as that
+     * type, so its extension is used - the file is not renamed in storage.</p>
      */
     static String downloadName(String originalName, String key) {
         if (originalName == null || originalName.isBlank()) {
@@ -102,7 +106,7 @@ public final class StorageKeys {
         }
         String leaf = key.substring(key.lastIndexOf('/') + 1);
         int keyDot = leaf.lastIndexOf('.');
-        String extension = keyDot < 0 ? "" : leaf.substring(keyDot).toLowerCase(Locale.ROOT);
+        String extension = keyDot < 0 ? soleTypeExtension(key) : leaf.substring(keyDot).toLowerCase(Locale.ROOT);
         String base = originalName.strip();
         base = base.substring(Math.max(base.lastIndexOf('/'), base.lastIndexOf('\\')) + 1);
         // Only what looks like an extension goes - "scan.PNG", "x.docm" - not the end of "Báo giá v1.2".
@@ -122,6 +126,17 @@ public final class StorageKeys {
         return base + extension;
     }
 
+    /** The extension of the only type the key's category accepts, or empty when it accepts several or none. */
+    private static String soleTypeExtension(String key) {
+        String prefix = key.substring(0, Math.max(0, key.indexOf('/')));
+        for (FileCategory category : FileCategory.values()) {
+            if (category.prefix().equals(prefix) && category.allowedContentTypes().size() == 1) {
+                return extensionFor(category.allowedContentTypes().iterator().next());
+            }
+        }
+        return "";
+    }
+
     /** Extension including the dot, or empty when the type has no obvious one. */
     static String extensionFor(String contentType) {
         return switch (ContentTypePolicy.normalise(contentType)) {
@@ -137,6 +152,7 @@ public final class StorageKeys {
             case "text/plain" -> ".txt";
             case "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> ".docx";
             case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" -> ".xlsx";
+            case "model/gltf-binary" -> ".glb";
             default -> "";
         };
     }

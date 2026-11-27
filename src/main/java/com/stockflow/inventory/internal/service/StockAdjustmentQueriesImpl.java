@@ -31,8 +31,8 @@ class StockAdjustmentQueriesImpl implements StockAdjustmentQueries {
 
     @Override
     public PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
-                                                           int page, int size, String sort) {
-        return operations.adjustments(status, sku, location, page, size, sort,
+                                                           String warehousePrefix, int page, int size, String sort) {
+        return operations.adjustments(status, sku, location, warehousePrefix, page, size, sort,
                 BookVisibility.of(currentUsers.current()));
     }
 }

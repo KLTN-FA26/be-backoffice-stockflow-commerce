@@ -3,7 +3,6 @@ package com.stockflow.inventory.internal.domain;
 import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionDraft;
 
 import java.math.BigDecimal;
@@ -28,40 +27,12 @@ public final class UomConversionRules {
         }
         // BR-09: "hệ số phải là số nguyên dương".
         if (d.factor() < 1) {
-            throw invalid("factor", "factor must be a positive whole number of base units");
+            throw invalid("factor", "factor must be a positive whole number of pieces");
         }
         positive(d.weightKg(), "weightKg");
         positive(d.lengthCm(), "lengthCm");
         positive(d.widthCm(), "widthCm");
         positive(d.heightCm(), "heightCm");
-        retiredIsNotDefault(d);
-        retiredIsNotDefaultShipping(d);
-    }
-
-    /**
-     * The base unit: only its default purchase mark is edited here, and it can never be retired. Its code,
-     * factor, size and weight in the draft are ignored: they are the item's logistics, edited there.
-     */
-    public static void validateBase(UomConversion current, UomConversionDraft d) {
-        if (!d.active()) {
-            throw new BusinessException(ErrorCode.UOM_CONVERSION_IN_USE, "The base unit cannot be retired");
-        }
-        if (!d.defaultPurchase() && current.defaultPurchase()) {
-            throw invalid("defaultPurchase",
-                    "The base unit stays the default purchase unit until another unit is marked");
-        }
-    }
-
-    private static void retiredIsNotDefaultShipping(UomConversionDraft d) {
-        if (!d.active() && d.defaultShipping()) {
-            throw invalid("defaultShipping", "A retired unit cannot be the default shipping unit");
-        }
-    }
-
-    private static void retiredIsNotDefault(UomConversionDraft d) {
-        if (!d.active() && d.defaultPurchase()) {
-            throw invalid("defaultPurchase", "A retired unit cannot be the default purchase unit");
-        }
     }
 
     private static void positive(BigDecimal value, String field) {

@@ -31,13 +31,24 @@ import java.util.UUID;
  * from a half-written list (14 BR-03).</p>
  *
  * <p>4B-2 (kltn-docs 13 BR-02, BR-05, BR-06): a price is set for one of the customer's own SKUs, its tiers starting at a
- * number of cartons and pricing one piece. A price set before on a stock variant is kept, counted in units
- * ({@link PriceView#measure()} {@code UNIT}); no order is priced from it since checkout went (team plan 5-2): it can be
- * read and deleted, not set again. {@code tg_customer_price_own_sku} holds the same rule for a new row.</p>
+ * number of cartons and pricing one piece. {@code tg_customer_price_own_sku} holds the same rule for a new row, and
+ * since V20270105000100 {@code catalog.customer_price.sku} is a foreign key to {@code product.customer_skus}: a price on
+ * a catalogue variant (the {@code UNIT} measure of before 4B-2) cannot exist any more, so every price reads
+ * {@code CARTON}; the measure stays in the view for the screens that show it.</p>
+ *
+ * <p>Every change is audited with what changed (13 §4.2 step 3; BE3-B): the entry is under the customer, and its details
+ * name the SKU and, for a price set or replaced, its new tiers ("from 5: 10500" - from 5 cartons, 10 500 VND a piece),
+ * so the System Admin's audit log reads which price became what without a second table of old prices.</p>
  */
 @Service
 @Transactional
 public class CustomerPriceService {
+
+    /** The audited SKU: upper-cased and stripped as {@link #sku} keeps it, so one SKU reads one way in the log. */
+    private static final String AUDITED_SKU = "sku: #sku?.strip()?.toUpperCase(T(java.util.Locale).ROOT)";
+    /** The audited tiers, one string each: "from 5: 10500" - from 5 cartons on, 10 500 VND a piece. */
+    private static final String AUDITED_TIERS = "tiers: (#tiers == null ? null "
+            + ": #tiers.!['from ' + minQuantity() + ': ' + unitPrice()?.toPlainString()])";
 
     private final CustomerPriceRepository prices;
     private final PriceResolver resolver;
@@ -63,8 +74,8 @@ public class CustomerPriceService {
     /**
      * A customer's own price as stored; {@code moq} is its first tier.
      *
-     * @param measure what the tiers count: {@code CARTON} for the customer's own SKU; {@code UNIT} for a price set on
-     *                a stock variant before 4B-2, kept to read and delete
+     * @param measure what the tiers count: {@code CARTON} for the customer's own SKU; {@code UNIT} only for a price
+     *                whose SKU is not the customer's, which V20270105000100 and the foreign key no longer allow
      */
     public record PriceView(UUID customerId, String sku, String measure, int moq, List<TierInput> tiers, String note,
                             long version) {
@@ -95,7 +106,8 @@ public class CustomerPriceService {
      *         included), {@code CUSTOMER_SKU_REQUIRED} for a SKU that is not the customer's own, {@code CONFLICT}
      *         when the customer already has one (replace it instead), {@code VALIDATION_FAILED}
      */
-    @Auditable(action = AuditAction.CREATE, resourceType = "customer-price", resourceId = "#customerId")
+    @Auditable(action = AuditAction.CREATE, resourceType = "customer-price", resourceId = "#customerId",
+            details = "{" + AUDITED_SKU + ", " + AUDITED_TIERS + "}")
     public PriceView create(UUID customerId, String sku, List<TierInput> tiers, String note) {
         String code = prepare(customerId, sku);
         requireOwnSku(customerId, code);
@@ -114,7 +126,8 @@ public class CustomerPriceService {
      * @throws BusinessException {@code CUSTOMER_PRICE_NOT_FOUND}, {@code CUSTOMER_SKU_REQUIRED} for a price on a stock
      *         variant (kept to read and delete, not set again), {@code OPTIMISTIC_LOCK}, {@code VALIDATION_FAILED}
      */
-    @Auditable(action = AuditAction.UPDATE, resourceType = "customer-price", resourceId = "#customerId")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "customer-price", resourceId = "#customerId",
+            details = "{" + AUDITED_SKU + ", " + AUDITED_TIERS + ", version: #expectedVersion}")
     public PriceView replace(UUID customerId, String sku, List<TierInput> tiers, String note,
                              long expectedVersion) {
         String code = prepare(customerId, sku);
@@ -126,10 +139,12 @@ public class CustomerPriceService {
     }
 
     /**
-     * The SKU no longer has a price of this customer's own - and there is no other (kltn-docs 13 BR-04): Sales enters
-     * the tiers on the next quote by hand (13 §4.2 step 5); quotes already sent keep theirs.
+     * The SKU no longer has a price of this customer's own: the next quote of it starts from the standard price of its
+     * variant, or unpriced when there is none (13 BR-04 as changed on 2026-11-26, §4.2 step 5); quotes already sent keep
+     * theirs.
      */
-    @Auditable(action = AuditAction.DELETE, resourceType = "customer-price", resourceId = "#customerId")
+    @Auditable(action = AuditAction.DELETE, resourceType = "customer-price", resourceId = "#customerId",
+            details = "{" + AUDITED_SKU + ", version: #expectedVersion}")
     public void delete(UUID customerId, String sku, long expectedVersion) {
         String code = prepare(customerId, sku);
         CustomerPrice price = prices.findForUpdate(customerId, code)
@@ -169,12 +184,16 @@ public class CustomerPriceService {
     private String prepare(UUID customerId, String sku) {
         resolver.customer(customerId);
         String code = sku(sku);
-        if (products.nameForSku(code).isEmpty()) throw new BusinessException(ErrorCode.VARIANT_NOT_FOUND);
+        // A customer's SKU is its own table since V20270105000100: known either as one of those or as a catalogue
+        // variant (which a price is then refused for, CUSTOMER_SKU_REQUIRED), else not at all.
+        if (customerSkus.ownerOf(code).isEmpty() && products.nameForSku(code).isEmpty()) {
+            throw new BusinessException(ErrorCode.VARIANT_NOT_FOUND);
+        }
         listings.publishedProductForSku(code).ifPresent(publication::lock);
         return code;
     }
 
-    /** The shape of {@code product.variants.sku} (ck_variants_sku), upper-cased like the storefront does. */
+    /** The shape of a SKU (ck_variants_sku, ck_customer_skus_sku), upper-cased like the storefront does. */
     private static final java.util.regex.Pattern SKU = java.util.regex.Pattern.compile("[A-Z0-9][A-Z0-9._-]{0,63}");
 
     private static String sku(String raw) {

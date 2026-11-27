@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.order.internal.domain.ProductionOrderKind;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -8,7 +9,6 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.UUID;
@@ -55,12 +55,6 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "sample_waiver_reason", length = 500)
     private String sampleWaiverReason;
 
-    @Column(name = "unit_price", precision = 19, scale = 4)
-    private BigDecimal unitPrice;
-
-    @Column(name = "currency", nullable = false, updatable = false, length = 3)
-    private String currency;
-
     @Column(name = "note", length = 500)
     private String note;
 
@@ -81,6 +75,14 @@ public class ProductionOrderJpaEntity extends BaseEntity {
 
     @Column(name = "sent_at")
     private Instant sentAt;
+
+    /** Who sent it to its producer (17 §4.3 step 7): the coordinator; before 2026-11-20, the approver. */
+    @Column(name = "sent_by")
+    private UUID sentBy;
+
+    /** 17 §4.3 step 8: what the coordinator kept with the producer's acceptance; written once, with it. */
+    @Column(name = "acceptance_note", length = 500)
+    private String acceptanceNote;
 
     @Column(name = "production_started_at")
     private Instant productionStartedAt;
@@ -107,40 +109,54 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     @Column(name = "closing_reason", length = 500)
     private String closingReason;
 
+    /** SCRUM-839 (17 §4.13): STANDARD, or a REPLACEMENT of damaged cartons; written once. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "kind", nullable = false, updatable = false, length = 16)
+    private ProductionOrderKind kind = ProductionOrderKind.STANDARD;
+
+    /** The production order a REPLACEMENT makes up the damaged cartons of (17 BR-31); written once. */
+    @Column(name = "replaces_production_order_id", updatable = false)
+    private UUID replacesProductionOrderId;
+
     protected ProductionOrderJpaEntity() {
     }
 
     public ProductionOrderJpaEntity(UUID id, String code, UUID salesOrderId, UUID deliveryBatchId, UUID customerId,
-                                    boolean sampleRequiredByDefault, String currency, UUID drawnUpBy) {
+                                    boolean sampleRequiredByDefault, UUID drawnUpBy) {
         super(id);
         this.code = code;
         this.salesOrderId = salesOrderId;
         this.deliveryBatchId = deliveryBatchId;
         this.customerId = customerId;
         this.sampleRequiredByDefault = sampleRequiredByDefault;
-        this.currency = currency;
         this.drawnUpBy = drawnUpBy;
+    }
+
+    /** A new REPLACEMENT of the damaged cartons of production order {@code replacesProductionOrderId} (17 BR-31). */
+    public void replacing(UUID replacesProductionOrderId) {
+        this.kind = ProductionOrderKind.REPLACEMENT;
+        this.replacesProductionOrderId = replacesProductionOrderId;
     }
 
     /** Everything that moves after it was drawn up. */
     public void apply(UUID producerId, UUID receivingWarehouseId, LocalDate needByDate, ProductionOrderStatus status,
-                      boolean sampleApprovalRequired, String sampleWaiverReason, BigDecimal unitPrice, String note,
+                      boolean sampleApprovalRequired, String sampleWaiverReason, String note,
                       Instant submittedAt, UUID approvedBy, Instant approvedAt, String returnedReason, Instant sentAt,
-                      Instant productionStartedAt, UUID cancelledBy, Instant cancelledAt, String cancellationReason,
-                      UUID closedBy, Instant closedAt, String closingReason) {
+                      UUID sentBy, Instant productionStartedAt, UUID cancelledBy, Instant cancelledAt,
+                      String cancellationReason, UUID closedBy, Instant closedAt, String closingReason) {
         this.producerId = producerId;
         this.receivingWarehouseId = receivingWarehouseId;
         this.needByDate = needByDate;
         this.status = status;
         this.sampleApprovalRequired = sampleApprovalRequired;
         this.sampleWaiverReason = sampleWaiverReason;
-        this.unitPrice = unitPrice;
         this.note = note;
         this.submittedAt = submittedAt;
         this.approvedBy = approvedBy;
         this.approvedAt = approvedAt;
         this.returnedReason = returnedReason;
         this.sentAt = sentAt;
+        this.sentBy = sentBy;
         this.productionStartedAt = productionStartedAt;
         this.cancelledBy = cancelledBy;
         this.cancelledAt = cancelledAt;
@@ -151,8 +167,9 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     }
 
     /** Set beside {@link #apply}: the producer's day moves on its own, after the rest is settled. */
-    public void expectCompletion(LocalDate expectedCompletionDate) {
+    public void expectCompletion(LocalDate expectedCompletionDate, String acceptanceNote) {
         this.expectedCompletionDate = expectedCompletionDate;
+        this.acceptanceNote = acceptanceNote;
     }
 
     public String getCode() { return code; }
@@ -166,8 +183,6 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public boolean isSampleApprovalRequired() { return sampleApprovalRequired; }
     public boolean isSampleRequiredByDefault() { return sampleRequiredByDefault; }
     public String getSampleWaiverReason() { return sampleWaiverReason; }
-    public BigDecimal getUnitPrice() { return unitPrice; }
-    public String getCurrency() { return currency; }
     public String getNote() { return note; }
     public UUID getDrawnUpBy() { return drawnUpBy; }
     public Instant getSubmittedAt() { return submittedAt; }
@@ -175,12 +190,17 @@ public class ProductionOrderJpaEntity extends BaseEntity {
     public Instant getApprovedAt() { return approvedAt; }
     public String getReturnedReason() { return returnedReason; }
     public Instant getSentAt() { return sentAt; }
+    public UUID getSentBy() { return sentBy; }
     public Instant getProductionStartedAt() { return productionStartedAt; }
     public LocalDate getExpectedCompletionDate() { return expectedCompletionDate; }
+
+    public String getAcceptanceNote() { return acceptanceNote; }
     public UUID getCancelledBy() { return cancelledBy; }
     public Instant getCancelledAt() { return cancelledAt; }
     public String getCancellationReason() { return cancellationReason; }
     public UUID getClosedBy() { return closedBy; }
     public Instant getClosedAt() { return closedAt; }
     public String getClosingReason() { return closingReason; }
+    public ProductionOrderKind getKind() { return kind; }
+    public UUID getReplacesProductionOrderId() { return replacesProductionOrderId; }
 }

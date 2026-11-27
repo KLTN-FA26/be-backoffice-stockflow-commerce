@@ -77,7 +77,7 @@ class AssistantMcpTokenIntegrationTest {
         http = new SecuredMvc(mockMvc, decoder);
         // As the real decoder: a personal token is not a JWT.
         when(decoder.decode(startsWith("sfmcp_"))).thenThrow(new BadJwtException("Malformed token"));
-        // Opt-in (V20261125001100): the roles these cases sign in with, as an administrator would grant them.
+        // Opt-in (V20270106001100): the roles these cases sign in with, as an administrator would grant them.
         RoleGrants.grant(jdbc, tx, "assistant-mcp:CREATE", "SYSTEM_ADMIN", "SALES_STAFF", "WAREHOUSE_STAFF");
         // One whole carton of 10 at an HCM bin: stock is LPN cartons only since the rescope.
         AssistantStock stock = new AssistantStock(jdbc, tx, entityManager);

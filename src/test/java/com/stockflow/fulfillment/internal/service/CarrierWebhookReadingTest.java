@@ -170,6 +170,25 @@ class CarrierWebhookReadingTest {
         }
 
         @Test
+        @DisplayName("09B G7: a delivery's proof of delivery as an https address; ignored with another type; refused "
+                + "when not https, not an address, or longer than any file host gives")
+        void proofOfDelivery() throws Exception {
+            String head = "{\"loadCode\":\"LD-1\",\"reportedAt\":\"2026-11-20T08:00:00Z\",";
+            assertThat(LoadWebhookReader.read(json(head + "\"type\":\"DELIVERED\",\"podUrl\":"
+                    + "\" https://files.example.com/pod/1.pdf \"}")).podUrl())
+                    .isEqualTo("https://files.example.com/pod/1.pdf");
+            assertThat(LoadWebhookReader.read(json(head + "\"type\":\"DELIVERED\"}")).podUrl()).isNull();
+            assertThat(LoadWebhookReader.read(json(head + "\"type\":\"PICKED_UP\",\"podUrl\":"
+                    + "\"https://files.example.com/pod/1.pdf\"}")).podUrl()).isNull();
+            for (String bad : new String[] {"http://files.example.com/1.pdf", "ftp://files.example.com/1.pdf",
+                    "https:///1.pdf", "https://user:pw@files.example.com/1.pdf", "not an address",
+                    "https://files.example.com/" + "a".repeat(LoadWebhookReader.POD_URL_MAX)}) {
+                assertThatThrownBy(() -> LoadWebhookReader.read(json(head + "\"type\":\"DELIVERED\",\"podUrl\":\""
+                        + bad + "\"}"))).as(bad).hasMessageContaining("podUrl");
+            }
+        }
+
+        @Test
         @DisplayName("refused: a missing field, an unknown type, a time without an offset, a waybill event without a "
                 + "number, a field longer than the load holds")
         void refuses() {

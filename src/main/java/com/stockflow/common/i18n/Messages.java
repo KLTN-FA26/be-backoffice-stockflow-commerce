@@ -25,7 +25,7 @@ import java.util.Locale;
  * things a user reads on a form.</p>
  *
  * <p><b>Not translated:</b> the specific detail a domain exception builds, such as
- * "Insufficient stock for SKU SOFA-3S-GREY: requested 6, available 5". Translating those would mean
+ * "Insufficient stock for SKU LY-GIAY-DEMO-12OZ-XANH: requested 6, available 5". Translating those would mean
  * a properties key and a parameter list for every message in the system, and most of them are read
  * by a developer in a log rather than by a customer. Where a customer-facing message needs
  * translating, add a key and call {@link #forCode}.</p>
@@ -75,5 +75,23 @@ public class Messages {
         } catch (NoSuchMessageException missing) {
             return fallback;
         }
+    }
+
+    /**
+     * A business refusal's message people read ({@code BusinessException#messageKey}): {@link #get} with each enum
+     * argument read as its label - {@code label.QuoteStatus.SENT} is "Đã gửi" - so a status in a message is in the
+     * reader's language too; an enum with no label reads as its name.
+     */
+    public String refusal(String key, String fallback, Object... arguments) {
+        Object[] labelled = arguments == null ? new Object[0] : arguments.clone();
+        for (int i = 0; i < labelled.length; i++) {
+            if (labelled[i] instanceof Enum<?> constant) {
+                labelled[i] = get("label." + constant.getDeclaringClass().getSimpleName() + "." + constant.name(),
+                        constant.name());
+            } else if (labelled[i] instanceof Label label) {
+                labelled[i] = get("label." + label.type() + "." + label.name(), label.name());
+            }
+        }
+        return get(key, fallback, labelled);
     }
 }

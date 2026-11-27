@@ -48,6 +48,27 @@ class NoRoleNameAccessTest {
 
     private static final List<Allowed> ALLOWED = List.of(
             // ---- the security layer: converting a token, and the one data-scope test that has to name CUSTOMER
+            new Allowed("assistant/internal/controller/dto/NextStepsResponse.java",
+                    "allowableValues = {\"CUSTOMER\", \"SALES\", \"ACCOUNTANT\", \"WAREHOUSE\",",
+                    "who must act next on a stalled order, shown to the user as a label (contract 1.1): it addresses "
+                            + "nobody and grants nothing; the endpoint is guarded by sales-orders:READ"),
+            new Allowed("assistant/internal/controller/dto/NextStepsResponse.java",
+                    "\"PRODUCTION\", \"CARRIER\", \"SALES_MANAGER\"})",
+                    "the rest of the same who-acts-next label list as the line above"),
+            new Allowed("assistant/internal/service/OrderNextSteps.java", "case \"CUSTOMER\" -> WaitingOn.CUSTOMER;",
+                    "HoldReason.CUSTOMER (the customer asked to hold) mapped to who must act; no role is read"),
+            new Allowed("assistant/internal/service/OrderNextSteps.java",
+                    "case \"CREDIT\", \"FRAUD\", \"INVENTORY\", \"CUSTOMER\", \"PAYMENT\", \"ADDRESS\", \"DELIVERY_FAILED\" -> holdReason;",
+                    "hold reasons (HoldReason names), one of which is spelt like the CUSTOMER role; no role is read"),
+            new Allowed("assistant/internal/controller/dto/FeatureUsageResponse.java",
+                    "+ \"run time\", example = \"SALES_STAFF\") String role,",
+                    "an example value of the usage report's role column (contract 5.2): documentation, no access"),
+            new Allowed("assistant/internal/service/FeatureUse.java",
+                    "if (user == null || user.roles() == null || user.roles().isEmpty()) {",
+                    "the usage counter's role tag (contract 5.2): which roles use a feature, a statistic that decides nothing"),
+            new Allowed("assistant/internal/service/FeatureUse.java",
+                    "return user.roles().stream().sorted(Comparator.comparingInt(Role::ordinal)).map(Role::name)",
+                    "the same usage counter's role tag"),
             new Allowed("common/security/CurrentUserProvider.java", ".map(Role::fromAuthority)",
                     "turns the token's role codes into Role constants for CurrentUser.roles(); decides nothing"),
             new Allowed("common/security/CurrentUser.java", "allMatch(role -> role == Role.CUSTOMER)",
@@ -74,6 +95,15 @@ class NoRoleNameAccessTest {
                     "who is told of a quote with no handler"),
             new Allowed("application.yml", "heldOrders: ${ASSISTANT_WATCH_HELD_ORDERS_ROLES",
                     "assistant watch audience (whose list it is), not access: the tool's guard still decides"),
+            new Allowed("order/internal/service/SalesRecipients.java",
+                    "identity.notificationRecipients(Set.of(Roles.SALES_STAFF), null)",
+                    "who is told of a contract or an order whose salesperson is gone (WF-02 FLOW-4): the same rule as "
+                            + "a quote with no handler, kltn-docs 00 §6 - it addresses a message, it grants no access"),
+            new Allowed("notification/internal/service/WarehouseCapacityNotificationListener.java",
+                    "staff.activeStaff(Role.WAREHOUSE_MANAGER, event.warehouseId())",
+                    "who is told the projected free room turned negative: kltn-docs 00 §6 picks recipients by role "
+                            + "and warehouse at send time, and C42 names only the receiving warehouse's Warehouse "
+                            + "Manager - it addresses a message, it grants no access"),
             // ---- checks on the user an action is about, not on the caller
             new Allowed("fulfillment/internal/service/FulfillmentServiceImpl.java",
                     "Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority()",
@@ -87,6 +117,12 @@ class NoRoleNameAccessTest {
                     "OpenAPI example of the roles a new staff user gets"),
             new Allowed("identity/internal/repository/UserJpaRepository.java", "c.code = 'CUSTOMER'",
                     "role management query: staff accounts are the ones without the CUSTOMER role"),
+            new Allowed("identity/internal/repository/UserJpaRepository.java", "r.code = 'CUSTOMER')",
+                    "the chat's staff directory (BE-11): staff accounts are the ones without the CUSTOMER role"),
+            new Allowed("identity/internal/service/IdentityServiceImpl.java", "comparing(StaffMember.Role::code)",
+                    "orders a staff member's roles for display in the chat's staff directory; decides nothing"),
+            new Allowed("chat/internal/service/StaffChatService.java", "member.roles().stream()",
+                    "lists a staff member's roles in the chat's staff directory; decides nothing"),
             new Allowed("identity/internal/service/IdentityServiceImpl.java", "\"Role CUSTOMER is not revoked from account \"",
                     "error message of the CUSTOMER role rule"),
             new Allowed("identity/internal/service/IdentityServiceImpl.java", "\"A staff account cannot hold CUSTOMER\"",

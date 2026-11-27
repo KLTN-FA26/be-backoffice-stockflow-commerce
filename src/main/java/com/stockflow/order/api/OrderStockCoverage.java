@@ -33,13 +33,24 @@ public interface OrderStockCoverage {
      * @param lines           per order line, across every batch
      * @param batches         per delivery batch of the contract's schedule, earliest first; empty for an order
      *                        without one, which is released whole
+     * @param releasableBatch the seq of the batch the warehouse may release next once it is held in full (17 BR-29):
+     *                        the earliest not released yet, whose batch before it was handed over in full; null for an
+     *                        order without a schedule, one whose batches are all released, and one whose batch before
+     *                        the next still has goods to hand over. With {@link Batch#fullyHeld} it says whether the
+     *                        order waits for the warehouse to release it - the one step no status names.
      */
     record Coverage(boolean warehouseChosen, String warehouseCode, boolean fullyHeld, List<Line> lines,
-                    List<Batch> batches) {
+                    List<Batch> batches, Integer releasableBatch) {
 
         public Coverage {
             lines = lines == null ? List.of() : List.copyOf(lines);
             batches = batches == null ? List.of() : List.copyOf(batches);
+        }
+
+        /** A coverage that does not say which batch is released next. */
+        public Coverage(boolean warehouseChosen, String warehouseCode, boolean fullyHeld, List<Line> lines,
+                        List<Batch> batches) {
+            this(warehouseChosen, warehouseCode, fullyHeld, lines, batches, null);
         }
     }
 

@@ -34,13 +34,31 @@ class InvoicingModuleTest {
     @MockitoBean com.stockflow.inventory.api.UomConversionService uomConversionServiceMock;
     @MockitoBean com.stockflow.inventory.api.PackagingSpecResolver packagingSpecResolverMock;
     @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
+    // order draws quotes from design quote requests (FE request, decision 2); design is not booted here.
+    @MockitoBean com.stockflow.design.api.QuoteRequests quoteRequestsMock;
+    // R5-3: order names each line's design through design :: api, and reads a contract's installment due days
+    // through payment :: api; neither module is booted here.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.design.api.SkuDesigns skuDesignsMock;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.payment.api.CustomerInstallments customerInstallmentsMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
+    // order's WarehouseCapacityService (BE1: the capacity board behind the shipping-warehouse options and production
+    // order approval) reads the map's room and the cartons standing in each warehouse.
+    @MockitoBean com.stockflow.warehouse.api.WarehouseCapacities warehouseCapacitiesMock;
+    @MockitoBean com.stockflow.inventory.api.WarehouseOccupancy warehouseOccupancyMock;
+    // order's ProductionOrderService reads the damaged write-offs a replacement production order makes up (SCRUM-839).
+    @MockitoBean com.stockflow.inventory.api.DamagedWriteOffs damagedWriteOffsMock;
+    // order's ReturnRequestService settles whose a returned carton is when the refund is decided (WF-05 Q-4).
+    @MockitoBean com.stockflow.inventory.api.CartonReturns cartonReturnsMock;
     // order's SalesFollowUpService posts inbox notices (WF-02 A10)
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.Inbox inboxMock;
     @MockitoBean com.stockflow.product.api.ProductService productServiceMock;
     @MockitoBean com.stockflow.product.api.CustomerSkus customerSkusMock;
     @MockitoBean com.stockflow.payment.api.PaymentService paymentServiceMock;
+    // The contract liquidation reads payment's books for the order's papers (business documents).
+    @MockitoBean com.stockflow.payment.api.ContractLedger contractLedgerMock;
     @MockitoBean com.stockflow.catalog.api.CatalogService catalogServiceMock;
     @MockitoBean com.stockflow.identity.api.IdentityService identityServiceMock;
     @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;

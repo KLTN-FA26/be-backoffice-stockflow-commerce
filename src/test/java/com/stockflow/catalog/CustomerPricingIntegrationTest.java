@@ -68,9 +68,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * customer's own price is set for one of its own SKUs, by tiers of cartons and a price per piece, by the Sales Manager;
  * Sales reads it and a quote starts from it; the customer never sees it, and checkout never charges it.
  *
- * <p>Since 5-3 (13 BR-04, D14) it is the only price there is: the storefront shows none, and there is no base or group
- * price. Checkout - until 5-2 removes it - charges a stock variant (the demo's published SOFA-3S-GREY) only a price of
- * the customer's own kept from before 4B-2.</p>
+ * <p>Since 5-3 (13 BR-04, D14) the storefront shows no price and there is no group price; since 2026-11-26 a quote
+ * starts from the customer's own price, else the variant's standard price, and one priced too far below waits for the
+ * Sales Manager (14 BR-10). Checkout - until 5-2 removes it - charges a stock variant (the demo cup's published blank LY-GIAY-DEMO-12OZ)
+ * only a price of the customer's own kept from before 4B-2.</p>
  */
 @IntegrationTest
 @AutoConfigureMockMvc
@@ -143,7 +144,15 @@ class CustomerPricingIntegrationTest {
                 .andExpect(jsonPath("$.data.measure").value("CARTON"))
                 .andExpect(jsonPath("$.data.moq").value(1)).andExpect(jsonPath("$.data.version").value(0));
         mvc.perform(get(path(buyer.customerId(), sku)).header("Authorization", "Bearer " + sales))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.tiers[1].unitPrice").value(10_000));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.tiers[1].unitPrice").value(10_000))
+                .andExpect(jsonPath("$.data.customerName").value("Cong ty Mua Ly"))
+                .andExpect(jsonPath("$.data.customerCode").isNotEmpty());
+        // The list carries whose prices they are, so the screen needs no customer lookup.
+        mvc.perform(get("/api/v1/catalog/customer-prices").param("customerId", buyer.customerId().toString())
+                        .header("Authorization", "Bearer " + sales))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].sku").value(sku))
+                .andExpect(jsonPath("$.data[0].customerName").value("Cong ty Mua Ly"))
+                .andExpect(jsonPath("$.data[0].customerCode").isNotEmpty());
         createPrice(buyer.customerId(), sku, tiers).andExpect(status().isConflict());
 
         for (String invalid : List.of(
@@ -281,9 +290,11 @@ class CustomerPricingIntegrationTest {
     }
 
     @Test
-    void aQuoteLineWithoutTiersForASkuWithoutAPriceOfTheCustomersOwnAsksSalesToEnterThem() throws Exception {
+    void aQuoteLineWithoutTiersForASkuWithNeitherAPriceOfTheCustomersOwnNorAStandardPriceAsksSalesToEnterThem()
+            throws Exception {
         Buyer buyer = buyer("ACTIVE");
         String sku = ownSku(buyer);
+        com.stockflow.support.CustomerSkuRows.withoutStandardPrice(jdbc, tx, sku);
         Quotes.Create create = new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
                 new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null,
                         List.of(new Quotes.Line(sku, 5, null))));
@@ -298,12 +309,13 @@ class CustomerPricingIntegrationTest {
     }
 
     /**
-     * User decision of 2026-10-12, overriding kltn-docs 14 BR-10: no discount limit and no internal approval -
-     * Sales negotiates and sends any valid price. Server-side validation, the quote's price snapshot, audit and
-     * the customer's own acceptance all stay.
+     * kltn-docs 14 BR-10 as changed on 2026-11-26 (replacing the decision of 2026-10-12 and D-1's alert): Sales
+     * negotiates any valid price, but one more than 10% below the customer's own price waits for the Sales Manager, who
+     * alone approves it - over HTTP, with security on. Server-side validation, the quote's price snapshot, audit and the
+     * customer's own acceptance all stay.
      */
     @Test
-    void salesSendsANegotiatedPriceWithoutApprovalAndOnlyTheCustomerAccepts() throws Exception {
+    void aNegotiatedPriceFarBelowWaitsForTheSalesManagerAndOnlyTheCustomerAccepts() throws Exception {
         Buyer buyer = buyer("ACTIVE");
         String sku = ownSku(buyer);
         createPrice(buyer.customerId(), sku, tiers(Map.of(1, 10_000L))).andExpect(status().isCreated());
@@ -316,7 +328,7 @@ class CustomerPricingIntegrationTest {
                             e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED));
         }
 
-        // 20% below the customer's price: created and sent at once, by Sales alone.
+        // 20% below the customer's price: Sales sends it, and it waits for the Sales Manager - still a draft.
         Quotes.QuoteView created = quotes.create(salesUser, quote(buyer, sku, "8000"));
         assertThat(created.lines().getFirst().tiers()).extracting(t -> t.unitPrice().longValue()).containsExactly(8_000L);
         mvc.perform(post("/api/v1/quotes/" + created.id() + "/sending").header("Authorization", "Bearer " + warehouse)
@@ -324,7 +336,19 @@ class CustomerPricingIntegrationTest {
                 .andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/quotes/" + created.id() + "/sending").header("Authorization", "Bearer " + sales)
                         .contentType("application/json").content("{\"version\":" + created.version() + "}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SENT"));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DRAFT"))
+                .andExpect(jsonPath("$.data.priceReviewPending").value(true))
+                .andExpect(jsonPath("$.data.priceReview.lines[0].tiers[0].source").value("CUSTOMER_PRICE"));
+        mvc.perform(get("/api/v1/quotes/" + created.id()).header("Authorization", "Bearer " + buyer.token()))
+                .andExpect(status().isNotFound());
+        long waiting = quotes.get(salesUser, created.id()).version();
+        mvc.perform(post("/api/v1/quotes/" + created.id() + "/price-approval").header("Authorization", "Bearer " + sales)
+                        .contentType("application/json").content("{\"version\":" + waiting + "}"))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/quotes/" + created.id() + "/price-approval").header("Authorization", "Bearer " + admin)
+                        .contentType("application/json").content("{\"version\":" + waiting + "}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SENT"))
+                .andExpect(jsonPath("$.data.priceReview.outcome").value("APPROVED"));
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM platform.audit_log WHERE resource_type='quote' AND resource_id=? AND outcome='SUCCESS'""",
                 Long.class, created.id().toString())).isGreaterThanOrEqualTo(1);

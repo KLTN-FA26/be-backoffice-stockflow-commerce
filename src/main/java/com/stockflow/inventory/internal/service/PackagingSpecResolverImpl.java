@@ -11,6 +11,7 @@ import com.stockflow.inventory.internal.domain.PackagingRules;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository.ItemRow;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
+import com.stockflow.inventory.internal.repository.VariantRotations;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,7 +22,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * See {@link PackagingSpecResolver}. This class only reads the item and its units; {@link PackagingRules} decides.
+ * See {@link PackagingSpecResolver}. This class only reads the item, its variant's cartons and whether they may be
+ * turned (the variant's, owner decisions Q1 and Q9); {@link PackagingRules} decides.
  * Read-only: it joins the caller's transaction and takes no lock, because an estimate is advisory and a stale
  * read of a unit being edited at the same moment is as good as the moment before.
  */
@@ -31,10 +33,13 @@ class PackagingSpecResolverImpl implements PackagingSpecResolver {
 
     private final InventoryPolicyRepository items;
     private final UomConversionRepository conversions;
+    private final VariantRotations rotations;
 
-    PackagingSpecResolverImpl(InventoryPolicyRepository items, UomConversionRepository conversions) {
+    PackagingSpecResolverImpl(InventoryPolicyRepository items, UomConversionRepository conversions,
+                              VariantRotations rotations) {
         this.items = items;
         this.conversions = conversions;
+        this.rotations = rotations;
     }
 
     @Override
@@ -56,8 +61,10 @@ class PackagingSpecResolverImpl implements PackagingSpecResolver {
                 || !positive(unit.weightKg())) {
             return java.util.Optional.empty();
         }
-        boolean rotatable = items.findBySkus(java.util.Set.of(sku.code())).stream().findFirst()
-                .map(row -> row.logistics().rotatable()).orElse(true);
+        UUID variantId = items.findBySkus(java.util.Set.of(sku.code())).stream().findFirst()
+                .map(ItemRow::variantId).orElse(null);
+        boolean rotatable = variantId == null
+                || VariantRotations.rotatable(rotations.of(List.of(variantId)), variantId);
         return java.util.Optional.of(new PackagingSpec.CartonSpec(PackagingRules.mm(unit.lengthCm()),
                 PackagingRules.mm(unit.widthCm()), PackagingRules.mm(unit.heightCm()), unit.weightKg(), rotatable));
     }
@@ -84,10 +91,12 @@ class PackagingSpecResolverImpl implements PackagingSpecResolver {
                     "No inventory item " + String.join(", ", unknown));
         }
         Map<String, List<UomConversion>> units = conversions.bySkus(skus);
+        Map<UUID, Boolean> rotatable = rotations.of(rows.values().stream().map(ItemRow::variantId).toList());
         return lines.stream().map(line -> {
             ItemRow row = rows.get(line.sku().code());
-            return PackagingRules.resolve(row.id(), row.sku(), row.logistics(),
-                    units.getOrDefault(row.sku(), List.of()), line.quantity());
+            return PackagingRules.resolve(row.id(), row.sku(), units.getOrDefault(row.sku(), List.of()),
+                    VariantRotations.rotatable(rotatable, row.variantId()), line.quantity());
         }).toList();
+
     }
 }

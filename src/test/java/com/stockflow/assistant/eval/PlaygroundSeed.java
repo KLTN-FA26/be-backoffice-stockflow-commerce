@@ -135,7 +135,7 @@ class PlaygroundSeed {
         sales(today);
 
         System.out.println("Playground seed: " + jdbc.queryForObject(
-                "select count(*) from product.variants where sku like 'EVAL-%'", Long.class) + " EVAL SKUs, "
+                "select count(*) from product.customer_skus where sku like 'EVAL-%'", Long.class) + " EVAL SKUs, "
                 + ACCOUNTS.size() + " accounts");
     }
 

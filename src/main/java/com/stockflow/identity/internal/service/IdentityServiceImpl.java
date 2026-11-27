@@ -4,6 +4,7 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.identity.api.AssignableUser;
 import com.stockflow.identity.api.StaffContact;
+import com.stockflow.identity.api.StaffMember;
 import com.stockflow.identity.api.ChangePasswordCommand;
 import com.stockflow.identity.api.CreateRoleCommand;
 import com.stockflow.identity.api.CreateStaffUserCommand;
@@ -925,6 +926,40 @@ class IdentityServiceImpl implements IdentityService {
                         user.getFullName() == null || user.getFullName().isBlank()
                                 ? user.getUsername() : user.getFullName(),
                         held.getOrDefault(user.getId(), List.of()).stream().filter(roleCodes::contains).toList()))
+                .toList();
+    }
+
+    /** Three statements whatever the answer: the accounts, their role rows, the roles. */
+    @Override
+    @Transactional(readOnly = true)
+    public List<StaffMember> activeStaff(String nameQuery, int limit) {
+        String text = nameQuery == null ? "" : nameQuery.strip();
+        String pattern = text.isEmpty() ? null
+                : "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+        List<UserJpaEntity> found = users.findActiveStaffNamed(pattern,
+                Math.max(1, Math.min(limit, MAX_STAFF_PICKED)));
+        if (found.isEmpty()) {
+            return List.of();
+        }
+        List<UserRoleJpaEntity> rows = userRoles.findByUserIdIn(found.stream().map(UserJpaEntity::getId).toList());
+        Map<UUID, RoleJpaEntity> roleById = new java.util.HashMap<>();
+        roles.findAllById(rows.stream().map(UserRoleJpaEntity::getRoleId).distinct().toList())
+                .forEach(role -> roleById.put(role.getId(), role));
+        Map<UUID, List<StaffMember.Role>> held = new java.util.HashMap<>();
+        rows.forEach(row -> {
+            RoleJpaEntity role = roleById.get(row.getRoleId());
+            if (role != null) {
+                held.computeIfAbsent(row.getUserId(), id -> new java.util.ArrayList<>())
+                        .add(new StaffMember.Role(role.getCode(), role.getName()));
+            }
+        });
+        held.values().forEach(list -> list.sort(
+                java.util.Comparator.comparing(StaffMember.Role::code)));
+        return found.stream()
+                .map(user -> new StaffMember(user.getId(),
+                        user.getFullName() == null || user.getFullName().isBlank()
+                                ? user.getUsername() : user.getFullName(),
+                        held.getOrDefault(user.getId(), List.of())))
                 .toList();
     }
 

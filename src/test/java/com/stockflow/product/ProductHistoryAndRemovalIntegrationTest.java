@@ -12,7 +12,6 @@ import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.contracts.CatalogListingChanged;
 import com.stockflow.contracts.ProductDiscontinued;
-import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.product.api.ListProductsQuery;
 import com.stockflow.product.api.ProductChange;
@@ -78,7 +77,7 @@ class ProductHistoryAndRemovalIntegrationTest {
     @Autowired ProductMediaService media;
     @Autowired ProductTaxonomyService taxonomy;
     @Autowired InventoryItems items;
-    @Autowired InventoryService inventory;
+    @Autowired com.stockflow.product.internal.service.CustomerSkuLifecycleService customerSkuLifecycle;
     @Autowired FileStorage storage;
     @Autowired RecordedEvents.Recorder recorded;
     @Autowired JdbcTemplate jdbc;
@@ -125,9 +124,38 @@ class ProductHistoryAndRemovalIntegrationTest {
                 .findFirst().orElseThrow().id();
     }
 
-    private UUID itemOf(UUID variantId) {
-        String sku = jdbc.queryForObject("select sku from product.variants where id = ?", String.class, variantId);
-        return inventory.itemIdsOf(List.of(sku)).get(sku);
+    /** A customer's SKU drawn on one of the product's variants. */
+    private record Drawn(UUID id, String sku, UUID itemId) {
+    }
+
+    /**
+     * A customer's own SKU drawn on {@code variantId}, with the inventory item the order naming it would make: a variant
+     * has no item of its own since V20270105000100, so an item's settings are a customer's SKU's.
+     */
+    private Drawn customerSkuOn(UUID productId, UUID variantId) {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        String variantSku = jdbc.queryForObject("select sku from product.variants where id = ?", String.class, variantId);
+        UUID id = Identifiers.newId();
+        String sku = variantSku + "-KH-" + id.toString().substring(24, 28).toUpperCase(java.util.Locale.ROOT);
+        UUID item = tx.execute(s -> {
+            UUID draft = Identifiers.newId();
+            UUID snapshot = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+                    VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", draft, customer, productId);
+            jdbc.update("""
+                    INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
+                        artifact_manifest)
+                    VALUES (?, ?, ?, 'https://example.com/print.pdf', NOW(), NOW(), '[]'::jsonb)""",
+                    snapshot, draft, "c".repeat(64));
+            jdbc.update("""
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Ly in logo khach')""", id, productId, variantId, customer,
+                    snapshot, sku);
+            return com.stockflow.support.CartonRows.item(jdbc, sku);
+        });
+        return new Drawn(id, sku, item);
     }
 
     private List<ProductChange> history(UUID productId) {
@@ -181,6 +209,12 @@ class ProductHistoryAndRemovalIntegrationTest {
 
         var image = media.upload(id, defaultId, png(), editor, null);
         media.describe(id, defaultId, image.id(), "Mặt trước", 3, false);
+        // While the image exists its entries name the file and the SKU of the variant it belongs to (the default
+        // variant's SKU is the product code).
+        assertThat(history(id).get(0)).satisfies(c -> {
+            assertThat(c.subjectSku()).isEqualTo(created.code());
+            assertThat(c.subjectLabel()).isEqualTo("cup.png");
+        });
 
         // Logistics and stock policy are edited on the inventory item and leave no trace in the product's history.
 
@@ -272,6 +306,15 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(log.get(19).toStatus()).isEqualTo("DRAFT");
         assertThat(log.get(19).fromStatus()).isNull();
         assertThat(log).extracting(ProductChange::occurredAt).isSortedAccordingTo(java.util.Comparator.reverseOrder());
+        // The subject's SKU and name are read with the page: today's names, none for the product itself or for an
+        // image deleted since.
+        assertThat(log.get(6).subjectSku()).isEqualTo(extra.sku());
+        assertThat(log.get(16).subjectSku()).isEqualTo(extra.sku());
+        assertThat(log.get(17).subjectLabel()).isEqualTo("16oz renamed");
+        assertThat(discontinued.subjectSku()).isNull();
+        assertThat(discontinued.subjectLabel()).isNull();
+        assertThat(log.get(15).subjectSku()).isNull();
+        assertThat(log.get(15).subjectLabel()).isNull();
     }
 
     @Test
@@ -423,7 +466,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(added.status()).isEqualTo(VariantStatus.DRAFT);
         var image = media.upload(id, defaultId, png(), editor, null);
         assertThat(media.describe(id, defaultId, image.id(), "Alt", 1, false).altText()).isEqualTo("Alt");
-        var item = items.get(itemOf(defaultId));
+        var item = items.get(customerSkuOn(id, defaultId).itemId());
         assertThat(items.describe(item.id(), item.version(), item.logistics()).version()).isEqualTo(item.version() + 1);
         assertThat(variants.block(id, defaultId).status()).isEqualTo(VariantStatus.BLOCKED);
     }
@@ -479,8 +522,8 @@ class ProductHistoryAndRemovalIntegrationTest {
         products.discontinue(discontinued.productId(), "end", discontinued.version());
 
         Map<String, Purchasability> verdicts = products.purchasability(List.of(drafted.code(), pending.code(), active.code(),
-                blockedVariant.code(), suspended.code(), discontinued.code(), "SOFA-3S-GREY", " " + active.code().toLowerCase(Locale.ROOT),
-                "NO-SUCH-SKU"));
+                blockedVariant.code(), suspended.code(), discontinued.code(), DemoData.BLANK_CUP,
+                " " + active.code().toLowerCase(Locale.ROOT), "NO-SUCH-SKU"));
 
         assertThat(verdicts).containsOnly(
                 Map.entry(drafted.code(), Purchasability.PRODUCT_NOT_APPROVED),
@@ -489,7 +532,7 @@ class ProductHistoryAndRemovalIntegrationTest {
                 Map.entry(blockedVariant.code(), Purchasability.VARIANT_NOT_ACTIVE),
                 Map.entry(suspended.code(), Purchasability.PRODUCT_INACTIVE),
                 Map.entry(discontinued.code(), Purchasability.PRODUCT_DISCONTINUED),
-                Map.entry("SOFA-3S-GREY", Purchasability.PURCHASABLE),   // PUBLISHED demo product
+                Map.entry(DemoData.BLANK_CUP, Purchasability.PURCHASABLE),   // PUBLISHED demo product
                 Map.entry("NO-SUCH-SKU", Purchasability.VARIANT_NOT_ACTIVE));
         assertThat(products.purchasability(List.of())).isEmpty();
         // Resuming makes it purchasable again.
@@ -498,10 +541,28 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(products.purchasability(List.of(suspended.code()))).containsEntry(suspended.code(), Purchasability.PURCHASABLE);
     }
 
+    @Test
+    @DisplayName("purchasability of a customer's own SKU: its product decides first, then its own status (V20270105000100)")
+    void purchasabilityOfACustomersSku() {
+        ProductSummary active = ProductFixtures.approved(products, tax, suffix + "C", editor, approver);
+        Drawn onSale = customerSkuOn(active.productId(), defaultVariant(active.productId()));
+        Drawn blocked = customerSkuOn(active.productId(), defaultVariant(active.productId()));
+        customerSkuLifecycle.block(blocked.id());
+        assertThat(products.purchasability(List.of(onSale.sku(), blocked.sku()))).containsOnly(
+                Map.entry(onSale.sku(), Purchasability.PURCHASABLE),
+                Map.entry(blocked.sku(), Purchasability.VARIANT_NOT_ACTIVE));
+        // The locked read takes the product FOR SHARE through the union of both tables.
+        Map<String, Purchasability> locked = tx.execute(s -> products.lockedPurchasability(List.of(onSale.sku())));
+        assertThat(locked).containsEntry(onSale.sku(), Purchasability.PURCHASABLE);
+        products.suspend(active.productId(), "recall", products.findById(active.productId()).orElseThrow().version());
+        assertThat(products.purchasability(List.of(onSale.sku())))
+                .containsEntry(onSale.sku(), Purchasability.PRODUCT_INACTIVE);
+    }
+
     // ------------------------------------------------------------------ delete
 
     @Test
-    @DisplayName("deleting a draft removes the product, its variants, their inventory items and images, and the stored files after the commit")
+    @DisplayName("deleting a draft removes the product, its variants and images, and the stored files after the commit")
     void deleteDraftRemovesEverythingItOwns() throws Exception {
         ProductSummary created = draft();
         UUID id = created.productId();
@@ -516,16 +577,15 @@ class ProductHistoryAndRemovalIntegrationTest {
         }
         assertThat(keys).hasSizeGreaterThanOrEqualTo(4);
         keys.forEach(key -> assertThat(stored(key)).isTrue());
+        // A catalogue variant has no inventory item (V20270105000100): nothing in inventory to delete with it.
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku IN (?, ?)", Long.class,
-                created.code(), extra.sku())).isEqualTo(2);
+                created.code(), extra.sku())).isZero();
 
         products.deleteDraft(id, created.version());
 
         assertThat(products.findById(id)).isEmpty();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.variants WHERE product_id = ?", Long.class, id)).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.media WHERE id IN (?, ?)", Long.class, first.id(), second.id())).isZero();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku IN (?, ?)", Long.class,
-                created.code(), extra.sku())).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.product_change_log WHERE product_id = ?", Long.class, id)).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.product_categories WHERE product_id = ?", Long.class, id)).isZero();
         keys.forEach(key -> assertThat(stored(key)).as(key).isFalse());
@@ -552,7 +612,7 @@ class ProductHistoryAndRemovalIntegrationTest {
 
         assertThat(stored(image.original().key())).isTrue();
         assertThat(products.findById(id)).isPresent();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class, created.code())).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM product.variants WHERE sku = ?", Long.class, created.code())).isOne();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.media WHERE id = ?", Long.class, image.id())).isOne();
         assertThat(types(history(id))).containsExactly("MEDIA", "CREATED");
         // Once the design is gone the same call succeeds.
@@ -562,96 +622,66 @@ class ProductHistoryAndRemovalIntegrationTest {
     }
 
     @Test
-    @DisplayName("order lines and cart lines hold a SKU too: the foreign keys answer PRODUCT_IN_USE for anything the probes do not report")
-    void shippedOrderLineStillBlocksTheDelete() {
+    @DisplayName("an order line names a customer's own SKU, never a variant: the database refuses one on a draft's SKU")
+    void anOrderLineNeverNamesAVariant() {
         ProductSummary created = draft();
-        // A shipped order is not "open" (nothing to warn about) but its line still points at the SKU.
-        tx.executeWithoutResult(s -> ReferenceRows.orderWithLine(entityManager, created.code(), "SHIPPED", DemoData.CUSTOMER_ID,
-                editor, DemoData.WAREHOUSE_HCM));
-        assertThat(products.openReferences(created.productId()).references()).isEmpty();
-
-        assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> products.deleteDraft(created.productId(), created.version())))
-                .errorCode()).isEqualTo(ErrorCode.PRODUCT_IN_USE);
-        assertThat(products.findById(created.productId())).isPresent();
+        // Quotes and orders name product.customer_skus since V20270105000100, and a draft product has none: nothing on
+        // an order can hold a draft back from being deleted.
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> ReferenceRows.orderWithLine(entityManager, created.code(),
+                "SHIPPED", DemoData.CUSTOMER_ID, editor, DemoData.WAREHOUSE_HCM)))
+                .hasStackTraceContaining("fk_order_line_customer_sku");
+        products.deleteDraft(created.productId(), created.version());
+        assertThat(products.findById(created.productId())).isEmpty();
     }
 
     // ------------------------------------------------------------------ SKU-keyed references
 
     @Test
-    @DisplayName("a DRAFT SKU an adjustment refers to (no stock row) is in use: rename INVALID_VARIANT_TRANSITION, delete PRODUCT_IN_USE naming it")
-    void aSkuKeyedReferenceRefusesRenameAndDeleteByName() {
+    @DisplayName("a DRAFT variant is renamed freely: no stock, adjustment or customer price can name it")
+    void aDraftVariantIsRenamedFreely() {
         ProductSummary created = draft();
         UUID id = created.productId();
         UUID defaultId = defaultVariant(id);
-        String location = jdbc.queryForObject("SELECT location_code FROM warehouse.storage_location ORDER BY location_code LIMIT 1",
-                String.class);
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-                VALUES (?, ?, ?, ?, 5, 'FOUND', ?)""", Identifiers.newId(), "ADJ-" + suffix, location, created.code(), editor));
-
-        BusinessException rename = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
-                variants.update(id, defaultId, new NewVariant(created.code() + "-NEW", null, null, null))));
-        assertThat(rename.errorCode()).isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);
-
-        BusinessException delete = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
-                products.deleteDraft(id, products.findById(id).orElseThrow().version())));
-        assertThat(delete.errorCode()).isEqualTo(ErrorCode.PRODUCT_IN_USE);
-        assertThat(delete.getMessage()).contains(created.code());
-        assertThat(delete.getCause()).as("refused before any DELETE ran").isNull();
-
-        assertThat(products.findById(id)).isPresent();
-        assertThat(jdbc.queryForObject("SELECT sku FROM product.variants WHERE id = ?", String.class, defaultId))
-                .isEqualTo(created.code());
+        // Stock, adjustments and customer prices name a customer's own SKU since V20270105000100 (its inventory item,
+        // its foreign keys), never a catalogue variant: nothing can hold a DRAFT variant's code.
+        assertThat(variants.update(id, defaultId, new NewVariant(created.code() + "-NEW", null, null, null)).sku())
+                .isEqualTo(created.code() + "-NEW");
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
+                VALUES (?, 'c0000000-0000-4000-8000-000000000001', ?, NOW())""", Identifiers.newId(),
+                created.code() + "-NEW")))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
     @Test
-    @DisplayName("audit of #109: a customer's own price for a DRAFT SKU counts as a use - rename and delete are refused by name, not by a foreign key")
-    void aCustomersOwnPriceIsAUse() {
-        ProductSummary created = draft();
-        UUID id = created.productId();
-        UUID defaultId = defaultVariant(id);
-        // A price kept from before 4B-2 on a stock variant: tg_customer_price_own_sku refuses a new one, so the row is
-        // written as the old data has it, with the session's triggers off.
-        tx.executeWithoutResult(s -> {
-            jdbc.execute("SET LOCAL session_replication_role = replica");
-            jdbc.update("""
-                    INSERT INTO catalog.customer_price (id, customer_id, sku, created_at)
-                    VALUES (?, 'c0000000-0000-4000-8000-000000000001', ?, NOW())""", Identifiers.newId(), created.code());
-        });
-
-        BusinessException rename = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
-                variants.update(id, defaultId, new NewVariant(created.code() + "-NEW", null, null, null))));
-        assertThat(rename.errorCode()).isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);
-        BusinessException delete = refusal(org.assertj.core.api.Assertions.catchThrowable(() ->
-                products.deleteDraft(id, products.findById(id).orElseThrow().version())));
-        assertThat(delete.errorCode()).isEqualTo(ErrorCode.PRODUCT_IN_USE);
-        assertThat(delete.getMessage()).contains(created.code());
-        assertThat(delete.getCause()).as("refused before any DELETE ran").isNull();
-    }
-
-    @Test
-    @DisplayName("an OBSOLETE variant's item stays readable (its stock is still cleared); editing its logistics is VARIANT_OBSOLETE")
-    void obsoleteVariantIsReadButNotEdited() {
+    @DisplayName("an OBSOLETE customer SKU's item stays readable (its stock is still cleared); editing its logistics is VARIANT_OBSOLETE")
+    void obsoleteSkuItemIsReadButNotEdited() {
         ProductSummary created = draft();
         UUID id = created.productId();
         var extra = variants.add(id, new NewVariant("FX-" + suffix + "-OB", "Obsolete", null, null));
         products.submit(id, editor);
         actAs(approver);
         products.approve(id, approver);
-        variants.obsolete(id, extra.id());
         actAs(editor);
+        // Only a customer's SKU has an item (V20270105000100): one retired on its own, one retired with the product.
+        Drawn retired = customerSkuOn(id, extra.id());
+        Drawn kept = customerSkuOn(id, defaultVariant(id));
+        customerSkuLifecycle.obsolete(retired.id());
 
-        var obsolete = items.get(itemOf(extra.id()));
-        assertThat(obsolete.sku()).isEqualTo(extra.sku());
-
+        var obsolete = items.get(retired.itemId());
+        assertThat(obsolete.sku()).isEqualTo(retired.sku());
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> items.describe(obsolete.id(),
                 obsolete.version(), obsolete.logistics()))).errorCode()).isEqualTo(ErrorCode.VARIANT_OBSOLETE);
         assertThat(items.get(obsolete.id()).version()).as("nothing was written").isEqualTo(obsolete.version());
+        var stillOn = items.get(kept.itemId());
+        assertThat(items.describe(stillOn.id(), stillOn.version(), stillOn.logistics()).version())
+                .isEqualTo(stillOn.version() + 1);
 
-        // Discontinuing makes every variant obsolete; the reads still answer, the edits are refused.
+        // Discontinuing retires every customer's SKU of the product with its variants; the reads still answer, the
+        // edits are refused.
         products.discontinue(id, "Ngừng", products.findById(id).orElseThrow().version());
-        var defaultItem = items.get(itemOf(defaultVariant(id)));
-        assertThat(defaultItem.sku()).isEqualTo(created.code());
+        var defaultItem = items.get(kept.itemId());
+        assertThat(defaultItem.sku()).isEqualTo(kept.sku());
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> items.describe(defaultItem.id(),
                 defaultItem.version(), defaultItem.logistics()))).errorCode()).isEqualTo(ErrorCode.VARIANT_OBSOLETE);
         // An item nobody has is still INVENTORY_ITEM_NOT_FOUND, not VARIANT_OBSOLETE.

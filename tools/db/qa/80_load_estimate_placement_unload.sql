@@ -2,7 +2,7 @@
 -- Adversarial checks + happy paths for the load tables no other script touches: the load estimate (a vehicle count
 -- worked out for an order before a plan exists), the placement of a carton inside a planned vehicle, and the unload of
 -- a parcel from a manifest. Each rule is attacked by the statement that breaks only it (expect_fail_by names the rule).
--- Needs the demo seed, whose sofas are cartons of one on HCM-A01-2-B. Rolled back at the end.
+-- Needs the demo seed, whose blue cups are whole cartons of 1,000 on HCM-A01-2-B. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -51,25 +51,27 @@ VALUES (md5('qa80:order')::uuid, 'SO-QA-80', 'c0000000-0000-4000-8000-0000000000
        (md5('qa80:order2')::uuid, 'SO-QA-80B', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(),
         'PENDING_PAYMENT', 1, 'VND', NOW(), NOW(), 'Ms Lan', '0900000001', '1 Le Loi', 'W1', 'P1', 'VN');
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-VALUES (md5('qa80:ol')::uuid, md5('qa80:order')::uuid, 'SOFA-3S-GREY', 2, 1, 'VND');
+VALUES (md5('qa80:ol')::uuid, md5('qa80:order')::uuid, 'LY-GIAY-DEMO-12OZ-XANH', 2000, 1, 'VND');
 INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, picked_at, created_at)
 VALUES (md5('qa80:pick')::uuid, md5('qa80:order')::uuid, 'SO-QA-80', md5('demo:wh:HCM')::uuid, 'PICKED', NOW(), NOW());
 INSERT INTO fulfillment.pack (id, pick_id, status, created_at)
 VALUES (md5('qa80:pack')::uuid, md5('qa80:pick')::uuid, 'PENDING', NOW());
 
 CREATE TEMP TABLE qa80_carton AS
-SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_id, p.lpn
-  FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
- WHERE s.sku = 'SOFA-3S-GREY' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK' AND s.on_hand = 1
+SELECT row_number() OVER (ORDER BY p.lpn) AS n, p.id AS package_id, p.lpn, p.nominal_qty AS units
+  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+ WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+   AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
  ORDER BY p.lpn LIMIT 2;
-SELECT pg_temp.expect_true('F0 the demo seed has two sofa cartons to build on', (SELECT count(*) FROM qa80_carton) = 2);
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-SELECT md5('qa80:res:' || n)::uuid, row_id, md5('qa80:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, NOW(), NULL, 'HELD'
+SELECT pg_temp.expect_true('F0 the demo seed has two cup cartons to build on', (SELECT count(*) FROM qa80_carton) = 2);
+INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+SELECT md5('qa80:res:' || n)::uuid, package_id, md5('qa80:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, units, NOW(),
+       'HELD'
   FROM qa80_carton;
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty,
                                    picked_qty, status, lpn, whole_carton, picked_by, picked_at, consumed_at)
-SELECT md5('qa80:pl:' || n)::uuid, md5('qa80:pick')::uuid, md5('qa80:ol')::uuid, md5('qa80:res:' || n)::uuid, 'SOFA-3S-GREY',
-       'HCM-A01-2-B', n, 1, 1, 'PICKED', lpn, TRUE, md5('demo:user:editor')::uuid, NOW(), NOW()
+SELECT md5('qa80:pl:' || n)::uuid, md5('qa80:pick')::uuid, md5('qa80:ol')::uuid, md5('qa80:res:' || n)::uuid, 'LY-GIAY-DEMO-12OZ-XANH',
+       'HCM-A01-2-B', n, units, units, 'PICKED', lpn, TRUE, md5('demo:user:editor')::uuid, NOW(), NOW()
   FROM qa80_carton;
 INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
 SELECT md5('qa80:pkg:' || n)::uuid, md5('qa80:pack')::uuid, n, 'SO-QA-80-C' || n, 'TO_CHECK', md5('qa80:pl:' || n)::uuid, lpn
@@ -130,10 +132,10 @@ SELECT pg_temp.expect_fail_by('E7 incomplete with nothing missing', 'ck_load_est
     VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', TRUE) $q$);
 SELECT pg_temp.expect_fail_by('E8 something missing but not flagged incomplete', 'ck_load_estimate_incomplete', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status, missing)
-    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '["SOFA-3S-GREY"]'::jsonb) $q$);
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '["LY-GIAY-DEMO-12OZ-XANH"]'::jsonb) $q$);
 SELECT pg_temp.expect_ok('E9 ... flagged, it is accepted', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status, missing, incomplete)
-    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '["SOFA-3S-GREY"]'::jsonb, TRUE) $q$);
+    VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '["LY-GIAY-DEMO-12OZ-XANH"]'::jsonb, TRUE) $q$);
 SELECT pg_temp.expect_fail_by('E10 lines that are an object, not a list', 'ck_load_estimate_lines', $q$
     INSERT INTO fulfillment.load_estimate (id, source_type, source_id, mode, status, lines)
     VALUES (gen_random_uuid(), 'ORDER', md5('qa80:order2')::uuid, 'SINGLE_TYPE', 'SUPERSEDED', '{}'::jsonb) $q$);
@@ -231,15 +233,11 @@ SELECT pg_temp.expect_ok('U11 the parcel is unloaded', $q$
      WHERE id = md5('qa80:un:1')::uuid $q$);
 SELECT pg_temp.expect_ok('U12 ... and then the load is DISPATCHED', pg_temp.dispatch_sql());
 
-\echo '--- stock is kept in whole cartons (ck_stock_item_whole_cartons, V20261117000100)'
-SELECT pg_temp.expect_fail_by('W1 a live loose row: units on it, no carton', 'ck_stock_item_whole_cartons', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 'QA80-LOOSE', 1, 0, 'AVAILABLE', NOW(), NOW()) $q$);
-SELECT pg_temp.expect_ok('W2 a loose row at zero (history of a lot) is allowed', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 'QA80-LOOSE', 0, 0, 'AVAILABLE', NOW(), NOW()) $q$);
-SELECT pg_temp.expect_fail_by('W3 a carton row emptied into a loose one: the carton link dropped while units remain', 'ck_stock_item_whole_cartons', $q$
-    UPDATE inventory.stock_item SET stock_package_id = NULL WHERE stock_package_id IS NOT NULL AND on_hand > 0 $q$);
+\echo '--- stock is cartons and nothing else (the stock rows and ck_stock_item_whole_cartons went with V20261231000600)'
+-- W1 (a live loose row), W2 (a loose row at zero) and W3 (a carton row turned loose) checked ck_stock_item_whole_cartons:
+-- there is no stock row to be loose any more.
+SELECT pg_temp.expect_true('W1 there is no stock row beside a carton: inventory.stock_item is gone',
+    to_regclass('inventory.stock_item') IS NULL);
 SELECT pg_temp.expect_true('W4 the lot no longer carries purchase / supplier columns (V20261117000200)', (
     SELECT count(*) FROM information_schema.columns WHERE table_schema = 'inventory' AND table_name = 'stock_lot'
        AND column_name IN ('purchase_order_id', 'purchase_order_number', 'supplier_id', 'supplier_name')) = 0);

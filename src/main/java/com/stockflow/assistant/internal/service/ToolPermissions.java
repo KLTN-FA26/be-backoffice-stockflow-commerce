@@ -18,6 +18,11 @@ final class ToolPermissions {
     /** {@code InventoryResources.STOCK_MOVEMENTS}. */
     static final String INVENTORY_STOCK_MOVEMENTS = "inventory-stock-movements";
     /**
+     * {@code InventoryResources.LOT_TRACES}: the lot trace report's own guard since V20261209000300, held by every role
+     * that reads the stock ledger and by Sales and the Production Coordinator, who answer customers about a lot.
+     */
+    static final String LOT_TRACES = "inventory-lot-traces";
+    /**
      * {@code InventoryResources.STOCK_ADJUSTMENTS}: READ for the approval queue; APPROVE read here only to say whether
      * the caller may approve ({@link FindPendingAdjustmentsTool}).
      */
@@ -57,10 +62,34 @@ final class ToolPermissions {
     /** {@code CustomerPriceController.RESOURCE}. */
     static final String CUSTOMER_PRICES = "catalog-customer-prices";
     /**
+     * {@code StandardPriceController.RESOURCE}: read here only to decide whether {@code getCustomerPrice} may answer
+     * with the standard price behind a SKU, as the standard-price screen does.
+     */
+    static final String STANDARD_PRICES = "catalog-standard-prices";
+    /**
      * {@code CustomerResources.CUSTOMERS}: read here only to decide whether a caller may be shown which customers a
      * name matches, as the customer list does ({@link CustomerMatch}).
      */
     static final String CUSTOMERS = "customer-customers";
+    /**
+     * {@code OrderResources.DELIVERY_BATCHES}: an order's delivery schedule, held by whoever releases or sells; the
+     * work queue's batches due today ({@link WorkQueueReads#batchesDueToday}).
+     */
+    static final String DELIVERY_BATCHES = "sales-order-delivery-batches";
+    /** {@code OrderResources.CREDIT_HOLDS}: accounting's credit queue ({@link WorkQueueReads#creditReviewsPending}). */
+    static final String CREDIT_HOLDS = "sales-order-credit-holds";
+    /** {@code OrderResources.QUOTES}: the quote list ({@link WorkQueueReads#quotesAwaitingPriceApproval}). */
+    static final String QUOTES = "sales-quotes";
+    /**
+     * {@code OrderResources.QUOTE_PRICE_APPROVALS}: approving a quote's prices (14 BR-10), the Sales Manager's; the work
+     * queue shows the quotes waiting for it only to who holds it ({@link WorkQueue}).
+     */
+    static final String QUOTE_PRICE_APPROVALS = "sales-quote-price-approvals";
+    /**
+     * {@code PaymentResources.BANK_TRANSACTIONS}: the bank transfers screen
+     * ({@link WorkQueueReads#bankTransactionsToReview}).
+     */
+    static final String BANK_TRANSACTIONS = "payment-bank-transactions";
     /** The assistant's own resource, for a tool that mirrors no guarded screen: rule search, catalog search. */
     static final String ASSISTANT = "assistant-conversations";
 

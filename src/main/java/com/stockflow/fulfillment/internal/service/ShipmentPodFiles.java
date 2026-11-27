@@ -9,6 +9,7 @@ import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileCategory;
 import com.stockflow.common.storage.FileTransfers;
+import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.common.storage.PreparedFiles;
 import com.stockflow.common.storage.StagedUploads;
@@ -29,6 +30,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import com.stockflow.identity.api.IdentityService;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -43,9 +46,14 @@ import java.util.UUID;
 @Transactional
 public class ShipmentPodFiles {
 
-    /** A file as a shipment lists it; the bytes come from {@link #downloadLink}. */
+    /**
+     * A file as a shipment lists it; the bytes come from {@link #downloadLink}.
+     *
+     * @param uploadedBy     who uploaded it; null for one the carrier's webhook sent
+     * @param uploadedByName the display name of {@code uploadedBy}; null with it, or if unknown
+     */
     public record PodFile(UUID id, UUID shipmentId, String fileName, String contentType, long sizeBytes,
-                          UUID uploadedBy, Instant uploadedAt) {
+                          UUID uploadedBy, Instant uploadedAt, String uploadedByName) {
     }
 
     private final ShipmentJpaRepository shipments;
@@ -54,9 +62,12 @@ public class ShipmentPodFiles {
     private final StagedUploads staged;
     private final TransactionOperations tx;
     private final Clock clock;
+    private final IdentityService identities;
 
     public ShipmentPodFiles(ShipmentJpaRepository shipments, ShipmentPodFileJpaRepository files,
-                            FileTransfers transfers, StagedUploads staged, TransactionOperations tx, Clock clock) {
+                            FileTransfers transfers, StagedUploads staged, TransactionOperations tx, Clock clock,
+                            IdentityService identities) {
+        this.identities = identities;
         this.shipments = shipments;
         this.files = files;
         this.transfers = transfers;
@@ -93,7 +104,7 @@ public class ShipmentPodFiles {
             Optional<String> key = staged.keyOf(FileCategory.DOCUMENT, by, uploaded.uploadIds().get(0));
             Optional<PodFile> earlier = key.flatMap(k -> tx.execute(status -> {
                 requireShipment(shipmentId);
-                return files.findByStorageKeyAndShipmentId(k, shipmentId).map(ShipmentPodFiles::view);
+                return files.findByStorageKeyAndShipmentId(k, shipmentId).map(f -> view(f, nameOf(f.getUploadedBy())));
             }));
             if (earlier.isPresent()) {
                 return earlier.get();
@@ -104,24 +115,67 @@ public class ShipmentPodFiles {
             StoredFile stored = prepared.single().file();
             return tx.execute(status -> {
                 requireAttachable(shipmentId);
-                // The documents category also takes Word and Excel; a proof of delivery is a PDF or a photo of the paper.
-                if (!"application/pdf".equals(stored.contentType())
-                        && (stored.contentType() == null || !stored.contentType().startsWith("image/"))) {
-                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A proof of delivery is a PDF or an image");
-                }
+                requireProofType(stored);
                 ShipmentPodFileJpaEntity saved = files.saveAndFlush(new ShipmentPodFileJpaEntity(Identifiers.newId(),
                         shipmentId, stored.key(), stored.originalName(), stored.contentType(), stored.sizeBytes(), by,
                         clock.instant()));
                 prepared.adopt();
-                return view(saved);
+                return view(saved, nameOf(by));
             });
+        }
+    }
+
+    /**
+     * Keeps the proof of delivery a carrier's webhook sent with event {@code carrierEventId} (09 §4.5 step 7), as an
+     * uploaded one is kept - checked, scanned, stored - uploaded by nobody. Not transactional itself; called after the
+     * event was applied, with no caller in scope. Kept already for this event, or the shipment no longer delivered (a
+     * correction since): nothing is stored.
+     *
+     * @return whether it was kept
+     * @throws BusinessException {@code VALIDATION_FAILED} for a file that is not a PDF or an image
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public boolean keepFromCarrier(UUID shipmentId, UUID carrierEventId, FileUpload file) {
+        if (Boolean.FALSE.equals(tx.execute(status -> deliveredWithout(shipmentId, carrierEventId)))) {
+            return false;
+        }
+        try (PreparedFiles prepared = IncomingFiles.sent(List.of(file)).prepare(FileCategory.DOCUMENT, transfers,
+                staged)) {
+            StoredFile stored = prepared.single().file();
+            requireProofType(stored);
+            return Boolean.TRUE.equals(tx.execute(status -> {
+                if (!deliveredWithout(shipmentId, carrierEventId)) {
+                    return false;
+                }
+                files.saveAndFlush(ShipmentPodFileJpaEntity.fromCarrier(Identifiers.newId(), shipmentId, stored.key(),
+                        stored.originalName(), stored.contentType(), stored.sizeBytes(), clock.instant(),
+                        carrierEventId));
+                prepared.adopt();
+                return true;
+            }));
+        }
+    }
+
+    private boolean deliveredWithout(UUID shipmentId, UUID carrierEventId) {
+        return shipments.findById(shipmentId).filter(s -> s.getStatus() == ShipmentStatus.DELIVERED).isPresent()
+                && !files.existsByCarrierEventIdAndShipmentId(carrierEventId, shipmentId);
+    }
+
+    /** The documents category also takes Word and Excel; a proof of delivery is a PDF or a photo of the paper. */
+    private static void requireProofType(StoredFile stored) {
+        if (!"application/pdf".equals(stored.contentType())
+                && (stored.contentType() == null || !stored.contentType().startsWith("image/"))) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A proof of delivery is a PDF or an image");
         }
     }
 
     @Transactional(readOnly = true)
     public List<PodFile> list(UUID shipmentId) {
         requireShipment(shipmentId);
-        return files.findByShipmentIdOrderByUploadedAtAscIdAsc(shipmentId).stream().map(ShipmentPodFiles::view)
+        List<ShipmentPodFileJpaEntity> kept = files.findByShipmentIdOrderByUploadedAtAscIdAsc(shipmentId);
+        Map<UUID, String> names = identities.displayNames(kept.stream().map(ShipmentPodFileJpaEntity::getUploadedBy)
+                .filter(java.util.Objects::nonNull).distinct().toList());
+        return kept.stream().map(f -> view(f, f.getUploadedBy() == null ? null : names.get(f.getUploadedBy())))
                 .toList();
     }
 
@@ -152,8 +206,12 @@ public class ShipmentPodFiles {
         }
     }
 
-    private static PodFile view(ShipmentPodFileJpaEntity f) {
+    private String nameOf(UUID userId) {
+        return userId == null ? null : identities.displayNames(List.of(userId)).get(userId);
+    }
+
+    private static PodFile view(ShipmentPodFileJpaEntity f, String uploadedByName) {
         return new PodFile(f.getId(), f.getShipmentId(), f.getFileName(), f.getContentType(), f.getSizeBytes(),
-                f.getUploadedBy(), f.getUploadedAt());
+                f.getUploadedBy(), f.getUploadedAt(), uploadedByName);
     }
 }

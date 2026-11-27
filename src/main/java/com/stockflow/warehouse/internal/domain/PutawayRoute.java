@@ -22,8 +22,9 @@ import java.util.UUID;
  * (|dx| + |dy|) from where the clerk stands, the location code deciding a tie. OVERFLOW areas come last whatever
  * their distance (BR-17), and a location the map cannot place comes after every one it can.</p>
  *
- * <p>The distance crosses shelves and walls: aisles are not on the map (open question C46). The route is advice - the
- * clerk may visit the stops in any order.</p>
+ * <p>The distance crosses shelves and walls: aisles are not on the map (open question C46). That holds for the order
+ * only: the line drawn to each stop goes round them ({@link WalkingPath}, issue #410). The route is advice - the clerk
+ * may visit the stops in any order.</p>
  */
 public final class PutawayRoute {
 

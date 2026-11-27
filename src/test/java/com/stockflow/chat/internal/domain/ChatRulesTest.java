@@ -4,7 +4,6 @@ import com.stockflow.common.error.BusinessException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
 import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
@@ -64,19 +63,6 @@ class ChatRulesTest {
                 "the 4111 1111 1111 1111", null, null, Instant.now());
         assertThat(text.body()).isEqualTo("the **** **** **** 1111");
         assertThat(text.sameText("the 4111 1111 1111 1111")).as("a retried send is still the same").isTrue();
-    }
-
-    @Test
-    @DisplayName("BR-06: the VietQR payload names the bank, account, amount and content, with its CRC")
-    void vietQr() {
-        assertThat(VietQr.crc16("123456789")).isEqualTo("29B1");
-        String qr = VietQr.payload("970436", "0071000888999", new BigDecimal("1500000"), "HĐ-01 Đợt 1");
-        assertThat(qr).startsWith("000201010212").contains("0010A000000727").contains("0006970436")
-                .contains("01130071000888999").contains("0208QRIBFTTA").contains("5303704").contains("54071500000")
-                .contains("5802VN").contains("0811HD-01 Dot 1");
-        assertThat(qr.substring(qr.length() - 4)).isEqualTo(VietQr.crc16(qr.substring(0, qr.length() - 4)));
-        assertThatThrownBy(() -> VietQr.payload("97", "1", BigDecimal.ONE, "x"))
-                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

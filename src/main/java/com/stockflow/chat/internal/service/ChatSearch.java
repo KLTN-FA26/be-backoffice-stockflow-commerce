@@ -61,7 +61,7 @@ public class ChatSearch {
         callers.staff(user);
         String q = query == null ? "" : query.strip();
         if (q.length() < MIN_QUERY || q.length() > 200) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Search for 2 to 200 characters");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Search for 2 to 200 characters").localized("refusal.chat.searchLength");
         }
         int pageSize = properties.pageSize(size, 20);
         int index = Math.max(0, page);

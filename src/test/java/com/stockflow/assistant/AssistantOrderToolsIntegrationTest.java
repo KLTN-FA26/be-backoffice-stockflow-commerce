@@ -6,12 +6,14 @@ import com.stockflow.assistant.internal.domain.ToolCall;
 import com.stockflow.assistant.internal.domain.Turn;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
+import com.stockflow.support.AssistantStock;
 import com.stockflow.support.ConfirmedOrders;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredMvc;
 import com.stockflow.support.SecuredProductionReceiptTest;
+import com.stockflow.support.StaffFixtures;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -85,13 +87,8 @@ class AssistantOrderToolsIntegrationTest {
         sku = "AOT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         // A day of this test's own, far from every other test's orders: the list filters on it see only these.
         placedOn = LocalDate.of(2091, 1, 1).plusDays(ThreadLocalRandom.current().nextInt(20_000));
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Order tools fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Order tools fixture");
-        });
+        // Only a customer's SKU is ordered (fk_order_line_customer_sku): the demo customer's, whose orders these are.
+        new AssistantStock(jdbc, tx, entityManager).sku(sku);
         when(model.available()).thenReturn(true);
         when(model.closingTurn(anyString())).thenAnswer(call -> new Turn.ModelTurn("{\"closing\":true}",
                 call.getArgument(0), List.of()));
@@ -150,6 +147,28 @@ class AssistantOrderToolsIntegrationTest {
                 .as("the instalments are findOrder's, for one order").doesNotContainKeys("paymentTerm",
                         "paymentStatus", "paid", "amountDue");
         assertThat(JsonPath.<Integer>read(result, "$.total")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a warehouse manager's findOrders lists only the orders shipping from their warehouses, as the order "
+            + "list does: an order of another warehouse is neither listed nor counted")
+    void warehouseManagerSeesOnlyTheirWarehousesOrders() throws Exception {
+        StaffFixtures staffFixtures = new StaffFixtures(jdbc, tx, entityManager);
+        UUID other = staffFixtures.otherWarehouse().id();
+        String ours = shipFrom(held("INVENTORY", null, 9), DemoData.WAREHOUSE_HCM);
+        String theirs = shipFrom(held("INVENTORY", null, 10), other);
+        UUID manager = staffFixtures.staff("WAREHOUSE_MANAGER", DemoData.WAREHOUSE_HCM);
+        script(toolUse("findOrders", "{\"status\":\"ON_HOLD\",\"holdReason\":\"ANY\",\"placedFrom\":\"" + placedOn
+                + "\",\"placedTo\":\"" + placedOn + "\",\"limit\":50}"), answer("Có 1 đơn."));
+        String conversation = start(Role.WAREHOUSE_MANAGER, manager);
+
+        http.asRole(Role.WAREHOUSE_MANAGER, manager, ask(conversation, "Đơn nào đang bị giữ hôm nay?"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.toolCalls[0].outcome").value("OK"));
+
+        String result = result(conversation, "findOrders");
+        assertThat(JsonPath.<List<String>>read(result, "$.orders[*].orderNumber")).contains(ours).doesNotContain(theirs);
+        assertThat(result).doesNotContain(theirs);
     }
 
     @Test
@@ -301,6 +320,15 @@ class AssistantOrderToolsIntegrationTest {
                     + "VALUES (?, ?, ?, 100, 10000, 'VND')", Identifiers.newId(), id, sku);
         });
         return number;
+    }
+
+    /** The order ships from {@code warehouse}: Sales chose it, which is what the order list's warehouse limit reads. */
+    private String shipFrom(String orderNumber, UUID warehouse) {
+        UUID chooser = tx.execute(s -> ReferenceRows.user(entityManager));
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE ordering.customer_order SET shipping_warehouse_id = ?, shipping_warehouse_chosen_at = NOW(),
+                    shipping_warehouse_chosen_by = ? WHERE order_number = ?""", warehouse, chooser, orderNumber));
+        return orderNumber;
     }
 
     private String result(String conversation, String tool) {

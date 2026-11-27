@@ -133,11 +133,17 @@ class QuoteVatIntegrationTest {
     }
 
     @Test
-    @DisplayName("a first production: plate fee added, priced by Sales; VAT per line; sent, accepted and placed with the "
-            + "total with tax; revenue before tax on the dashboard")
+    @DisplayName("TC-F03-02: a first production: plate fee added, priced by Sales; VAT per line; sent, accepted and "
+            + "placed with the total with tax; revenue before tax on the dashboard")
     void aFirstProductionQuotedWithVatAndFees() {
         String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 10, "STANDARD", false).sku();
         CustomerSkuRows.stock(jdbc, tx, sku, 100);
+        // HĐ-7: the quote takes the rate in force today - 8% through 2026 (NĐ 174/2025), 10% after.
+        BigDecimal rate = com.stockflow.support.VatOfTheDay.standard(jdbc);
+        BigDecimal goodsTax = com.stockflow.support.VatOfTheDay.tax(90_000, rate);
+        BigDecimal tax = goodsTax.add(com.stockflow.support.VatOfTheDay.tax(500_000, rate))
+                .add(com.stockflow.support.VatOfTheDay.tax(300_000, rate));
+        BigDecimal total = tax.add(new BigDecimal("890000"));
 
         Quotes.QuoteView drafted = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
                 draft(sku, List.of())));
@@ -145,7 +151,7 @@ class QuoteVatIntegrationTest {
             assertThat(fee.kind()).isEqualTo(FeeKind.PLATE_FEE);
             assertThat(fee.sku()).isEqualTo(sku);
             assertThat(fee.amount()).as("the system adds it; Sales prices it").isNull();
-            assertThat(fee.taxRate()).isEqualByComparingTo("10");
+            assertThat(fee.taxRate()).isEqualByComparingTo(rate);
         });
         assertThat(drafted.proposedTotal()).isNull();
         assertThatThrownBy(() -> quotes.send(sales, drafted.id(), drafted.version()))
@@ -154,11 +160,11 @@ class QuoteVatIntegrationTest {
         Quotes.QuoteView priced = quotes.edit(sales, drafted.id(), drafted.version(), draft(sku, List.of(
                 new Quotes.Fee(FeeKind.PLATE_FEE, sku, new BigDecimal("500000")),
                 new Quotes.Fee(FeeKind.SHIPPING_FEE, null, new BigDecimal("300000")))));
-        // 90,000 of goods + 800,000 of fees; VAT 10% each: 9,000 + 50,000 + 30,000.
+        // 90,000 of goods + 800,000 of fees; VAT at the day's rate each: at 10%, 9,000 + 50,000 + 30,000.
         assertThat(priced.proposed().subtotal()).isEqualByComparingTo("90000");
         assertThat(priced.proposed().fees()).isEqualByComparingTo("800000");
-        assertThat(priced.proposed().tax()).isEqualByComparingTo("89000");
-        assertThat(priced.proposedTotal()).isEqualByComparingTo("979000");
+        assertThat(priced.proposed().tax()).isEqualByComparingTo(tax);
+        assertThat(priced.proposedTotal()).isEqualByComparingTo(total);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.quote_fee_line WHERE quote_id = ?", Long.class,
                 drafted.id())).isEqualTo(2);
 
@@ -168,23 +174,23 @@ class QuoteVatIntegrationTest {
         Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
                 quotes.get(portal, sent.id()).version(), Map.of()));
         assertThat(accepted.status()).isEqualTo(QuoteStatus.ACCEPTED);
-        assertThat(accepted.acceptedTotal()).isEqualByComparingTo("979000");
+        assertThat(accepted.acceptedTotal()).isEqualByComparingTo(total);
 
         UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
                 .convertedOrder().orderId();
         OrderSummary order = orders.findById(orderId).orElseThrow();
-        assertThat(order.total().amount()).as("what the customer pays").isEqualByComparingTo("979000");
+        assertThat(order.total().amount()).as("what the customer pays").isEqualByComparingTo(total);
         assertThat(order.netTotal().amount()).isEqualByComparingTo("890000");
-        assertThat(order.charges().taxTotal().amount()).isEqualByComparingTo("89000");
+        assertThat(order.charges().taxTotal().amount()).isEqualByComparingTo(tax);
         assertThat(order.charges().fees()).extracting(OrderSummary.FeeSummary::kind)
                 .containsExactlyInAnyOrder(FeeKind.PLATE_FEE, FeeKind.SHIPPING_FEE);
         assertThat(order.lines()).singleElement().satisfies(line -> {
-            assertThat(line.taxRate()).isEqualByComparingTo("10");
-            assertThat(line.taxAmount().amount()).isEqualByComparingTo("9000");
+            assertThat(line.taxRate()).isEqualByComparingTo(rate);
+            assertThat(line.taxAmount().amount()).isEqualByComparingTo(goodsTax);
         });
         assertThat(jdbc.queryForObject("SELECT net_amount || '/' || tax_amount || '/' || total_amount FROM "
                 + "ordering.customer_order WHERE id = ?", String.class, orderId))
-                .isEqualTo("890000.0000/89000.0000/979000.0000");
+                .isEqualTo("890000.0000/" + tax.setScale(4) + "/" + total.setScale(4));
         // 4B-5: a DRAFT order until its contract is signed - not the customer's to see, not a sale yet.
         assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
         assertThatThrownBy(() -> customerOrders.myOrder(customerId, orderId))
@@ -194,13 +200,13 @@ class QuoteVatIntegrationTest {
                 .isEqualTo(OrderStatus.PENDING_PAYMENT);
         // The portal shows the same three totals, each line's VAT and the fee lines: the lines and fees add up.
         var mine = customerOrders.myOrder(customerId, orderId);
-        assertThat(mine.total()).isEqualByComparingTo("979000");
+        assertThat(mine.total()).isEqualByComparingTo(total);
         assertThat(mine.charges().netTotal()).isEqualByComparingTo("890000");
-        assertThat(mine.charges().taxTotal()).isEqualByComparingTo("89000");
+        assertThat(mine.charges().taxTotal()).isEqualByComparingTo(tax);
         assertThat(mine.charges().fees()).extracting(com.stockflow.order.internal.service.CustomerOrders.Fee::kind)
                 .containsExactlyInAnyOrder("PLATE_FEE", "SHIPPING_FEE");
         assertThat(mine.lines()).singleElement().satisfies(line ->
-                assertThat(line.taxAmount()).isEqualByComparingTo("9000"));
+                assertThat(line.taxAmount()).isEqualByComparingTo(goodsTax));
 
         // The dashboard (17 §4.11, D33): revenue before tax, the fee lines included; the SKU's cartons counted.
         Await.until("the order rolled up", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
@@ -238,6 +244,55 @@ class QuoteVatIntegrationTest {
         Quotes.QuoteView waived = quotes.edit(sales, drafted.id(), drafted.version(), draft(sku, List.of(
                 new Quotes.Fee(FeeKind.PLATE_FEE, sku, BigDecimal.ZERO))));
         assertThat(quotes.send(sales, drafted.id(), waived.version()).status()).isEqualTo(QuoteStatus.SENT);
+    }
+
+    @Test
+    @DisplayName("QD4: produced since the draft was edited, the plate fee still on it: refused when sent")
+    void thePlateFeeIsChargedOnce() {
+        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 10, "STANDARD", false).sku();
+        Quotes.QuoteView drafted = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                draft(sku, List.of(new Quotes.Fee(FeeKind.PLATE_FEE, sku, new BigDecimal("500000"))))));
+        assertThat(drafted.fees()).as("produced for the first time").extracting(Quotes.FeeView::kind)
+                .containsExactly(FeeKind.PLATE_FEE);
+        CustomerSkuRows.produced(jdbc, tx, customerId, sku);
+        assertThatThrownBy(() -> quotes.send(sales, drafted.id(), drafted.version()))
+                .extracting(QuoteVatIntegrationTest::code).isEqualTo(ErrorCode.QUOTE_PLATE_FEE_REORDER);
+        Quotes.QuoteView edited = quotes.edit(sales, drafted.id(), drafted.version(), draft(sku, List.of()));
+        assertThat(edited.fees()).as("the reorder has none").isEmpty();
+        assertThat(quotes.send(sales, drafted.id(), edited.version()).status()).isEqualTo(QuoteStatus.SENT);
+    }
+
+    @Test
+    @DisplayName("14 BR-10 (2026-11-26, replacing D-1's alert after the send): a quote more than 10% below the customer's "
+            + "own price waits for the sales managers, who are told; 5% below is sent")
+    void aDeepDiscountWaitsForTheManagers() {
+        UUID manager = new com.stockflow.support.StaffFixtures(jdbc, tx, entityManager).staff("SALES_MANAGER");
+        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 10).sku();
+        tx.executeWithoutResult(s -> {
+            UUID price = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO catalog.customer_price (id, customer_id, sku, currency, version, created_at)
+                    VALUES (?, ?, ?, 'VND', 0, NOW())""", price, customerId, sku);
+            jdbc.update("""
+                    INSERT INTO catalog.customer_price_tier (id, customer_price_id, min_quantity, unit_price, version,
+                        created_at)
+                    VALUES (?, ?, 1, 4000, 0, NOW())""", Identifiers.newId(), price);
+        });
+        Quotes.QuoteView near = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null, List.of(new Quotes.Line(sku, 3,
+                        List.of(new Quotes.Tier(1, new BigDecimal("3800"))))), null, List.of())));
+        assertThat(quotes.send(sales, near.id(), near.version()).status()).as("5% below is within the threshold")
+                .isEqualTo(QuoteStatus.SENT);
+        Quotes.QuoteView deep = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                draft(sku, List.of())));
+        Quotes.QuoteView waiting = quotes.send(sales, deep.id(), deep.version());
+
+        assertThat(waiting.status()).isEqualTo(QuoteStatus.DRAFT);
+        assertThat(waiting.priceReviewPending()).isTrue();
+        String title = "Báo giá " + deep.quoteNumber() + " chờ duyệt giá";
+        Await.until("the managers told", ASYNC, () -> new com.stockflow.support.StaffFixtures(jdbc, tx, entityManager).titles(manager).contains(title));
+        assertThat(new com.stockflow.support.StaffFixtures(jdbc, tx, entityManager).titles(manager))
+                .noneMatch(t -> t.contains(near.quoteNumber()));
     }
 
     @Test

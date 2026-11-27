@@ -29,6 +29,13 @@ public interface KnowledgeRepository {
     List<String> sources();
 
     /**
+     * The rules {@code anchors} name ({@code 15 BR-08}), each with every passage it was cut into ({@code 15 BR-08 (2)},
+     * ...), ordered by anchor; a rule the index does not hold is absent. For a caller that knows which rule it wants,
+     * not one searching for it (the error explanations, contract §4.1).
+     */
+    List<KnowledgeChunk> rules(java.util.Collection<String> anchors);
+
+    /**
      * The keyword ranking: the best {@code limit} chunks for {@code query} by its words in the text (accents and case
      * ignored), title similarity for typos, and a rule or section the query names first, every part of it
      * ({@link KnowledgeSearch#namedRules}, {@link KnowledgeSearch#isNamed}).

@@ -5,11 +5,13 @@
  *
  * <p><b>May depend on:</b> order, inventory, warehouse, identity, customer (only to find the signed-in customer
  * whose order's vehicles the portal shows, 3-6; no longer design: the warehouse checks no design,
- * kltn-docs 08 §1). Plus {@code common} and {@code contracts}, which are
+ * kltn-docs 08 §1), payment, product (only the names of the SKUs a delivery note prints; product depends on inventory
+ * and identity alone, so there is no cycle). Plus {@code common} and {@code contracts}, which are
  * available to every module. From inventory it uses two named interfaces: {@code api}, and
  * {@code consumption} — the narrow one that deducts picked stock, books put-backs and moves cartons into and out of
  * a staging area, in the pick line's own transaction (SCRUM-275, team plan 4C-5). No other module may use
- * {@code consumption}. From order it uses {@code api}, and implements {@code spi}: which units of an order are labelled
+ * {@code consumption}. It implements inventory's {@code spi}: which consumed cartons are picked for an order and not
+ * handed over yet, asked when an LPN label is printed again (kltn-docs 03 §4.1 step 4). From order it uses {@code api}, and implements {@code spi}: which units of an order are labelled
  * and not handed over, asked when Sales closes the rest of an order (WF4-CLOSE-REST, 2026-11-13).</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
@@ -21,5 +23,6 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "order :: spi", "inventory :: api",
-        "inventory :: consumption", "warehouse :: api", "identity :: api", "customer :: api", "payment :: api"})
+        "inventory :: consumption", "inventory :: spi", "warehouse :: api", "identity :: api", "customer :: api", "payment :: api",
+        "product :: api"})
 package com.stockflow.fulfillment;

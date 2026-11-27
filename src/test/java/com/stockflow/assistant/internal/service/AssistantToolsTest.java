@@ -208,7 +208,7 @@ class AssistantToolsTest {
         ToolExecution picking = answering("getOrderPicking", new GetOrderPickingTool.Answer("SO-20991231-900001",
                 "PICKED", assigned, picked, List.of(), null));
         ToolExecution lot = answering("traceLot", new TraceLotTool.Answer("EVAL-LOT-2401", 1, List.of(
-                new TraceLotTool.Lot("EVAL-LID-90", "EVAL-LOT-2401", received, "GOODS_RECEIPT", "GR-1", "LSX-1", 100,
+                new TraceLotTool.Lot("EVAL-LID-90", "EVAL-LOT-2401", received, "GOODS_RECEIPT", "LSX-1", 100,
                         97, 97, 0,
                         1, false, List.of(new TraceLotTool.OrderLeg("SO-20991231-900003", 3, 0, firstPick, lastPick)),
                         0, false, List.of(), 0, false, List.of()))));

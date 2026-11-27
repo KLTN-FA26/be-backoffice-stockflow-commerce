@@ -12,7 +12,7 @@ import java.util.UUID;
 /**
  * Products as the product module itself makes them, for tests of what happens around a product's life
  * (SCRUM-461): created with a brand and a category, submitted and approved by two different people, so the
- * default variant is ACTIVE and the SKU has an inventory item.
+ * default variant is ACTIVE. A catalogue variant has no inventory item (V20270105000100).
  */
 public final class ProductFixtures {
 

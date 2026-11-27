@@ -13,7 +13,10 @@ import java.util.UUID;
 /**
  * One installment of a signed contract's payment plan (kltn-docs 15 §4.1, §5.1): made when the contract is signed, as
  * the plan row says - amount, milestone, days to pay, the delivery batch it is tied to - and never changed after. Its
- * milestone comes once ({@link #reach}); receipts pay it ({@link #pay}), a voided receipt takes that back
+ * milestone comes once ({@link #reach}) - unless it is paid after delivery and the delivery it counted from is
+ * corrected to a failure, which takes the milestone back ({@link #withdrawMilestone}) until the goods are delivered
+ * again, or the order comes to count as delivered in full from another day, which moves it ({@link #redate}); receipts
+ * pay it ({@link #pay}), a voided receipt takes that back
  * ({@link #unpay}); the unpaid installments of a cancelled order are {@link #cancel cancelled}, and a closure of the
  * rest of the order takes off what the goods closed were worth ({@link #reduce}, 4B-9).
  *
@@ -139,17 +142,6 @@ public final class Installment {
         return openFee(InstallmentMilestone.CANCELLATION_FEE, ofContract, seq, name, owed, at, day);
     }
 
-    /**
-     * The fee item of a failed trip (WF-05 fix plan, section 2): what the customer pays for a delivery they refused or
-     * misaddressed, once Sales decide to deliver again. As the cancellation fee item: due at once, numbered after the
-     * plan, never lowered by a closure and never cancelled - the trip failed whatever becomes of the order. Due at once
-     * is deliberate and an open question for the owner (see {@code InstallmentService.chargeFailedDelivery}).
-     */
-    public static Installment openDeliveryFailureFee(Installment ofContract, int seq, String name, BigDecimal owed,
-                                                     Instant at, LocalDate day) {
-        return openFee(InstallmentMilestone.FAILED_TRIP_FEE, ofContract, seq, name, owed, at, day);
-    }
-
     private static Installment openFee(InstallmentMilestone kind, Installment ofContract, int seq, String name,
                                        BigDecimal owed, Instant at, LocalDate day) {
         Objects.requireNonNull(ofContract, "ofContract");
@@ -168,7 +160,9 @@ public final class Installment {
     /**
      * Its milestone came on {@code day} (15 §4.1 step 2): due from then on, and by {@code day} plus its days to pay
      * unless it is paid before delivery, which has no due day. Paid early, it keeps PARTIALLY_PAID or PAID and from now
-     * on has a due day (step 3). A milestone comes once; a cancelled installment stays cancelled.
+     * on has a due day (step 3). A milestone comes once - unless a delivery it counted from is corrected to a failure
+     * ({@link #withdrawMilestone}), after which the next delivery reaches it again; a cancelled installment stays
+     * cancelled.
      *
      * @return whether anything changed
      */
@@ -187,6 +181,60 @@ public final class Installment {
     }
 
     /**
+     * WF-05 BE-04 (decision Q-3): the order counts as delivered in full from another moment than the one it was reached
+     * from - a delivery recorded after a later one, a return or a loss closed after the last delivery (the later of the
+     * two is the day, Q-3), a delivery corrected and made again. Reached once and never moved, the customer was due -
+     * and overdue - from a stale day: up to fifteen days early, the credit hold and the return window following it
+     * (audit M-3). Only after delivery, reached and still owing, as {@link #withdrawMilestone}; status unchanged - DUE
+     * stays DUE, PARTIALLY_PAID keeps what was paid. {@code ck_installment_status_facts} and
+     * {@code check_installment_transition} allow exactly this move.
+     *
+     * @return whether anything changed (false: not such an installment, or already from {@code at})
+     */
+    public boolean redate(Instant at, LocalDate day) {
+        Objects.requireNonNull(at, "at");
+        Objects.requireNonNull(day, "day");
+        if (milestone != InstallmentMilestone.AFTER_DELIVERY || reachedAt == null
+                || status == InstallmentStatus.PAID || status == InstallmentStatus.CANCELLED) {
+            return false;
+        }
+        LocalDate due = day.plusDays(dueDays);
+        if (at.equals(reachedAt) && due.equals(dueDate)) {
+            return false;
+        }
+        this.reachedAt = at;
+        this.dueDate = due;
+        return true;
+    }
+
+    /**
+     * The delivery its milestone counted from did not happen after all: the carrier reported it delivered and the
+     * warehouse manager corrected that to a failure (kltn-docs 09 §4.3 step 5; E17: the milestone of an installment
+     * paid after delivery "tính lại theo kết quả mới"; WF-05 GH-3). Only after delivery - the one milestone a
+     * correction undoes. It has no due day any more: DUE goes back to NOT_DUE, and PARTIALLY_PAID keeps what was paid,
+     * as an installment paid early does (15 §4.1 step 3). Overdue, the receivable or committed figure of
+     * {@code ReceivablesAdapter} and the credit check ({@code InstallmentBook.overdue}) are all read from the due day,
+     * none from a stored flag, so the customer is no longer overdue for goods they never received. The next delivery
+     * {@link #reach reaches} it again, from that delivery's own day.
+     *
+     * <p>A paid one keeps what it has: it owes nothing, so its due day decides nothing. A cancelled one is final.</p>
+     *
+     * @return whether anything changed
+     */
+    public boolean withdrawMilestone() {
+        if (milestone != InstallmentMilestone.AFTER_DELIVERY || reachedAt == null
+                || status == InstallmentStatus.PAID || status == InstallmentStatus.CANCELLED) {
+            return false;
+        }
+        this.reachedAt = null;
+        this.dueDate = null;
+        if (status == InstallmentStatus.DUE) {
+            this.status = InstallmentStatus.NOT_DUE;
+        }
+        return true;
+    }
+
+    /**
      * A receipt line pays {@code money} of it (15 §4.2 step 6-7): never more than it still owes (BR-05: nothing is left
      * over), never once it is paid in full or cancelled. Paid in full it is PAID; short of that it is PARTIALLY_PAID -
      * past its due day too: it is then {@link #overdue} for what is left, which the status no longer hides.
@@ -199,13 +247,14 @@ public final class Installment {
             throw new IllegalArgumentException("A receipt line pays money");
         }
         if (!status.takesMoney()) {
-            throw new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, "Installment %d of contract %s is %s"
-                    .formatted(seq, contractNumber, status));
+            throw notPayable();
         }
         if (money.compareTo(outstanding()) > 0) {
             throw new BusinessException(ErrorCode.PAYMENT_RECEIPT_EXCEEDS_OUTSTANDING,
                     "Installment %d of contract %s still owes %s %s, not %s".formatted(seq, contractNumber,
-                            outstanding().toPlainString(), currency, money.toPlainString()));
+                            outstanding().toPlainString(), currency, money.toPlainString()), java.util.List.of(),
+                    java.util.Map.of("installmentId", id, "outstanding", outstanding(), "currency", currency),
+                    "refusal.payment.exceedsOutstanding", seq, contractNumber, outstanding(), money);
         }
         this.paidAmount = paidAmount.add(money);
         if (paidAmount.add(reducedAmount).compareTo(amount) == 0) {
@@ -238,6 +287,22 @@ public final class Installment {
         } else {
             this.status = reachedAt != null ? InstallmentStatus.DUE : InstallmentStatus.NOT_DUE;
         }
+    }
+
+    /**
+     * {@code INSTALLMENT_NOT_PAYABLE}: it is paid or cancelled. A fee item is named by its kind ("the cancellation fee"),
+     * not by its number: its seq starts at {@link #FIRST_FEE_SEQ}, and "installment 21" means nothing to the customer
+     * reading it (WF-02 r6, owner question 12). The status and the kind go in as enums, read as their labels.
+     */
+    public BusinessException notPayable() {
+        if (isFeeItem()) {
+            return new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, "The %s of contract %s is %s"
+                    .formatted(milestone, contractNumber, status))
+                    .localized("refusal.payment.feeNotPayable", milestone, contractNumber, status);
+        }
+        return new BusinessException(ErrorCode.INSTALLMENT_NOT_PAYABLE, "Installment %d of contract %s is %s"
+                .formatted(seq, contractNumber, status))
+                .localized("refusal.payment.notPayable", seq, contractNumber, status);
     }
 
     /**
@@ -295,6 +360,11 @@ public final class Installment {
         return dueDate != null && dueDate.isBefore(today) && status.takesMoney();
     }
 
+    /** How many days past its due day it is still owing on {@code today}; 0 when it is not {@link #overdue}. */
+    public int daysOverdue(LocalDate today) {
+        return overdue(today) ? (int) java.time.temporal.ChronoUnit.DAYS.between(dueDate, today) : 0;
+    }
+
     /** What it still owes: its amount less what was paid and taken off; zero once paid or cancelled. */
     public BigDecimal outstanding() {
         return status == InstallmentStatus.CANCELLED ? BigDecimal.ZERO
@@ -307,8 +377,9 @@ public final class Installment {
     }
 
     /**
-     * A fee item rather than a row of the contract's plan: a cancellation fee (15 §4.6 step 18) or the fee of a failed
-     * trip. Its money is the fee's alone - no settlement counts it as collected for goods, and it is never refunded.
+     * A fee item rather than a row of the contract's plan: a cancellation fee (15 §4.6 step 18), or - on rows written
+     * before WF-05 decision Q-19 removed it - the fee of a failed trip. Its money is the fee's alone - no settlement
+     * counts it as collected for goods, and it is never refunded.
      */
     public boolean isFeeItem() {
         return milestone.feeItem();
@@ -348,6 +419,11 @@ public final class Installment {
      * the plan, and must not read as one of its installments.
      */
     public String transferReference() {
-        return isFeeItem() ? contractNumber + " FEE" + (seq - FIRST_FEE_SEQ + 1) : contractNumber + " DOT" + seq;
+        return transferReference(contractNumber, seq, isFeeItem());
+    }
+
+    /** {@link #transferReference()} of an installment read as a row, without restoring it. */
+    public static String transferReference(String contractNumber, int seq, boolean feeItem) {
+        return feeItem ? contractNumber + " FEE" + (seq - FIRST_FEE_SEQ + 1) : contractNumber + " DOT" + seq;
     }
 }

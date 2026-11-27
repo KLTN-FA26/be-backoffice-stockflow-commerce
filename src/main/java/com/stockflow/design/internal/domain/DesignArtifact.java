@@ -8,8 +8,9 @@ import java.util.UUID;
 
 /**
  * Append-only file revision; confirmed snapshots reference an exact revision. {@code documentChecksum} is the SHA-256 of
- * the canonical layout a customer's file was rendered from (kltn-docs 12 BR-10) and {@code templateVersion} the version
- * of the template it was drawn on; both null for a file of the staff workflow.
+ * the canonical layout a customer's file was rendered from (kltn-docs 12 BR-10) and {@code templateVersion} the print
+ * version ({@code PrintConfig#printVersion}) of the template it was drawn on; both null for a file of the staff
+ * workflow.
  */
 public record DesignArtifact(UUID id, UUID designId, com.stockflow.design.api.DesignArtifactRole role,
                              StoredFile file, String checksum, String uploadKey, String documentChecksum,

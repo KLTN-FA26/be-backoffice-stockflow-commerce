@@ -68,10 +68,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionOperations;
 
 /**
- * The Sales Manager's side of a customer's design (kltn-docs 12 §4.4, §4.5): the queue of designs submitted alone, and
- * the decision on one - also on one in a project's review round, which the decision counts towards closing (§4.10,
- * {@link DesignReviewRounds}). Who may decide is the permission on the endpoint ({@code design-designs:APPROVE}; BR-06), not who
- * owns the design.
+ * The Production Coordinator's side of a customer's design (kltn-docs 12 §4.4, §4.5): the queue of designs submitted
+ * alone, and the decision on one - also on one in a project's review round, which the decision counts towards closing
+ * (§4.10, {@link DesignReviewRounds}). Who may decide is the permission on the endpoint
+ * ({@code design-designs:APPROVE}; BR-06), not who owns the design.
  *
  * <h2>Approving is one step (BR-09)</h2>
  * <p>The files are checked, the print file stamped for the press, the production instruction drawn, the snapshot
@@ -89,7 +89,7 @@ import org.springframework.transaction.support.TransactionOperations;
 @Transactional(readOnly = true)
 public class DesignReviewService {
 
-    /** What the Sales Manager approves: the files the customer submitted (plan D2). */
+    /** What the Production Coordinator approves: the files the customer submitted (plan D2). */
     private static final List<DesignArtifactRole> SUBMITTED = List.of(DesignArtifactRole.CUSTOMER_PREVIEW,
             DesignArtifactRole.PRINT_READY, DesignArtifactRole.TECHNICAL_SPEC);
     private static final int REASON_MAX = 2000;
@@ -112,6 +112,7 @@ public class DesignReviewService {
     private final ApplicationEventPublisher events;
     private final DraftViews views;
     private final DesignQuoteRequestService quoteRequests;
+    private final DesignProjectQuoteRequestService projectQuoteRequests;
     private final DesignReviewRounds reviewRounds;
     private final EntityManager entityManager;
     private final TransactionOperations tx;
@@ -125,7 +126,8 @@ public class DesignReviewService {
                                ProductService products, UomConversionService units, FileStorage storage,
                                FileTransfers files, PrintReadyStamp stamp, ProductionInstructionSheet instructions,
                                ApplicationEventPublisher events, DraftViews views,
-                               DesignQuoteRequestService quoteRequests, DesignReviewRounds reviewRounds,
+                               DesignQuoteRequestService quoteRequests,
+                               DesignProjectQuoteRequestService projectQuoteRequests, DesignReviewRounds reviewRounds,
                                EntityManager entityManager, TransactionOperations tx, Clock clock) {
         this.drafts = drafts;
         this.documents = documents;
@@ -145,6 +147,7 @@ public class DesignReviewService {
         this.events = events;
         this.views = views;
         this.quoteRequests = quoteRequests;
+        this.projectQuoteRequests = projectQuoteRequests;
         this.reviewRounds = reviewRounds;
         this.entityManager = entityManager;
         this.tx = tx;
@@ -185,7 +188,7 @@ public class DesignReviewService {
                 approval.printReadyChecksum());
              PrintFileCopy stamped = PrintFileCopy.empty()) {
             // Titled by its template and design: the customer's SKU exists only once the approval commits.
-            stamp.stamp(submitted, approval.template(), "Print file " + approval.template().code() + ", design " + id,
+            int pages = stamp.stamp(submitted, approval.template(), "Print file " + approval.template().code() + ", design " + id,
                     stamped);
             long size = stamped.size();
             if (size > FileCategory.DESIGN_RENDER.maxBytes()) {
@@ -195,7 +198,7 @@ public class DesignReviewService {
             try (InputStream content = Files.newInputStream(stamped.path());
                  PreparedFiles print = files.prepare(FileCategory.DESIGN_RENDER,
                          new FileUpload("print-ready.pdf", "application/pdf", size, content))) {
-                return tx.execute(status -> approve(id, actor, note, approval, print));
+                return tx.execute(status -> approve(id, actor, note, approval, print, pages));
             }
         } catch (IOException ex) {
             throw new StorageException("Could not read the stamped print file", ex);
@@ -241,11 +244,14 @@ public class DesignReviewService {
             DesignArtifactJpaEntity file = submitted.get(role) == null ? null
                     : artifacts.findById(submitted.get(role)).orElse(null);
             if (file == null || !file.getDraftId().equals(id) || !layout.getChecksum().equals(file.getDocumentChecksum())
-                    || !Long.valueOf(template.version()).equals(file.getTemplateVersion())) {
-                // The template was edited after the design was submitted: its files no longer fit it. Return it.
+                    || !Long.valueOf(template.printVersion()).equals(file.getTemplateVersion())) {
+                // What the files are drawn on changed after the design was submitted (its print version moved: a
+                // rename or an activation does not move it): they no longer fit it. Return it.
+                // Only a reviewer gets here, and only the customer can render the files again: told as such, under
+                // the same code the customer's own refusal carries.
                 throw new BusinessException(ErrorCode.DESIGN_FILES_OUTDATED, "The submitted " + role
                         + " file no longer matches the layout or the template", List.of(),
-                        Map.of("roles", List.of(role.name())));
+                        Map.of("roles", List.of(role.name())), "refusal.design.filesOutdatedAtReview");
             }
         }
         DesignArtifactJpaEntity print = artifacts.findById(submitted.get(DesignArtifactRole.PRINT_READY)).orElseThrow();
@@ -254,14 +260,14 @@ public class DesignReviewService {
         }
         String productName = products.findById(draft.getProductId()).map(ProductSummary::name).orElse(null);
         UomConversion carton = units.conversionsOf(List.of(new Sku(draft.getSku()))).getOrDefault(draft.getSku(),
-                List.of()).stream().filter(unit -> unit.active() && !unit.base() && unit.factor() > 1)
+                List.of()).stream().filter(unit -> unit.active() && unit.factor() > 1)
                 .max(Comparator.comparingInt(UomConversion::factor)).orElse(null);
         return new Approval(draft.getVersion(), layout.getChecksum(), submitted, print.storedFile(),
                 print.getChecksum(), template, productName, carton);
     }
 
     private DesignWorkflowService.DraftView approve(UUID id, UUID actor, String note, Approval approval,
-                                                    PreparedFiles print) {
+                                                    PreparedFiles print, int printPages) {
         DesignDraftJpaEntity draft = lockPending(id, approval.version());
         DesignDocumentJpaEntity layout = documents.findById(id).orElseThrow();
         if (!layout.getChecksum().equals(approval.layoutChecksum()) || !draft.getCurrentArtifacts().entrySet()
@@ -270,21 +276,21 @@ public class DesignReviewService {
         }
         Instant now = clock.instant();
         // The stamped print file replaces the submitted one; the instruction is new. Both name the approved layout.
-        if (printConfigs.byId(draft.getTemplateId()).map(PrintConfig::version).orElse(-1L)
-                != approval.template().version()) {
+        if (printConfigs.byId(draft.getTemplateId()).map(PrintConfig::printVersion).orElse(-1L)
+                != approval.template().printVersion()) {
             throw new BusinessException(ErrorCode.CONFLICT, "The template changed while the design was being approved");
         }
         DesignArtifactJpaEntity stampedFile = newArtifact(id, DesignArtifactRole.PRINT_READY, print,
-                approval.layoutChecksum(), approval.template().version());
+                approval.layoutChecksum(), approval.template().printVersion());
         // The code of the SKU issued below, its product locked from here until this commits.
         String customerCode = customers.findById(draft.getCustomerId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND)).code();
         String customerSku = customerSkus.nextSku(draft.getSku(), draft.getCustomerId(), customerCode);
         byte[] sheet = instructions.render(new ProductionInstructionSheet.Facts(customerSku, approval.productName(),
                 draft.getSku(), approval.template(), approval.carton(), approval.layoutChecksum(),
-                stampedFile.getChecksum(), actor, now));
+                stampedFile.getChecksum(), actor, now, printPages));
         DesignArtifactJpaEntity sheetFile = drawnArtifact(id, DesignArtifactRole.PRODUCTION_INSTRUCTION, sheet,
-                "production-instruction.pdf", approval.layoutChecksum(), approval.template().version());
+                "production-instruction.pdf", approval.layoutChecksum(), approval.template().printVersion());
         draft.attachArtifact(DesignArtifactRole.PRINT_READY, stampedFile.getId());
         draft.attachArtifact(DesignArtifactRole.PRODUCTION_INSTRUCTION, sheetFile.getId());
 
@@ -318,6 +324,8 @@ public class DesignReviewService {
         decide(draft, actor, DesignDecisionType.APPROVED, "Snapshot " + snapshotId + ", SKU " + issued.sku()
                 + ", checksum " + snapshot.getChecksum() + (note == null ? "" : ". " + note));
         reviewRounds.decided(id, "APPROVED", actor, now);
+        // The last design of a project request to be approved tells Sales they can quote it (12 BR-25.2).
+        projectQuoteRequests.designApproved(id, now);
         events.publishEvent(new DesignReviewed(id, draft.getOwnerUserId(), "APPROVED", issued.sku(), now,
                 quoteRequests.openOf(id)));
         return views.of(draft);

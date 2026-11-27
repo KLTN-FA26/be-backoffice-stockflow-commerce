@@ -3,6 +3,7 @@ package com.stockflow.warehouse.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -153,6 +154,7 @@ class ShelfLayoutServiceIntegrationTest {
         @DisplayName("an INACTIVE shelf frees its place, and cannot come back while it is taken (#18 D3)")
         void inactiveShelvesFreeTheirPlace() {
             UUID a02 = DemoData.shelf("A02");
+            CartonRows.moveOut(jdbc, "HCM-A02-", "HCM-OVF01");     // 06 BR-04: emptied before it goes off the layout
             shelves.changeShelfStatus(a02, LocationStatus.INACTIVE);
 
             create("X01", at("5", "9", "10", "1.2"));

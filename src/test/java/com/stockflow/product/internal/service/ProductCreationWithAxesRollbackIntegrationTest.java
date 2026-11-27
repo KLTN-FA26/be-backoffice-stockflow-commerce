@@ -118,8 +118,9 @@ class ProductCreationWithAxesRollbackIntegrationTest {
                 Long.class, attribute)).isZero();
         assertThat(jdbc.queryForObject("select count(*) from product.variants where sku like ?", Long.class,
                 code + "%")).isEqualTo(1);
+        // Variants have no inventory item (V20270105000100): neither the holder's nor any refused one left one.
         assertThat(jdbc.queryForObject("select count(*) from inventory.inventory_items where sku like ?", Long.class,
-                code + "%")).isEqualTo(1);
+                code + "%")).isZero();
     }
 
     private static CreateProductCommand command(String code, List<CreateProductCommand.Axis> axes) {

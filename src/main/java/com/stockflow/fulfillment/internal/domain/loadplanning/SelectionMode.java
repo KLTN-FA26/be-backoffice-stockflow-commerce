@@ -1,12 +1,44 @@
 package com.stockflow.fulfillment.internal.domain.loadplanning;
 
 /**
- * How the planner picks vehicles (kltn-docs 09 §4.2 "Chế độ chọn xe"). Loading beyond the fleet is not a mode: the
- * vehicle counts cap every mode (BR-12) and what does not fit is reported unplaced.
+ * How the planner picks vehicles (kltn-docs 09 §4.2 "Chế độ chọn xe"). The vehicle counts cap every mode (BR-12): what
+ * does not fit the vehicles on offer is reported unplaced, whatever the mode.
+ *
+ * <p>The docs' sixth mode, "Chỉnh tay" (drag a carton on the 3D model, then recalculate one vehicle), is not a way to
+ * pick vehicles before a calculation: it edits a calculated plan (09 §4.2 step 3, BR-11), see
+ * {@code LoadPlans#editPlacements} and {@code LoadPlans#recalculateVehicle}.</p>
+ *
+ * <p>Load plans, order estimates and the trial estimate take every mode (WF4-LP-MODES, WF4-TRIAL-EST). The main /
+ * filler split of {@link #PRIORITY_FILL} is by order line on a plan and an estimate (owner answer RTM-LPGROUP, 19/11),
+ * by sheet row in the trial.</p>
  */
 public enum SelectionMode {
     /** "Một loại": the one type that loads best, as many of it as needed (the original's {@code same_type}). */
     SINGLE_TYPE,
     /** "Ít xe nhất": types mixed so the plan uses the fewest vehicles (the original's {@code minimize}). */
-    FEWEST_VEHICLES
+    FEWEST_VEHICLES,
+    /**
+     * "Giữ nguyên dòng": every carton of one line rides in one vehicle (the original's {@code keep_line_together}). A
+     * line is the cartons sharing a {@link CargoPackage#sourceRef()} - an estimate line, a row of the trial sheet, the
+     * order line a load plan's parcel holds - or a kit group. A line too big for one vehicle loads what fits and the
+     * rest is reported unplaced (09 edge case "Chế độ Giữ nguyên dòng").
+     */
+    KEEP_LINES,
+    /**
+     * "Ưu tiên + hàng chèn": the main cargo decides the vehicles, as {@link #SINGLE_TYPE} does; the cartons marked
+     * {@link CargoPackage#fill()} only top up the space it leaves and never open a vehicle (the original's
+     * {@code solve_two_pool} with its default {@code same_type}).
+     */
+    PRIORITY_FILL,
+    /**
+     * "Vượt sức chứa": load as much as fits the vehicles on offer, mixing every chosen type up to its count, and report
+     * the rest (the original's {@code shave_to_fit}). The search is {@link #FEWEST_VEHICLES}'s: the docs' order of
+     * merit puts the fewest cartons left first.
+     */
+    OVER_CAPACITY;
+
+    /** Whether the search mixes the vehicle types (the fleet drive) rather than trying each type alone. */
+    boolean mixesTypes() {
+        return this == FEWEST_VEHICLES || this == OVER_CAPACITY;
+    }
 }

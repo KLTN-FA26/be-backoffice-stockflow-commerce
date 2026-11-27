@@ -16,6 +16,7 @@ import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
+import com.stockflow.invoicing.internal.domain.EInvoiceType;
 import com.stockflow.invoicing.internal.domain.InvoiceParty;
 import com.stockflow.order.api.ReturnRequestLookup;
 import com.stockflow.order.api.ReturnRequestReference;
@@ -26,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -33,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.TreeSet;
 import java.util.UUID;
@@ -103,12 +106,27 @@ public class EInvoiceCorrections {
     /**
      * What became of a return's goods on the order's invoices.
      *
-     * @param drafts    the adjustments drawn up, one per invoice reached
-     * @param unplaced  pieces refunded, by order line, that no issued invoice in force could take: not invoiced yet,
-     *                  on an invoice being replaced, or part of a carton whose price does not divide into whole dong.
-     *                  The accountant adjusts for them by hand
+     * @param drafts        the adjustments drawn up, one per invoice reached
+     * @param unplaced      pieces refunded, by order line, that the invoice of the return's shipment could not take:
+     *                      more than it still holds, it is being replaced, or part of a carton whose price does not
+     *                      divide into whole dong. The accountant adjusts for them by hand
+     * @param pending       pieces kept until the invoice of the return's shipment is issued (WF-05 BE-28): taken off it
+     *                      then, by themselves ({@link #drawUpPendingReturns})
+     * @param onReplacement pieces on a replacement invoice, which no provider adjusts (Q-9): reduced on the provider's
+     *                      portal by the accountant
      */
-    public record ReturnAdjustments(List<EInvoice.Snapshot> drafts, Map<UUID, Long> unplaced) {
+    public record ReturnAdjustments(List<EInvoice.Snapshot> drafts, Map<UUID, Long> unplaced,
+                                    Map<UUID, Long> pending, Map<UUID, Long> onReplacement) {
+
+        public ReturnAdjustments {
+            pending = pending == null ? Map.of() : Map.copyOf(pending);
+            onReplacement = onReplacement == null ? Map.of() : Map.copyOf(onReplacement);
+        }
+
+        /** As before pieces could wait for their own invoice, or sit on a replacement. */
+        public ReturnAdjustments(List<EInvoice.Snapshot> drafts, Map<UUID, Long> unplaced) {
+            this(drafts, unplaced, Map.of(), Map.of());
+        }
     }
 
     private final EInvoiceRepository invoices;
@@ -129,8 +147,9 @@ public class EInvoiceCorrections {
     /**
      * Draws up an adjustment of an issued invoice, as a draft.
      *
-     * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code RETURN_REQUEST_NOT_FOUND}; {@code VALIDATION_FAILED}
-     *         for a line that is not the invoice's, a quantity of zero, a price that is not whole dong, a return of
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code RETURN_REQUEST_NOT_FOUND};
+     *         {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for {@code DELIVERY_FAILED}, the system's alone;
+     *         {@code VALIDATION_FAILED} for a line that is not the invoice's, a quantity of zero, a price that is not whole dong, a return of
      *         another order, or a buyer changed on anything but the correction of an error; and what
      *         {@link EInvoice#drawUpAdjustment} refuses
      */
@@ -139,6 +158,12 @@ public class EInvoiceCorrections {
     public EInvoice.Snapshot adjust(Adjust command) {
         if (command.basis() == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "basis: ERROR, RETURN or TRADE_DISCOUNT");
+        }
+        if (command.basis().systemOnly()) {
+            // WF-05 HĐ-3: drawn up when the delivery is corrected, whole, by EInvoiceDrafts.reverseForCorrectedDelivery
+            // - which also stops the invoice standing for its shipment. Drawn up by hand it would do neither.
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE, ("basis %s: drawn up by the "
+                    + "system when a delivery is corrected to a failure, never by hand").formatted(command.basis()));
         }
         Map<UUID, EInvoice> locked = lock(command.originalId(), command.listedInvoiceIds());
         EInvoice original = locked.get(command.originalId());
@@ -238,16 +263,31 @@ public class EInvoiceCorrections {
 
     /**
      * Goods that came back were refunded (the return's settlement was approved): each order line's refunded pieces are
-     * taken off the issued invoices in force that invoiced that line, the oldest first, as far as each still holds
-     * them - one draft adjustment per invoice, naming the return (TT 91 Điều 10 khoản 5 điểm c.1; no agreement is
-     * needed, the return is the record). The accountant reads and issues them.
+     * taken off the issued invoice of <b>the shipment the return was against</b> - and only that one (WF-05 BE-28,
+     * HĐ-4; 17 §4.10 step 40: the invoice of the shipment that carried the goods) - as far as it still holds them, in a
+     * draft adjustment naming the return (TT 91 Điều 10 khoản 5 điểm c.1; no agreement is needed, the return is the
+     * record). The accountant reads and issues it.
+     *
+     * <ul>
+     *   <li><b>That invoice not issued yet</b> (a draft, refused, at the provider, or not drawn up): the pieces are kept
+     *       ({@link EInvoiceRepository#keepPendingReturn}) and taken off it once it is issued
+     *       ({@link #drawUpPendingReturns}). They used to be taken off another delivery's invoice - another day, often
+     *       another tax period - which is the wrong invoice in law.</li>
+     *   <li><b>That invoice a replacement</b>: no provider adjusts one (Q-9; TT 91 Điều 10 khoản 6 điểm a; SePay 422,
+     *       sandbox T-5), and a return is never corrected by replacing (khoản 5 điểm c.1): the pieces are reported
+     *       {@code onReplacement}, for the accountant to reduce on the provider's portal.</li>
+     *   <li><b>More pieces than it still holds</b>, a piece of a carton not worth whole dong, an invoice being replaced:
+     *       {@code unplaced}, the accountant's. Never spilt onto another shipment's invoice.</li>
+     * </ul>
+     *
+     * <p>A return of an order delivered without shipments names none, and is taken off the order's originals in force,
+     * the oldest first, as before.</p>
      *
      * <p>Whole cartons come off as cartons at the carton's price. Pieces that are not whole cartons come off as pieces,
-     * when the carton's price divides into whole dong; otherwise they are left for the accountant, as are pieces no
-     * issued invoice holds - the delivery's invoice not issued yet, or being replaced.</p>
+     * when the carton's price divides into whole dong; otherwise they are left for the accountant.</p>
      *
      * <p>A return is taken off once: a second call for the same return - the event delivered again - draws nothing up,
-     * even if its drafts were voided since.</p>
+     * even if its drafts were voided since, and keeps nothing twice.</p>
      *
      * <p>A transaction of its own: its caller, the return's listener, must commit the announcement of what is left to
      * the accountant even when the invoice's rules refuse the adjustment - a refusal joining the caller's transaction
@@ -264,57 +304,153 @@ public class EInvoiceCorrections {
         if (remaining.isEmpty() || invoices.hasAdjustmentForReturn(resolved.returnRequestId())) {
             return new ReturnAdjustments(List.of(), Map.of());
         }
-        List<UUID> candidates = invoices.findInForceOfOrder(resolved.orderId());
+        if (resolved.shipmentId() != null) {
+            Optional<EInvoice> own = invoices.findLiveOriginalOfShipment(resolved.shipmentId());
+            // Audit r2 L-1: decided on the row locked, never on the read above. The answer that issues it locks the
+            // same row (EInvoiceIssuanceSteps.issued): either it committed first and is read ISSUED here, or it waits
+            // for this transaction, so the pieces kept below are committed before its EInvoiceIssued is published and
+            // PendingReturnAdjustmentListener finds them. Read unlocked, the two could cross and the pieces stay kept
+            // for an invoice already issued, with nothing ever to take them off.
+            EInvoice invoice = own.isEmpty() ? null : invoices.findByIdForUpdate(own.get().id()).orElse(null);
+            if (invoice == null || !invoice.status().wasIssued()) {
+                // Not issued yet (or not even drawn up): kept, and taken off it once it is (BE-28).
+                Instant now = clock.instant();
+                remaining.forEach((orderLine, pieces) -> invoices.keepPendingReturn(
+                        new EInvoiceRepository.PendingReturnPieces(resolved.returnRequestId(), resolved.rmaNumber(),
+                                resolved.orderId(), resolved.orderNumber(), resolved.shipmentId(), orderLine, pieces),
+                        now));
+                return new ReturnAdjustments(List.of(), Map.of(), remaining, Map.of());
+            }
+            if (invoice.status() != EInvoiceStatus.ISSUED) {
+                // Replaced meanwhile: the replacement stands for the shipment now - the accountant's.
+                return new ReturnAdjustments(List.of(), Map.copyOf(remaining));
+            }
+            if (invoice.type() == EInvoiceType.REPLACEMENT) {
+                // Kept as well: the accountant's record of the reduction made on the portal takes these pieces
+                // (EInvoicePortalReductions, basis RETURN).
+                Instant now = clock.instant();
+                remaining.forEach((orderLine, pieces) -> invoices.keepPendingReturn(
+                        new EInvoiceRepository.PendingReturnPieces(resolved.returnRequestId(), resolved.rmaNumber(),
+                                resolved.orderId(), resolved.orderNumber(), resolved.shipmentId(), orderLine, pieces),
+                        now));
+                return new ReturnAdjustments(List.of(), Map.of(), Map.of(), remaining);
+            }
+            List<EInvoice.Snapshot> drafts = new ArrayList<>();
+            reduceOn(invoice, remaining, resolved.returnRequestId(), resolved.rmaNumber()).ifPresent(drafts::add);
+            remaining.values().removeIf(left -> left <= 0);
+            return new ReturnAdjustments(drafts, Map.copyOf(remaining));
+        }
+        List<UUID> inForce = invoices.findInForceOfOrder(resolved.orderId());
         // Locked in id order, like every correction, each read once as the lock refreshes it; then walked oldest
         // first. One that is gone or no longer issued by the time its lock is held is passed over below.
         Map<UUID, EInvoice> locked = new HashMap<>();
-        for (UUID id : new TreeSet<>(candidates)) {
+        for (UUID id : new TreeSet<>(inForce)) {
             invoices.findByIdForUpdate(id).ifPresent(invoice -> locked.put(id, invoice));
         }
-        ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-        LocalDate date = BusinessCalendar.date(resolved.resolvedAt() == null ? clock.instant()
-                : resolved.resolvedAt());
         List<EInvoice.Snapshot> drafts = new ArrayList<>();
-        for (UUID candidate : candidates) {
+        for (UUID candidate : inForce) {
             EInvoice invoice = locked.get(candidate);
-            if (invoice == null || invoice.status() != EInvoiceStatus.ISSUED) {
+            if (invoice == null || invoice.status() != EInvoiceStatus.ISSUED
+                    || invoice.type() == EInvoiceType.REPLACEMENT) {
                 continue;
             }
-            EInvoice.Corrections corrections = invoices.correctionsOf(invoice.id());
-            if (corrections.liveReplacement()) {
-                continue;
-            }
-            Map<UUID, Long> taken = invoices.piecesTakenOff(invoice.id());
-            List<EInvoiceLine> lines = new ArrayList<>();
-            for (EInvoiceLine line : invoice.lines()) {
-                Long wanted = line.kind() == EInvoiceLine.Kind.GOODS ? remaining.get(line.orderLineId()) : null;
-                if (wanted == null || wanted <= 0) {
-                    continue;
-                }
-                long take = Math.min(wanted, line.pieces() - taken.getOrDefault(line.orderLineId(), 0L));
-                EInvoiceLine reduction = take <= 0 ? null : reduction(line, take, lines.size() + 1, t);
-                if (reduction == null) {
-                    continue;
-                }
-                lines.add(reduction);
-                taken.merge(line.orderLineId(), take, Long::sum);
-                remaining.merge(line.orderLineId(), -take, Long::sum);
-            }
-            if (lines.isEmpty()) {
-                continue;
-            }
-            EInvoice adjustment = EInvoice.drawUpAdjustment(Identifiers.newId(), invoices.nextCode(date), invoice,
-                    CorrectionBasis.RETURN, t.getString("einvoice.correction.return")
-                            .formatted(resolved.rmaNumber()), invoice.buyer(), lines, date,
-                    resolved.returnRequestId(), List.of(), corrections);
-            drafts.add(invoices.save(adjustment).snapshot());
+            reduceOn(invoice, remaining, resolved.returnRequestId(), resolved.rmaNumber()).ifPresent(drafts::add);
         }
         remaining.values().removeIf(left -> left <= 0);
         return new ReturnAdjustments(drafts, Map.copyOf(remaining));
     }
 
+    /**
+     * The pieces of returns kept for a shipment's invoice that was not issued yet (WF-05 BE-28), taken off it now that
+     * it is: one draft adjustment per return, as {@link #drawUpForReturn} would have drawn up. A return adjusted
+     * meanwhile - by hand, or by an earlier run - draws nothing up again. What the invoice cannot take (a replacement
+     * issued in its place, more than it holds) is reported for the accountant.
+     *
+     * <p>A transaction of its own, for the same reason as {@link #drawUpForReturn}.</p>
+     *
+     * @return per return kept for the shipment, what became of its pieces
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Map<EInvoiceRepository.PendingReturnPieces, ReturnAdjustments> drawUpPendingReturns(UUID shipmentId) {
+        List<EInvoiceRepository.PendingReturnPieces> kept = invoices.findPendingReturnsOfShipment(shipmentId);
+        if (kept.isEmpty()) {
+            return Map.of();
+        }
+        Optional<EInvoice> own = invoices.findLiveOriginalOfShipment(shipmentId);
+        if (own.isEmpty() || own.get().status() != EInvoiceStatus.ISSUED) {
+            return Map.of();
+        }
+        EInvoice invoice = invoices.findByIdForUpdate(own.get().id()).orElseThrow();
+        if (invoice.status() != EInvoiceStatus.ISSUED) {
+            return Map.of();
+        }
+        Map<UUID, List<EInvoiceRepository.PendingReturnPieces>> byReturn = new LinkedHashMap<>();
+        kept.forEach(pieces -> byReturn.computeIfAbsent(pieces.returnRequestId(), id -> new ArrayList<>()).add(pieces));
+        Map<EInvoiceRepository.PendingReturnPieces, ReturnAdjustments> outcome = new LinkedHashMap<>();
+        Instant now = clock.instant();
+        for (List<EInvoiceRepository.PendingReturnPieces> pieces : byReturn.values()) {
+            EInvoiceRepository.PendingReturnPieces first = pieces.getFirst();
+            if (invoices.hasAdjustmentForReturn(first.returnRequestId())) {
+                invoices.settlePendingReturn(first.returnRequestId(), shipmentId, now);
+                continue;
+            }
+            Map<UUID, Long> remaining = new LinkedHashMap<>();
+            pieces.forEach(line -> remaining.merge(line.orderLineId(), line.pieces(), Long::sum));
+            if (invoice.type() == EInvoiceType.REPLACEMENT) {
+                // Still kept: they are taken off by the record of the reduction made on the portal (Q-9).
+                outcome.put(first, new ReturnAdjustments(List.of(), Map.of(), Map.of(), remaining));
+                continue;
+            }
+            invoices.settlePendingReturn(first.returnRequestId(), shipmentId, now);
+            List<EInvoice.Snapshot> drafts = new ArrayList<>();
+            reduceOn(invoice, remaining, first.returnRequestId(), first.rmaNumber()).ifPresent(drafts::add);
+            remaining.values().removeIf(left -> left <= 0);
+            outcome.put(first, new ReturnAdjustments(drafts, Map.copyOf(remaining)));
+        }
+        return outcome;
+    }
+
+    /**
+     * Takes {@code remaining} pieces off one issued invoice, as far as it still holds them, in one draft adjustment
+     * naming the return; what it took is subtracted from {@code remaining}. Empty when it took nothing, or something
+     * replaces it already.
+     */
+    private Optional<EInvoice.Snapshot> reduceOn(EInvoice invoice, Map<UUID, Long> remaining, UUID returnRequestId,
+                                                 String rmaNumber) {
+        EInvoice.Corrections corrections = invoices.correctionsOf(invoice.id());
+        if (corrections.liveReplacement()) {
+            return Optional.empty();
+        }
+        ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        Map<UUID, Long> taken = invoices.piecesTakenOff(invoice.id());
+        List<EInvoiceLine> lines = new ArrayList<>();
+        for (EInvoiceLine line : invoice.lines()) {
+            Long wanted = line.kind() == EInvoiceLine.Kind.GOODS ? remaining.get(line.orderLineId()) : null;
+            if (wanted == null || wanted <= 0) {
+                continue;
+            }
+            long take = Math.min(wanted, line.pieces() - taken.getOrDefault(line.orderLineId(), 0L));
+            EInvoiceLine reduction = take <= 0 ? null : reduction(line, take, lines.size() + 1, t);
+            if (reduction == null) {
+                continue;
+            }
+            lines.add(reduction);
+            taken.merge(line.orderLineId(), take, Long::sum);
+            remaining.merge(line.orderLineId(), -take, Long::sum);
+        }
+        if (lines.isEmpty()) {
+            return Optional.empty();
+        }
+        // Dated the day it is drawn up; re-dated to the day it is issued when it is submitted (WF-05 Q-1).
+        LocalDate date = BusinessCalendar.date(clock.instant());
+        EInvoice adjustment = EInvoice.drawUpAdjustment(Identifiers.newId(), invoices.nextCode(date), invoice,
+                CorrectionBasis.RETURN, t.getString("einvoice.correction.return").formatted(rmaNumber),
+                invoice.buyer(), lines, date, returnRequestId, List.of(), corrections);
+        return Optional.of(invoices.save(adjustment).snapshot());
+    }
+
     /** {@code pieces} of {@code line} taken off it: as cartons when they are whole cartons, else as pieces. */
-    private static EInvoiceLine reduction(EInvoiceLine line, long pieces, int lineNo, ResourceBundle t) {
+    static EInvoiceLine reduction(EInvoiceLine line, long pieces, int lineNo, ResourceBundle t) {
         Integer perCarton = line.unitsPerCarton();
         if (perCarton == null || pieces % perCarton == 0) {
             return line.corrected(Identifiers.newId(), lineNo, (int) -(perCarton == null ? pieces : pieces / perCarton),

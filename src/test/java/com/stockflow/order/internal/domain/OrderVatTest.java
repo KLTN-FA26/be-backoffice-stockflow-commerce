@@ -112,13 +112,13 @@ class OrderVatTest {
     }
 
     @Test
-    @DisplayName("the fee lines go with the first shipment out; when it comes back, the next one carries them again")
+    @DisplayName("the fee lines go with the first shipment out; RTM-RETURNED: when it comes back its cups are closed "
+            + "(sent again only on a new order) and the order, the rest delivered, is partly fulfilled")
     void feesFollowTheShipmentsStillOut() {
         Order order = packed(order());
         UUID cups = order.lines().getFirst().id();
         UUID first = UUID.randomUUID();
         UUID second = UUID.randomUUID();
-        UUID again = UUID.randomUUID();
         order.recordHandover(handover(first, cups, 400));
         // 400 cups with tax (880,000) and the fee lines with tax (880,000).
         assertThat(valueOf(order, first)).isEqualByComparingTo("1760000");
@@ -127,17 +127,15 @@ class OrderVatTest {
 
         order.recordShipmentDeliveryFailed(first, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
         order.recordShipmentReturned(first, NOW, STAFF);
-        order.resolveDeliveryFailure("giao lại", STAFF, NOW);
-        order.recordHandover(handover(again, cups, 400));
-        assertThat(valueOf(order, again)).as("the cups again, and the fee lines that came back with them")
-                .isEqualByComparingTo("1760000");
+        // WF-05 Q-7: closed when the return receipt is confirmed, not on the carrier's report.
+        assertThat(order.closeReturnedShipment(first, NOW, NOW, STAFF).orElseThrow().goodsValue())
+                .as("the 400 cups with their tax").isEqualByComparingTo("880000");
         order.recordShipmentDelivered(second, NOW, STAFF);
-        order.recordShipmentDelivered(again, NOW, STAFF);
-        assertThat(order.status()).as("everything delivered").isEqualTo(com.stockflow.order.api.OrderStatus.DELIVERED);
+        assertThat(order.status()).isEqualTo(com.stockflow.order.api.OrderStatus.PARTIALLY_FULFILLED);
     }
 
     @Test
-    @DisplayName("a line's rounded shares add up whatever order its shipments go and come back in")
+    @DisplayName("one unit of a line with a rounded share comes back and is closed at its rounded value, as any closure")
     void sharesAddUpAfterAReturn() {
         // 2 units at 1,005 with 5% VAT: 2,010 + 101 = 2,111; one unit is worth 1,055.5, rounded.
         OrderLine odd = Order.line(UUID.randomUUID(), new Sku("A"), 2, Money.vnd(1_005), null)
@@ -147,14 +145,12 @@ class OrderVatTest {
         UUID line = order.lines().getFirst().id();
         UUID a = UUID.randomUUID();
         UUID b = UUID.randomUUID();
-        UUID c = UUID.randomUUID();
         order.recordHandover(handover(a, line, 1));
         order.recordHandover(handover(b, line, 1));
         order.recordShipmentDeliveryFailed(a, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
         order.recordShipmentReturned(a, NOW, STAFF);
-        order.resolveDeliveryFailure("giao lại", STAFF, NOW);
-        order.recordHandover(handover(c, line, 1));
-        assertThat(valueOf(order, b).add(valueOf(order, c))).isEqualByComparingTo("2111");
+        assertThat(order.closeReturnedShipment(a, NOW, NOW, STAFF).orElseThrow().goodsValue())
+                .isBetween(new BigDecimal("1055"), new BigDecimal("1056"));
     }
 
     @Test

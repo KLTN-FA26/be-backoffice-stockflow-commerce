@@ -8,8 +8,10 @@ import com.stockflow.invoicing.internal.controller.dto.EInvoiceProviderResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceRegisterEntryResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceSettingsResponse;
+import com.stockflow.invoicing.internal.controller.dto.EInvoiceSignatureResponse;
 import com.stockflow.invoicing.internal.controller.dto.ProviderCallResponse;
 import com.stockflow.invoicing.internal.domain.EInvoice;
+import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.ErrorNotice;
@@ -17,7 +19,9 @@ import com.stockflow.invoicing.internal.domain.InvoiceParty;
 import com.stockflow.invoicing.internal.domain.ProviderAccounts;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog;
 import com.stockflow.invoicing.internal.domain.TaxRateTotal;
+import com.stockflow.invoicing.internal.service.EInvoiceQueryService;
 import com.stockflow.invoicing.internal.service.EInvoiceSettingsService;
+import com.stockflow.invoicing.internal.service.InvoiceXmlSignature;
 
 import java.time.Instant;
 import java.util.Arrays;
@@ -29,18 +33,51 @@ final class InvoicingWebMapper {
     private InvoicingWebMapper() {
     }
 
-    /** The warning the screen shows beside the stored ones while an earlier-dated invoice waits (E0 M6). */
+    /** The warning shown beside the stored ones while an earlier-dated invoice of the series waits (HĐ-2). */
     static final String EARLIER_INVOICE_PENDING = "EARLIER_INVOICE_PENDING";
 
-    static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now) {
-        return toResponse(s, now, null);
+    /**
+     * @param earlierPending       the code of an earlier-dated invoice still to be issued under the series this draft
+     *                             would take - a warning, not a refusal; null when there is none or it was not asked
+     * @param errorNoticeSupported whether its provider sends a Mẫu 04/SS-HĐĐT notice (F-11)
+     * @param deliveryFailureReductionAllowed whether the accountant's reduction for a failed delivery would be drawn now
+     *                             (BE #423, {@code EInvoiceDrafts#deliveryFailureReducible})
+     */
+    static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending,
+                                       boolean errorNoticeSupported,
+                                       com.stockflow.invoicing.internal.service.WithdrawalRule.Decision withdrawal,
+                                       com.stockflow.invoicing.internal.service.EInvoiceIssuance
+                                               .ExternalReductionOptions external,
+                                       com.stockflow.invoicing.internal.domain.EInvoiceRepository
+                                               .TransactionWatch watch) {
+        return toResponse(s, now, earlierPending, errorNoticeSupported, withdrawal, external, watch, null, null, false);
     }
 
     /**
-     * @param earlierPending the code of an earlier-dated invoice still to be issued, which keeps this draft from being
-     *                       issued; null when there is none or it was not asked
+     * @param original      the invoice {@code s} adjusts or replaces; null on an original or when it is not read
+     * @param returnRmaNumber the RMA number of the return {@code s} names; null for none
+     * @param deliveryFailureReductionAllowed whether the accountant's reduction for a failed delivery would be drawn now
+     *                        (BE #423, {@code EInvoiceDrafts#deliveryFailureReducible}); false where it is not read
      */
-    static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending) {
+    static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending,
+                                       boolean errorNoticeSupported,
+                                       com.stockflow.invoicing.internal.service.WithdrawalRule.Decision withdrawal,
+                                       com.stockflow.invoicing.internal.service.EInvoiceIssuance
+                                               .ExternalReductionOptions external,
+                                       com.stockflow.invoicing.internal.domain.EInvoiceRepository
+                                               .TransactionWatch watch,
+                                       EInvoice.Snapshot original, String returnRmaNumber,
+                                       boolean deliveryFailureReductionAllowed) {
+        List<String> bases = new java.util.ArrayList<>();
+        if (external.deliveryFailed()) {
+            bases.add("DELIVERY_FAILED");
+        }
+        if (!external.returns().isEmpty()) {
+            bases.add("RETURN");
+        }
+        if (!external.errors().isEmpty()) {
+            bases.add("ERROR");
+        }
         List<String> warnings = new java.util.ArrayList<>(s.warnings().stream().sorted().map(Enum::name).toList());
         if (earlierPending != null) {
             warnings.add(EARLIER_INVOICE_PENDING);
@@ -64,7 +101,19 @@ final class InvoicingWebMapper {
                 s.correctionBasis() != null && s.correctionBasis().requiresAgreement(),
                 s.agreementFileKey() == null ? null
                         : new EInvoiceResponse.Agreement(s.agreementNumber(), s.agreementDate()),
-                s.returnRequestId(), s.listedInvoiceIds(), earlierPending);
+                s.returnRequestId(), s.listedInvoiceIds(), earlierPending, s.deliveryFailedAt(), s.reversedAt(),
+                errorNoticeSupported, s.issuedVia() == null ? null : s.issuedVia().name(), s.deliveredOn(),
+                s.voidReasonCode() == null ? null : s.voidReasonCode().name(), withdrawal.allowed(),
+                withdrawal.blocked() == null ? null : withdrawal.blocked().name(), withdrawal.from(),
+                withdrawal.evidenceRequired(), external.any(), List.copyOf(bases),
+                external.returns().stream().map(option -> new EInvoiceResponse.ExternalReductionReturn(
+                        option.returnRequestId(), option.rmaNumber())).toList(),
+                watch == null ? null : watch.watchUntil(), watch == null ? null : watch.foundAt(),
+                external.errors().stream().map(option -> new EInvoiceResponse.ExternalReductionError(
+                        option.voidedAdjustmentId(), option.code(), option.reason(), option.grandTotal())).toList(),
+                original == null ? null : original.code(), original == null ? null : original.symbol(),
+                original == null ? null : original.invoiceNumber(), returnRmaNumber,
+                deliveryFailureReductionAllowed);
     }
 
     static EInvoiceListItemResponse toResponse(EInvoiceQueries.Listing row, Instant now) {
@@ -74,14 +123,22 @@ final class InvoicingWebMapper {
                 overdue(row.status(), row.issueDueAt(), now), row.templateCode(), row.symbol(), row.invoiceNumber(),
                 row.subtotal(), row.taxTotal(), row.grandTotal(),
                 row.warnings() == null ? List.of() : Arrays.asList(row.warnings().split(",")), row.rejectionCode(),
-                row.issuedAt());
+                row.issuedAt(), row.correctionBasis(), row.reversedAt(), row.deliveredOn());
     }
 
     /** The row as its buyer sees it: nothing of the seller's work on the invoice. */
-    static CustomerEInvoiceResponse toCustomerResponse(EInvoiceQueries.Listing row) {
+    static CustomerEInvoiceResponse toCustomerResponse(EInvoiceQueryService.IssuedInvoice issued) {
+        EInvoiceQueries.Listing row = issued.invoice();
+        EInvoiceQueries.Replacements links = issued.replacements() == null ? EInvoiceQueries.Replacements.NONE
+                : issued.replacements();
         return new CustomerEInvoiceResponse(row.id(), row.type().name(), row.status().name(), row.adjusted(),
                 row.orderId(), row.orderNumber(), row.shipmentCode(), row.issueDate(), row.templateCode(),
-                row.symbol(), row.invoiceNumber(), row.subtotal(), row.taxTotal(), row.grandTotal(), row.issuedAt());
+                row.symbol(), row.invoiceNumber(), row.subtotal(), row.taxTotal(), row.grandTotal(), row.issuedAt(),
+                reference(links.replaces()), reference(links.replacedBy()));
+    }
+
+    private static CustomerEInvoiceResponse.Reference reference(EInvoiceQueries.Reference reference) {
+        return reference == null ? null : new CustomerEInvoiceResponse.Reference(reference.id(), reference.code());
     }
 
     static EInvoiceRegisterEntryResponse toResponse(EInvoiceQueries.RegisterEntry entry) {
@@ -95,7 +152,8 @@ final class InvoicingWebMapper {
 
     static ProviderCallResponse toResponse(ProviderCallLog.Call call) {
         return new ProviderCallResponse(call.provider(), call.transactionId(), call.operation().name(),
-                call.outcome().name(), call.httpStatus(), call.errorCode(), call.calledAt(), call.durationMs());
+                call.outcome().name(), call.httpStatus(), call.errorCode(), call.calledAt(), call.durationMs(),
+                call.providerReference());
     }
 
     static CustomerEInvoiceErrorNoticeResponse toCustomerResponse(ErrorNotice.Snapshot notice) {
@@ -104,11 +162,14 @@ final class InvoicingWebMapper {
                 notice.createdAt(), notice.respondedAt(), ErrorNotice.FORM_NAME);
     }
 
-    static EInvoiceErrorNoticeResponse toResponse(ErrorNotice.Snapshot notice) {
+    /** @param names who recorded each notice, by user id, read once for the list */
+    static EInvoiceErrorNoticeResponse toResponse(ErrorNotice.Snapshot notice,
+                                                  java.util.Map<java.util.UUID, String> names) {
         return new EInvoiceErrorNoticeResponse(notice.id(), notice.einvoiceId(), notice.formCode(),
                 notice.subject().name(), notice.reason(), notice.correctBuyerName(), notice.correctBuyerAddress(),
                 notice.status().name(), notice.sentAt(), notice.responseCode(), notice.responseMessage(),
-                notice.respondedAt(), notice.recordedBy(), notice.createdAt(), ErrorNotice.FORM_NAME);
+                notice.respondedAt(), notice.recordedBy(), notice.createdAt(), ErrorNotice.FORM_NAME,
+                notice.recordedBy() == null ? null : names.get(notice.recordedBy()));
     }
 
     static EInvoiceSettingsResponse toResponse(EInvoiceSettingsService.Settings settings) {
@@ -119,17 +180,30 @@ final class InvoicingWebMapper {
                         series.symbol(), series.year())).toList(), provider.version());
     }
 
-    static EInvoiceProviderResponse toResponse(ProviderAccounts.Account account) {
+    static EInvoiceProviderResponse toResponse(ProviderAccounts.Account account,
+                                               java.util.Optional<EInvoiceProvider> port) {
         return new EInvoiceProviderResponse(account.provider(), account.environment(), account.username(),
-                account.secretSealed() != null, account.active(), account.autoIssue(), account.version());
+                account.secretSealed() != null, account.active(), account.autoIssue(), account.version(),
+                port.map(EInvoiceProvider::accountInDeployment).orElse(false),
+                port.map(EInvoiceProvider::deploymentAccountReady).orElse(false),
+                port.map(EInvoiceProvider::issuesCorrections).orElse(false),
+                port.map(EInvoiceProvider::adjustsReplacements).orElse(false),
+                port.map(EInvoiceProvider::sendsErrorNotices).orElse(false));
     }
 
     private static EInvoiceResponse.Party party(InvoiceParty party) {
         return new EInvoiceResponse.Party(party.name(), party.taxCode(), party.address(), party.email());
     }
 
-    /** Still to issue, past the end of the working day after its date (NĐ 254 Phụ lục điểm 7). */
+    /** Still to issue, past the end of its date (NĐ 254 Điều 9 khoản 1; WF-05 Q-1). */
     private static boolean overdue(EInvoiceStatus status, Instant dueAt, Instant now) {
         return !status.wasIssued() && status != EInvoiceStatus.VOIDED_DRAFT && !now.isBefore(dueAt);
+    }
+
+    static EInvoiceSignatureResponse toResponse(InvoiceXmlSignature.Check check) {
+        return new EInvoiceSignatureResponse(check.status().name(), check.valid(), check.signer(),
+                check.signerTaxCode(), check.signerOrganization(), check.issuer(), check.signingTime(),
+                check.certificateValidFrom(), check.certificateValidTo(), check.certificateValidAtSigning(),
+                check.buyerSigned(), check.chainChecked());
     }
 }

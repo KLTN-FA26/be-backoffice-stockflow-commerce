@@ -2,7 +2,6 @@ package com.stockflow.assistant.internal.service;
 
 import com.stockflow.assistant.internal.domain.ToolSpec;
 import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.NotFoundException;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
@@ -11,14 +10,10 @@ import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.common.web.CorrelationIdFilter;
 import com.stockflow.fulfillment.api.OrderPicking;
 import com.stockflow.fulfillment.api.OrderPickingQueries;
-import com.stockflow.order.api.HandoverBlock;
-import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderStatusChange;
-import com.stockflow.order.api.OrderStockCoverage;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.ProductionOrderQueries;
 import com.stockflow.payment.api.InstallmentStanding;
 import com.stockflow.payment.api.PaymentService;
 import org.slf4j.Logger;
@@ -27,16 +22,11 @@ import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.time.Clock;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -65,15 +55,12 @@ import java.util.stream.Collectors;
  * So that field is described as the whole, and the figure that actually keeps goods in the warehouse comes from the
  * order module's own handover check, per batch, in {@code blockers}.</p>
  *
- * <p><b>Blockers: why a live order does not move on</b>, from what the {@code api}s already decide, never inferred:
- * the contract not signed yet, the on-signing instalment awaited (PENDING_PAYMENT), the hold, the handover check
- * ({@link OrderService#handoverBlocks}: the batch's instalment, its delivery window) for an order at the dispatch
- * stage, the production orders not received yet ({@link ProductionOrderQueries}, under the production screen's
- * permission and warehouse rule), and the cartons not held at the shipping warehouse for the earliest delivery batch
- * still short ({@link OrderStockCoverage}, under the coverage screen's permission). A check the caller may not see,
- * or that fails, is named in {@code notChecked} instead of being left silent: an empty list of reasons must never
- * read as "nothing is wrong" when half of it was not looked at. A failure is logged and leaves the rest of the answer
- * whole, as the pick task does.</p>
+ * <p><b>Blockers: why a live order does not move on</b>, read by {@link OrderBlockers}, the one reading the order
+ * screen's "why is this order not moving" panel ({@link OrderNextSteps}) shares, so the chat and the panel never give
+ * two answers for one order. A check the caller may not see, or that fails, is named in {@code notChecked}.</p>
+ *
+ * <p><b>The order list's scope.</b> The order is looked up as {@code GET /api/v1/orders} lists it to the caller
+ * ({@link OrderBlockers#find}): a caller limited to warehouses finds only the orders of theirs.</p>
  *
  * <p><b>Shipments.</b> When one shipment of a split order fails while other units are still to ship, the order stays
  * PARTIALLY_FULFILLED and its history has no reason, so every shipment's outcome is returned, with the carrier and
@@ -100,31 +87,8 @@ class FindOrderTool implements AssistantTool {
     static final int MAX_SHIPMENTS = 10;
     /** Short lines of one task: a whole bin missing for a large order must not push the answer past its limit. */
     static final int MAX_SHORT_LINES = 20;
-    /** Reasons of one order: one per production order and per short line can add up on a long schedule. */
-    static final int MAX_BLOCKERS = 20;
-
     /** A pick line the picker found short and nobody has reallocated yet; a reallocated one turns CANCELLED. */
     private static final String SHORT = "SHORT";
-
-    /** What {@code notChecked} names. */
-    static final String HANDOVER = "HANDOVER";
-    static final String PRODUCTION_ORDERS = "PRODUCTION_ORDERS";
-    static final String STOCK_HELD = "STOCK_HELD";
-
-    /** The error codes of the handover check ({@code Order.requireHandoverAllowed}) that a blocker names itself. */
-    private static final String BALANCE_NOT_PAID = "ORDER_BALANCE_NOT_PAID";
-    private static final String WINDOW_NOT_OPEN = "DELIVERY_BATCH_WINDOW_NOT_OPEN";
-
-    /** Not handed over whole yet: an order that can still be held up on its way to the customer. */
-    private static final Set<OrderStatus> LIVE = EnumSet.of(OrderStatus.DRAFT, OrderStatus.PENDING_CONTRACT,
-            OrderStatus.PENDING_PAYMENT, OrderStatus.CONFIRMED, OrderStatus.AWAITING_STOCK, OrderStatus.IN_PRODUCTION,
-            OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.PACKED,
-            OrderStatus.ON_HOLD);
-    /** The statuses the order module hands goods over from ({@code Order.requireHandoverAllowed}). */
-    private static final Set<OrderStatus> AT_HANDOVER = EnumSet.of(OrderStatus.PICKING, OrderStatus.PACKED,
-            OrderStatus.PARTIALLY_FULFILLED);
-    /** Before a signed contract there are no production orders, no shipping warehouse and nothing held. */
-    private static final Set<OrderStatus> UNSIGNED = EnumSet.of(OrderStatus.DRAFT, OrderStatus.PENDING_CONTRACT);
 
     private static final ToolSpec SPEC = new ToolSpec("findOrder",
             "One customer order by its order number: status, whether and why it is on hold (reason and note) and the "
@@ -147,8 +111,8 @@ class FindOrderTool implements AssistantTool {
                     + "shipping warehouse: sku, cartons needed, heldCartons, shortCartons; a batch is released only "
                     + "once every carton is held); PRODUCTION_NOT_RECEIVED (a production order at an outside producer "
                     + "not received in full: productionOrderCode, productionOrderStatus, batchSeq, needByDate, "
-                    + "expectedCompletionDate, cartons ordered and receivedCartons). The handover check gives its "
-                    + "first reason only. blockers.notChecked names what could not be looked at for this user "
+                    + "expectedCompletionDate, cartons ordered and receivedCartons). The handover check gives every "
+                    + "reason a batch may not leave now, each as its own entry. blockers.notChecked names what could not be looked at for this user "
                     + "(HANDOVER, PRODUCTION_ORDERS, STOCK_HELD): never say nothing blocks there, say it was not "
                     + "checked. blockers is absent for an order already handed over whole, delivered, cancelled or "
                     + "closed. payment: total with VAT, netTotal before tax and taxTotal the VAT, the order's own. "
@@ -176,20 +140,15 @@ class FindOrderTool implements AssistantTool {
     private final OrderPickingQueries picking;
     private final CurrentUserProvider currentUsers;
     private final PaymentService payments;
-    private final ProductionOrderQueries productionOrders;
-    private final OrderStockCoverage stockCoverage;
-    private final Clock clock;
+    private final OrderBlockers blockers;
 
     FindOrderTool(OrderService orders, OrderPickingQueries picking, CurrentUserProvider currentUsers,
-                  PaymentService payments, ProductionOrderQueries productionOrders, OrderStockCoverage stockCoverage,
-                  Clock clock) {
+                  PaymentService payments, OrderBlockers blockers) {
         this.orders = orders;
         this.picking = picking;
         this.currentUsers = currentUsers;
         this.payments = payments;
-        this.productionOrders = productionOrders;
-        this.stockCoverage = stockCoverage;
-        this.clock = clock;
+        this.blockers = blockers;
     }
 
     @Override
@@ -208,14 +167,7 @@ class FindOrderTool implements AssistantTool {
         Optional<CurrentUser> caller = currentUsers.current();
         caller.ifPresent(ScopeGuards::requireBackOffice);
         String number = arguments.text("orderNumber", 32);
-        // The list matches a substring of the number (and of names and phones); only an exact number is this order.
-        OrderSummary match = orders.list(new ListOrdersQuery(0, 20, number, null, null, null, null, null)).items()
-                .stream()
-                .filter(order -> order.orderNumber().equalsIgnoreCase(number))
-                .findFirst()
-                .orElseThrow(() -> new NotFoundException("Order", number));
-        OrderSummary order = orders.findById(match.orderId())
-                .orElseThrow(() -> new NotFoundException("Order", number));
+        OrderSummary order = blockers.find(number, caller);
         List<OrderStatusChange> history = orders.history(order.orderId());
         Picking task = caller.map(user -> pickingOf(order, user)).orElse(null);
         boolean seesInstallments = may(caller, ToolPermissions.INSTALLMENTS);
@@ -238,7 +190,7 @@ class FindOrderTool implements AssistantTool {
                 life == null || life.holdReason() == null ? null
                         : new Hold(life.holdReason().name(), TypedText.masked(life.holdNote()),
                         life.statusBeforeHold() == null ? null : life.statusBeforeHold().name()),
-                blockersOf(order, caller, seesInstallments),
+                blockers.of(order, caller, seesInstallments),
                 task,
                 Payment.of(order, standing),
                 cancelled ? Cancellation.of(order) : null,
@@ -261,120 +213,7 @@ class FindOrderTool implements AssistantTool {
     }
 
     private static boolean may(Optional<CurrentUser> caller, String resource) {
-        return caller.map(user -> user.can(resource, Action.READ)).orElse(false);
-    }
-
-    /**
-     * Why a live order does not move on, from what the {@code api}s decide; null for an order past that point.
-     * Each check runs only for the statuses it can apply to, so a CONFIRMED order is never told it "may not be handed
-     * over" merely because it is not packed yet.
-     */
-    private Blockers blockersOf(OrderSummary order, Optional<CurrentUser> caller, boolean seesInstallments) {
-        OrderStatus status = order.status();
-        if (!LIVE.contains(status)) {
-            return null;
-        }
-        List<Blocker> reasons = new ArrayList<>();
-        List<String> notChecked = new ArrayList<>();
-        OrderSummary.Lifecycle life = order.lifecycle();
-        if (UNSIGNED.contains(status)) {
-            reasons.add(Blocker.of("CONTRACT_NOT_SIGNED"));
-        }
-        if (status == OrderStatus.PENDING_PAYMENT) {
-            reasons.add(Blocker.of("SIGNING_INSTALLMENT_UNPAID"));
-        }
-        if (life != null && life.holdReason() != null) {
-            reasons.add(Blocker.of("ON_HOLD").holdReason(life.holdReason().name()));
-        }
-        if (AT_HANDOVER.contains(status)) {
-            handoverBlockers(order, seesInstallments, reasons, notChecked);
-        }
-        if (!UNSIGNED.contains(status)) {
-            if (status != OrderStatus.PENDING_PAYMENT) {
-                if (may(caller, ToolPermissions.SHIPPING_WAREHOUSES)) {
-                    stockBlockers(order, reasons, notChecked);
-                } else {
-                    notChecked.add(STOCK_HELD);
-                }
-            }
-            if (may(caller, ToolPermissions.PRODUCTION_ORDERS)) {
-                productionBlockers(order, reasons, notChecked);
-            } else {
-                notChecked.add(PRODUCTION_ORDERS);
-            }
-        }
-        return new Blockers(reasons.stream().limit(MAX_BLOCKERS).toList(), reasons.size() > MAX_BLOCKERS,
-                List.copyOf(notChecked));
-    }
-
-    /** The order module's own handover check, for the delivery batch on its way out: what a vehicle would be refused. */
-    private void handoverBlockers(OrderSummary order, boolean seesInstallments, List<Blocker> reasons,
-                                  List<String> notChecked) {
-        try {
-            for (HandoverBlock block : orders.handoverBlocks(List.of(order.orderId()), clock.instant())) {
-                if (!order.orderId().equals(block.orderId())) {
-                    continue;
-                }
-                Blocker blocker = switch (block.reasonCode() == null ? "" : block.reasonCode()) {
-                    case BALANCE_NOT_PAID -> Blocker.of("INSTALLMENT_DUE")
-                            .amountDue(seesInstallments ? block.amountDue() : null,
-                                    seesInstallments ? block.currency() : null);
-                    case WINDOW_NOT_OPEN -> Blocker.of("DELIVERY_WINDOW_NOT_OPEN").windowStart(block.windowStart());
-                    default -> Blocker.of("HANDOVER_REFUSED").refusalCode(block.reasonCode());
-                };
-                reasons.add(blocker.batchSeq(block.batchSeq()));
-            }
-        } catch (RuntimeException failure) {
-            leftOut(order, HANDOVER, failure);
-            notChecked.add(HANDOVER);
-        }
-    }
-
-    /**
-     * The shipping warehouse not chosen yet, or the lines of the earliest delivery batch not fully held there: batches
-     * are released in order, so the earliest one short is the one the order waits for.
-     */
-    private void stockBlockers(OrderSummary order, List<Blocker> reasons, List<String> notChecked) {
-        try {
-            Optional<OrderStockCoverage.Coverage> found = stockCoverage.coverage(order.orderId());
-            if (found.isEmpty()) {
-                return;
-            }
-            OrderStockCoverage.Coverage coverage = found.get();
-            if (!coverage.warehouseChosen()) {
-                reasons.add(Blocker.of("NO_SHIPPING_WAREHOUSE"));
-                return;
-            }
-            Optional<OrderStockCoverage.Batch> shortBatch = coverage.batches().stream()
-                    .filter(batch -> !batch.fullyHeld()).findFirst();
-            List<OrderStockCoverage.Line> lines = shortBatch.map(OrderStockCoverage.Batch::lines)
-                    .orElse(coverage.batches().isEmpty() ? coverage.lines() : List.of());
-            Integer seq = shortBatch.map(OrderStockCoverage.Batch::seq).orElse(null);
-            lines.stream().filter(line -> line.shortCartons() > 0)
-                    .forEach(line -> reasons.add(Blocker.of("STOCK_NOT_HELD").batchSeq(seq).stock(line)));
-        } catch (RuntimeException failure) {
-            leftOut(order, STOCK_HELD, failure);
-            notChecked.add(STOCK_HELD);
-        }
-    }
-
-    /** The production orders of the order still to bring goods, among those the production screen shows the caller. */
-    private void productionBlockers(OrderSummary order, List<Blocker> reasons, List<String> notChecked) {
-        try {
-            productionOrders.ofSalesOrder(order.orderId()).stream()
-                    .filter(production -> ProductionOrderQueries.OPEN_STATUSES.contains(production.status()))
-                    .forEach(production -> reasons.add(Blocker.of("PRODUCTION_NOT_RECEIVED")
-                            .batchSeq(production.deliveryBatchSeq()).production(production)));
-        } catch (RuntimeException failure) {
-            leftOut(order, PRODUCTION_ORDERS, failure);
-            notChecked.add(PRODUCTION_ORDERS);
-        }
-    }
-
-    /** A check that failed leaves its part out, logged as a failed tool is, instead of taking the answer down. */
-    private static void leftOut(OrderSummary order, String what, RuntimeException failure) {
-        log.error("findOrder could not check {} of order {} (correlation id {})", what, order.orderNumber(),
-                MDC.get(CorrelationIdFilter.MDC_KEY), failure);
+        return OrderBlockers.may(caller, resource);
     }
 
     /**
@@ -411,7 +250,8 @@ class FindOrderTool implements AssistantTool {
      * @param shipmentsTruncated   only the latest {@value #MAX_SHIPMENTS} shipments are listed
      * @param historyTruncated     only the latest {@value #MAX_HISTORY} changes are listed
      */
-    record Answer(String orderNumber, String status, Hold hold, Blockers blockers, Picking picking, Payment payment,
+    record Answer(String orderNumber, String status, Hold hold, OrderBlockers.Blockers blockers, Picking picking,
+                  Payment payment,
                   Cancellation cancellation, Boolean allowPartialShipment, List<Line> lines, List<Shipment> shipments,
                   boolean shipmentsTruncated, Dates dates, List<Change> history, boolean historyTruncated) {
 
@@ -426,78 +266,6 @@ class FindOrderTool implements AssistantTool {
 
     /** @param note what Sales wrote, masked */
     record Hold(String reason, String note, String statusBeforeHold) {
-    }
-
-    /**
-     * @param reasons          at most {@value #MAX_BLOCKERS}, in the order the checks run: contract, payment on
-     *                         signing, hold, handover, stock, production
-     * @param reasonsTruncated more reasons were found than are listed
-     * @param notChecked       the checks this user may not see, or that could not be read: {@code HANDOVER},
-     *                         {@code PRODUCTION_ORDERS}, {@code STOCK_HELD}
-     */
-    record Blockers(List<Blocker> reasons, boolean reasonsTruncated, List<String> notChecked) {
-    }
-
-    /**
-     * One reason, by its code; only the fields of that code are set (nulls are left out of the result).
-     *
-     * @param amountDue   INSTALLMENT_DUE: what the batch's instalments still want before its goods leave; null for a
-     *                    user who may not see instalments
-     * @param batchSeq    the delivery batch concerned; null for an order without a delivery schedule
-     * @param refusalCode HANDOVER_REFUSED: the handover check's own code
-     * @param cartons     STOCK_NOT_HELD: cartons the batch's line needs; PRODUCTION_NOT_RECEIVED: cartons ordered
-     */
-    record Blocker(String code, String holdReason, BigDecimal amountDue, String currency, Integer batchSeq,
-                   LocalDate windowStart, String refusalCode, String sku, Integer cartons, Integer heldCartons,
-                   Integer shortCartons, String productionOrderCode, String productionOrderStatus,
-                   LocalDate needByDate, LocalDate expectedCompletionDate, Integer receivedCartons) {
-
-        static Blocker of(String code) {
-            return new Blocker(code, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null);
-        }
-
-        Blocker holdReason(String reason) {
-            return new Blocker(code, reason, amountDue, currency, batchSeq, windowStart, refusalCode, sku, cartons,
-                    heldCartons, shortCartons, productionOrderCode, productionOrderStatus, needByDate,
-                    expectedCompletionDate, receivedCartons);
-        }
-
-        Blocker amountDue(BigDecimal amount, String inCurrency) {
-            return new Blocker(code, holdReason, amount, inCurrency, batchSeq, windowStart, refusalCode, sku, cartons,
-                    heldCartons, shortCartons, productionOrderCode, productionOrderStatus, needByDate,
-                    expectedCompletionDate, receivedCartons);
-        }
-
-        Blocker batchSeq(Integer seq) {
-            return new Blocker(code, holdReason, amountDue, currency, seq, windowStart, refusalCode, sku, cartons,
-                    heldCartons, shortCartons, productionOrderCode, productionOrderStatus, needByDate,
-                    expectedCompletionDate, receivedCartons);
-        }
-
-        Blocker windowStart(LocalDate start) {
-            return new Blocker(code, holdReason, amountDue, currency, batchSeq, start, refusalCode, sku, cartons,
-                    heldCartons, shortCartons, productionOrderCode, productionOrderStatus, needByDate,
-                    expectedCompletionDate, receivedCartons);
-        }
-
-        Blocker refusalCode(String refused) {
-            return new Blocker(code, holdReason, amountDue, currency, batchSeq, windowStart, refused, sku, cartons,
-                    heldCartons, shortCartons, productionOrderCode, productionOrderStatus, needByDate,
-                    expectedCompletionDate, receivedCartons);
-        }
-
-        Blocker stock(OrderStockCoverage.Line line) {
-            return new Blocker(code, holdReason, amountDue, currency, batchSeq, windowStart, refusalCode, line.sku(),
-                    line.cartons(), line.heldCartons(), line.shortCartons(), productionOrderCode,
-                    productionOrderStatus, needByDate, expectedCompletionDate, receivedCartons);
-        }
-
-        Blocker production(ProductionOrderQueries.ProductionOrderRow production) {
-            return new Blocker(code, holdReason, amountDue, currency, batchSeq, windowStart, refusalCode, sku,
-                    production.cartons(), heldCartons, shortCartons, production.code(), production.status(),
-                    production.needByDate(), production.expectedCompletionDate(), production.receivedCartons());
-        }
     }
 
     /**

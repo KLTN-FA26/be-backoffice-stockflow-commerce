@@ -76,7 +76,9 @@ public interface StockOperations {
      * adjustment keeps who counted the line (WF-05 fix plan, section 8), read from the line itself - its counter is
      * fixed once the count is submitted - so neither the caller nor a later reader has to be trusted with it.
      */
-    StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta, UUID requestedBy,
+    StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot,
+                                                com.stockflow.inventory.internal.domain.AdjustmentDirection direction,
+                                                UUID requestedBy,
                                                 String note);
 
     /**
@@ -118,14 +120,27 @@ public interface StockOperations {
      * As above, without the adjustments of slots under a count (open, or its variance still pending approval) for a
      * reader who may not see the books: a pending {@code COUNT_VARIANCE} is a delta against them (SCRUM-146).
      */
-    PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
-                                                    int page, int size, String sort, BookVisibility visibility);
+    default PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
+                                                            int page, int size, String sort,
+                                                            BookVisibility visibility) {
+        return adjustments(status, sku, location, null, page, size, sort, visibility);
+    }
 
-    /** One line of the stock history, as the screen shows it. */
+    /** As above, kept to one warehouse by its code prefix; null for every warehouse the caller may see. */
+    PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
+                                                    String warehousePrefix, int page, int size, String sort,
+                                                    BookVisibility visibility);
+
+    /**
+     * One line of the stock history, as the screen shows it. {@code lpn} names the carton the line is about
+     * (V20261231000200: one carton, where {@code fromLpn} / {@code toLpn} named one per side) and {@code quantity} is
+     * that carton's standard count: the ledger keeps no quantity of its own (V20261231000400), a line is one whole
+     * carton.
+     */
     record LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
                       String fromLocation, String toLocation, int quantity, String status,
                       String toStatus, String referenceType, UUID referenceId, String reason, UUID actorId,
-                      java.time.Instant occurredAt, UUID requestedBy, UUID countedBy) {
+                      java.time.Instant occurredAt, UUID requestedBy, UUID countedBy, String lpn) {
     }
 
     default PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
@@ -134,6 +149,37 @@ public interface StockOperations {
     }
 
     /** As above, without the lines of slots under a count for a reader who may not see their books (SCRUM-146). */
-    PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
-                                    int page, int size, BookVisibility visibility);
+    default PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
+                                            int page, int size, BookVisibility visibility) {
+        return ledger(new LedgerFilter(sku, location, type, null, null, null), page, size, visibility);
+    }
+
+    /**
+     * What the stock history is filtered by. Every field null means "any".
+     *
+     * @param from        the first business day (Asia/Ho_Chi_Minh), inclusive - the stock summary's period, so a row of
+     *                    a report row drills down to the lines of its period (2026-11-14 plan, BE2-C)
+     * @param to          the last business day, inclusive
+     * @param warehouseId lines with either side in this warehouse - moves inside it included, which the stock
+     *                    summary counts as zero
+     * @param lpn         lines that took units out of this carton or put units into it - its history (kltn-docs 20
+     *                    §4.1, the carton as a lookup key); any case. An LPN that is no carton matches nothing
+     */
+    record LedgerFilter(String sku, String location, StockMovement.MovementType type, java.time.LocalDate from,
+                        java.time.LocalDate to, UUID warehouseId, String lpn) {
+
+        public LedgerFilter(String sku, String location, StockMovement.MovementType type, java.time.LocalDate from,
+                            java.time.LocalDate to, UUID warehouseId) {
+            this(sku, location, type, from, to, warehouseId, null);
+        }
+    }
+
+    /**
+     * The history, newest first, by {@code filter}; scoped to the caller's warehouses, as every read of the ledger.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} when {@code from} is after
+     *         {@code to}; {@code WAREHOUSE_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE} for a warehouse not the caller's, or
+     *         for a carton ({@code lpn}) in one
+     */
+    PageResponse<LedgerLine> ledger(LedgerFilter filter, int page, int size, BookVisibility visibility);
 }

@@ -40,7 +40,7 @@ import java.util.function.Function;
 
 /**
  * Photos of a goods receipt (04b F-RCV step 05): the warehouse's of what arrived, of the delivery as a whole or of one
- * line, while the receipt is counted (or, a historical purchase receipt, awaits its old approval) - evidence when a
+ * line, while the receipt is counted - evidence when a
  * carton is refused or a delivery disputed.
  * JPEG or PNG, at most 20 MB and {@value GoodsReceiptPhotoService#MAX_PHOTOS_PER_SUBJECT} per subject. Sent as
  * multipart, or uploaded straight to storage through {@code /uploads} and named by its upload id

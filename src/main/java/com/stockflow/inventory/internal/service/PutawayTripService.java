@@ -10,7 +10,7 @@ import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery.CartonLoad;
-import com.stockflow.inventory.internal.service.PutawayService.Reserved;
+import com.stockflow.inventory.internal.service.BinSuggestionInputs.Reserved;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
 import com.stockflow.warehouse.api.PutawayTripView;
@@ -49,7 +49,7 @@ import java.util.stream.Collectors;
  * rules whether it is the one assigned or not (BR-07, BR-09), and a hold is not a lock (BR-16). The trip is told by
  * the putaway itself, so a carton of a cart put away from the single-task screen leaves its cart all the same.</p>
  *
- * <p>Lock order: the trip row first, then whatever a putaway locks (task row, bin, SKU, carton, stock rows).</p>
+ * <p>Lock order: the trip row first, then whatever a putaway locks (task row, bin, SKU, carton).</p>
  *
  * <p>A trip is worked by its own clerk; a warehouse manager may close one left behind (05 §4.5 step 17), which the
  * controller lets through under its own permission.</p>
@@ -63,10 +63,12 @@ public class PutawayTripService {
     private final WarehouseService warehouses;
     private final StockPackageRepository stockPackages;
     private final BinOccupancyQuery occupancy;
+    private final BinSuggestionInputs inputs;
 
     public PutawayTripService(PutawayTrips trips, PutawayTasks tasks, PutawayService putaway,
                               WarehouseService warehouses, StockPackageRepository stockPackages,
-                              BinOccupancyQuery occupancy) {
+                              BinOccupancyQuery occupancy, BinSuggestionInputs inputs) {
+        this.inputs = inputs;
         this.trips = trips;
         this.tasks = tasks;
         this.putaway = putaway;
@@ -76,12 +78,15 @@ public class PutawayTripService {
     }
 
     /**
-     * @param startLocationCode the source area the route starts from; null until the trip set off
-     * @param stops             the places still to visit, in order; empty unless the trip is on its way
+     * @param startLocationCode  the source area the route starts from; null until the trip set off
+     * @param originLocationCode where the stops still to visit were ordered from - the last carton's bin, else the
+     *                           start area - with its point; the first stop's path starts there (issue #410)
+     * @param stops              the places still to visit, in order; empty unless the trip is on its way
      */
     public record TripView(UUID id, UUID warehouseId, UUID operatorId, String status, String startLocationCode,
-                           BigDecimal startX, BigDecimal startY, Instant startedAt, Instant lastActivityAt,
-                           Instant closedAt, UUID closedBy, List<CartonView> cartons, List<StopView> stops) {
+                           BigDecimal startX, BigDecimal startY, String originLocationCode, BigDecimal originX,
+                           BigDecimal originY, Instant startedAt, Instant lastActivityAt, Instant closedAt,
+                           UUID closedBy, List<CartonView> cartons, List<StopView> stops) {
     }
 
     /**
@@ -94,8 +99,13 @@ public class PutawayTripService {
                              Instant placedAt) {
     }
 
-    /** A stop of the route: where to stand, and the cartons to put there. */
-    public record StopView(int sequence, String locationCode, BigDecimal x, BigDecimal y, List<String> lpns) {
+    /**
+     * A stop of the route: where to stand, the cartons to put there, and the line to walk to it.
+     *
+     * @param path round shelves, walls and closed doors, both ends included; null when none can be drawn
+     */
+    public record StopView(int sequence, String locationCode, BigDecimal x, BigDecimal y, List<String> lpns,
+                           List<PutawayTripView.MapPoint> path) {
     }
 
     /**
@@ -201,7 +211,7 @@ public class PutawayTripService {
                     .add(task);
         }
         // Every hold in the warehouse is another trip's: this one is still LOADING and holds nothing yet.
-        List<Reserved> reserved = new ArrayList<>(putaway.heldByTrips(warehouseId, null));
+        List<Reserved> reserved = new ArrayList<>(inputs.heldByTrips(warehouseId, null));
         Map<String, UUID> binIds = warehouses.putawayCandidates(warehouseId).stream()
                 .collect(Collectors.toMap(c -> c.locationCode(), c -> c.locationId(), (a, b) -> a));
         UUID overflow = overflowArea(warehouseId);
@@ -270,7 +280,7 @@ public class PutawayTripService {
         Map<String, UUID> binIds = warehouses.putawayCandidates(trip.warehouseId()).stream()
                 .collect(Collectors.toMap(c -> c.locationCode(), c -> c.locationId(), (a, b) -> a));
         UUID next = putaway.suggest(trip.warehouseId(), task, putaway.lotOfTask(task),
-                        putaway.heldByTrips(trip.warehouseId(), task.id())).stream()
+                        inputs.heldByTrips(trip.warehouseId(), task.id())).stream()
                 .map(PutawayRanker.Suggestion::locationCode)
                 .filter(code -> !code.equals(currentCode))
                 .findFirst().map(binIds::get)
@@ -303,9 +313,17 @@ public class PutawayTripService {
         return trip;
     }
 
+    /**
+     * The scanned carton. One standing in a warehouse the caller is not assigned to is answered as not found (BR-SEC-002,
+     * as {@code CycleCountCountingService.addLine} does): what comes next - whether it waits for putaway, whether it is
+     * on a cart - is not the caller's to learn of another warehouse's carton.
+     */
     private StockPackage carton(String lpn) {
         String normal = StockPackageView.normalLpn(lpn);
         return (normal == null ? Optional.<StockPackage>empty() : stockPackages.findByLpn(normal))
+                .filter(found -> WarehouseScope.restriction()
+                        .map(allowed -> allowed.prefixes().contains(WarehouseScope.prefixOf(found.location().code())))
+                        .orElse(true))
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No carton " + lpn));
     }
 
@@ -345,9 +363,10 @@ public class PutawayTripService {
         List<StopView> stops = trip.stops().stream().map(stop -> new StopView(stop.sequence(), stop.locationCode(),
                 stop.x(), stop.y(), cartons.stream()
                 .filter(c -> "ON_CART".equals(c.status()) && stop.locationCode().equals(c.assignedLocationCode()))
-                .map(CartonView::lpn).toList())).toList();
+                .map(CartonView::lpn).toList(), stop.path())).toList();
         return new TripView(trip.id(), trip.warehouseId(), trip.operatorId(), trip.status(),
-                code.apply(trip.startLocationId()), trip.startX(), trip.startY(), trip.startedAt(),
+                code.apply(trip.startLocationId()), trip.startX(), trip.startY(),
+                code.apply(trip.originLocationId()), trip.originX(), trip.originY(), trip.startedAt(),
                 trip.lastActivityAt(), trip.closedAt(), trip.closedBy(), cartons, stops);
     }
 }

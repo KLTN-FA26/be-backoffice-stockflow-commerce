@@ -10,11 +10,16 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.internal.domain.CreditChecks;
+import com.stockflow.order.internal.domain.OrderId;
+import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.ReturnRequest;
+import com.stockflow.order.internal.repository.DeliveredAndReturnedUnits;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
@@ -56,10 +61,22 @@ class CustomerOrdersService implements CustomerOrders {
     private final OrderService orders;
     private final CreditChecks creditChecks;
     private final com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests;
+    private final OrderRepository orderRepository;
+    private final ReturnAllowances returnAllowances;
+    private final DeliveredAndReturnedUnits deliveredAndReturned;
+    private final Clock clock;
+    private final LineNames lineNames;
 
     CustomerOrdersService(OrderSearchRepository search, OrderService orders, CreditChecks creditChecks,
-                          com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests) {
+                          com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
+                          OrderRepository orderRepository, ReturnAllowances returnAllowances,
+                          DeliveredAndReturnedUnits deliveredAndReturned, Clock clock, LineNames lineNames) {
+        this.lineNames = lineNames;
         this.cancellationRequests = cancellationRequests;
+        this.orderRepository = orderRepository;
+        this.returnAllowances = returnAllowances;
+        this.deliveredAndReturned = deliveredAndReturned;
+        this.clock = clock;
         this.search = search;
         this.orders = orders;
         this.creditChecks = creditChecks;
@@ -85,12 +102,22 @@ class CustomerOrdersService implements CustomerOrders {
         // A row carries no shipments: whether a partly fulfilled order has handed anything over is asked for those only.
         Set<UUID> handedOver = search.withShipments(page.getContent().stream()
                 .filter(row -> row.status() == OrderStatus.PARTIALLY_FULFILLED).map(OrderSummary::orderId).toList());
+        // BE-35 (F-2): whether the order is partly returned is asked, in one statement for the page, only for the rows
+        // it can change - ended in a return, or partly fulfilled (a carrier's return beside a delivery).
+        Map<UUID, DeliveredAndReturnedUnits.Units> units = deliveredAndReturned.of(page.getContent().stream()
+                .filter(row -> mayBePartlyReturned(row.status(), row.lifecycle())).map(OrderSummary::orderId)
+                .toList());
         var requests = cancellationRequests.latestStatuses(ids);
-        return Pages.toResponse(page, row -> new Card(row.orderId(), row.orderNumber(), row.status(),
-                statusGroup(row.status(), row.lifecycle()), row.total().amount(),
-                row.total().currency().getCurrencyCode(), row.placedAt(), lineCounts.getOrDefault(row.orderId(), 0),
-                rowDeliveryState(row.status(), row.lifecycle(), handedOver.contains(row.orderId())),
-                requests.containsKey(row.orderId()) ? requests.get(row.orderId()).name() : null));
+        return Pages.toResponse(page, row -> {
+            boolean kept = partlyReturned(row.status(), row.lifecycle(),
+                    units.getOrDefault(row.orderId(), DeliveredAndReturnedUnits.Units.NONE));
+            return new Card(row.orderId(), row.orderNumber(), row.status(),
+                    statusGroup(row.status(), row.lifecycle(), kept), row.total().amount(),
+                    row.total().currency().getCurrencyCode(), row.placedAt(),
+                    lineCounts.getOrDefault(row.orderId(), 0),
+                    rowDeliveryState(row.status(), row.lifecycle(), handedOver.contains(row.orderId()), kept),
+                    requests.containsKey(row.orderId()) ? requests.get(row.orderId()).name() : null);
+        });
     }
 
     @Override
@@ -100,26 +127,115 @@ class CustomerOrdersService implements CustomerOrders {
                 // 17 §5.2: a DRAFT order - its contract still being drawn up - is not the customer's to see.
                 .filter(order -> order.status() != OrderStatus.DRAFT)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        // What each SKU is called, for the whole order at once: the customer does not know their SKUs by code.
+        Map<String, LineNames.Names> names = lineNames.of(summary.lines().stream()
+                .map(OrderSummary.LineSummary::sku).toList());
         List<Line> lines = summary.lines().stream()
-                .map(line -> new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
-                        line.lineTotal().amount(), line.designSnapshotId(), production(line, summary.status()),
-                        line.cartons(), line.unitsPerCarton(), line.taxRate(),
-                        line.taxAmount() == null ? null : line.taxAmount().amount()))
+                .map(line -> {
+                    LineNames.Names named = LineNames.of(names, line.sku());
+                    return new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
+                            line.lineTotal().amount(), line.designSnapshotId(), production(line, summary.status()),
+                            line.cartons(), line.unitsPerCarton(), line.taxRate(),
+                            line.taxAmount() == null ? null : line.taxAmount().amount(), named.productName(),
+                            named.variantName());
+                })
                 .toList();
         Optional<CreditChecks.Check> latestCheck = summary.status() == OrderStatus.ON_HOLD
                 ? creditChecks.latest(orderId)
                 : Optional.empty();
+        boolean kept = partlyReturned(summary);
         return new Detail(summary.orderId(), summary.orderNumber(), summary.status(),
-                statusGroup(summary.status(), summary.lifecycle()),
+                statusGroup(summary.status(), summary.lifecycle(), kept),
                 holdReasonPublic(summary.status(), latestCheck), summary.total().amount(),
                 summary.total().currency().getCurrencyCode(), summary.placedAt(), summary.shippingAddress(),
-                lines, timeline(summary, orders.history(orderId)),
-                deliveryState(summary.status(), summary.lifecycle()), allowedActions(summary),
+                lines, timeline(summary, orders.history(orderId), kept),
+                deliveryState(summary.status(), summary.lifecycle(), kept), allowedActions(summary),
                 cancellationRequests.latestOf(orderId)
                         .map(r -> new CancellationRequestView(r.status().name(), r.reasonCode(), r.note(),
                                 r.requestedAt(), r.decidedAt(), r.decisionNote()))
                         .orElse(null),
-                shipments(summary), charges(summary));
+                shipments(summary, claimable(summary)), charges(summary));
+    }
+
+    /**
+     * Whether the order is partly returned, read - by the same statement a list page uses, so a row and the detail
+     * cannot disagree - only for an order it can be true of.
+     */
+    private boolean partlyReturned(OrderSummary summary) {
+        if (!mayBePartlyReturned(summary.status(), summary.lifecycle())) {
+            return false;
+        }
+        return partlyReturned(summary.status(), summary.lifecycle(), deliveredAndReturned.of(List.of(summary.orderId()))
+                .getOrDefault(summary.orderId(), DeliveredAndReturnedUnits.Units.NONE));
+    }
+
+    /** The orders {@link #partlyReturned(OrderStatus, OrderSummary.Lifecycle, DeliveredAndReturnedUnits.Units)} reads. */
+    static boolean mayBePartlyReturned(OrderStatus status, OrderSummary.Lifecycle lifecycle) {
+        return status == OrderStatus.PARTIALLY_FULFILLED || endedInReturn(status, lifecycle);
+    }
+
+    /**
+     * BE-35 (contract F-2): PARTIALLY_RETURNED rather than RETURNED or "preparing" - an order that ended in a return
+     * while the customer kept goods ({@link #keptGoods}), or one partly fulfilled whose deliveries are over, some
+     * delivered and the others brought back by the carrier or lost ({@link #backFromCarrierInPart}). The storefront
+     * says "delivered in part, the rest back at the warehouse".
+     */
+    static boolean partlyReturned(OrderStatus status, OrderSummary.Lifecycle lifecycle,
+                                  DeliveredAndReturnedUnits.Units units) {
+        if (status == OrderStatus.PARTIALLY_FULFILLED) {
+            return backFromCarrierInPart(units);
+        }
+        return endedInReturn(status, lifecycle) && keptGoods(units);
+    }
+
+    /**
+     * A partly fulfilled order whose deliveries are over (RTM-RETURNED-PARTIAL): a shipment delivered, another brought
+     * back by the carrier or closed as lost, none still with the carrier or still to be decided, and nothing left to
+     * ship. It waits for its refund (then PARTIALLY_REFUNDED), or - nothing made refundable - for its closing (WF-05
+     * BE-45); nothing of it is being prepared any more. An order still
+     * shipping its rest stays "preparing".
+     */
+    static boolean backFromCarrierInPart(DeliveredAndReturnedUnits.Units units) {
+        return units.deliveredShipments() > 0 && units.undeliveredShipments() > 0 && units.openShipments() == 0
+                && units.outstandingUnits() <= 0;
+    }
+
+    /**
+     * BE-35 (contract F-2): the customer kept goods when a shipment of the order was delivered and the delivered
+     * shipments carried more units than came back on the order's returns. A shipment the carrier brought back is never
+     * kept - it is not DELIVERED - and its units are not a return's: an order whose every shipment came back from the
+     * carrier kept nothing, while one that kept a delivered shipment and saw another brought back kept goods. An order
+     * that left as a whole before shipments were recorded has no DELIVERED shipment and reads as before: kept nothing.
+     */
+    static boolean keptGoods(DeliveredAndReturnedUnits.Units units) {
+        return units.deliveredShipments() > 0 && units.deliveredUnits() > units.returnedUnits();
+    }
+
+    /**
+     * The orders whose customer view depends on what came back: returned or settled by a return (RETURNED, REFUNDED,
+     * PARTIALLY_REFUNDED), or closed without ever completing - closed after such a settlement. {@code lifecycle} null
+     * reads a CLOSED order as completed, as {@link #statusGroup(OrderStatus, OrderSummary.Lifecycle, boolean)} does.
+     */
+    static boolean endedInReturn(OrderStatus status, OrderSummary.Lifecycle lifecycle) {
+        return switch (status) {
+            case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> true;
+            case CLOSED -> lifecycle != null && lifecycle.completedAt() == null;
+            default -> false;
+        };
+    }
+
+    /**
+     * What each shipment's lines may still be claimed for. Read only for an order that shows a shipment: the aggregate
+     * (two statements) and what its returns claim (one, for every shipment and line at once) are not worth reading for
+     * an order nothing of which has left.
+     */
+    private ReturnRequest.Claimable claimable(OrderSummary summary) {
+        if (shipments(summary, ReturnRequest.Claimable.NONE).isEmpty()) {
+            return ReturnRequest.Claimable.NONE;
+        }
+        return orderRepository.findById(new OrderId(summary.orderId()))
+                .map(order -> returnAllowances.claimable(order, clock.instant()))
+                .orElse(ReturnRequest.Claimable.NONE);
     }
 
     /**
@@ -127,8 +243,12 @@ class CustomerOrdersService implements CustomerOrders {
      * order whose goods left as a whole, with no shipment recorded on it (before G4-2a, or a parcel packed before
      * parcels recorded their contents), shows one shipment made from the order's own milestones: no number, carrier or
      * parcel count, because the order never learnt them.
+     *
+     * <p>Each carries its lines from {@code claimable} (WF-05 TH-1): what it carried and what a return of it may still
+     * claim - the made-up shipment the lines of the order as a whole, which is what a return of such an order claims.
+     * </p>
      */
-    static List<Shipment> shipments(OrderSummary summary) {
+    static List<Shipment> shipments(OrderSummary summary, ReturnRequest.Claimable claimable) {
         var lifecycle = summary.lifecycle();
         if (lifecycle == null) {
             return List.of();
@@ -136,22 +256,27 @@ class CustomerOrdersService implements CustomerOrders {
         if (lifecycle.shipments().isEmpty()) {
             com.stockflow.order.api.OrderShipmentStatus whole = wholeOrderShipmentStatus(summary.status());
             return whole == null || lifecycle.shippedAt() == null ? List.of()
-                    : List.of(new Shipment(null, whole, 0, null, lifecycle.shippedAt(),
+                    : List.of(new Shipment(null, null, whole, 0, null, lifecycle.shippedAt(),
                     whole == com.stockflow.order.api.OrderShipmentStatus.HANDED_OVER ? null
                             : whole == com.stockflow.order.api.OrderShipmentStatus.DELIVERED ? lifecycle.deliveredAt()
                             : null,
-                    lifecycle.deliveryFailureReason()));
+                    lifecycle.deliveryFailureReason(), lines(claimable.of(null))));
         }
         return lifecycle.shipments().stream()
                 .sorted(java.util.Comparator.comparing(OrderSummary.Shipment::handedOverAt))
                 .map(s -> {
                     var carriage = s.carriage();
-                    return new Shipment(carriage == null ? null : carriage.shipmentCode(), s.status(),
+                    return new Shipment(s.shipmentId(), carriage == null ? null : carriage.shipmentCode(), s.status(),
                             carriage == null ? 0 : carriage.packageCount(),
                             carriage == null ? null : carriage.carrierName(), s.handedOverAt(), s.outcomeAt(),
-                            s.failureReason());
+                            s.failureReason(), lines(claimable.of(s.shipmentId())));
                 })
                 .toList();
+    }
+
+    private static List<ShipmentLine> lines(List<ReturnRequest.ClaimableLine> claimable) {
+        return claimable.stream().map(line -> new ShipmentLine(line.orderLineId(), line.sku(), line.quantity(),
+                line.returnable())).toList();
     }
 
     /**
@@ -170,7 +295,7 @@ class CustomerOrdersService implements CustomerOrders {
     }
 
     static StatusGroup statusGroup(OrderStatus status) {
-        return statusGroup(status, null);
+        return statusGroup(status, null, false);
     }
 
     /**
@@ -182,8 +307,20 @@ class CustomerOrdersService implements CustomerOrders {
         return from.stream().filter(status -> status != OrderStatus.DRAFT).distinct().toList();
     }
 
-    /** {@code lifecycle} tells a CLOSED order that was refunded from one that was completed; null reads as completed. */
+    /** As {@link #statusGroup(OrderStatus, OrderSummary.Lifecycle, boolean)} for an order that kept no goods. */
     static StatusGroup statusGroup(OrderStatus status, OrderSummary.Lifecycle lifecycle) {
+        return statusGroup(status, lifecycle, false);
+    }
+
+    /**
+     * {@code lifecycle} tells a CLOSED order that was refunded from one that was completed; null reads as completed.
+     * {@code partlyReturned} ({@link #partlyReturned(OrderStatus, OrderSummary.Lifecycle,
+     * DeliveredAndReturnedUnits.Units)}) tells an order that ended in a return but left the customer part of its goods
+     * from one that came back whole, and a partly fulfilled order whose rest the carrier brought back from one still
+     * being prepared (BE-35): PARTIALLY_RETURNED.
+     */
+    static StatusGroup statusGroup(OrderStatus status, OrderSummary.Lifecycle lifecycle, boolean partlyReturned) {
+        StatusGroup returned = partlyReturned ? StatusGroup.PARTIALLY_RETURNED : StatusGroup.RETURNED;
         return switch (status) {
             // A DRAFT order is not the customer's to see (17 §5.2): the reads leave it out; were one read, it waits.
             case DRAFT, PENDING_PAYMENT -> StatusGroup.AWAITING_PAYMENT;
@@ -193,14 +330,16 @@ class CustomerOrdersService implements CustomerOrders {
             // 17 §5.2: "Đang chờ hàng".
             case AWAITING_STOCK -> StatusGroup.AWAITING_STOCK;
             case IN_PRODUCTION -> StatusGroup.IN_PRODUCTION;
-            case READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED -> StatusGroup.PREPARING;
+            case PARTIALLY_FULFILLED -> partlyReturned ? StatusGroup.PARTIALLY_RETURNED : StatusGroup.PREPARING;
+            case READY_TO_FULFILL, PICKING, PACKED -> StatusGroup.PREPARING;
             case SHIPPED, DELIVERY_FAILED -> StatusGroup.SHIPPING;
             case DELIVERED, COMPLETED -> StatusGroup.DELIVERED;
+            // A return is being decided: the goods are still the customer's, nothing came back yet.
+            case RETURN_REQUESTED -> StatusGroup.RETURN_REQUESTED;
             // Closed after a refund (never completed) is a return; closed after completion a delivery.
-            case CLOSED -> lifecycle != null && lifecycle.completedAt() == null ? StatusGroup.RETURNED
-                    : StatusGroup.DELIVERED;
+            case CLOSED -> endedInReturn(status, lifecycle) ? returned : StatusGroup.DELIVERED;
             case CANCELLED -> StatusGroup.CANCELLED;
-            case RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED -> StatusGroup.RETURNED;
+            case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> returned;
         };
     }
 
@@ -216,7 +355,7 @@ class CustomerOrdersService implements CustomerOrders {
     }
 
     static DeliveryState deliveryState(OrderStatus status) {
-        return deliveryState(status, null);
+        return deliveryState(status, null, false);
     }
 
     /**
@@ -225,10 +364,22 @@ class CustomerOrdersService implements CustomerOrders {
      * station, before anything left - not shipped yet; in transit once a part was handed over.
      */
     static DeliveryState rowDeliveryState(OrderStatus status, OrderSummary.Lifecycle lifecycle, boolean handedOver) {
+        return rowDeliveryState(status, lifecycle, handedOver, false);
+    }
+
+    /** {@link #rowDeliveryState(OrderStatus, OrderSummary.Lifecycle, boolean)}, with {@code partlyReturned}. */
+    static DeliveryState rowDeliveryState(OrderStatus status, OrderSummary.Lifecycle lifecycle, boolean handedOver,
+                                          boolean partlyReturned) {
         if (status == OrderStatus.PARTIALLY_FULFILLED) {
-            return handedOver ? DeliveryState.IN_TRANSIT : DeliveryState.NOT_SHIPPED;
+            return partlyReturned ? DeliveryState.PARTIALLY_RETURNED
+                    : handedOver ? DeliveryState.IN_TRANSIT : DeliveryState.NOT_SHIPPED;
         }
-        return deliveryState(status, lifecycle);
+        return deliveryState(status, lifecycle, partlyReturned);
+    }
+
+    /** As {@link #deliveryState(OrderStatus, OrderSummary.Lifecycle, boolean)} for an order that kept no goods. */
+    static DeliveryState deliveryState(OrderStatus status, OrderSummary.Lifecycle lifecycle) {
+        return deliveryState(status, lifecycle, false);
     }
 
     /**
@@ -237,8 +388,11 @@ class CustomerOrdersService implements CustomerOrders {
      * {@code lifecycle} may be null: the status alone decides then. With a lifecycle its shipments are all the order
      * has (an order read whole): a PARTIALLY_FULFILLED order with none was completed in part at the check station and
      * nothing of it left yet (WF4-PF-STATUS, 2026-11-12) - not shipped. A list row is read by {@link #rowDeliveryState}.
+     * An order that ended in a return is PARTIALLY_RETURNED when the customer kept goods, and so is a partly fulfilled
+     * one whose rest the carrier brought back ({@code partlyReturned}, BE-35): RETURNED would tell them the goods they
+     * still hold came back, PARTIALLY_DELIVERED that the rest is still coming.
      */
-    static DeliveryState deliveryState(OrderStatus status, OrderSummary.Lifecycle lifecycle) {
+    static DeliveryState deliveryState(OrderStatus status, OrderSummary.Lifecycle lifecycle, boolean partlyReturned) {
         List<OrderSummary.Shipment> shipments = lifecycle == null ? List.of() : lifecycle.shipments();
         boolean anyDelivered = shipments.stream()
                 .anyMatch(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED);
@@ -249,14 +403,16 @@ class CustomerOrdersService implements CustomerOrders {
         return switch (status) {
             case SHIPPED -> anyDelivered ? DeliveryState.PARTIALLY_DELIVERED : DeliveryState.IN_TRANSIT;
             case DELIVERY_FAILED -> anyDelivered ? DeliveryState.PARTIALLY_DELIVERED : DeliveryState.DELIVERY_FAILED;
-            case PARTIALLY_FULFILLED, PACKED, ON_HOLD -> anyDelivered ? DeliveryState.PARTIALLY_DELIVERED
+            case PARTIALLY_FULFILLED, PACKED, ON_HOLD -> status == OrderStatus.PARTIALLY_FULFILLED && partlyReturned
+                    ? DeliveryState.PARTIALLY_RETURNED
+                    : anyDelivered ? DeliveryState.PARTIALLY_DELIVERED
                     : anyInTransit || status == OrderStatus.PARTIALLY_FULFILLED && lifecycle == null
                     ? DeliveryState.IN_TRANSIT
                     : anyFailed ? DeliveryState.DELIVERY_FAILED : DeliveryState.NOT_SHIPPED;
             case DELIVERED, COMPLETED, RETURN_REQUESTED -> DeliveryState.DELIVERED;
-            case CLOSED -> statusGroup(status, lifecycle) == StatusGroup.RETURNED ? DeliveryState.RETURNED
-                    : DeliveryState.DELIVERED;
-            case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> DeliveryState.RETURNED;
+            case CLOSED, RETURNED, REFUNDED, PARTIALLY_REFUNDED -> !endedInReturn(status, lifecycle)
+                    ? DeliveryState.DELIVERED
+                    : partlyReturned ? DeliveryState.PARTIALLY_RETURNED : DeliveryState.RETURNED;
             case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
                  PICKING, CANCELLED -> DeliveryState.NOT_SHIPPED;
         };
@@ -295,12 +451,21 @@ class CustomerOrdersService implements CustomerOrders {
         return awaitingCredit ? AWAITING_CREDIT_APPROVAL : UNDER_REVIEW;
     }
 
+    /** As {@link #timeline(OrderSummary, List, boolean)} for an order that kept no goods. */
+    static List<TimelineEntry> timeline(OrderSummary summary, List<OrderStatusChange> history) {
+        return timeline(summary, history, false);
+    }
+
     /**
      * Oldest first, from the status history. The history's reason column holds what staff or the
      * customer typed, so only the cancellation's reason <i>code</i> is taken, from the order itself.
-     * An order with no history reads as one entry, the status it is in.
+     * An order with no history reads as one entry, the status it is in. A step into a return reads with the order's
+     * {@code partlyReturned} (BE-35), so the timeline does not call returned what the header calls partly returned; so
+     * does the step into PARTIALLY_FULFILLED a carrier's return made (from SHIPPED or DELIVERY_FAILED) - not one made
+     * while the order was still being prepared.
      */
-    static List<TimelineEntry> timeline(OrderSummary summary, List<OrderStatusChange> history) {
+    static List<TimelineEntry> timeline(OrderSummary summary, List<OrderStatusChange> history,
+                                        boolean partlyReturned) {
         List<TimelineEntry> entries = new ArrayList<>();
         for (OrderStatusChange change : history) {
             // A step into DRAFT - the order made from the quote, or its contract withdrawn - is Sales' drafting, not a
@@ -311,10 +476,14 @@ class CustomerOrdersService implements CustomerOrders {
             var reasonCode = change.to() == OrderStatus.CANCELLED && summary.cancellation() != null
                     ? summary.cancellation().reasonCode()
                     : null;
-            entries.add(new TimelineEntry(change.to(), statusGroup(change.to()), change.occurredAt(), reasonCode));
+            boolean partly = partlyReturned && (change.to() != OrderStatus.PARTIALLY_FULFILLED
+                    || change.from() == OrderStatus.SHIPPED || change.from() == OrderStatus.DELIVERY_FAILED);
+            entries.add(new TimelineEntry(change.to(), statusGroup(change.to(), null, partly), change.occurredAt(),
+                    reasonCode));
         }
         if (entries.isEmpty()) {
-            entries.add(new TimelineEntry(summary.status(), statusGroup(summary.status()), summary.placedAt(), null));
+            entries.add(new TimelineEntry(summary.status(), statusGroup(summary.status(), null, partlyReturned),
+                    summary.placedAt(), null));
         }
         return List.copyOf(entries);
     }

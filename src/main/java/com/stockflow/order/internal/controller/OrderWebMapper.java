@@ -2,6 +2,7 @@ package com.stockflow.order.internal.controller;
 
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
+import com.stockflow.order.internal.service.OrderSources;
 
 import java.util.List;
 
@@ -16,8 +17,30 @@ final class OrderWebMapper {
 
     private OrderWebMapper() {}
 
+    /** F-1 as the detail shows it; null when there is nothing to show (nothing delivered yet, nor ending). */
+    static OrderResponse.SettlementReadiness toSettlement(
+            com.stockflow.order.internal.service.SettlementReadiness.View view) {
+        return view == null ? null : new OrderResponse.SettlementReadiness(view.branch().name(),
+                view.returnWindowDays(), view.returnWindowEndsAt(), view.owing(), view.openReturn(),
+                view.uninvoicedShipmentIds(), view.shippingFeeUninvoiced(), view.refundOutstanding(),
+                view.completionHeld(), view.returnAdjustmentUnissued(), view.completesAt(), view.closesAt(),
+                view.blockers().stream().map(Enum::name).toList(), view.completionHoldable(),
+                view.deliveryReductionUnissued(), view.failedDeliveryUnreducedShipmentIds());
+    }
+
     static OrderResponse toResponse(OrderSummary summary) {
         return toResponse(summary, true);
+    }
+
+    /** What a back-office reader of an order sees of its customer: the name and code, from one batch lookup. */
+    static OrderResponse toResponse(OrderSummary summary, com.stockflow.customer.api.CustomerLabel label) {
+        return toResponse(summary, true, label);
+    }
+
+    /** The label of an order's customer in a batch read; null when there is none (or the order has no customer). */
+    static com.stockflow.customer.api.CustomerLabel labelOf(
+            java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels, java.util.UUID customerId) {
+        return labels == null || customerId == null ? null : labels.get(customerId);
     }
 
     /**
@@ -26,6 +49,17 @@ final class OrderWebMapper {
      * office's note (review of #109, nit).
      */
     static OrderResponse toResponse(OrderSummary summary, boolean internal) {
+        return toResponse(summary, internal, null);
+    }
+
+    static OrderResponse toResponse(OrderSummary summary, boolean internal,
+                                    com.stockflow.customer.api.CustomerLabel label) {
+        return toResponse(summary, internal, label, OrderSources.Extras.NONE);
+    }
+
+    /** With where the order came from: its quote and the design of each line's SKU (R5-3, R5-7). */
+    static OrderResponse toResponse(OrderSummary summary, boolean internal,
+                                    com.stockflow.customer.api.CustomerLabel label, OrderSources.Extras extras) {
         OrderSummary.Lifecycle lifecycle = summary.lifecycle();
         java.util.Map<java.util.UUID, OrderSummary.LineProgress> progress = lifecycle == null ? java.util.Map.of()
                 : lifecycle.lines().stream().collect(java.util.stream.Collectors.toMap(OrderSummary.LineProgress::lineId,
@@ -34,6 +68,8 @@ final class OrderWebMapper {
                 summary.orderId(),
                 summary.orderNumber(),
                 summary.customerId(),
+                label == null ? null : label.name(),
+                label == null ? null : label.code(),
                 summary.status().name(),
                 summary.total().amount(),
                 summary.total().currency().getCurrencyCode(),
@@ -57,7 +93,11 @@ final class OrderWebMapper {
                                                         ? progress.get(line.lineId()).cancelledQuantity() : null,
                                                 line.requestedDeliveryDate(), line.cartons(), line.unitsPerCarton(),
                                                 line.taxRate(),
-                                                line.taxAmount() == null ? null : line.taxAmount().amount()))
+                                                line.taxAmount() == null ? null : line.taxAmount().amount(),
+                                                extras.design(line.sku()) == null ? null
+                                                        : extras.design(line.sku()).name(),
+                                                extras.design(line.sku()) == null ? null
+                                                        : extras.design(line.sku()).previewUrl()))
                         .toList(),
                 summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),
@@ -94,7 +134,10 @@ final class OrderWebMapper {
                                 shipment.failureReason() == null ? null : shipment.failureReason().name(),
                                 shipment.lines().stream()
                                         .map(line -> new OrderResponse.ShipmentLine(line.lineId(), line.quantity()))
-                                        .toList()))
+                                        .toList(),
+                                // Order.closeLostShipment refuses a cancelled or closed order too.
+                                shipment.lostClosable() && summary.status() != com.stockflow.order.api.OrderStatus.CANCELLED
+                                        && summary.status() != com.stockflow.order.api.OrderStatus.CLOSED))
                         .toList(),
                 lifecycle == null ? null : lifecycle.allowPartialShipment(),
                 // Printing is outside the system: whatever an order holds is in stock, so the goods are ready.
@@ -103,7 +146,23 @@ final class OrderWebMapper {
                 summary.charges() == null ? null : summary.charges().taxTotal().amount(),
                 summary.charges() == null || summary.charges().fees() == null ? null : summary.charges().fees().stream()
                         .map(fee -> new OrderResponse.Fee(fee.kind().name(), fee.sku(), fee.amount().amount(),
-                                fee.taxRate(), fee.taxAmount().amount())).toList());
+                                fee.taxRate(), fee.taxAmount().amount())).toList(),
+                extras.sourceQuoteId(), extras.sourceQuoteNumber()).withVersion(internal ? summary.version() : null);
+    }
+
+    /**
+     * The responses naming their warehouse, from {@code warehouses} (one batch lookup for the answer); a response
+     * without a warehouse, or whose warehouse is unknown, keeps nulls.
+     */
+    static OrderResponse withWarehouse(OrderResponse response,
+                                       java.util.Map<java.util.UUID, com.stockflow.warehouse.api.WarehouseView> warehouses) {
+        var site = response.warehouseId() == null ? null : warehouses.get(response.warehouseId());
+        return site == null ? response : response.withWarehouse(site.prefix(), site.name());
+    }
+
+    /** An address as the order answers it; null for none. */
+    static OrderResponse.Address toAddress(OrderSummary.AddressSummary address) {
+        return toResponse(address);
     }
 
     private static OrderResponse.Address toResponse(OrderSummary.AddressSummary address) {

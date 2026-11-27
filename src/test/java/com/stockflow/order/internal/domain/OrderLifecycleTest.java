@@ -147,6 +147,32 @@ class OrderLifecycleTest {
         }
 
         @Test
+        @DisplayName("14 §4.3 step 16: a sent contract cancelled puts the order back to DRAFT with CODE: reason; a "
+                + "draft contract cancelled leaves no row")
+        void contractWithdrawnSaysWhy() {
+            Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
+                    Order.line(new Sku("CUP"), 1, Money.vnd(1_000), null)), NOW);
+            order.withdrawContract(STAFF, "never sent", NOW);
+            assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
+            assertThat(order.pullTransitions()).as("no status change, no history row").isEmpty();
+
+            order.sendContract(STAFF, NOW);
+            order.withdrawContract(STAFF, "  the customer wants another window  ", NOW);
+            order.sendContract(STAFF, NOW);
+            order.withdrawContract(STAFF, " ", NOW);
+            order.sendContract(STAFF, NOW);
+            order.withdrawContract(STAFF, "x".repeat(500), NOW);
+            assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
+            List<String> reasons = order.pullTransitions().stream()
+                    .filter(t -> t.to() == OrderStatus.DRAFT).map(OrderTransition::reason).toList();
+            assertThat(reasons).hasSize(3);
+            assertThat(reasons.get(0)).isEqualTo("CONTRACT_CANCELLED: the customer wants another window");
+            assertThat(reasons.get(1)).isEqualTo("CONTRACT_CANCELLED");
+            assertThat(reasons.get(2)).as("the history column holds 500").hasSize(500)
+                    .startsWith("CONTRACT_CANCELLED: xxx");
+        }
+
+        @Test
         @DisplayName("a packed order is not cancelled; a picking one is, by staff")
         void cancellationUpToPicking() {
             Order picking = picking();
@@ -669,8 +695,9 @@ class OrderLifecycleTest {
         }
 
         @Test
-        @DisplayName("one shipment delivered, another failed and returned: ON_HOLD for the failed delivery, held from "
-                + "PARTIALLY_FULFILLED; Sales decide, the rest closed: DELIVERED")
+        @DisplayName("RTM-RETURNED-PARTIAL: one shipment delivered, another failed and came back - the order stays "
+                + "PARTIALLY_FULFILLED, the returned units closed (resent only on a new order); its refund recorded, "
+                + "PARTIALLY_REFUNDED straight, never RETURNED")
         void oneDeliveredOneReturned() {
             Order order = packed();
             order.recordHandover(handover(S1, cups(order), 10));
@@ -678,30 +705,30 @@ class OrderLifecycleTest {
             order.recordShipmentDelivered(S1, NOW, STAFF);
             order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.DAMAGED, null, NOW, STAFF);
             order.recordShipmentReturned(S2, NOW, STAFF);
-            assertThat(order.status()).as("WF-05: the order waits for Sales, it does not move on by itself")
-                    .isEqualTo(OrderStatus.ON_HOLD);
-            assertThat(order.holdReason()).isEqualTo(HoldReason.DELIVERY_FAILED);
-            assertThat(order.statusBeforeHold()).as("09 edge: giao một phần").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-            assertThat(order.holdNote()).isEqualTo("DAMAGED");
-            assertThat(order.heldForDeliveryFailure()).isTrue();
-            assertThat(order.outstandingUnits()).isEqualTo(5);
-            assertThat(code(catchThrowable(() -> order.closeRemainder(CancellationReasonCode.OUT_OF_STOCK, null, STAFF,
-                    NOW)))).as("the hold is decided first").isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
-            assertThat(code(catchThrowable(() -> order.resolveHold("a note is not a decision", STAFF, NOW))))
-                    .isEqualTo(ErrorCode.ORDER_DELIVERY_FAILURE_USE_DECISION);
-            order.resolveDeliveryFailure("khách không nhận lại", STAFF, NOW);
             assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
             assertThat(order.holdReason()).isNull();
-            order.closeRemainder(CancellationReasonCode.DELIVERY_FAILED, null, STAFF, NOW);
-            assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+            assertThat(order.outstandingUnits()).as("the units that came back are not owed any more").isZero();
+            // WF-05 Q-7: the carrier's report closes nothing; the confirmed return receipt does.
+            assertThat(order.closedAmount()).isZero();
+            assertThat(order.partlyReturnedAndDone()).as("its receipt is still to come").isFalse();
+            assertThat(order.closeReturnedShipment(S2, NOW, NOW, STAFF).orElseThrow().goodsValue())
+                    .isEqualByComparingTo("100000");
+            assertThat(order.closedAmount()).isEqualByComparingTo("100000");
             assertThat(order.billable()).as("only the delivered cups are what it is worth now")
                     .isEqualByComparingTo("1000000");
-            assertThat(order.closedAmount()).isEqualByComparingTo("100000");
+            assertThat(order.partlyReturnedAndDone()).isTrue();
+            assertThat(order.refunded(false, STAFF, NOW, "refund recorded")).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+            // The refund record voided: back to the status it was refunded from, then forward again (TT-4).
+            assertThat(order.refundReopened(STAFF, NOW, "chuyển khoản bị trả về")).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            assertThat(order.refunded(false, STAFF, NOW, "refund recorded again")).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
         }
 
         @Test
-        @DisplayName("everything failed and came back: ON_HOLD, never RETURNED by the shipments alone; RETURNED only "
-                + "once Sales cancelled what was not delivered")
+        @DisplayName("RTM-RETURNED: everything failed and came back - RETURNED once the last shipment is back (17 §5.1), "
+                + "then REFUNDED when the refund is recorded")
         void allReturned() {
             Order order = packed();
             order.recordHandover(handover(S1, cups(order), 10));
@@ -710,23 +737,19 @@ class OrderLifecycleTest {
             order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.WRONG_ADDRESS, null, NOW, STAFF);
             assertThat(order.status()).isEqualTo(OrderStatus.DELIVERY_FAILED);
             order.recordShipmentReturned(S1, NOW, STAFF);
-            assertThat(order.status()).as("held from DELIVERY_FAILED the moment one came back")
-                    .isEqualTo(OrderStatus.ON_HOLD);
-            assertThat(order.deliveryFailureReason()).as("ck_order_delivery_failure: the order's only while "
-                    + "DELIVERY_FAILED").isNull();
+            assertThat(order.status()).as("the other still failed, not back yet").isEqualTo(OrderStatus.DELIVERY_FAILED);
             order.recordShipmentReturned(S2, NOW, STAFF);
-            assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
-            assertThat(order.holdReason()).isEqualTo(HoldReason.DELIVERY_FAILED);
-            order.resolveDeliveryFailure("giao lại", STAFF, NOW);
-            assertThat(order.status()).as("every shipment back, the units owed a delivery again: partial, not RETURNED")
-                    .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-            order.closeRemainder(CancellationReasonCode.DELIVERY_FAILED, null, STAFF, NOW);
             assertThat(order.status()).isEqualTo(OrderStatus.RETURNED);
+            assertThat(order.outstandingUnits()).isZero();
+            assertThat(order.refunded(true, STAFF, NOW, "refund recorded")).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.REFUNDED);
+            assertThat(order.refundReopened(STAFF, NOW, "void")).isTrue();
+            assertThat(order.status()).as("refunded from RETURNED, back to RETURNED").isEqualTo(OrderStatus.RETURNED);
         }
 
         @Test
-        @DisplayName("a shipment comes back while its others are still out: held from SHIPPED; an order held for "
-                + "something else is held for the failed delivery from then on")
+        @DisplayName("RTM-RETURNED-PARTIAL: a shipment comes back while another is still out - SHIPPED, then "
+                + "PARTIALLY_FULFILLED once the other is delivered; an order on hold for something else stays held")
         void heldFromShippedAndOverAnotherHold() {
             Order order = packed();
             order.recordHandover(handover(S1, cups(order), 10));
@@ -734,13 +757,10 @@ class OrderLifecycleTest {
             order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
             assertThat(order.status()).as("one failed, one still out").isEqualTo(OrderStatus.SHIPPED);
             order.recordShipmentReturned(S2, NOW, STAFF);
-            assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
-            assertThat(order.statusBeforeHold()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-            // The other shipment's outcome is recorded while the order waits; the decision catches up with it.
+            assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
             order.recordShipmentDelivered(S1, NOW, STAFF);
-            assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
-            order.resolveDeliveryFailure("giao lại", STAFF, NOW);
-            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            assertThat(order.status()).as("not DELIVERED as a whole: part of it came back")
+                    .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
 
             Order held = picking();
             held.recordHandover(handover(S1, cups(held), 6));
@@ -748,30 +768,14 @@ class OrderLifecycleTest {
             held.putOnHold(HoldReason.CUSTOMER, "hỏi khách", STAFF, NOW);
             held.recordShipmentReturned(S1, NOW, STAFF);
             assertThat(held.status()).isEqualTo(OrderStatus.ON_HOLD);
-            assertThat(held.holdReason()).as("that decision comes first").isEqualTo(HoldReason.DELIVERY_FAILED);
-            assertThat(held.statusBeforeHold()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-            assertThat(code(catchThrowable(() -> held.resolveHold("khách đồng ý", STAFF, NOW))))
-                    .isEqualTo(ErrorCode.ORDER_DELIVERY_FAILURE_USE_DECISION);
+            assertThat(held.holdReason()).as("the hold it had is not replaced").isEqualTo(HoldReason.CUSTOMER);
         }
 
         @Test
-        @DisplayName("goods that came back were made: their closure may keep an agreed fee though no mass printing was "
-                + "recorded; an order nothing came back of keeps none before printing")
+        @DisplayName("an order nothing came back of keeps no fee on its closure before printing")
         void aFeeOnTheClosureOfGoodsThatCameBack() {
-            Order order = packed();
-            order.recordHandover(handover(S1, cups(order), 10));
-            order.recordHandover(handover(S2, lids(order), 5));
-            order.recordShipmentDelivered(S1, NOW, STAFF);
-            order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
-            order.recordShipmentReturned(S2, NOW, STAFF);
-            order.resolveDeliveryFailure("khách không nhận lại", STAFF, NOW);
             var fee = new com.stockflow.order.api.CancellationFee(new java.math.BigDecimal("50000"), "Hàng đã in",
                     "Theo điều khoản hợp đồng");
-            // Not CANCELLATION_FEE_BEFORE_PRINTING: the goods exist, so the fee is judged by its cap - the value of the
-            // print units closed, none here (the lids are no print line) - which is what refuses this amount.
-            assertThat(code(catchThrowable(() -> order.closeRemainder(CancellationReasonCode.DELIVERY_FAILED, null,
-                    fee, STAFF, NOW)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
-
             Order untouched = picking();
             untouched.recordHandover(handover(S1, cups(untouched), 6));
             assertThat(code(catchThrowable(() -> untouched.closeRemainder(CancellationReasonCode.OUT_OF_STOCK, null,
@@ -814,18 +818,14 @@ class OrderLifecycleTest {
         }
 
         @Test
-        @DisplayName("a shipment that came back, decided as a cancellation of the rest: nothing delivered, RETURNED")
+        @DisplayName("RTM-RETURNED: the only shipment came back - RETURNED at once, nothing waits for a decision")
         void resolveCatchesUp() {
             Order order = packed();
-            order.recordHandover(handover(S1, cups(order), 10));
+            order.recordHandover(everything(order, S1));
             order.recordShipmentDeliveryFailed(S1, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
             order.recordShipmentReturned(S1, NOW, STAFF);
-            assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
-            assertThat(code(catchThrowable(() -> order.putOnHold(HoldReason.CUSTOMER, "hỏi khách", STAFF, NOW))))
-                    .as("held already, for the failed delivery").isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
-            order.resolveDeliveryFailure("khách huỷ phần còn lại", STAFF, NOW);
-            order.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null, STAFF, NOW);
             assertThat(order.status()).as("nothing was delivered, every shipment came back").isEqualTo(OrderStatus.RETURNED);
+            assertThat(order.holdReason()).isNull();
         }
 
         @Test
@@ -843,7 +843,8 @@ class OrderLifecycleTest {
     class Review {
 
         @Test
-        @DisplayName("units that came back are shipped again: packed, handed over, SHIPPED - no dead end")
+        @DisplayName("RTM-RETURNED: units that came back are not shipped again on this order (a new order sends them) - "
+                + "nothing of them is owed, a handover of them is refused")
         void returnedUnitsShipAgain() {
             Order order = packed();
             order.recordHandover(handover(S1, cups(order), 10));
@@ -851,19 +852,9 @@ class OrderLifecycleTest {
             order.recordShipmentDelivered(S1, NOW, STAFF);
             order.recordShipmentDeliveryFailed(S2, DeliveryFailureReason.WRONG_ADDRESS, null, NOW, STAFF);
             order.recordShipmentReturned(S2, NOW, STAFF);
-            assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
-            assertThat(code(catchThrowable(() -> order.recordHandover(handover(S3, lids(order), 5)))))
-                    .as("nothing leaves while Sales have not decided").isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
-            order.resolveDeliveryFailure("giao lại theo địa chỉ mới", STAFF, NOW);
             assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-            order.markPacked(NOW, STAFF);
-            assertThat(order.status()).as("a part left already (WF4-PF-NEXT)").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-            assertThat(code(catchThrowable(() -> order.recordHandover(handover(S3, lids(order), 6)))))
-                    .isEqualTo(ErrorCode.ORDER_SHIPMENT_QUANTITY_EXCEEDED);
-            order.recordHandover(handover(S3, lids(order), 5));
-            assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
-            order.recordShipmentDelivered(S3, NOW, STAFF);
-            assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+            assertThat(order.outstandingUnits()).isZero();
+            assertThat(catchThrowable(() -> order.recordHandover(handover(S3, lids(order), 5)))).isNotNull();
         }
     }
 
@@ -890,8 +881,8 @@ class OrderLifecycleTest {
             assertThat(order.complete(windowEnd, week, true, false, false)).as("a return is open").isFalse();
             assertThat(order.complete(windowEnd, week, false, false, false)).isTrue();
             assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
-            assertThat(order.close(NOW.plus(Duration.ofDays(20)), Duration.ofDays(30), false)).isFalse();
-            assertThat(order.close(NOW.plus(Duration.ofDays(40)), Duration.ofDays(30), false)).isTrue();
+            assertThat(order.close(NOW.plus(Duration.ofDays(20)), Duration.ofDays(30), false, false)).isFalse();
+            assertThat(order.close(NOW.plus(Duration.ofDays(40)), Duration.ofDays(30), false, false)).isTrue();
             assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
             assertThat(order.closedAt()).isNotNull();
             assertThat(order.status().isTerminal()).isTrue();
@@ -926,7 +917,7 @@ class OrderLifecycleTest {
             order.goodsReturned(STAFF, NOW, null);
             order.refunded(false, STAFF, NOW, null);
             assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
-            assertThat(order.close(NOW.plus(Duration.ofDays(31)), Duration.ofDays(30), false)).isTrue();
+            assertThat(order.close(NOW.plus(Duration.ofDays(31)), Duration.ofDays(30), false, false)).isTrue();
             assertThat(order.requestReturn(STAFF, NOW, "a claim after it closed")).as("BR-05: a closed order stays")
                     .isFalse();
             assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
@@ -945,10 +936,87 @@ class OrderLifecycleTest {
             credit.goodsReturned(STAFF, NOW, null);
             credit.refunded(false, STAFF, NOW, "REFUNDED");
             assertThat(credit.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
-            assertThat(credit.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), true))
+            assertThat(credit.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), true, false))
                     .as("its installments still owe").isFalse();
             assertThat(credit.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
             assertThat(credit.requestReturn(STAFF, NOW, "second claim")).isTrue();
+        }
+
+        @Test
+        @DisplayName("TT-4: a refund still owed to the customer keeps a refunded or completed order from closing")
+        void refundOwedNeverCloses() {
+            Order refunded = delivered();
+            refunded.requestReturn(STAFF, NOW);
+            refunded.goodsReturned(STAFF, NOW, null);
+            refunded.refunded(true, STAFF, NOW, "REFUNDED");
+            refunded.pullTransitions();
+            assertThat(refunded.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), false, true))
+                    .as("the seller still owes a refund").isFalse();
+            assertThat(refunded.status()).isEqualTo(OrderStatus.REFUNDED);
+            assertThat(refunded.pullTransitions()).isEmpty();
+            assertThat(refunded.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), false, false)).isTrue();
+            assertThat(refunded.status()).isEqualTo(OrderStatus.CLOSED);
+
+            Order completed = delivered();
+            Instant windowEnd = ReturnPolicy.endOfDays(NOW, Duration.ofDays(7));
+            assertThat(completed.complete(windowEnd, Duration.ofDays(7), false, false, false))
+                    .as("completion does not wait for a refund").isTrue();
+            assertThat(completed.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), false, true)).isFalse();
+            assertThat(completed.status()).isEqualTo(OrderStatus.COMPLETED);
+        }
+
+        @Test
+        @DisplayName("TT-4: a refund voided takes a (PARTIALLY_)REFUNDED order back to RETURNED; refunded again it "
+                + "moves on and closes from the new refund")
+        void refundVoidedReopens() {
+            Order order = delivered();
+            order.requestReturn(STAFF, NOW);
+            order.goodsReturned(STAFF, NOW, null);
+            order.refunded(false, STAFF, NOW, "REFUNDED");
+            order.pullTransitions();
+            Instant voided = NOW.plus(Duration.ofDays(3));
+
+            assertThat(order.refundReopened(STAFF, voided, "  wrong statement line  ")).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.RETURNED);
+            assertThat(order.refundedAt()).as("kept: when it last became refunded").isEqualTo(NOW);
+            assertThat(order.pullTransitions()).singleElement().satisfies(t -> {
+                assertThat(t.from()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+                assertThat(t.to()).isEqualTo(OrderStatus.RETURNED);
+                assertThat(t.reason()).isEqualTo("REFUND_VOIDED: wrong statement line");
+                assertThat(t.actorId()).isEqualTo(STAFF);
+            });
+            assertThat(order.refundReopened(STAFF, voided, "again")).as("RETURNED already").isFalse();
+            assertThat(order.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), false, false))
+                    .as("RETURNED does not close").isFalse();
+
+            Instant again = NOW.plus(Duration.ofDays(5));
+            assertThat(order.refunded(true, STAFF, again, "REFUNDED")).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.REFUNDED);
+            assertThat(order.refundedAt()).isEqualTo(again);
+            assertThat(order.close(again.plus(Duration.ofDays(29)), Duration.ofDays(30), false, false))
+                    .as("the delay counts from the new refund").isFalse();
+            assertThat(order.close(again.plus(Duration.ofDays(31)), Duration.ofDays(30), false, false)).isTrue();
+
+            assertThat(order.refundReopened(STAFF, again.plus(Duration.ofDays(40)), "too late"))
+                    .as("BR-05: a CLOSED order is never reopened").isFalse();
+            assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
+
+            Order full = delivered();
+            full.requestReturn(STAFF, NOW);
+            full.goodsReturned(STAFF, NOW, null);
+            full.refunded(true, STAFF, NOW, "REFUNDED");
+            full.pullTransitions();
+            assertThat(full.refundReopened(null, voided, "x".repeat(600))).isTrue();
+            assertThat(full.pullTransitions()).singleElement().satisfies(t -> {
+                assertThat(t.from()).isEqualTo(OrderStatus.REFUNDED);
+                assertThat(t.reason()).hasSize(500).startsWith("REFUND_VOIDED: xxx");
+            });
+
+            Order completed = delivered();
+            completed.complete(ReturnPolicy.endOfDays(NOW, Duration.ofDays(7)), Duration.ofDays(7), false, false,
+                    false);
+            assertThat(completed.refundReopened(STAFF, voided, "x")).as("only a refunded order").isFalse();
+            assertThat(completed.status()).isEqualTo(OrderStatus.COMPLETED);
         }
     }
 }

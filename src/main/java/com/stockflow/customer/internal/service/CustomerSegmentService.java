@@ -24,8 +24,8 @@ import java.util.UUID;
  * creates and renames groups and puts customers in them; Sales reads. Who may call
  * what is the {@code customer-segments} resource (V20261017000600).
  *
- * <p>A group prices nothing (kltn-docs 13 BR-04: the customer's own price list is the one source of a price, team
- * plan 5-3), so moving a customer between groups changes no price.</p>
+ * <p>A group prices nothing (kltn-docs 13 BR-04: a quote starts from the customer's own price list, else the variant's
+ * standard price; there is no group price, team plan 5-3), so moving a customer between groups changes no price.</p>
  */
 @Service
 @Transactional
