@@ -132,23 +132,26 @@ class LooseStockToCartonsIntegrationTest {
         all.addAll(quarantined);
         assertThat(all).extracting(c -> c.path("lpn").asText()).allMatch(lpn -> lpn.matches(LPN))
                 .doesNotHaveDuplicates();
-        Map<String, Integer> standard = cartonUnitFactors();
-        assertThat(standard).isEqualTo(Map.of(STOCKED, STOCKED_PER_CARTON, QUARANTINED, QUARANTINED_PER_CARTON));
+        // Q1 (V20270104000100): both cups are packed in their variant's one carton of 1,000 from now on; the red cup's
+        // cartons of 500 stay what they were counted in, a retired carton kept as history (BR-10).
+        assertThat(cartonUnitFactors()).isEqualTo(Map.of(STOCKED, STOCKED_PER_CARTON, QUARANTINED, STOCKED_PER_CARTON));
+        Map<String, Integer> perSku = Map.of(STOCKED, STOCKED_PER_CARTON, QUARANTINED, QUARANTINED_PER_CARTON);
+        Map<String, String> unitOfLpn = receivedIn();
         for (JsonNode carton : all) {
             String sku = carton.path("sku").asText();
             String lpn = carton.path("lpn").asText();
-            int perCarton = standard.get(sku);
+            int perCarton = perSku.get(sku);
             // 20 §5.5 / BR-18: IN_STOCK, sealed, holding exactly the standard count it was counted in at.
-            assertThat(carton.path("unitOfMeasure").asText()).as(lpn).isEqualTo("THUNG");
+            assertThat(carton.path("unitOfMeasure").asText()).as(lpn).isEqualTo(unitOfLpn.get(lpn)).startsWith("THUNG");
             assertThat(carton.path("nominalQty").asInt()).as(lpn).isEqualTo(perCarton);
-            assertThat(carton.path("receivedQty").asInt()).as(lpn).isEqualTo(perCarton);
+            assertThat(carton.hasNonNull("countedAt")).as(lpn + " was counted in").isTrue();
             assertThat(carton.path("onHand").asInt()).as(lpn).isEqualTo(perCarton);
             assertThat(carton.path("reserved").asInt()).as(lpn).isZero();
             assertThat(carton.path("status").asText()).as(lpn).isEqualTo("IN_STOCK");
             assertThat(carton.has("unopened")).as("%s: the flag is gone (4C-3)", lpn).isFalse();
             assertThat(absent(carton.path("goodsReceiptLineId"))).as("%s was made in the warehouse", lpn).isTrue();
 
-            // The LPN a person scans finds the same carton, with its one stock row: the units, their lot and status.
+            // The LPN a person scans finds the same carton, which is the stock: its units, their lot and status.
             JsonNode detail = data(get("/api/v1/inventory/stock-packages/{lpn}", lpn.toLowerCase()));
             assertThat(detail.path("lpn").asText()).isEqualTo(lpn);
             assertThat(detail.path("sku").asText()).as(lpn).isEqualTo(sku);
@@ -177,7 +180,7 @@ class LooseStockToCartonsIntegrationTest {
 
     @Test
     @DisplayName("where the demo stock stands, every unit is in a sealed carton: no opened carton, nothing loose, and"
-            + " every stock row carries a lot")
+            + " every carton carries a lot")
     void nothingIsLooseOrOpened() throws Exception {
         assertThat(locationLine(STOCKED_BIN, STOCKED))
                 .isEqualTo("UNTRACED/AVAILABLE whole 25 (25000) opened 0 (0) loose 0 = 25000");
@@ -357,11 +360,25 @@ class LooseStockToCartonsIntegrationTest {
     }
 
     /** The standard count per carton of each demo SKU: the factor of its one active unit that is not the base one. */
+    /** The code of the carton each demo LPN was counted in, by LPN. */
+    private Map<String, String> receivedIn() {
+        Map<String, String> codes = new HashMap<>();
+        jdbc.query("""
+                SELECT p.lpn, u.unit_of_measure FROM inventory.stock_package p
+                  JOIN inventory.uom_conversions u ON u.id = p.uom_conversion_id
+                  JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE i.sku IN (?, ?)""",
+                rs -> {
+                    codes.put(rs.getString("lpn"), rs.getString("unit_of_measure"));
+                }, STOCKED, QUARANTINED);
+        return codes;
+    }
+
     private Map<String, Integer> cartonUnitFactors() {
         Map<String, Integer> factors = new HashMap<>();
         jdbc.query("""
                 SELECT i.sku, u.factor FROM inventory.uom_conversions u
-                  JOIN inventory.inventory_items i ON i.id = u.inventory_item_id
+                  JOIN inventory.inventory_items i ON i.variant_id = u.variant_id
                  WHERE i.sku IN (?, ?) AND u.active""",
                 rs -> {
                     assertThat(factors.put(rs.getString("sku"), rs.getInt("factor")))

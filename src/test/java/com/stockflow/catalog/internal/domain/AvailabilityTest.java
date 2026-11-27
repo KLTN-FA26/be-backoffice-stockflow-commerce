@@ -30,27 +30,5 @@ class AvailabilityTest {
     @Test
     void aNegativeThresholdIsAConfigurationMistake() {
         assertThatThrownBy(() -> Availability.of(1, -1)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> Availability.ofCartons(10, 10, -1)).isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @ParameterizedTest(name = "{0} pieces, {1} a carton, threshold {2} cartons -> {3}")
-    @CsvSource({
-            "60,  10, 5, IN_STOCK",      // 6 cartons
-            "59,  10, 5, LOW_STOCK",     // 5 whole cartons and 9 pieces: the 9 promise nothing
-            "50,  10, 5, LOW_STOCK",
-            "10,  10, 5, LOW_STOCK",
-            "9,   10, 5, OUT_OF_STOCK",  // less than one carton is nothing a customer can order
-            "0,   10, 5, OUT_OF_STOCK",
-            "-30, 10, 5, OUT_OF_STOCK",  // an over-reservation never reads as stock
-            "10,  10, 0, IN_STOCK",      // threshold 0 never warns
-            "7,   1,  5, IN_STOCK",
-    })
-    void onlyWholeCartonsCount(int pieces, int unitsPerCarton, int thresholdInCartons, Availability expected) {
-        assertThat(Availability.ofCartons(pieces, unitsPerCarton, thresholdInCartons)).isEqualTo(expected);
-    }
-
-    @Test
-    void aCartonHoldsAtLeastOnePiece() {
-        assertThatThrownBy(() -> Availability.ofCartons(10, 0, 5)).isInstanceOf(IllegalArgumentException.class);
     }
 }

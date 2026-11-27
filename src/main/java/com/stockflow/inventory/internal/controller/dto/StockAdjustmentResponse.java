@@ -4,7 +4,12 @@ import java.time.Instant;
 import java.util.UUID;
 
 public record StockAdjustmentResponse(UUID adjustmentId, String number, String locationCode, String sku,
-                                      String lotNumber, int quantityDelta, String reason, String note,
+                                      String lotNumber,
+                                      @io.swagger.v3.oas.annotations.media.Schema(description = "WRITE_OFF takes the "
+                                              + "whole carton out of stock, RESTOCK puts a LOST carton back whole. "
+                                              + "There is no quantity: a carton is adjusted whole",
+                                              allowableValues = {"WRITE_OFF", "RESTOCK"})
+                                      String direction, String reason, String note,
                                       String status, UUID requestedBy, Instant requestedAt, UUID decidedBy,
                                       Instant decidedAt, String rejectionReason, Instant postedAt,
                                       Instant withdrawnAt, long version, UUID stockPackageId,

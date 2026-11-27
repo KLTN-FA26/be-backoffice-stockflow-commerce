@@ -11,7 +11,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.persistence.Pages;
-import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.CategoryNavigation;
 import com.stockflow.product.api.ProductPublication;
 import com.stockflow.product.api.PublishedProductCard;
@@ -26,7 +25,6 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -37,13 +35,14 @@ import java.util.stream.Collectors;
  * filters in SQL before anything is cut (so a page is full and the total is true), and the product
  * module is asked once more for the candidates it kept, because the catalog snapshot can lag a
  * discontinuation by the time an event takes to arrive. Nothing here returns a price or a stock
- * figure; stock only nudges the order.</p>
+ * figure, and stock does not move the order: the catalogue lists blanks (catalogue variants), which are never
+ * stocked - goods are stocked only as a customer's own SKU, once an order names it (owner decisions Q4, Q5 of
+ * 2026-11-26, V20270105000100) - and ranking a blank by its customers' stock would tell an anonymous shopper what
+ * other customers hold (13 BR-02). The in-stock bonus that once broke near ties went with that change.</p>
  *
- * <p><b>Ranking window.</b> Stock lives in another module's schema, and a SQL join across schemas is
- * not allowed, so the best {@code rankingWindow} text matches are fetched, re-ranked in memory with
- * the in-stock bonus, and paged from there. The total is the size of that window. A catalogue
- * larger than the window is paged only through its best matches, which for a search box is what a
- * shopper reads anyway.</p>
+ * <p><b>Ranking window.</b> The best {@code rankingWindow} text matches are fetched, re-ranked in memory and paged
+ * from there. The total is the size of that window. A catalogue larger than the window is paged only through its
+ * best matches, which for a search box is what a shopper reads anyway.</p>
  *
  * <p><b>Privacy.</b> The query is free text typed by a customer and may carry a name or a phone number:
  * it is never logged, and error messages never repeat it.</p>
@@ -78,20 +77,17 @@ public class CatalogSearchService {
 
     private final CatalogSearchRepository repository;
     private final ProductPublication products;
-    private final InventoryService inventory;
     private final SearchProperties properties;
     private final CategoryNavigation categories;
 
     public CatalogSearchService(
             CatalogSearchRepository repository,
             ProductPublication products,
-            InventoryService inventory,
             SearchProperties properties,
             CategoryNavigation categories) {
         this.categories = categories;
         this.repository = repository;
         this.products = products;
-        this.inventory = inventory;
         this.properties = properties;
     }
 
@@ -213,20 +209,13 @@ public class CatalogSearchService {
             .comparing((Candidate c) -> SearchQueryNormalizer.fold(c.title()))
             .thenComparing(Candidate::productId);
 
-    /** Text score plus the in-stock bonus; ties go to the alphabetically first title, then the id. */
+    /** The text score; ties go to the alphabetically first title, then the id. */
     private List<Candidate> byRelevance(List<Candidate> candidates) {
         if (candidates.isEmpty()) return candidates;
-        Set<String> skus = candidates.stream().flatMap(c -> c.skus().stream()).collect(Collectors.toSet());
-        Map<String, Long> available = inventory.availableQuantities(skus);
-        double bonus = properties.inStockWeight();
-        record Scored(Candidate candidate, double score) {}
         return candidates.stream()
-                .map(c -> new Scored(c, c.textScore()
-                        + (c.skus().stream().anyMatch(s -> available.getOrDefault(s, 0L) > 0) ? bonus : 0)))
-                .sorted(Comparator.comparingDouble(Scored::score).reversed()
-                        .thenComparing(s -> SearchQueryNormalizer.fold(s.candidate().title()))
-                        .thenComparing(s -> s.candidate().productId()))
-                .map(Scored::candidate)
+                .sorted(Comparator.comparingDouble(Candidate::textScore).reversed()
+                        .thenComparing(c -> SearchQueryNormalizer.fold(c.title()))
+                        .thenComparing(Candidate::productId))
                 .toList();
     }
 

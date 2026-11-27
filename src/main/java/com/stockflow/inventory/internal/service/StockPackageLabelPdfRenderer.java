@@ -32,7 +32,7 @@ public class StockPackageLabelPdfRenderer {
     public byte[] render(List<StockPackageLabel> labels, LabelFormat format) {
         return CartonLabelSheet.render(fonts, labels.stream()
                 .map(label -> new CartonLabel(label.lpn(), label.sku(), label.name(), label.lot(),
-                        label.receivedQty(), label.nominalQty(), label.unit()))
+                        label.counted(), label.nominalQty(), label.unit()))
                 .toList(), format);
     }
 }

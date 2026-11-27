@@ -28,8 +28,9 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * The units of measure of a SKU's inventory item: its base unit and its packing units with their factor
- * to the base unit, size and weight, and which one purchase orders start in (docs 01 §3, BR-09, BR-10).
+ * The cartons of a catalogue variant: its packing units with their factor, size and weight (docs 01 §3, BR-03,
+ * BR-09, BR-10), which every customer's SKU drawn on it is packed in (owner decision Q1). Keyed by the variant, which
+ * has no inventory item (V20270105000100); a customer's own SKU is not a variant, so its id is 404 here.
  * Same permissions as the SKU's logistics.
  */
 @RestController

@@ -1,7 +1,6 @@
 package com.stockflow.inventory;
 
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.consumption.PickConsumption;
@@ -28,7 +27,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * SCRUM-473 (#141) against a real PostgreSQL and its commit-time checks (V20261020000200), since team plan 4C-2 with
@@ -62,28 +60,24 @@ class StockPackageConsumptionIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Carton fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Carton fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Carton fixture");
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             carton = Identifiers.newId();
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 5)", carton, item);
+            jdbc.update("insert into inventory.uom_conversions (id, variant_id, unit_of_measure, factor)"
+                    + " values (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', 5)", carton, item);
         });
     }
 
     /** A whole carton of 5 on the shelf, counted in at 5: the only stock of the SKU unless another is added. */
     private UUID cartonOnShelf(String name) {
         UUID id = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        received_qty, location_code, status) values (?, ?, ?, ?, 5, 5, ?, 'IN_STOCK')""",
-                    id, "LPN-" + sku + "-" + name, item, carton, SHELF);
-            jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved, status,
-                        version, created_at, stock_package_id) values (?, ?, ?, 'UNTRACED', ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, SHELF, java.sql.Timestamp.from(RECEIVED), id);
-        });
+        tx.executeWithoutResult(s -> jdbc.update("""
+                insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                    counted_at, location_code, status, stock_status, lot_id, received_at)
+                values (?, ?, ?, ?, 5, now(), ?, 'IN_STOCK', 'AVAILABLE', ?, ?)""",
+                id, "LPN-" + sku + "-" + name, item, carton, SHELF,
+                com.stockflow.support.CartonRows.lot(jdbc, sku, "UNTRACED", RECEIVED),
+                java.sql.Timestamp.from(RECEIVED)));
         return id;
     }
 
@@ -112,7 +106,7 @@ class StockPackageConsumptionIntegrationTest {
     private Map<String, Object> carton(UUID id) {
         return jdbc.queryForMap("""
                 select p.status, p.closed_at is not null as closed,
-                       (select coalesce(sum(s.on_hand), 0) from inventory.stock_item s where s.stock_package_id = p.id) as held
+                       (case when p.status = 'IN_STOCK' then p.nominal_qty else 0 end)::bigint as held
                   from inventory.stock_package p where p.id = ?""", id);
     }
 
@@ -122,12 +116,13 @@ class StockPackageConsumptionIntegrationTest {
         UUID box = cartonOnShelf("A");
         UUID order = confirmedOrder();
 
-        // The checkout reservation's own refusal (RESERVATION_NOT_WHOLE_CARTONS) went with it (review C4 D-1); a hold
-        // of part of a carton still never reaches a carton: the release finds no whole carton for it, and nothing
-        // is held (the hold and its allocation are one transaction here).
-        assertThat(((BusinessException) catchThrowable(() -> hold(order, 3))).errorCode())
-                .as("3 of a carton of 5: allocated whole cartons only")
-                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        // A hold counts cartons of one count (ADR-0011, V20261231000500): 3 units is "a carton of 3", and the SKU has
+        // none, so part of the carton of 5 is never even held - where, before, the hold was taken in units and only
+        // the release refused it (INSUFFICIENT_STOCK: no whole carton for 3).
+        assertThat(tx.execute(s -> Holds.attempt(inventory, order, sku, "HCM", 3)).cartonsHeld())
+                .as("3 of a carton of 5: a carton is held whole, or not at all").isZero();
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_reservation where order_id = ?",
+                Integer.class, order)).isZero();
         assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("held", 5L);
 
         UUID whole = hold(order, 5);
@@ -136,7 +131,7 @@ class StockPackageConsumptionIntegrationTest {
                 .containsEntry("held", 0L);
 
         assertThat(jdbc.queryForList("""
-                select from_stock_package_id from inventory.stock_movement
+                select stock_package_id from inventory.stock_movement
                  where sku = ? and movement_type = 'PICK'""", UUID.class, sku)).containsExactly(box);
     }
 

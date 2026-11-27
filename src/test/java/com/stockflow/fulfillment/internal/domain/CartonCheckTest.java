@@ -60,8 +60,13 @@ class CartonCheckTest {
         return check;
     }
 
+    /** The spec of every carton these tests label, by LPN: each is measured as the carton it was received in. */
     private static Map<String, Spec> specs() {
-        return Map.of("SKU-A", SPEC, "SKU-B", SPEC);
+        Map<String, Spec> specs = new LinkedHashMap<>();
+        for (String lpn : List.of("LPN-1", "LPN-A1", "LPN-A2", "LPN-A3", "LPN-A9", "LPN-B1", "LPN-B9", "LPN-ELSEWHERE", "LPN-NOPE", "LPN-X1", "LPN-X2")) {
+            specs.put(lpn, SPEC);
+        }
+        return specs;
     }
 
     private static Map<UUID, Integer> wanted(int a, int b) {
@@ -300,7 +305,7 @@ class CartonCheckTest {
             CartonCheck check = started();
             check.check("LPN-A1", WORKER, NOW);
             Spec tiny = new Spec(BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, new BigDecimal("0.1"), false);
-            check.label(List.of("LPN-A1"), Map.of("SKU-A", tiny), DIVISOR, WORKER, NOW);
+            check.label(List.of("LPN-A1"), Map.of("LPN-A1", tiny), DIVISOR, WORKER, NOW);
             Carton carton = check.carton("LPN-A1").orElseThrow();
             assertThat(carton.dimWeightKg()).isEqualByComparingTo("0.001");
             assertThat(carton.rotatable()).isFalse();
@@ -324,12 +329,12 @@ class CartonCheckTest {
         }
 
         @Test
-        @DisplayName("a SKU without a spec, or an unmeasured one, stops every label and names every such SKU (BR-07)")
+        @DisplayName("a carton without a spec, or an unmeasured one, stops every label and names every such SKU (BR-07)")
         void unmeasured() {
             CartonCheck check = started();
             labelNothing(check);
             Spec noWeight = new Spec(BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, null, true);
-            assertThatThrownBy(() -> check.label(null, Map.of("SKU-A", noWeight), DIVISOR, WORKER, NOW))
+            assertThatThrownBy(() -> check.label(null, Map.of("LPN-A1", noWeight, "LPN-A2", noWeight), DIVISOR, WORKER, NOW))
                     .isInstanceOfSatisfying(BusinessException.class, e -> {
                         assertThat(e.errorCode()).isEqualTo(ErrorCode.CARTON_SPEC_UNMEASURED);
                         assertThat(e.getMessage()).contains("SKU-A").contains("SKU-B");

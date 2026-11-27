@@ -17,10 +17,11 @@ import java.util.UUID;
  * options are created in the same transaction, SKUs by the code rule ({@code CODE-VALUE-VALUE}) and the
  * first combination as the default variant; anything refused (a SKU taken, a matrix over the limit)
  * leaves no product behind. Images are then added per variant ({@code /variants/{variantId}/media}).
- * Logistics are not part of the catalog flow: they belong to the variant's inventory item
- * ({@code /api/v1/inventory/items/{id}}) and are set by the warehouse side, which holds
- * {@code inventory-inventory-items:UPDATE} (the warehouse manager). Catalog roles hold no grant on
- * that resource by design.
+ * Logistics are not part of the catalog flow: a variant's carton is declared on it
+ * ({@code /variants/{variantId}/uom-conversions}), and the inventory item of a customer's SKU - made when an order
+ * names it, never for a variant (V20270105000100) - is the warehouse side's ({@code /api/v1/inventory/items/{id}},
+ * {@code inventory-inventory-items:UPDATE}, the warehouse manager). Catalog roles hold no grant on that resource by
+ * design.
  *
  * <p>{@code code} is upper-cased by the server. {@code categoryId} is not {@code @NotNull}: a product
  * can be created without one, and {@code submit()} is what refuses to move it to approval without a
@@ -39,10 +40,6 @@ public record CreateProductRequest(
         @Size(max = 255, message = "name must be at most 255 characters")
         String name,
 
-        @NotBlank(message = "nameEn is required")
-        @Size(max = 300, message = "nameEn must be at most 300 characters")
-        String nameEn,
-
         UUID brandId,
 
         UUID categoryId,
@@ -50,8 +47,6 @@ public record CreateProductRequest(
         String shortDescription,
 
         String description,
-
-        String descriptionEn,
 
         @NotNull(message = "taxClass is required")
         TaxClass taxClass,

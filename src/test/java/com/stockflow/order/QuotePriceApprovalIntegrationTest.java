@@ -82,8 +82,8 @@ class QuotePriceApprovalIntegrationTest {
                 Set.of(), Set.of());
         sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, PER_CARTON).sku();
         variant = jdbc.queryForObject("""
-                SELECT s.sku FROM product.variants v JOIN product.variants s ON s.id = v.source_variant_id
-                 WHERE v.sku = ?""", String.class, sku);
+                SELECT s.sku FROM product.customer_skus c JOIN product.variants s ON s.id = c.variant_id
+                 WHERE c.sku = ?""", String.class, sku);
         standardPrice(1000);   // from 1 carton, 1 000 VND a piece
     }
 

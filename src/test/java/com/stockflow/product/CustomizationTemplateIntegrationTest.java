@@ -91,8 +91,8 @@ class CustomizationTemplateIntegrationTest {
 
     private ProductSummary create(ProductKind kind) {
         String suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        return products.create(new CreateProductCommand("TPL-" + suffix, "Ly giấy 12oz", "Paper cup 12oz", null, null,
-                "Ly", null, null, TaxClass.STANDARD, List.of()));
+        return products.create(new CreateProductCommand("TPL-" + suffix, "Ly giấy 12oz", null, null,
+                "Ly", null, TaxClass.STANDARD, List.of()));
     }
 
     private static String cup(String code, double bleed, Long version) {

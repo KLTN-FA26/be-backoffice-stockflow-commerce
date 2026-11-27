@@ -27,6 +27,7 @@ import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.service.BookVisibility;
 import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.Holds;
 import com.stockflow.support.ProductionReceiptTest;
@@ -126,7 +127,7 @@ class StockLedgerTotalsIntegrationTest {
     private String lpnPickedBy(UUID pickLine) {
         return jdbc.queryForObject("""
                 SELECT p.lpn FROM inventory.stock_movement m
-                  JOIN inventory.stock_package p ON p.id = m.from_stock_package_id
+                  JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE m.movement_type = 'PICK' AND m.reference_id = ?""", String.class, pickLine);
     }
 
@@ -144,18 +145,28 @@ class StockLedgerTotalsIntegrationTest {
 
     private long onHand() {
         return jdbc.queryForObject("""
-                SELECT COALESCE(SUM(on_hand), 0) FROM inventory.stock_item
-                 WHERE sku = ? AND location_code LIKE 'HCM-%'""", Long.class, sku);
+                SELECT COALESCE(SUM(p.nominal_qty), 0) FROM inventory.stock_package p
+                  JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE i.sku = ? AND p.status = 'IN_STOCK' AND p.location_code LIKE 'HCM-%'""", Long.class, sku);
     }
 
+    /**
+     * A line into {@link #BIN} at {@code at}, naming a carton of {@code quantity} units standing there: a ledger line
+     * is its carton, whole, and counts for the carton's standard count (ADR-0011), so the carton is made of that size.
+     * The test that uses it reads the ledger's days and units, not the stock.
+     */
     private void ledgerLine(int quantity, Instant at) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
-                    to_location_code, quantity, to_status, reference_type, reference_id, occurred_at, version,
-                    created_at)
-                VALUES (?, 'ADJUSTMENT', ?, ?, NULL, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW())""",
-                Identifiers.newId(), sku, goods.productionCode(), BIN, quantity, Identifiers.newId(),
-                OffsetDateTime.ofInstant(at, ZoneOffset.UTC)));
+        tx.executeWithoutResult(s -> {
+            UUID carton = CartonRows.stockOfUnit(jdbc, sku, CartonRows.unitOf(jdbc, sku, quantity), BIN, 1,
+                    goods.productionCode(), at, "AVAILABLE").getFirst().id();
+            jdbc.update("""
+                    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
+                        to_location_code, to_status, reference_type, reference_id, occurred_at, version,
+                        created_at, stock_package_id)
+                    VALUES (?, 'ADJUSTMENT', ?, ?, NULL, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW(), ?)""",
+                    Identifiers.newId(), sku, goods.productionCode(), BIN, Identifiers.newId(),
+                    OffsetDateTime.ofInstant(at, ZoneOffset.UTC), carton);
+        });
     }
 
     private static ErrorCode code(Throwable thrown) {

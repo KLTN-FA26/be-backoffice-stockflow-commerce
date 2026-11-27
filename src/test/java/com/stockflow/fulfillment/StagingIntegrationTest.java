@@ -103,6 +103,7 @@ class StagingIntegrationTest {
     @Autowired OrderService orders;
     @Autowired com.stockflow.order.internal.service.OrderReleases releases;
     @Autowired InventoryService inventory;
+    @Autowired com.stockflow.inventory.internal.service.StockOperations stockOperations;
     @Autowired PickLists pickLists;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -296,13 +297,13 @@ class StagingIntegrationTest {
 
     private String rowLocationOf(String lpn) {
         return jdbc.queryForObject("""
-                SELECT s.location_code FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
+                SELECT p.location_code FROM inventory.stock_package p
                  WHERE p.lpn = ?""", String.class, lpn);
     }
 
     private int onHandOf(String lpn) {
         return jdbc.queryForObject("""
-                SELECT s.on_hand FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
+                SELECT CASE WHEN p.status = 'IN_STOCK' THEN p.nominal_qty ELSE 0 END FROM inventory.stock_package p
                  WHERE p.lpn = ?""", Integer.class, lpn);
     }
 
@@ -330,7 +331,7 @@ class StagingIntegrationTest {
     // ---- picking to the staging area -----------------------------------------------------------
 
     @Test
-    @DisplayName("a staged line moves its carton whole to HCM-STG01 and keeps the hold: on_hand unchanged, a MOVE row, no PICK; "
+    @DisplayName("a staged line moves its carton whole to HCM-STG01 and keeps the hold: the carton still in stock, a MOVE row, no PICK; "
             + "the task completes STAGED, the order stays PICKING and packing refuses it")
     void pickingToStagingMovesTheCartonAndKeepsTheHold() throws Exception {
         OrderSummary order = confirmedOrder(2);
@@ -348,7 +349,7 @@ class StagingIntegrationTest {
                 .andExpect(jsonPath("$.data.pickedQty").value(1));
 
         assertThat(locationOf(lpn)).as("the carton moved whole").isEqualTo(STAGING);
-        assertThat(rowLocationOf(lpn)).as("with its row").isEqualTo(STAGING);
+        assertThat(rowLocationOf(lpn)).as("the carton itself: there is no row beside it").isEqualTo(STAGING);
         assertThat(cartonStatus(lpn)).isEqualTo("IN_STOCK");
         assertThat(onHandOf(lpn)).as("nothing deducted").isEqualTo(1);
         assertThat(holdStatusOf(first)).as("the order still owns it").isEqualTo("HELD");
@@ -634,25 +635,30 @@ class StagingIntegrationTest {
         JsonNode line = lines(task).get(0);
         String lpn = line.path("lpn").asText();
         confirm(task, line).andExpect(status().isOk());
-        String row = jdbc.queryForObject("""
-                SELECT s.id::text FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
-                 WHERE p.lpn = ?""", String.class, lpn);
         int ledgerBefore = jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE sku = ?",
                 Integer.class, STOCKED.code());
 
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
         Await.until("task cancelled", ASYNC, () -> "CANCELLED".equals(pickStatus(task)));
-        assertThat(jdbc.queryForObject("SELECT reserved FROM inventory.stock_item WHERE id = ?::uuid", Integer.class, row))
-                .as("released, left in staging").isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_reservation r JOIN inventory.stock_package p "
+                + "ON p.id = r.stock_package_id WHERE p.lpn = ? AND r.status = 'HELD'", Integer.class, lpn))
+                .as("released, left in staging: no live allocation names the carton").isZero();
 
-        String lot = jdbc.queryForObject("SELECT lot_number FROM inventory.stock_item WHERE id = ?::uuid", String.class, row);
-        Throwable surplus = catchThrowable(() -> tx.execute(s -> inventory.requestAdjustment(
-                new com.stockflow.inventory.api.RequestAdjustmentCommand(STAGING, STOCKED, lot, 1,
-                        com.stockflow.inventory.api.StockAdjustmentReason.FOUND, "found in staging", managerHcm))));
+        String lot = jdbc.queryForObject("SELECT l.lot_number FROM inventory.stock_package p JOIN inventory.stock_lot l "
+                + "ON l.id = p.lot_id WHERE p.lpn = ?", String.class, lpn);
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class, lpn);
+        // An adjustment asked by hand through the inventory API only writes a carton off (RequestAdjustmentCommand has
+        // no direction, ADR-0011); the surplus that can still be asked of a carton in staging is a count's variance.
+        var staged = com.stockflow.inventory.internal.domain.CountSlot.carton(
+                new com.stockflow.inventory.internal.domain.LocationId(STAGING), STOCKED, lot,
+                new com.stockflow.inventory.internal.domain.StockPackageId(carton));
+        Throwable surplus = catchThrowable(() -> tx.execute(s -> stockOperations.requestCountVariance(
+                UUID.randomUUID(), staged, com.stockflow.inventory.internal.domain.AdjustmentDirection.RESTOCK,
+                managerHcm, "found in staging")));
         assertThat(surplus).isInstanceOfSatisfying(BusinessException.class,
                 refusal -> assertThat(refusal.errorCode()).isEqualTo(ErrorCode.STAGING_MOVE_NOT_ALLOWED));
         Throwable writeDown = catchThrowable(() -> tx.execute(s -> inventory.requestAdjustment(
-                new com.stockflow.inventory.api.RequestAdjustmentCommand(STAGING, STOCKED, lot, -1,
+                com.stockflow.inventory.api.RequestAdjustmentCommand.ofCarton(lpn,
                         com.stockflow.inventory.api.StockAdjustmentReason.LOST, "gone from staging", managerHcm))));
         if (writeDown instanceof BusinessException refused) {
             assertThat(refused.errorCode()).as("a write-down is not what is refused")
@@ -733,8 +739,10 @@ class StagingIntegrationTest {
 
         // a free carton into it
         String free = jdbc.queryForObject("""
-                SELECT p.lpn FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
-                 WHERE p.location_code = ? AND p.status = 'IN_STOCK' AND s.reserved = 0 AND s.on_hand > 0
+                SELECT p.lpn FROM inventory.stock_package p
+                 WHERE p.location_code = ? AND p.status = 'IN_STOCK'
+                   AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation r
+                                    WHERE r.stock_package_id = p.id AND r.status = 'HELD')
                  ORDER BY p.lpn LIMIT 1""", String.class, STOCKED_BIN);
         Throwable into = catchThrowable(() -> moveByHand(List.of(free), STAGING));
         assertThat(into).isInstanceOfSatisfying(BusinessException.class,
@@ -748,7 +756,7 @@ class StagingIntegrationTest {
                 ErrorCode.STOCK_PACKAGE_HELD);
         assertThat(locationOf(staged)).isEqualTo(STAGING);
         assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.to_stock_package_id
+                SELECT count(*) FROM inventory.stock_movement m JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE p.lpn IN (?, ?) AND m.reference_type = 'MOVE_TASK'""", Integer.class, free, staged)).isZero();
     }
 

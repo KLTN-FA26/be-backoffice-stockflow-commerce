@@ -1,6 +1,7 @@
 package com.stockflow.inventory.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import com.stockflow.inventory.internal.domain.AdjustmentReason;
 import com.stockflow.inventory.internal.domain.AdjustmentStatus;
 import jakarta.persistence.Column;
@@ -29,8 +30,10 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     @Column(name = "lot_number", length = 64, updatable = false)
     private String lotNumber;
 
-    @Column(name = "quantity_delta", nullable = false, updatable = false)
-    private int quantityDelta;
+    /** Which way the whole carton goes; the units it stands for are the carton's (ADR-0011). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "direction", nullable = false, length = 16, updatable = false)
+    private AdjustmentDirection direction;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "reason_code", nullable = false, length = 24, updatable = false)
@@ -123,14 +126,14 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     public UUID getCycleCountLineId() { return cycleCountLineId; }
 
     public StockAdjustmentJpaEntity(UUID id, String adjustmentNumber, String locationCode, String sku,
-                                    String lotNumber, int quantityDelta, AdjustmentReason reasonCode,
+                                    String lotNumber, AdjustmentDirection direction, AdjustmentReason reasonCode,
                                     String note, UUID requestedBy) {
         super(id);
         this.adjustmentNumber = adjustmentNumber;
         this.locationCode = locationCode;
         this.sku = sku;
         this.lotNumber = lotNumber;
-        this.quantityDelta = quantityDelta;
+        this.direction = direction;
         this.reasonCode = reasonCode;
         this.note = note;
         this.requestedBy = requestedBy;
@@ -151,7 +154,7 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     public String getLocationCode() { return locationCode; }
     public String getSku() { return sku; }
     public String getLotNumber() { return lotNumber; }
-    public int getQuantityDelta() { return quantityDelta; }
+    public AdjustmentDirection getDirection() { return direction; }
     public AdjustmentReason getReasonCode() { return reasonCode; }
     public String getNote() { return note; }
     public AdjustmentStatus getStatus() { return status; }

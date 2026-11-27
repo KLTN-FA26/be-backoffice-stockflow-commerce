@@ -106,9 +106,8 @@ class StockOperationsController {
             description = "from / to are ISO dates, business days in Asia/Ho_Chi_Minh, both inclusive; warehouseId "
                     + "keeps the lines with either side in that warehouse. 400 VALIDATION_FAILED when from is after "
                     + "to; 404 WAREHOUSE_NOT_FOUND; 403 for a warehouse not the caller's. lpn (any case) keeps the "
-                    + "lines that took units out of that carton or put units into it - its history; an LPN that is no "
-                    + "carton gives an empty page, a carton in a warehouse not the caller's is 403 OUT_OF_DATA_SCOPE. "
-                    + "Each line names its cartons as fromLpn / toLpn.")
+                    + "lines about that carton - its history; an LPN that is no carton gives an empty page, a carton "
+                    + "in a warehouse not the caller's is 403 OUT_OF_DATA_SCOPE. Each line names its carton as lpn.")
     @RequiresPermission(resource = InventoryResources.STOCK_MOVEMENTS, action = Action.READ)
     public ApiResponse<PageResponse<StockMovementResponse>> movements(
             @RequestParam(required = false) String sku,

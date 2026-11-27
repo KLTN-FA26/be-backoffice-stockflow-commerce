@@ -189,7 +189,8 @@ class CustomerOrderPortalIntegrationTest {
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
                                                      design_checksum) VALUES (?, ?, ?, 10, 2000, 'VND', ?, ?)""",
-                    printLine, order, DemoData.BLANK_CUP, snapshot, "a".repeat(64));
+                    // A line carrying a snapshot names a customer's SKU: a blank is never ordered (V20270105000100).
+                    printLine, order, DemoData.SKU_QUARANTINED, snapshot, "a".repeat(64));
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
                     VALUES (?, ?, ?, 1, 10000, 'VND')""", stockLine, order, DemoData.SKU_STOCKED);

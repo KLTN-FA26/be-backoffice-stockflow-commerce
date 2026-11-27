@@ -1,7 +1,6 @@
 package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
@@ -78,9 +77,20 @@ class CartonCheckServiceTest {
     private final LoadPlanReleases loadPlans = mock(LoadPlanReleases.class);
     private final PlanVehicles planVehicles = mock(PlanVehicles.class);
     private final CartonMeasures measures = new CartonMeasures(itemControls,
-            mock(com.stockflow.fulfillment.internal.repository.PickLineJpaRepository.class),
             mock(PackageJpaRepository.class), planMembers,
             mock(com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository.class), 6000);
+    /** Every carton asked about was received in this carton (they are all SKU-A here): the spec by LPN. */
+    private static org.mockito.stubbing.Answer<java.util.Map<String, CartonSpec>> everyLpn(CartonSpec spec) {
+        return call -> {
+            java.util.Map<String, CartonSpec> specs = new java.util.HashMap<>();
+            java.util.Collection<String> lpns = call.getArgument(0);
+            if (lpns != null) {   // null while Mockito re-stubs with any()
+                lpns.forEach(lpn -> specs.put(lpn, spec));
+            }
+            return specs;
+        };
+    }
+
     private final LabelledCartons labelledCartons = mock(LabelledCartons.class);
     private final com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines =
             mock(com.stockflow.fulfillment.internal.repository.PickLineJpaRepository.class);
@@ -130,7 +140,7 @@ class CartonCheckServiceTest {
                 new CartonCheck.PickedCarton(UUID.randomUUID(), "LPN-1", lineId, "SKU-A", null, 10),
                 new CartonCheck.PickedCarton(secondPickLine, "LPN-2", lineId, "SKU-A", null, 10)));
         orderIs(order(OrderStatus.PICKING, BigDecimal.ZERO));
-        when(itemControls.cartonSpec(new Sku("SKU-A"))).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10,
+        when(itemControls.cartonSpecsOfLpns(any())).thenAnswer(everyLpn(new CartonSpec("SKU-A", "CARTON", 10,
                 new BigDecimal("60"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("12"), true)));
         when(payments.installmentStanding(any())).thenReturn(InstallmentStanding.none(orderId));
         when(shipments.saveAndFlush(any())).thenAnswer(call -> call.getArgument(0));
@@ -178,7 +188,7 @@ class CartonCheckServiceTest {
         @Test
         @DisplayName("a label that fails (no carton spec size) locks nothing")
         void refusedLabelDoesNotLock() {
-            when(itemControls.cartonSpec(any())).thenReturn(Optional.empty());
+            when(itemControls.cartonSpecsOfLpns(any())).thenReturn(java.util.Map.of());
             started();
             service.check(pick.getId(), "LPN-1", actor);
 
@@ -479,7 +489,7 @@ class CartonCheckServiceTest {
             service.complete(pick.getId(), PackingCompletion.whole(), actor);
             CartonCheck.Carton one = check.carton("LPN-1").orElseThrow();
             check.saved();   // the store wrote the cartons (mocked here)
-            when(itemControls.cartonSpec(new Sku("SKU-A"))).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10,
+            when(itemControls.cartonSpecsOfLpns(any())).thenAnswer(everyLpn(new CartonSpec("SKU-A", "CARTON", 10,
                     new BigDecimal("70"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("14"), true)));
 
             service.reprint(pick.getId(), "LPN-1", null, actor);
@@ -488,7 +498,7 @@ class CartonCheckServiceTest {
 
             when(planMembers.findByPackageIdInAndActiveTrue(List.of(one.id()))).thenReturn(List.of(
                     mock(com.stockflow.fulfillment.internal.entity.LoadPlanPackageJpaEntity.class)));
-            when(itemControls.cartonSpec(new Sku("SKU-A"))).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10,
+            when(itemControls.cartonSpecsOfLpns(any())).thenAnswer(everyLpn(new CartonSpec("SKU-A", "CARTON", 10,
                     new BigDecimal("80"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("15"), true)));
             service.reprint(pick.getId(), "LPN-1", null, actor);
             assertThat(one.lengthCm()).as("planned: frozen").isEqualByComparingTo("70");
@@ -560,7 +570,7 @@ class CartonCheckServiceTest {
         @Test
         @DisplayName("the session lists the SKUs whose carton spec has no size, so the screen can say why labelling stops")
         void sessionNamesUnmeasuredSkus() {
-            when(itemControls.cartonSpec(any())).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10, null,
+            when(itemControls.cartonSpecsOfLpns(any())).thenAnswer(everyLpn(new CartonSpec("SKU-A", "CARTON", 10, null,
                     null, null, null, true)));
 
             var session = service.start(pick.getId(), actor);

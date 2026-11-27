@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -233,22 +234,26 @@ class LotTraceIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku, "Lot fixture",
                     sku.toLowerCase(java.util.Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Lot fixture','')", Identifiers.newId(), product, sku);
-            // Two cartons of one lot received together: the stock-row trigger puts both rows in the same UNTRACED lot.
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Lot fixture");
+            // Two cartons of one lot received together: both are of the same UNTRACED lot (CartonRows.lot finds it).
             java.time.Instant received = java.time.Instant.now().minusSeconds(30L * 24 * 3600);
             com.stockflow.support.CartonRows.carton(jdbc, sku, "HCM-A01-1-A", 4, "X1", received, "AVAILABLE");
-            UUID heldRow = com.stockflow.support.CartonRows.carton(jdbc, sku, "HCM-A01-1-B", 5, "X1", received,
-                    "AVAILABLE").stockItemId();
-            jdbc.update("UPDATE inventory.stock_item SET reserved = 2 WHERE id = ?", heldRow);
+            UUID heldCarton = com.stockflow.support.CartonRows.carton(jdbc, sku, "HCM-A01-1-B", 5, "X1", received,
+                    "AVAILABLE").id();
+            // A carton is held whole: one live allocation names it (ADR-0011) - there is no part of it to hold.
+            jdbc.update("""
+                    INSERT INTO inventory.stock_reservation (id, stock_package_id, sku, order_id, root_request_id,
+                        request_id, cartons, units_per_carton, reserved_at, status)
+                    SELECT gen_random_uuid(), ?, ?, o.id, gen_random_uuid(), gen_random_uuid(), 1, 5, NOW(), 'HELD'
+                      FROM (SELECT id FROM ordering.customer_order ORDER BY id LIMIT 1) o""", heldCarton, sku);
         });
 
         var lots = traces.lots(new LotTraces.Query(sku, "X1", null, null, null, 0, 20)).items();
         assertThat(lots).singleElement().satisfies(lot -> {
             assertThat(lot.origin()).isEqualTo("UNTRACED");
             assertThat(lot.onHand()).isEqualTo(9);
-            assertThat(lot.held()).isEqualTo(2);
-            assertThat(lot.available()).isEqualTo(7);
+            assertThat(lot.held()).as("the held carton, whole").isEqualTo(5);
+            assertThat(lot.available()).isEqualTo(4);
         });
     }
 }

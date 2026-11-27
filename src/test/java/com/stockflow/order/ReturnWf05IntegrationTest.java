@@ -385,8 +385,8 @@ class ReturnWf05IntegrationTest {
         assertThat(code(catchThrowable(() -> scan(receipt.id(), d.lpn(1), null))))
                 .isEqualTo(ErrorCode.RETURN_CARTON_NOT_CLAIMED);
         Map<String, Object> pkg = jdbc.queryForMap("""
-                SELECT p.id, s.lot_number FROM inventory.stock_package p
-                  JOIN inventory.stock_item s ON s.stock_package_id = p.id WHERE p.lpn = ?""", d.lpn(1));
+                SELECT p.id, l.lot_number FROM inventory.stock_package p
+                  JOIN inventory.stock_lot l ON l.id = p.lot_id WHERE p.lpn = ?""", d.lpn(1));
         assertThat(inDatabase("""
                 INSERT INTO procurement.goods_receipt_return_cartons (id, receipt_id, stock_package_id, lpn, sku,
                     lot_number, quantity, scanned_by, version, created_at)
@@ -476,16 +476,15 @@ class ReturnWf05IntegrationTest {
         confirm(receipt.id(), manager, true);
 
         assertThat(jdbc.queryForMap("""
-                SELECT p.status, p.return_opened_at IS NOT NULL AS opened, sum(s.on_hand) AS on_hand
-                  FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
-                 WHERE p.lpn = ? GROUP BY p.status, p.return_opened_at""", d.lpn(1)))
+                SELECT p.status, p.return_opened_at IS NOT NULL AS opened
+                  FROM inventory.stock_package p
+                 WHERE p.lpn = ?""", d.lpn(1)))
                 .containsEntry("status", "CONSUMED").containsEntry("opened", true);
-        assertThat(((Number) jdbc.queryForObject("SELECT sum(s.on_hand) FROM inventory.stock_item s JOIN "
-                + "inventory.stock_package p ON p.id = s.stock_package_id WHERE p.lpn = ?", Number.class, d.lpn(1)))
-                .intValue()).as("no stock from a label").isZero();
+        assertThat(jdbc.queryForObject("SELECT stock_status FROM inventory.stock_package WHERE lpn = ?", String.class,
+                d.lpn(1))).as("no stock from a label: the opened carton is not in stock").isNull();
         assertThat(jdbc.queryForMap("""
-                SELECT p.status, s.status AS stock, s.on_hand FROM inventory.stock_package p
-                  JOIN inventory.stock_item s ON s.stock_package_id = p.id WHERE p.lpn = ? AND s.on_hand > 0""",
+                SELECT p.status, p.stock_status AS stock, p.nominal_qty AS on_hand FROM inventory.stock_package p
+                 WHERE p.lpn = ? AND p.status = 'IN_STOCK'""",
                 d.lpn(0))).containsEntry("status", "IN_STOCK").containsEntry("stock", "QUARANTINE")
                 .containsEntry("on_hand", CARTON);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE reference_type = "

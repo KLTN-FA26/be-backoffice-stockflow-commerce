@@ -1,16 +1,13 @@
 package com.stockflow.fulfillment.internal.service;
 
-import com.stockflow.common.domain.Sku;
 import com.stockflow.fulfillment.internal.domain.CartonCheck;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadPackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanPackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
-import com.stockflow.fulfillment.internal.entity.PickLineJpaEntity;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.LoadPlanPackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PickLineJpaRepository;
 import com.stockflow.inventory.api.CartonSpec;
 import com.stockflow.inventory.api.InventoryControlService;
 import org.slf4j.Logger;
@@ -28,14 +25,15 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 /**
- * A shipping carton's size and weight from its SKU's carton spec (kltn-docs 08 BR-07, BR-09), for the label and for
- * load planning.
+ * A shipping carton's size and weight from the carton it was received in (kltn-docs 08 BR-07, BR-09), for the label and
+ * for load planning. Read by LPN, never by SKU: the carton is its catalogue variant's (owner decision Q1), and after the
+ * company retires one and declares another (BR-10) the cartons on the shelf are still the old kind, so a label read
+ * from the SKU's current carton would print the new carton's size on an old box (plan 4.17).
  *
  * <p>08 edge case "the real carton differs from the declared spec": the warehouse manager corrects the spec on the
- * item, and a carton already checked takes the new one <b>when its label is printed again or when its vehicle is
+ * variant, and a carton already checked takes the new one <b>when its label is printed again or when its vehicle is
  * planned</b>. The label does it through {@link CartonCheck#reprint}; planning through {@link #refreshForPlanning}, as
  * its shipment's cartons join a load plan. A carton a load plan or a vehicle already holds keeps the measures its
  * layout was computed from: {@code tg_package_in_load_plan} refuses to change them, and a layout that no longer matches
@@ -47,20 +45,18 @@ class CartonMeasures {
     private static final Logger log = LoggerFactory.getLogger(CartonMeasures.class);
 
     private final InventoryControlService itemControls;
-    private final PickLineJpaRepository pickLines;
     private final PackageJpaRepository packages;
     private final LoadPlanPackageJpaRepository planMembers;
     private final DispatchLoadPackageJpaRepository loadParcels;
     private final int divisor;
 
-    CartonMeasures(InventoryControlService itemControls, PickLineJpaRepository pickLines, PackageJpaRepository packages,
+    CartonMeasures(InventoryControlService itemControls, PackageJpaRepository packages,
                    LoadPlanPackageJpaRepository planMembers, DispatchLoadPackageJpaRepository loadParcels,
                    @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int divisor) {
         if (divisor <= 0) {
             throw new IllegalArgumentException("stockflow.fulfillment.packing.dim-divisor must be positive");
         }
         this.itemControls = itemControls;
-        this.pickLines = pickLines;
         this.packages = packages;
         this.planMembers = planMembers;
         this.loadParcels = loadParcels;
@@ -73,13 +69,17 @@ class CartonMeasures {
     }
 
     /**
-     * The carton spec of each of these SKUs, as the label wants it (08 §4.3 step 5, 01 BR-03). A SKU with no carton
-     * unit is missing; one whose unit declares no size or weight is there, not measured.
+     * The carton spec of each of these LPN cartons, by LPN, as the label wants it (08 §4.3 step 5, 01 BR-03): the
+     * carton row each was received in, as measured now. An unknown LPN is missing; one whose carton declares no size
+     * or weight is there, not measured. One read for all of them.
      */
-    Map<String, CartonCheck.Spec> specs(Collection<String> skus) {
+    Map<String, CartonCheck.Spec> specs(Collection<String> lpns) {
+        List<String> wanted = lpns.stream().filter(Objects::nonNull).distinct().toList();
+        if (wanted.isEmpty()) {
+            return Map.of();
+        }
         Map<String, CartonCheck.Spec> specs = new HashMap<>();
-        skus.stream().distinct().forEach(sku -> itemControls.cartonSpec(new Sku(sku))
-                .ifPresent(spec -> specs.put(sku, toSpec(spec))));
+        itemControls.cartonSpecsOfLpns(wanted).forEach((lpn, spec) -> specs.put(lpn, toSpec(spec)));
         return specs;
     }
 
@@ -90,7 +90,7 @@ class CartonMeasures {
     }
 
     /**
-     * The labelled cartons among these parcels take their SKU's carton spec as it is now, unless a load plan or a
+     * The labelled cartons among these parcels take their own carton's spec as it is now, unless a load plan or a
      * vehicle holds them already (08 edge case: the spec corrected after the check applies when the vehicle is
      * planned). A SKU whose spec is gone or no longer measured keeps the measures the carton has. Called as the
      * parcels join a load plan, under the locks of their tasks and shipments, before the plan checks they are measured;
@@ -112,13 +112,10 @@ class CartonMeasures {
         if (free.isEmpty()) {
             return;
         }
-        Map<UUID, String> skuByLine = pickLines.findAllById(free.stream().map(PackageJpaEntity::getPickLineId)
-                        .distinct().toList()).stream()
-                .collect(Collectors.toMap(PickLineJpaEntity::getId, PickLineJpaEntity::getSku));
-        Map<String, CartonCheck.Spec> specs = specs(skuByLine.values());
+        Map<String, CartonCheck.Spec> specs = specs(free.stream().map(PackageJpaEntity::getLpn).toList());
         List<PackageJpaEntity> changed = new ArrayList<>();
         for (PackageJpaEntity carton : free) {
-            CartonCheck.Spec spec = specs.get(skuByLine.get(carton.getPickLineId()));
+            CartonCheck.Spec spec = carton.getLpn() == null ? null : specs.get(carton.getLpn());
             if (spec == null || !spec.measured() || sameAs(carton, spec)) {
                 continue;
             }

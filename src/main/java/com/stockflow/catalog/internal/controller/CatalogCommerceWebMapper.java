@@ -34,14 +34,24 @@ public class CatalogCommerceWebMapper {
     }
 
     public CatalogProductResponse toResponse(CatalogCommerceService.PublicView v) {
+        var page = v.page();
         return new CatalogProductResponse(
                 v.productId(),
                 v.slug(),
                 v.title(),
-                v.description(),
+                page.descriptionHtml(),
                 v.seoTitle(),
                 v.seoDescription(),
-                v.variants().stream().map(s -> new CatalogProductResponse.VariantResponse(s.sku(), s.name())).toList(),
+                page.brand() == null ? null : new CatalogProductResponse.Brand(page.brand().id(), page.brand().name(),
+                        page.brand().slug(), page.brand().logoUrl()),
+                page.category() == null ? null : new CatalogProductResponse.Category(page.category().id(),
+                        page.category().name(), page.category().slug()),
+                page.attributes().stream().map(a -> new CatalogProductResponse.Attribute(a.code(), a.name(),
+                        a.dataType(), a.unit(), a.values(), a.text(), a.number(), a.bool())).toList(),
+                page.variants().stream().map(s -> new CatalogProductResponse.VariantResponse(s.variantId(), s.sku(),
+                        s.name(), s.descriptionHtml(), s.ownDescription(), s.options().stream()
+                        .map(o -> new CatalogProductResponse.Option(o.axisCode(), o.axisName(), o.valueCode(),
+                                o.label())).toList())).toList(),
                 "/api/v1/catalog/products/" + v.slug() + "/gallery",
                 v.kind());
     }

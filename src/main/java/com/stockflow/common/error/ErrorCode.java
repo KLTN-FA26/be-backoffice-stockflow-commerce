@@ -33,7 +33,7 @@ public enum ErrorCode {
     /** SCRUM-461, kltn-docs 01 §3: a product is identified by its brand too, so it is chosen before approval. */
     PRODUCT_BRAND_REQUIRED("A brand is required before submitting for approval", 409),
     /** SCRUM-87: the request requires them, so a product reaching approval without them is a legacy row. */
-    PRODUCT_DETAILS_REQUIRED("An English name and a tax class are required before submitting for approval", 409),
+    PRODUCT_DETAILS_REQUIRED("A tax class is required before submitting for approval", 409),
     /** SCRUM-87: a retired brand stays on the products that chose it, but no product newly chooses it. */
     BRAND_INACTIVE("This brand is inactive and cannot be chosen for a product", 409),
     /** SCRUM-87: a retired category stays on the products that chose it, but no product newly chooses it. */
@@ -181,6 +181,13 @@ public enum ErrorCode {
     /** 01 BR-03: one active carton per SKU ({@code uk_uom_conversions_one_carton}); the other is retired first. */
     UOM_CARTON_ALREADY_DECLARED("This SKU already has a carton unit; retire it before declaring another", 409),
     /**
+     * Owner decision Q1 (2026-11-26): a customer's own SKU is packed in its catalogue variant's carton and has none of
+     * its own; a carton write named by a customer's SKU's code would change every customer's carton of the variant
+     * ({@code UomConversionServiceImpl}; the database cannot tell, both resolve to the variant since V20270105000100).
+     */
+    UOM_CARTON_OF_CUSTOMER_SKU("A customer's own SKU is packed in its variant's carton; declare cartons on the variant",
+            409),
+    /**
      * The base unit, or a unit a variant sells in, cannot be deleted or retired (docs 01 BR-10, BR-11); a unit
      * a document counts in keeps its factor and code and is not deleted (BR-10, V20261020000600).
      */
@@ -232,8 +239,6 @@ public enum ErrorCode {
     RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
     /** Kltn-docs 03 BR-12: every unit received is in a carton; units outside one are not received. */
     RECEIPT_LINE_NOT_IN_CARTONS("Every unit of a receipt line must be in a carton", 422),
-    /** Kltn-docs 03 BR-13: a carton holds the SKU's standard count; one of another count is not received. */
-    RECEIPT_PACKAGE_NOT_STANDARD("A carton must hold the SKU's standard count", 422),
     /** SCRUM-92: no putaway task with this id. */
     PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
     /** SCRUM-92: the task has been put away completely; nothing is left to move. */
@@ -329,6 +334,18 @@ public enum ErrorCode {
     SALES_CONTRACT_ORDER_NOT_CARTONS("A sales contract schedules cartons of the customer's own SKUs; this order has lines not ordered in cartons", 409),
     /** 4B-4 (14 §5.2, BR-14): the contract's state machine. */
     SALES_CONTRACT_STATUS_INVALID("The sales contract is not in a status that allows this", 409),
+    /**
+     * 15 BR-11 (2026-11-26): a contract waiting for accounting to approve the customer's credit is neither edited nor
+     * sent; Sales withdraws it first.
+     */
+    CONTRACT_CREDIT_REVIEW_PENDING("This contract is waiting for accounting to approve the customer's credit; "
+            + "withdraw it to change it", 409),
+    /** 15 BR-11: there is no credit review waiting on this contract to approve, refuse or withdraw. */
+    CONTRACT_CREDIT_REVIEW_NOT_PENDING("This contract is not waiting for accounting to approve the customer's credit",
+            409),
+    /** 15 BR-11, four eyes: whoever sent a contract for the credit review does not decide it. */
+    CONTRACT_CREDIT_REVIEW_SELF("The credit of a contract is decided by someone other than whoever sent it for review",
+            403),
     /** 4B-4 (14 BR-23): batches, windows and cartons; the field errors name each rule broken. */
     DELIVERY_SCHEDULE_INVALID("The delivery schedule breaks a rule of the contract", 409),
     /** 4B-4 (14 BR-13): installments adding up to the total with tax; the field errors name each rule broken. */
@@ -674,6 +691,12 @@ public enum ErrorCode {
     /** 4B-6, 15 BR-13: the void leaves a confirmed order short of its installment on signing; the accountant agrees to hold it. */
     PAYMENT_RECEIPT_VOID_NEEDS_HOLD("Voiding this receipt leaves a confirmed order unpaid: confirm putting it on hold",
             409),
+    /** Credit plan 2026-11-26 part C: no transfer the bank feed reported with that id. */
+    BANK_TRANSACTION_NOT_FOUND("Bank transfer not found", 404),
+    /** Part C: only a transfer waiting for review is assigned or ignored; it was applied or ignored already. */
+    BANK_TRANSACTION_NOT_OPEN("This bank transfer was already dealt with", 409),
+    /** Part C, 15 BR-05: the installments a transfer is assigned to are paid no more than the transfer brought. */
+    BANK_TRANSACTION_OVER_ASSIGNED("The installments are assigned more than this transfer brought", 409),
     /** 4B-9, 15 BR-14: a refund recorded is never more than what the order still has to refund. */
     REFUND_EXCEEDS_REFUNDABLE("This refund is more than the order still has to refund", 409),
     /** 4B-9: no refund record with that id. */
@@ -682,6 +705,19 @@ public enum ErrorCode {
     REFUND_RECORD_ALREADY_VOIDED("This refund record is already voided", 409),
     /** 4B-9: one outgoing bank statement line, one live refund record. */
     REFUND_REFERENCE_IN_USE("This bank statement line is already recorded as a refund", 409),
+    /** QĐ-A (2026-11-26): no credit request with that id (for a customer: none of theirs). */
+    CREDIT_REQUEST_NOT_FOUND("Credit request not found", 404),
+    /** QĐ-A: one credit request is open per customer at a time. */
+    CREDIT_REQUEST_ALREADY_OPEN("This customer already has an open credit request", 409),
+    /** QĐ-A: the step does not fit the request's status (an opinion once given, a decision on one not waiting). */
+    CREDIT_REQUEST_INVALID_TRANSITION("This credit request cannot do that in its status", 409),
+    /** QĐ-A, 18 BR-02: whoever decides neither filed the request nor gave Sales' opinion on it. */
+    CREDIT_REQUEST_SELF_DECISION("A credit request is decided by someone other than whoever filed it or gave Sales' "
+            + "opinion", 409),
+    /** QĐ-A, plan §5 question 3: the limit granted is at most the one asked; a higher one is a new request. */
+    CREDIT_REQUEST_ABOVE_REQUESTED("The limit granted cannot be above the limit asked", 409),
+    /** QĐ-A: a credit request is withdrawn by whoever filed it. */
+    CREDIT_REQUEST_NOT_FILER("Only whoever filed this credit request may withdraw it", 403),
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
@@ -1038,6 +1074,13 @@ public enum ErrorCode {
     PRINT_CONFIG_SURFACES_INVALID("The 3D model's surfaces do not match the template's print areas", 422),
     /** A customer SKU is issued only from an ordinary ACTIVE variant of an approved or published product (B20). */
     CUSTOMER_SKU_SOURCE_UNAVAILABLE("This variant cannot have customer SKUs now", 409),
+    /** No customer's own SKU has this id ({@code product.customer_skus}, V20270105000100). */
+    CUSTOMER_SKU_NOT_FOUND("Customer SKU not found", 404),
+    /**
+     * A customer's SKU moves ACTIVE - BLOCKED - OBSOLETE ({@code CustomerSkuStatus}); OBSOLETE is final, and one goes on
+     * sale again only while its product is on sale and the variant it was drawn on is ACTIVE.
+     */
+    INVALID_CUSTOMER_SKU_TRANSITION("This customer SKU cannot move to that status right now", 409),
     /** A customer holds at most 50 drafts at once (kltn-docs 12 B37); deleting one makes room. */
     DESIGN_DRAFT_LIMIT_REACHED("You already have the most drafts allowed; delete one first", 409),
     /** Only a draft is renamed, laid out or deleted (kltn-docs 12 BR-07, BR-08, BR-16). */

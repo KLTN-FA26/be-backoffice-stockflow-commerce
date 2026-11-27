@@ -44,11 +44,10 @@ VALUES (md5('qa:cp428:draft')::uuid, 'c0000000-0000-4000-8000-000000000001', md5
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa:cp428:snapshot')::uuid, md5('qa:cp428:draft')::uuid, repeat('e', 64), 'https://example.com/p.pdf', NOW(),
         NOW(), '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-VALUES (md5('qa:cp428:own')::uuid, md5('qa:cp428:product')::uuid, 'QA-CP-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
-        'OWNED-SKU:QA-CP-OWN', 1, 0, NOW(), 'c0000000-0000-4000-8000-000000000001', md5('qa:cp428:snapshot')::uuid,
-        md5('qa:cp428:blank')::uuid);
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+VALUES ( md5('qa:cp428:own')::uuid, md5('qa:cp428:product')::uuid, 'QA-CP-OWN', 'QA ly in logo', 'ACTIVE', 0, NOW(),
+       'c0000000-0000-4000-8000-000000000001', md5('qa:cp428:snapshot')::uuid, md5('qa:cp428:blank')::uuid);
 INSERT INTO customer.customer (id, full_name, email, status, version, created_at)
 VALUES (md5('qa:cp428:other')::uuid, 'QA khach khac', 'qa-cp-other@example.com', 'ACTIVE', 0, NOW());
 SELECT pg_temp.expect_ok('P1 a customer price for the customer''s own SKU', $q$

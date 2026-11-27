@@ -5,16 +5,17 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * One carton as {@code inventory.stock_package_balance} shows it (SCRUM-473): its label, unit, place and status, and
- * what its stock rows hold. A read model of the carton lookup, as {@link LotTrace} is of the lot trace - the search
+ * One carton as the lookup shows it (SCRUM-473): its label, unit, place and status, and what it stands for in units.
+ * The carton is the stock and keeps no quantity (ADR-0011); the unit figures here are derived for the HTTP contract,
+ * which still answers them: its count while it is in stock, its count again while an order holds it. A read model of the carton lookup, as {@link LotTrace} is of the lot trace - the search
  * port fills it and the web layer maps it, so the lookup has one set of types, not one per layer. The carton that
  * changes is {@link StockPackage}.
  *
  * @param nominalQty  what it was made to hold: its packing unit's factor then
- * @param receivedQty what was counted into it at receipt; null until counted
- * @param lotNumber   of its rows holding stock - a carton holds one lot at most - and null when it holds nothing
- * @param onHand      what is left in it, the sum of its rows; 0 for a carton with none yet (RECEIVING)
- * @param reserved    of that, what orders hold
+ * @param countedAt   when it was counted in at receiving; null until counted. Its units are {@code nominalQty}
+ * @param lotNumber   its lot's number - a carton is of one lot - and null until it goes into stock
+ * @param onHand      {@code nominalQty} while it is IN_STOCK, else 0
+ * @param reserved    {@code nominalQty} while a live allocation names it, else 0
  * @param closedAt    when it was emptied, lost or voided
  * @param returnOpenedAt when a return receipt found it opened or empty (WF-05 TH-4, Q-18): never sold again - since
  *                    Q-18 it stays CONSUMED, before that it sat in quarantine to be written off; null when it never came
@@ -24,10 +25,11 @@ import java.util.UUID;
  *                    it offers them) - COMPANY, or CUSTOMER_*; null for a carton that never came back on one
  * @param returnRequestId the return request it last came back on; null with {@code returnOwnership}
  * @param returnRmaNumber that return's RMA number, filled by the lookup; null when not known
- * @param stockStatuses   the distinct statuses of its stock rows holding something (#454): a quarantined or damaged
- *                        carton is told apart in a list without opening it; empty for a carton holding nothing
- * @param receivedAt      the oldest receipt of its rows holding something, for FIFO (kltn-docs 20 §4.1); null when
- *                        it holds nothing
+ * @param stockStatuses   its stock status (#454): a quarantined or damaged carton is told apart in a list without
+ *                        opening it. A list of one because the contract was written when a carton's contents were
+ *                        rows; empty for a carton not in stock
+ * @param receivedAt      when it was received, for FIFO (kltn-docs 20 §4.1); null when it is not in stock, or its
+ *                        receipt time is not known
  * @param source          where it came from; null when not read (the location summary)
  * @param heldFor         the orders holding its units ({@code reserved}), one entry per order; empty when none
  * @param openTask        the open work it is in (20 BR-10: a busy carton); null when none
@@ -39,7 +41,7 @@ import java.util.UUID;
  * @param goodsReceiptNumber that receipt's number
  */
 public record StockPackageBalance(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty,
-                                  Integer receivedQty, String locationCode, StockPackageStatus status,
+                                  Instant countedAt, String locationCode, StockPackageStatus status,
                                   String lotNumber, int onHand, int reserved,
                                   UUID goodsReceiptLineId, Instant closedAt, Instant returnOpenedAt,
                                   String returnOwnership, UUID returnRequestId, String returnRmaNumber,
@@ -55,27 +57,27 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
 
     /** What the carton's own rows say, before the lookup names what other modules know of it. */
     public StockPackageBalance(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty,
-                               Integer receivedQty, String locationCode, StockPackageStatus status, String lotNumber,
+                               Instant countedAt, String locationCode, StockPackageStatus status, String lotNumber,
                                int onHand, int reserved, UUID goodsReceiptLineId, Instant closedAt,
                                Instant returnOpenedAt, String returnOwnership, UUID returnRequestId,
                                List<StockStatus> stockStatuses, Instant receivedAt, Source source, OpenTask openTask) {
-        this(id, lpn, sku, unitOfMeasure, nominalQty, receivedQty, locationCode, status, lotNumber, onHand, reserved,
+        this(id, lpn, sku, unitOfMeasure, nominalQty, countedAt, locationCode, status, lotNumber, onHand, reserved,
                 goodsReceiptLineId, closedAt, returnOpenedAt, returnOwnership, returnRequestId, null, stockStatuses,
                 receivedAt, source, List.of(), openTask, null, null, null, null, null, null);
     }
 
     /** As before the return's ownership was shown. */
     public StockPackageBalance(UUID id, String lpn, String sku, String unitOfMeasure, int nominalQty,
-                               Integer receivedQty, String locationCode, StockPackageStatus status, String lotNumber,
+                               Instant countedAt, String locationCode, StockPackageStatus status, String lotNumber,
                                int onHand, int reserved, UUID goodsReceiptLineId, Instant closedAt,
                                Instant returnOpenedAt) {
-        this(id, lpn, sku, unitOfMeasure, nominalQty, receivedQty, locationCode, status, lotNumber, onHand, reserved,
+        this(id, lpn, sku, unitOfMeasure, nominalQty, countedAt, locationCode, status, lotNumber, onHand, reserved,
                 goodsReceiptLineId, closedAt, returnOpenedAt, null, null, List.of(), null, null, null);
     }
 
     /** The same carton naming its return by its RMA number. */
     public StockPackageBalance withReturnRmaNumber(String rmaNumber) {
-        return new StockPackageBalance(id, lpn, sku, unitOfMeasure, nominalQty, receivedQty, locationCode, status,
+        return new StockPackageBalance(id, lpn, sku, unitOfMeasure, nominalQty, countedAt, locationCode, status,
                 lotNumber, onHand, reserved, goodsReceiptLineId, closedAt, returnOpenedAt, returnOwnership,
                 returnRequestId, rmaNumber, stockStatuses, receivedAt, source, heldFor, openTask, warehouseId,
                 warehouseCode, productName, variantName, goodsReceiptId, goodsReceiptNumber);
@@ -83,7 +85,7 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
 
     /** The same carton with the orders holding its units. */
     public StockPackageBalance withHeldFor(List<Hold> holds) {
-        return new StockPackageBalance(id, lpn, sku, unitOfMeasure, nominalQty, receivedQty, locationCode, status,
+        return new StockPackageBalance(id, lpn, sku, unitOfMeasure, nominalQty, countedAt, locationCode, status,
                 lotNumber, onHand, reserved, goodsReceiptLineId, closedAt, returnOpenedAt, returnOwnership,
                 returnRequestId, returnRmaNumber, stockStatuses, receivedAt, source, holds, openTask, warehouseId,
                 warehouseCode, productName, variantName, goodsReceiptId, goodsReceiptNumber);
@@ -95,7 +97,7 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
      */
     public StockPackageBalance named(UUID warehouse, String warehouseCodeOf, String product, String variant,
                                      UUID receipt, String receiptNumber, OpenTask work) {
-        return new StockPackageBalance(id, lpn, sku, unitOfMeasure, nominalQty, receivedQty, locationCode, status,
+        return new StockPackageBalance(id, lpn, sku, unitOfMeasure, nominalQty, countedAt, locationCode, status,
                 lotNumber, onHand, reserved, goodsReceiptLineId, closedAt, returnOpenedAt, returnOwnership,
                 returnRequestId, returnRmaNumber, stockStatuses, receivedAt, source, heldFor,
                 openTask != null ? openTask : work,
@@ -133,7 +135,7 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
         return returnOpenedAt != null;
     }
 
-    /** A carton with its stock rows holding something, oldest receipt first. */
+    /** A carton with what it holds while in stock: at most one {@link Content}. */
     public record Detail(StockPackageBalance carton, List<Content> contents) {
 
         public Detail {
@@ -141,15 +143,15 @@ public record StockPackageBalance(UUID id, String lpn, String sku, String unitOf
         }
     }
 
-    /** One stock row inside a carton. */
+    /** What a carton in stock holds: one lot, one receipt, one stock status, its count. */
     public record Content(String lotNumber, Instant receivedAt, StockStatus status, int onHand,
                           int reserved) {
     }
 
     /**
      * What one location holds of one SKU, lot and stock status: cartons and their units - every carton in stock is
-     * whole (team plan 4C-3), so there is no opened column - and units in no carton, which only the paths not yet in
-     * cartons write (a put-back, a customer return, a damage report).
+     * whole (team plan 4C-3), so there is no opened column. {@code looseUnits} is always 0 since stock is cartons only
+     * (V20261231000600); it stays because the HTTP contract names it.
      *
      * @param totalUnits the two unit columns added; any other value is refused
      */

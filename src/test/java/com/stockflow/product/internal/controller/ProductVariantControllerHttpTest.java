@@ -44,7 +44,8 @@ class ProductVariantControllerHttpTest {
 
     private static VariantView view() {
         return new VariantView(VARIANT, PRODUCT, "CUP-RED", "Cup / Red", VariantStatus.DRAFT, false,
-                "COLOR=RED", 1, null, 0L, List.of(new VariantOption(ATTR, "COLOR", VALUE, "RED", "Red")));
+                "COLOR=RED", 1, null, 0L, List.of(new VariantOption(ATTR, "COLOR", VALUE, "RED", "Red")), true, null);
+
     }
 
     @Test
@@ -65,14 +66,14 @@ class ProductVariantControllerHttpTest {
     }
 
     @Test
-    void getCarriesTheInventoryItemIdOfItsSku() throws Exception {
-        UUID item = UUID.fromString("0190a000-0000-7000-8000-000000000045");
+    void getCarriesNoInventoryItemId() throws Exception {
+        // A catalogue variant has no inventory item (V20270105000100), so the response names none.
         when(service.get(PRODUCT, VARIANT)).thenReturn(view());
-        when(service.inventoryItemIds(any())).thenReturn(Map.of("CUP-RED", item));
 
         mvc.perform(get("/api/v1/products/{id}/variants/{v}", PRODUCT, VARIANT))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.inventoryItemId").value(item.toString()));
+                .andExpect(jsonPath("$.data.sku").value("CUP-RED"))
+                .andExpect(jsonPath("$.data.inventoryItemId").doesNotExist());
     }
 
     @Test
@@ -131,7 +132,7 @@ class ProductVariantControllerHttpTest {
         Map<String, Action> expected = Map.of(
                 "list", Action.READ, "get", Action.READ,
                 "add", Action.CREATE, "generate", Action.CREATE,
-                "update", Action.UPDATE, "block", Action.UPDATE,
+                "update", Action.UPDATE, "describe", Action.UPDATE, "block", Action.UPDATE,
                 "activate", Action.APPROVE, "obsolete", Action.APPROVE);
         int guarded = 0;
         for (Method m : ProductVariantController.class.getDeclaredMethods()) {

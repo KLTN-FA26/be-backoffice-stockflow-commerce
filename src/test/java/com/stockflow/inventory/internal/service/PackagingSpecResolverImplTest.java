@@ -9,11 +9,15 @@ import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository.ItemRow;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
+import com.stockflow.inventory.internal.repository.VariantRotations;
+import com.stockflow.inventory.spi.CartonRotation;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -33,17 +37,27 @@ class PackagingSpecResolverImplTest {
     private static final Sku SKU = new Sku("CUP-12OZ");
     private static final UUID ITEM = UUID.randomUUID();
     private static final UUID CARTON = UUID.randomUUID();
+    private static final UUID VARIANT = UUID.randomUUID();
 
     private final InventoryPolicyRepository items = mock(InventoryPolicyRepository.class);
     private final UomConversionRepository conversions = mock(UomConversionRepository.class);
-    private final PackagingSpecResolverImpl resolver = new PackagingSpecResolverImpl(items, conversions);
+    /** The catalogue's answer (owner decision Q9: whether a carton may be turned is its variant's). */
+    private final Map<UUID, Boolean> catalogue = new HashMap<>();
+    private final PackagingSpecResolverImpl resolver =
+            new PackagingSpecResolverImpl(items, conversions, new VariantRotations(answering(catalogue)));
 
-    private static ItemLogistics logistics(boolean rotatable) {
-        return new ItemLogistics("PCS", null, rotatable);
+    @SuppressWarnings("unchecked")
+    private static ObjectProvider<CartonRotation> answering(Map<UUID, Boolean> catalogue) {
+        ObjectProvider<CartonRotation> provider = mock(ObjectProvider.class);
+        CartonRotation rotation = ids -> Map.copyOf(catalogue);
+        when(provider.getIfAvailable()).thenReturn(rotation);
+        return provider;
     }
 
-    private static ItemRow row(boolean rotatable) {
-        return new ItemRow(ITEM, SKU.code(), 1, logistics(rotatable));
+    /** The item, its variant's cartons turning or not as the catalogue answers. */
+    private ItemRow row(boolean rotatable) {
+        catalogue.put(VARIANT, rotatable);
+        return new ItemRow(ITEM, SKU.code(), 1, new ItemLogistics("PCS", null), VARIANT);
     }
 
     private static UomConversion carton(BigDecimal length) {
@@ -147,7 +161,7 @@ class PackagingSpecResolverImplTest {
     }
 
     @Test
-    @DisplayName("a carton is rotatable unless the item says otherwise, also when the item cannot be read")
+    @DisplayName("a carton is rotatable unless its variant says otherwise, also when the item cannot be read")
     void rotatableDefaultsToTrue() {
         when(conversions.find(SKU.code(), CARTON)).thenReturn(Optional.of(carton(new BigDecimal("40"))));
         when(items.findBySkus(any())).thenReturn(List.of());

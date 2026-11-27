@@ -112,16 +112,17 @@ class DemoDataIntegrationTest {
     }
 
     @Test
-    @DisplayName("the demo stock sits on locations of the map: no seeded stock item points at a missing code")
+    @DisplayName("the demo stock sits on locations of the map: no seeded carton points at a missing code")
     void demoStockIsOnTheMap() {
         assertThat(jdbc.queryForList("""
-                SELECT s.location_code FROM inventory.stock_item s
-                WHERE s.created_by = 'flyway'
-                  AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location l WHERE l.location_code = s.location_code)
+                SELECT p.location_code FROM inventory.stock_package p
+                WHERE p.created_by = 'V20261206000100'
+                  AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location l WHERE l.location_code = p.location_code)
                 """, String.class)).isEmpty();
+        // The carton is the stock (V20261231000600): the demo cups' cartons stand where the seed's stock rows stood.
         assertThat(jdbc.queryForList("""
-                SELECT location_code FROM inventory.stock_item WHERE created_by = 'flyway' ORDER BY location_code
-                """, String.class))
+                SELECT DISTINCT location_code FROM inventory.stock_package WHERE created_by = 'V20261206000100'
+                 ORDER BY location_code""", String.class))
                 .containsExactly("HCM-A01-2-B", "HCM-A02-1-A", "HCM-B01-1-A", "HCM-QC01");
     }
 
@@ -154,12 +155,14 @@ class DemoDataIntegrationTest {
 
         for (String sku : List.of(DemoData.SKU_STOCKED, DemoData.SKU_QUARANTINED)) {
             Integer ledger = jdbc.queryForObject("""
-                    SELECT COALESCE(SUM(quantity * ((to_location_code IS NOT NULL)::int
-                                                    - (from_location_code IS NOT NULL)::int)), 0)
-                      FROM inventory.stock_movement WHERE sku = ?
+                    SELECT COALESCE(SUM(p.nominal_qty * ((m.to_location_code IS NOT NULL)::int
+                                                         - (m.from_location_code IS NOT NULL)::int)), 0)
+                      FROM inventory.stock_movement m
+                      JOIN inventory.stock_package p ON p.id = m.stock_package_id WHERE m.sku = ?
                     """, Integer.class, sku);
-            Integer onHand = jdbc.queryForObject(
-                    "SELECT COALESCE(SUM(on_hand), 0) FROM inventory.stock_item WHERE sku = ?", Integer.class, sku);
+            Integer onHand = jdbc.queryForObject("SELECT COALESCE(SUM(p.nominal_qty), 0) FROM inventory.stock_package p"
+                    + " JOIN inventory.inventory_items i ON i.id = p.inventory_item_id"
+                    + " WHERE i.sku = ? AND p.status = 'IN_STOCK'", Integer.class, sku);
             assertThat(ledger).as("ledger of %s", sku).isPositive().isEqualTo(onHand);
         }
 
@@ -180,6 +183,20 @@ class DemoDataIntegrationTest {
                 .containsEntry("code", "HOP-GIAY-DEMO");
         assertThat(row("SELECT product_id FROM product.variants WHERE sku = ?", DemoData.BLANK_CUP))
                 .containsEntry("product_id", DemoData.PRODUCT_CUP);
+
+        // Owner decisions Q4, Q5 (V20270105000100): the demo's customer SKUs are rows of product.customer_skus drawn on
+        // the blank, no longer variants, and only a customer's SKU has an inventory item - a blank never does.
+        for (String sku : List.of(DemoData.SKU_STOCKED, DemoData.SKU_QUARANTINED)) {
+            assertThat(row("SELECT v.sku AS source FROM product.customer_skus c JOIN product.variants v ON v.id = "
+                    + "c.variant_id WHERE c.sku = ?", sku)).as("%s is a customer's SKU on the blank", sku)
+                    .containsEntry("source", DemoData.BLANK_CUP);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM product.variants WHERE sku = ?", Long.class, sku))
+                    .as("%s is not a variant", sku).isZero();
+        }
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.inventory_items i
+                 WHERE NOT EXISTS (SELECT 1 FROM product.customer_skus c WHERE c.sku = i.sku AND c.variant_id = i.variant_id)
+                """, Long.class)).as("items that are not a customer's SKU's, packed as its variant").isZero();
     }
 
     /** Cartons of a SKU the demo seed put in stock, counted by "location status" of their opening ledger line. */
@@ -189,7 +206,7 @@ class DemoDataIntegrationTest {
                 SELECT m.to_location_code || ' ' || m.to_status AS place, count(DISTINCT p.id) AS cartons
                   FROM inventory.stock_package p
                   JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
-                  JOIN inventory.stock_movement m ON m.to_stock_package_id = p.id AND m.movement_type = 'RECEIPT'
+                  JOIN inventory.stock_movement m ON m.stock_package_id = p.id AND m.movement_type = 'RECEIPT'
                                                  AND m.reference_type = 'STOCK_PACKAGE' AND m.reference_id = p.id
                  WHERE i.sku = ? AND m.created_by = 'flyway'
                  GROUP BY 1

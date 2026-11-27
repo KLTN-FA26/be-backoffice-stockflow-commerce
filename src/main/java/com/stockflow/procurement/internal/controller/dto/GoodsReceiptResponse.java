@@ -25,8 +25,9 @@ public record GoodsReceiptResponse(UUID id, String number, UUID warehouseId, Str
     /**
      * No expiry: there is none (03 BR-06, team plan 5-1). {@code unitOfMeasure}: the packing unit of
      * the line's cartons, null for a historical line counted loose. {@code looseQuantity}: the part counted into no
-     * carton (the line less the cartons' {@code receivedQty}). {@code packages}: the line's cartons by LPN, voided ones
-     * left out (SCRUM-473). {@code units}: every unit of the line's item, for the counting screen's unit picker.
+     * carton (the line less the {@code nominalQty} of each carton counted in). {@code packages}: the line's cartons by LPN,
+     * voided ones left out (SCRUM-473). {@code units}: the carton the line is received in - the one its order line was
+     * signed in (Q7, Q10), even retired - for the counting screen's unit picker.
      */
     public record Line(UUID id, UUID inventoryItemId, String sku, int quantity, String lotNumber,
                        String locationCode, String note,
@@ -76,11 +77,11 @@ public record GoodsReceiptResponse(UUID id, String number, UUID warehouseId, Str
 
     /**
      * One labelled carton. {@code quantity}: what is in it now - what was counted into it while RECEIVING, what is
-     * left in it once in stock; {@code receivedQty}: what was counted into it, fixed once it is in stock;
+     * left in it once in stock; {@code countedAt}: when it was counted in, null until then - a counted carton holds {@code nominalQty};
      * {@code nominalQty}: what its unit holds; {@code status}: RECEIVING, IN_STOCK, CONSUMED or LOST;
      * {@code locationCode}: where it stands now - the receiving area, then wherever it was moved or put away.
      */
-    public record Package(UUID id, String lpn, int quantity, int receivedQty, int nominalQty, String status,
+    public record Package(UUID id, String lpn, int quantity, Instant countedAt, int nominalQty, String status,
                           String locationCode) {
     }
 }

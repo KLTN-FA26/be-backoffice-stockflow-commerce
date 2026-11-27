@@ -44,8 +44,6 @@ public class ProductJpaEntity extends BaseEntity {
     @Column(name = "name", nullable = false, length = 255)
     private String name;
 
-    @Column(name = "name_en", length = 300)
-    private String nameEn;
 
     @Column(name = "slug", nullable = false, length = 255, updatable = false)
     private String slug;
@@ -70,8 +68,6 @@ public class ProductJpaEntity extends BaseEntity {
     @Column(name = "description", columnDefinition = "text")
     private String description;
 
-    @Column(name = "description_en", columnDefinition = "text")
-    private String descriptionEn;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "tax_class", length = 32)
@@ -127,14 +123,12 @@ public class ProductJpaEntity extends BaseEntity {
         this.slug = slug;
     }
 
-    public void setDetails(String name, String nameEn, UUID brandId, String shortDescription, String description,
-                           String descriptionEn, TaxClass taxClass, ProductKind kind) {
+    public void setDetails(String name, UUID brandId, String shortDescription, String description,
+                           TaxClass taxClass, ProductKind kind) {
         this.name = name;
-        this.nameEn = nameEn;
         this.brandId = brandId;
         this.shortDescription = shortDescription;
         this.description = description;
-        this.descriptionEn = descriptionEn;
         this.taxClass = taxClass;
         this.kind = kind;
     }
@@ -157,7 +151,6 @@ public class ProductJpaEntity extends BaseEntity {
 
     public String getCode() { return code; }
     public String getName() { return name; }
-    public String getNameEn() { return nameEn; }
     public String getSlug() { return slug; }
     public UUID getBrandId() { return brandId; }
     public String getBrandName() { return brandName; }
@@ -165,7 +158,6 @@ public class ProductJpaEntity extends BaseEntity {
     public String getCategoryName() { return categoryName; }
     public String getShortDescription() { return shortDescription; }
     public String getDescription() { return description; }
-    public String getDescriptionEn() { return descriptionEn; }
     public TaxClass getTaxClass() { return taxClass; }
     public ProductKind getKind() { return kind; }
     public ProductStatus getStatus() { return status; }

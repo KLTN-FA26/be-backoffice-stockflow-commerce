@@ -3,6 +3,7 @@ package com.stockflow.warehouse.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.support.StockedSkus;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -80,8 +81,7 @@ class PlaceDeactivationIntegrationTest {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Deactivation fixture", sku.toLowerCase(Locale.ROOT));
-        jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                Identifiers.newId(), product, sku, "Deactivation fixture");
+        StockedSkus.customerSkuOn(jdbc, product, sku, "Deactivation fixture");
         CartonRows.unit(jdbc, sku, 10);
         return sku;
     }
@@ -146,17 +146,18 @@ class PlaceDeactivationIntegrationTest {
         jdbc.update("""
                 insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
                                                      location_code, status)
-                select ?, ?, inventory_item_id, id, factor, ?, 'RECEIVING' from inventory.uom_conversions where id = ?""",
-                Identifiers.newId(), "PDI-RCV-" + sku, EMPTY_BIN, unit);
+                select ?, ?, i.id, u.id, u.factor, ?, 'RECEIVING'
+                  from inventory.uom_conversions u join inventory.inventory_items i on i.variant_id = u.variant_id
+                 where u.id = ? and i.sku = ?""",
+                Identifiers.newId(), "PDI-RCV-" + sku, EMPTY_BIN, unit, sku);
 
         assertThat(refusal(() -> binStatus(EMPTY_BIN, 1, LocationStatus.INACTIVE)).errorCode())
                 .isEqualTo(ErrorCode.LOCATION_HOLDS_CARTONS);
 
         String other = "HCM-A01-1-B";
         CartonRows.Carton picked = CartonRows.stock(jdbc, sku, other, 1, 10, "LOT-1", Instant.now()).getFirst();
-        jdbc.update("update inventory.stock_item set on_hand = 0 where id = ?", picked.stockItemId());
-        jdbc.update("update inventory.stock_package set status = 'CONSUMED', closed_at = now() where id = ?",
-                picked.id());
+        jdbc.update("update inventory.stock_package set status = 'CONSUMED', stock_status = null, closed_at = now() "
+                + "where id = ?", picked.id());
 
         binStatus(other, 1, LocationStatus.INACTIVE);
         assertThat(locationStatus(other)).isEqualTo("INACTIVE");

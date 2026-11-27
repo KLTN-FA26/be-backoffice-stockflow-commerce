@@ -2,6 +2,8 @@ package com.stockflow.reporting;
 
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
+import com.stockflow.support.CartonRows;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -53,6 +55,9 @@ class ReportsHttpIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
 
+    /** Units in one carton of the fixture's SKU: 4 and 6 units are 2 and 3 cartons. */
+    private static final int PER_CARTON = 2;
+
     private SecuredMvc mvc;
     private UUID accountant;
     private UUID salesStaff;
@@ -69,16 +74,13 @@ class ReportsHttpIntegrationTest {
         accountant = staff("ACCOUNTANT");
         salesStaff = staff("SALES_STAFF");
         manager = staff("WAREHOUSE_MANAGER", WAREHOUSE_HCM);
-        sku = "RPT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
+        // Stock is a customer's SKU's (V20270105000100: a catalogue variant has no inventory item).
+        ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
+        sku = CustomerSkuRows.issueOn(jdbc, tx, com.stockflow.support.DemoData.CUSTOMER_ID, product, PER_CARTON).sku();
         otherWarehouse = Identifiers.newId();
         String prefix = "R" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT);
         otherArea = prefix + "-QC01";
         tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Report fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Report fixture");
             jdbc.update("""
                     INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
                                                      version, created_at)
@@ -111,14 +113,25 @@ class ReportsHttpIntegrationTest {
         return user;
     }
 
+    /**
+     * {@code quantity} units into {@code location}: one ledger line per carton of {@link #PER_CARTON} standing there.
+     * A line names its carton and no number of units (ADR-0011); the report under test sums the cartons' standard
+     * counts.
+     */
     private void ledgerLine(String location, int quantity) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
-                    to_location_code, quantity, to_status, reference_type, reference_id, occurred_at, version,
-                    created_at)
-                VALUES (?, 'ADJUSTMENT', ?, 'UNTRACED', NULL, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW())""",
-                Identifiers.newId(), sku, location, quantity, Identifiers.newId(),
-                OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC)));
+        tx.executeWithoutResult(s -> {
+            for (var carton : CartonRows.stock(jdbc, sku, location, quantity / PER_CARTON, PER_CARTON, null,
+                    Instant.now())) {
+                jdbc.update("""
+                        INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
+                            to_location_code, to_status, reference_type, reference_id, occurred_at, version,
+                            created_at, stock_package_id)
+                        VALUES (?, 'ADJUSTMENT', ?, 'UNTRACED', NULL, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, 0, NOW(),
+                                ?)""",
+                        Identifiers.newId(), sku, location, Identifiers.newId(),
+                        OffsetDateTime.ofInstant(Instant.now(), ZoneOffset.UTC), carton.id());
+            }
+        });
     }
 
     private static void isSpreadsheet(MvcResult result, String stem) throws Exception {
@@ -167,7 +180,9 @@ class ReportsHttpIntegrationTest {
                 .andExpect(jsonPath("$.data.rows.items[0].warehouseId").value(WAREHOUSE_HCM.toString()))
                 .andExpect(jsonPath("$.data.rows.items[0].closing.units").value(4))
                 .andExpect(jsonPath("$.data.rows.items[0].adjustedIn.units").value(4))
-                .andExpect(jsonPath("$.data.rows.items[0].cartonNote").value("NO_CARTON_UNIT"));
+                // A SKU with ledger lines has a carton unit since a line names its carton (V20261231000200): the
+                // NO_CARTON_UNIT note is StockSummaryReportServiceTest's.
+                .andExpect(jsonPath("$.data.rows.items[0].cartonNote").value("NONE"));
         mvc.asRole(Role.WAREHOUSE_MANAGER, manager, get("/api/v1/reports/stock-summary")
                         .param("warehouseId", otherWarehouse.toString()))
                 .andExpect(status().isForbidden());
@@ -198,8 +213,11 @@ class ReportsHttpIntegrationTest {
                         .param("warehouseId", WAREHOUSE_HCM.toString()).param("from", today.toString())
                         .param("to", today.toString()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(1))
-                .andExpect(jsonPath("$.data.items[0].quantity").value(4));
+                // HCM's 4 pieces are two cartons of PER_CARTON, a line each (the other warehouse's three are left out);
+                // a line answers its carton's standard count.
+                .andExpect(jsonPath("$.data.totalElements").value(2))
+                .andExpect(jsonPath("$.data.items[0].quantity").value(PER_CARTON))
+                .andExpect(jsonPath("$.data.items[1].quantity").value(PER_CARTON));
         mvc.asRole(Role.WAREHOUSE_MANAGER, manager, get("/api/v1/inventory/movements")
                         .param("warehouseId", otherWarehouse.toString()))
                 .andExpect(status().isForbidden());

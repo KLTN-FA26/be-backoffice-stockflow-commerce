@@ -34,6 +34,15 @@ class StockLotsAdapter implements StockLots {
     }
 
     @Override
+    public UUID openUntraced(com.stockflow.common.domain.Sku sku, String lotNumber, java.time.Instant receivedAt) {
+        return jpa.findBySkuAndLotNumberAndReceivedAtAndOriginOrderByCreatedAtAscIdAsc(sku.code(), lotNumber,
+                        receivedAt, StockLotJpaEntity.Origin.UNTRACED).stream().findFirst()
+                .map(StockLotJpaEntity::getId)
+                .orElseGet(() -> jpa.saveAndFlush(StockLotJpaEntity.untraced(Identifiers.newId(), sku.code(),
+                        lotNumber, receivedAt)).getId());
+    }
+
+    @Override
     public java.util.Optional<ProductionLot> productionLotOf(UUID lotId) {
         return lotId == null ? java.util.Optional.empty() : jpa.findById(lotId)
                 .filter(lot -> lot.getProductionOrderId() != null)

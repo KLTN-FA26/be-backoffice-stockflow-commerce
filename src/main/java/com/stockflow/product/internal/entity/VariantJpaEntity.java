@@ -15,11 +15,13 @@ import java.util.UUID;
  * JPA mapping of a variant (table {@code product.variants}): one sellable form of a product,
  * identified everywhere downstream by its {@code sku}.
  *
- * <p>Inserting a row creates the SKU's inventory item (trigger {@code tg_variant_inventory_item},
- * docs 01 BR-07); the SKU may be renamed only while the variant is {@code DRAFT}
- * ({@code tg_variants_sku_frozen}), and the rename follows to the inventory item through
- * {@code ON UPDATE CASCADE}. {@code attributeSignature} is the normalised attribute combination
- * ({@code COLOR=GREY;SIZE=12OZ}) that {@code uk_variants_combination} keeps unique per product.</p>
+ * <p>A variant is the catalogue's alone since V20270105000100: a customer's own SKU is a row of
+ * {@code product.customer_skus} drawn on one ({@code CustomerSkuJpaEntity}), and no variant has an inventory item -
+ * it carries the carton ({@code inventory.uom_conversions.variant_id}) and the standard price that its customers' SKUs
+ * are packed in and priced from. The SKU may be renamed only while the variant is {@code DRAFT}
+ * ({@code tg_variants_sku_frozen}), and never to a customer's SKU's code ({@code tg_variants_code_free}).
+ * {@code attributeSignature} is the normalised attribute combination ({@code COLOR=GREY;SIZE=12OZ}) that
+ * {@code uk_variants_combination} keeps unique per product.</p>
  */
 @Entity
 @Table(name = "variants", schema = "product")
@@ -50,15 +52,16 @@ public class VariantJpaEntity extends BaseEntity {
     @Column(name = "obsoleted_at")
     private Instant obsoletedAt;
 
-    /** A customer's own SKU (kltn-docs 12 §4.5): the customer, the approved design and the variant it was drawn on. */
-    @Column(name = "owner_customer_id", updatable = false)
-    private UUID ownerCustomerId;
+    /**
+     * Whether a carton of this variant may be turned (owner decision Q9, V20270104000200): every SKU of the variant is
+     * packed in its carton, so inventory and the load planner ask the variant, through {@code inventory :: spi}.
+     */
+    @Column(name = "rotatable", nullable = false)
+    private boolean rotatable = true;
 
-    @Column(name = "design_snapshot_id", updatable = false)
-    private UUID designSnapshotId;
-
-    @Column(name = "source_variant_id", updatable = false)
-    private UUID sourceVariantId;
+    /** The variant's own description: HTML cleaned by {@code RichTextPolicy}; null shows the product's (ADR-0013). */
+    @Column(name = "description", columnDefinition = "text")
+    private String description;
 
     protected VariantJpaEntity() {
     }
@@ -82,15 +85,12 @@ public class VariantJpaEntity extends BaseEntity {
         this.position = position;
     }
 
-    /**
-     * Makes this new variant a customer's own SKU, ACTIVE at once (kltn-docs 12 §4.5: the design's approval stands in for
-     * a variant's activation). Never changed afterwards ({@code tg_variants_customer_sku}).
-     */
-    public void ownBy(UUID ownerCustomerId, UUID designSnapshotId, UUID sourceVariantId) {
-        this.ownerCustomerId = ownerCustomerId;
-        this.designSnapshotId = designSnapshotId;
-        this.sourceVariantId = sourceVariantId;
-        this.status = VariantStatus.ACTIVE;
+    public void describe(String description) {
+        this.description = description;
+    }
+
+    public void setRotatable(boolean rotatable) {
+        this.rotatable = rotatable;
     }
 
     public void moveTo(VariantStatus target, Instant now) {
@@ -106,7 +106,6 @@ public class VariantJpaEntity extends BaseEntity {
     public String getAttributeSignature() { return attributeSignature; }
     public int getPosition() { return position; }
     public Instant getObsoletedAt() { return obsoletedAt; }
-    public UUID getOwnerCustomerId() { return ownerCustomerId; }
-    public UUID getDesignSnapshotId() { return designSnapshotId; }
-    public UUID getSourceVariantId() { return sourceVariantId; }
+    public boolean isRotatable() { return rotatable; }
+    public String getDescription() { return description; }
 }

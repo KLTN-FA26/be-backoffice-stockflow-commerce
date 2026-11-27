@@ -36,7 +36,7 @@ class ArchitectureTest {
      *
      * <p>A domain model that imports Spring or JPA cannot be unit-tested without a container, and
      * within a year the business rules have quietly migrated into services because "the entity is
-     * awkward to construct". Keeping the domain plain makes {@code StockItemTest} run in
+     * awkward to construct". Keeping the domain plain makes {@code StockPackageTest} run in
      * milliseconds, which is what keeps people writing those tests.</p>
      */
     @Test
@@ -384,7 +384,7 @@ class ArchitectureTest {
      * entity inside a record — every caller now depends on that internal type too. The module
      * boundary still <i>looks</i> intact: {@code ModularityTest} sees {@code order} importing only
      * {@code inventory.api}, which is allowed, and says nothing. But {@code order} can now reach a
-     * {@code StockItem} through the returned object and call behaviour on it outside a transaction
+     * {@code StockPackage} through the returned object and call behaviour on it outside a transaction
      * and outside the invariants.</p>
      *
      * <p>That is the exact leak the whole api/internal split exists to prevent, and it is the one

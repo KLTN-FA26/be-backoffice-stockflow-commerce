@@ -16,11 +16,10 @@ import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
-import com.stockflow.inventory.internal.domain.StockItem;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
 import com.stockflow.inventory.internal.domain.StockPackage;
+import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
@@ -42,28 +41,30 @@ import java.util.UUID;
  * (SCRUM-267/275, team plan 4C-4; kltn-docs 07 Output, BR-05, §4.5 step 14).
  *
  * <p><b>Why the ledger is the idempotency key.</b> A pick line deducts once: the {@code PICK} row with
- * reference {@code PICK_LINE} and the line's id is looked up under the stock row's lock before anything
+ * reference {@code PICK_LINE} and the line's id is looked up under the carton's lock before anything
  * changes, and {@code uk_stock_movement_pick_line} refuses a second one should two transactions ever get
  * past that check. The hold's own status could not answer the question on its own — CONSUMED says the
  * hold was used, not by whom — which is how a second pick line pointing at the same hold is told apart
  * ({@code RESERVATION_NOT_ACTIVE}) from the same line confirmed twice (answered as done).</p>
  *
- * <p><b>Locks.</b> Every method takes the SKU's advisory lock, then the carton (stock package) the hold's
- * row is in if it is in one, then the stock row it changes ({@code SELECT … FOR UPDATE} plus a refresh): the
- * lock order every writer of a carton keeps (V20261020000100). The row lock is what serialises a pick against
- * a cancellation releasing the same hold: whichever commits second sees the hold closed. A put-back locks the
- * carton the pick emptied and its one row. Callers that lock their own rows (fulfillment's pick task, its package)
- * take them before calling in here, and nothing takes a SKU lock and then such a row.</p>
+ * <p><b>Locks.</b> Every method reads the carton of its hold unlocked, only to learn the SKU (an allocation never
+ * changes carton), takes the SKU's advisory lock, then the carton ({@code SELECT … FOR UPDATE} plus a refresh), and
+ * reads the hold again from the locked carton: the lock order every writer of a carton keeps. There is nothing to
+ * lock after the carton - it is the stock (ADR-0011). The carton's lock is what serialises a pick against a
+ * cancellation releasing the same hold: whichever commits second sees the hold closed. Callers that lock their own
+ * rows (fulfillment's pick task, its package) take them before calling in here, and nothing takes a SKU lock and then
+ * such a row.</p>
  *
- * <p>A pick takes its carton whole and closes it CONSUMED in the same transaction ({@link StockPackageContents}); a
- * put-back brings that very carton back IN_STOCK, sealed ({@link StockPackage#restock}).</p>
+ * <p>A pick takes its carton whole: consuming the hold takes the carton IN_STOCK → CONSUMED in the same step
+ * ({@link StockPackage#consumeReservation}); a put-back brings that very carton back IN_STOCK, sealed
+ * ({@link StockPackage#restock}).</p>
  *
  * <p><b>Staging (team plan 4C-5).</b> A task picked to a staging area moves the carton instead ({@link #stage}): the
- * carton and its one row go to the staging area as they are, the allocation on the row with them, and one MOVE line
- * names the pick line. Nothing is deducted until the task moves to dispatch ({@link #consumeStaged}, the same deduction
- * as a pick, from where the carton stands). A cancelled order's staged carton is moved back to a bin
- * ({@link #unstage}, a second MOVE). These are the only moves into or out of a staging area: a person's move is refused
- * there ({@code StockOperationsServiceImpl.requireMovableBetween}), and so is any other ledger line
+ * carton goes to the staging area as it is - still AVAILABLE, its allocation still HELD - and one MOVE line names the
+ * pick line. Nothing is deducted until the task moves to dispatch ({@link #consumeStaged}, the same deduction as a
+ * pick, from where the carton stands). A cancelled order's staged carton is moved back to a bin ({@link #unstage}, a
+ * second MOVE). These are the only moves into or out of a staging area: a person's move is refused there
+ * ({@code StockOperationsServiceImpl.requireMovableBetween}), and so is any other ledger line
  * ({@code tg_stock_movement_staging}).</p>
  *
  * <p>Joins the caller's transaction ({@code REQUIRED}): the pick line and the deduction commit or roll
@@ -75,7 +76,6 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
 
     private static final Logger log = LoggerFactory.getLogger(PickConsumptionService.class);
 
-    private final StockItemRepository stockItems;
     private final StockMovementLog ledger;
     private final InventoryEventPublisher events;
     private final LocationDirectory locations;
@@ -86,7 +86,7 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     private final StockPackageRepository stockPackages;
     private final CartonPlacement placement;
 
-    PickConsumptionService(StockItemRepository stockItems, StockMovementLog ledger, InventoryEventPublisher events,
+    PickConsumptionService(StockMovementLog ledger, InventoryEventPublisher events,
                            LocationDirectory locations, InventoryPolicyRepository policies,
                            StockPackageContents cartons, Clock clock,
                            com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
@@ -94,7 +94,6 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         this.stockPackages = stockPackages;
         this.placement = placement;
         this.cycleCounts = cycleCounts;
-        this.stockItems = stockItems;
         this.ledger = ledger;
         this.events = events;
         this.locations = locations;
@@ -106,33 +105,35 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     @Override
     public ConsumedPick consumeForPick(UUID reservationId, UUID pickLineId, UUID actorId) {
         Objects.requireNonNull(pickLineId, "pickLineId");
-        StockPackageContents.LockedCartons locked = lockSkusAndCartons(List.of(reservationId));
-        StockItem item = holderOf(reservationId);
-        Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
-        requireOrderStock(item, hold);
+        StockPackage carton = lockHolderOf(reservationId);
+        Reservation hold = carton.findReservation(ReservationId.of(reservationId)).orElseThrow();
+        requireOrderStock(carton, hold);
+        LocationId at = carton.location();
         Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.PICK,
                 StockMovement.ReferenceType.PICK_LINE, pickLineId);
         if (done.isPresent()) {
-            return toConsumed(item, hold, true);
+            return toConsumed(carton, at, hold, true);
         }
-        deduct(item, reservationId, StockMovement.ReferenceType.PICK_LINE, pickLineId, actorId, locked);
-        cartons.settle(locked, clock.instant());
+        deduct(carton, reservationId, StockMovement.ReferenceType.PICK_LINE, pickLineId, actorId);
         log.info("Pick line {} consumed hold {}: {} x {} off {}", pickLineId, reservationId,
-                hold.quantity(), item.sku(), item.location());
-        return toConsumed(item, hold, false);
+                hold.quantity(), carton.sku(), at);
+        return toConsumed(carton, at, hold, false);
     }
 
     /**
-     * The first two locks of the order every carton writer keeps: the SKUs of these holds' rows (sorted), then the
-     * cartons those rows are in. The rows themselves are locked after, one by one, by the caller. A hold is moved
-     * from row to row only under its SKU lock, so the rows are read again once that lock is held.
+     * The carton of {@code reservationId}, read without a lock: enough to learn its SKU and where it stands before
+     * the SKU lock is taken. An allocation is on one carton for as long as it exists.
      */
-    private StockPackageContents.LockedCartons lockSkusAndCartons(java.util.Collection<UUID> reservationIds) {
-        java.util.function.Function<UUID, Optional<StockItem>> row = id ->
-                stockItems.findIdByReservationId(ReservationId.of(id)).flatMap(stockItems::findById);
-        reservationIds.stream().map(row).flatMap(Optional::stream).map(item -> item.sku().code())
-                .distinct().sorted().forEach(policies::lock);
-        return cartons.lockFor(reservationIds.stream().map(row).flatMap(Optional::stream).toList());
+    private StockPackage cartonOf(UUID reservationId) {
+        return stockPackages.findByReservationId(ReservationId.of(reservationId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                        "No reservation with id " + reservationId));
+    }
+
+    /** The carton {@code id}, locked and read fresh. Call under its SKU's lock. */
+    private StockPackage lock(StockPackageId id) {
+        return stockPackages.findByIdForUpdate(id).orElseThrow(() ->
+                new IllegalStateException("No stock package " + id.value()));
     }
 
     /**
@@ -144,21 +145,19 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "stock-reservation", resourceId = "#reservationId")
     public void consume(UUID reservationId, UUID actorId) {
-        StockPackageContents.LockedCartons locked = lockSkusAndCartons(List.of(reservationId));
-        StockItem item = holderOf(reservationId);
-        Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
-        requireOrderStock(item, hold);
-        deduct(item, reservationId, StockMovement.ReferenceType.ORDER, hold.orderId(), actorId, locked);
-        cartons.settle(locked, clock.instant());
+        StockPackage carton = lockHolderOf(reservationId);
+        Reservation hold = carton.findReservation(ReservationId.of(reservationId)).orElseThrow();
+        requireOrderStock(carton, hold);
+        deduct(carton, reservationId, StockMovement.ReferenceType.ORDER, hold.orderId(), actorId);
         log.info("Consumed reservation {} by hand: stock deducted for real", reservationId);
     }
 
     /**
-     * A pick deducts an order's goods from a shelf, never goods a legacy print-shop row still records
+     * A pick deducts an order's goods from a shelf, never goods a legacy print-shop carton still records
      * ({@code IN_PRODUCTION}, review of #109).
      */
-    private static void requireOrderStock(StockItem item, Reservation hold) {
-        if (item.status() == StockStatus.IN_PRODUCTION) {
+    private static void requireOrderStock(StockPackage carton, Reservation hold) {
+        if (carton.stockStatus() == StockStatus.IN_PRODUCTION) {
             throw new BusinessException(ErrorCode.PRODUCTION_HOLD_NOT_PICKABLE,
                     "Hold %s is not an order's goods on a shelf; a pick does not close it".formatted(hold.id().value()));
         }
@@ -173,27 +172,28 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
      * {@inheritDoc}
      *
      * <p>The same path as {@link #putBack}, locks and replay included; only the target and the status differ: a
-     * QUARANTINE area of the carton's own warehouse, and the row's units QUARANTINE once back in it.</p>
+     * QUARANTINE area of the carton's own warehouse, and the carton QUARANTINE once back in stock.</p>
      */
     @Override
     public void putBackToQuarantine(PutBackCommand command) {
         restockPicked(command, true);
     }
 
-    /** A picked carton back into stock whole: AVAILABLE onto a bin, or QUARANTINE into a quarantine area. */
+    /**
+     * A picked carton back into stock whole: AVAILABLE onto a bin, or QUARANTINE into a quarantine area. The status
+     * is said here, by the operation (ADR-0011): a carton out of stock has none of its own, and a pick only ever took
+     * AVAILABLE stock.
+     */
     private void restockPicked(PutBackCommand command, boolean quarantine) {
         LocationId target = new LocationId(command.locationCode());
         // BR-SEC-002: the bin is in a warehouse the caller is assigned to. First, so a replay cannot tell
         // anything about another warehouse.
         WarehouseScope.requireLocation(target.code());
-        // The carton the hold emptied, in the order every carton writer locks (V20261020000100): the SKU here, then the
-        // carton FOR UPDATE and its row by id in StockPackageContents#restock. The row is read once unlocked to learn
-        // the SKU and the carton; a pick line's hold never changes row once consumed.
-        StockItem rowView = stockItems.findIdByReservationId(ReservationId.of(command.reservationId()))
-                .flatMap(stockItems::findById)
-                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
-                        "No reservation with id " + command.reservationId()));
-        policies.lock(rowView.sku().code());
+        // The carton the hold emptied, in the order every carton writer locks: the SKU here, then the carton FOR
+        // UPDATE in StockPackageContents#restock. It is read once unlocked to learn the SKU; a pick line's hold never
+        // changes carton.
+        StockPackage cartonView = cartonOf(command.reservationId());
+        policies.lock(cartonView.sku().code());
         if (ledger.findByReference(StockMovement.MovementType.PUT_BACK, StockMovement.ReferenceType.PICK_LINE,
                 command.pickLineId()).isPresent()) {
             return;
@@ -214,86 +214,72 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
             // Both resolved: two unknown places must not pass as "the same warehouse".
             UUID targetWarehouse = locations.warehouseOf(target).orElseThrow(() ->
                     new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + target));
-            UUID cartonWarehouse = locations.warehouseOf(rowView.location()).orElseThrow(() ->
+            UUID cartonWarehouse = locations.warehouseOf(cartonView.location()).orElseThrow(() ->
                     new IllegalStateException("Carton %s stands at an unknown location %s"
-                            .formatted(command.lpn(), rowView.location())));
+                            .formatted(command.lpn(), cartonView.location())));
             if (!targetWarehouse.equals(cartonWarehouse)) {
                 throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
                         "%s is in another warehouse than carton %s".formatted(target, command.lpn()));
             }
         }
-        // Only a whole carton comes back (team plan 4C-4; 07 §4.5 step 14): never loose units of a line picked loose
-        // before 4C-1. V20261113000400 stopped on any such put-back still waiting.
-        if (rowView.stockPackageId() == null) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Pick line %s took loose stock; only a "
-                    + "whole carton is put back (kltn-docs 07 §4.5 step 14)").formatted(command.pickLineId()));
-        }
         // Onto a bin, the carton must fit it (kltn-docs 07 BR-12, 06 BR-01); one that fits no bin goes to an OVERFLOW
         // area, which takes any size - and only then. A quarantine area is not judged.
-        placement.requirePutBackTarget(target.code(), rowView.stockPackageId());
-        StockPackage cartonView = stockPackages.findById(rowView.stockPackageId()).orElseThrow(() ->
-                new IllegalStateException("No stock package " + rowView.stockPackageId().value()));
+        placement.requirePutBackTarget(target.code(), cartonView.id());
         if (!cartonView.lpn().equalsIgnoreCase(command.lpn().trim())) {
             // tg_pick_line_carton keeps a line's LPN its hold's carton: a mismatch is a caller's bug, not a request.
             throw new IllegalStateException("Pick line %s names carton %s; its hold is in %s"
                     .formatted(command.pickLineId(), command.lpn(), cartonView.lpn()));
         }
-        Reservation consumed = rowView.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
+        Reservation consumed = cartonView.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
         if (consumed.status() != com.stockflow.inventory.internal.domain.ReservationStatus.CONSUMED) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Allocation %s is %s; only a whole carton "
                     + "taken by the pick goes back").formatted(command.reservationId(), consumed.status()));
         }
-        // CONSUMED -> IN_STOCK, sealed, at the bin, its row following it with its units back as the same receipt layer
-        // (4C-2's StockPackageContents#restock: STOCK_PACKAGE_TAKEN_WHOLE unless the hold is what was counted into the
-        // carton, INVALID_STOCK_PACKAGE_TRANSITION unless CONSUMED). It saves the carton before the row, so the carton
-        // stands at its new place before the ledger line names it there (check_stock_movement_package).
-        StockItem row = cartons.restock(rowView.stockPackageId(), rowView.id(), target, consumed.quantity().value(),
-                quarantine);
+        // CONSUMED -> IN_STOCK, sealed, at the target, the same carton with its lot and FIFO date
+        // (StockPackageContents#restock: INVALID_STOCK_PACKAGE_TRANSITION unless CONSUMED). It writes the carton at
+        // once, so the carton stands at its new place before the ledger line names it there
+        // (check_stock_movement_package).
+        StockPackage carton = cartons.restock(cartonView.id(), target, quarantine);
         Instant now = clock.instant();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,
-                row.sku(), row.lotNumber(), null, target, consumed.quantity().value(), row.status(),
-                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now)
-                .ofLot(row.lotId()).forOrder(consumed.orderId()).arriving(row.stockPackageId()));
-        log.info("Pick line {} put back: carton {} ({} x {}) onto {} as {}", command.pickLineId(), cartonView.lpn(),
-                consumed.quantity(), row.sku(), target, row.status());
+                carton.sku(), carton.lotNumber(), null, target, carton.stockStatus(),
+                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now,
+                carton.id())
+                .ofLot(carton.lotId()).forOrder(consumed.orderId()));
+        log.info("Pick line {} put back: carton {} ({} x {}) onto {} as {}", command.pickLineId(), carton.lpn(),
+                consumed.quantity(), carton.sku(), target, carton.stockStatus());
     }
 
     /**
      * {@inheritDoc}
      *
-     * <p>Locks as a pick does: the SKU, then the carton {@code FOR UPDATE}, then its row by id. The replay is looked up
-     * under the SKU lock: the line's first MOVE is its staging (a second is the put-back of {@link #unstage}). The
-     * allocation must be the carton's whole content - its only row, all of it held - since the carton moves with
-     * whatever is in it and must not take units of nobody's order into the staging area.</p>
+     * <p>Locks as a pick does: the SKU, then the carton {@code FOR UPDATE}. The replay is looked up under the SKU
+     * lock: the line's first MOVE is its staging (a second is the put-back of {@link #unstage}). The carton moves
+     * with its allocation still HELD and stays AVAILABLE ({@code tg_stock_package_held_available} wants a held carton
+     * AVAILABLE; what keeps it out of every promise is where it stands, a staging area being no pickable
+     * location).</p>
      */
     @Override
     public StagedPick stage(StageCommand command) {
         LocationId target = new LocationId(command.stagingLocationCode());
         WarehouseScope.requireLocation(target.code());
-        StockItem rowView = stockItems.findIdByReservationId(ReservationId.of(command.reservationId()))
-                .flatMap(stockItems::findById)
-                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
-                        "No reservation with id " + command.reservationId()));
-        WarehouseScope.requireLocation(rowView.location().code());
-        policies.lock(rowView.sku().code());
+        StockPackage cartonView = cartonOf(command.reservationId());
+        WarehouseScope.requireLocation(cartonView.location().code());
+        policies.lock(cartonView.sku().code());
         Optional<StockMovement> done = ledger.findByReference(StockMovement.MovementType.MOVE,
                 StockMovement.ReferenceType.PICK_LINE, command.pickLineId());
         if (done.isPresent()) {
-            return new StagedPick(command.reservationId(), command.lpn(), rowView.sku().code(),
-                    done.get().quantity(), done.get().from().code(), done.get().to().code(), true);
+            // The line records the carton, not a number: what was staged is the carton's standard count (ADR-0011).
+            int staged = stockPackages.findAllById(List.of(done.get().stockPackage())).stream().findFirst()
+                    .map(StockPackage::nominalQty).orElseThrow(() -> new IllegalStateException(
+                            "No stock package " + done.get().stockPackage().value()));
+            return new StagedPick(command.reservationId(), command.lpn(), cartonView.sku().code(),
+                    staged, done.get().from().code(), done.get().to().code(), true);
         }
-        requireStagingArea(rowView.location(), target);
-        if (rowView.stockPackageId() == null) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Pick line %s holds loose stock; only a "
-                    + "whole carton is staged").formatted(command.pickLineId()));
-        }
-        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(rowView.stockPackageId())).stream()
-                .findFirst().orElseThrow(() -> new IllegalStateException(
-                        "No stock package " + rowView.stockPackageId().value()));
-        StockItem row = stockItems.findByIdForUpdate(rowView.id()).orElseThrow(() ->
-                new IllegalStateException("Stock item %s vanished mid staging".formatted(rowView.id())));
-        Reservation hold = row.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
-        requireOrderStock(row, hold);
+        requireStagingArea(cartonView.location(), target);
+        StockPackage carton = lock(cartonView.id());
+        Reservation hold = carton.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
+        requireOrderStock(carton, hold);
         if (!carton.lpn().equalsIgnoreCase(command.lpn().trim())) {
             // tg_pick_line_carton keeps a line's LPN its hold's carton: a mismatch is a caller's bug, not a request.
             throw new IllegalStateException("Pick line %s names carton %s; its hold is in %s"
@@ -303,30 +289,23 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
             throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
                     "Allocation %s is %s; only a held one is staged".formatted(command.reservationId(), hold.status()));
         }
-        if (row.status() != StockStatus.AVAILABLE) {
+        // A live hold is on a carton in stock (the aggregate's invariant), so only its stock status is left to ask.
+        if (carton.stockStatus() != StockStatus.AVAILABLE) {
             throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
-                    "Carton %s holds %s stock; only AVAILABLE stock is staged".formatted(carton.lpn(), row.status()));
+                    "Carton %s holds %s stock; only AVAILABLE stock is staged".formatted(carton.lpn(),
+                            carton.stockStatus()));
         }
-        int rows = stockItems.findIdsInStockPackage(carton.id()).size();
-        if (carton.status() != com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK || rows != 1
-                || hold.quantity().value() != row.onHand().value()) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Allocation %s holds %s of carton %s "
-                    + "(%s, %d row(s), %s on hand); only an allocation of the whole carton in stock is staged")
-                    .formatted(command.reservationId(), hold.quantity(), carton.lpn(), carton.status(), rows,
-                            row.onHand()));
-        }
-        LocationId from = row.location();
+        LocationId from = carton.location();
         carton.moveTo(target);
-        row.followPackageTo(target);
-        stockItems.save(row);
         stockPackages.save(carton);
-        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, row.sku(),
-                row.lotNumber(), from, target, row.onHand().value(), row.status(), row.status(),
-                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), clock.instant())
-                .ofLot(row.lotId()).forOrder(hold.orderId()).leaving(carton.id()).arriving(carton.id()));
+        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, carton.sku(),
+                carton.lotNumber(), from, target, carton.stockStatus(), carton.stockStatus(),
+                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), clock.instant(),
+                carton.id())
+                .ofLot(carton.lotId()).forOrder(hold.orderId()));
         log.info("Pick line {} staged carton {} ({} x {}) from {} to {}", command.pickLineId(), carton.lpn(),
-                hold.quantity(), row.sku(), from, target);
-        return new StagedPick(command.reservationId(), carton.lpn(), row.sku().code(), hold.quantity().value(),
+                hold.quantity(), carton.sku(), from, target);
+        return new StagedPick(command.reservationId(), carton.lpn(), carton.sku().code(), hold.quantity().value(),
                 from.code(), target.code(), false);
     }
 
@@ -344,59 +323,59 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     /**
      * {@inheritDoc}
      *
-     * <p>Locks once for every line (review M1): the SKUs of all the rows, sorted, then all their cartons in id order
-     * ({@link #lockSkusAndCartons}), then the rows one by one in row id order - never per line, which would take the SKU
-     * locks in pick-line order (bin, then SKU) and could deadlock with a checkout holding one of them and asking for
-     * another. The cartons are settled once, after every row is saved.</p>
+     * <p>Locks once for every line (review M1): the SKUs of all the cartons, sorted, then all the cartons in id order
+     * in one call - never per line, which would take the SKU locks in pick-line order (bin, then SKU) and could
+     * deadlock with a release holding one of them and asking for another.</p>
      */
     @Override
     public List<ConsumedPick> consumeStaged(List<StagedLine> lines, UUID actorId) {
-        StockPackageContents.LockedCartons locked = lockSkusAndCartons(
-                lines.stream().map(StagedLine::reservationId).toList());
-        java.util.Map<UUID, String> rowOf = new java.util.HashMap<>();
+        java.util.Map<UUID, StockPackage> views = new java.util.LinkedHashMap<>();
         for (StagedLine line : lines) {
-            rowOf.put(line.reservationId(), stockItems.findIdByReservationId(ReservationId.of(line.reservationId()))
-                    .map(id -> id.value().toString()).orElse(""));
+            stockPackages.findByReservationId(ReservationId.of(line.reservationId()))
+                    .ifPresent(view -> views.put(line.reservationId(), view));
         }
+        views.values().stream().map(view -> view.sku().code()).distinct().sorted().forEach(policies::lock);
+        java.util.Map<StockPackageId, StockPackage> locked = new java.util.HashMap<>();
+        stockPackages.findAllByIdForUpdate(views.values().stream().map(StockPackage::id).toList())
+                .forEach(carton -> locked.put(carton.id(), carton));
         java.util.Map<UUID, ConsumedPick> done = new java.util.HashMap<>();
-        boolean deducted = false;
-        for (StagedLine line : lines.stream()
-                .sorted(java.util.Comparator.comparing((StagedLine l) -> rowOf.get(l.reservationId()))).toList()) {
-            StockItem item = holderOf(line.reservationId());
-            Reservation hold = item.findReservation(ReservationId.of(line.reservationId())).orElseThrow();
+        for (StagedLine line : lines) {
+            StockPackage view = views.get(line.reservationId());
+            if (view == null) {
+                throw new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                        "No reservation with id " + line.reservationId());
+            }
+            StockPackage carton = locked.get(view.id());
+            if (carton == null) {
+                throw new IllegalStateException("No stock package " + view.id().value());
+            }
+            WarehouseScope.requireLocation(carton.location().code());
+            Reservation hold = carton.findReservation(ReservationId.of(line.reservationId())).orElseThrow();
+            LocationId at = carton.location();
             if (ledger.findByReference(StockMovement.MovementType.PICK, StockMovement.ReferenceType.PICK_LINE,
                     line.pickLineId()).isPresent()) {
-                done.put(line.pickLineId(), toConsumed(item, hold, true));
+                done.put(line.pickLineId(), toConsumed(carton, at, hold, true));
                 continue;
             }
             Optional<StockMovement> staged = ledger.findByReference(StockMovement.MovementType.MOVE,
                     StockMovement.ReferenceType.PICK_LINE, line.pickLineId());
-            if (staged.isEmpty() || !staged.get().to().equals(item.location())
-                    || !locations.isStagingArea(item.location())) {
-                throw new IllegalStateException("Pick line %s did not stage hold %s at %s".formatted(line.pickLineId(),
-                        line.reservationId(), item.location()));
-            }
             // Review M2: the carton must still be in stock where the line put it. One a count found missing (LOST) or that
             // left otherwise is a shortage of the order's goods (20 §4.9 step 4), reported on the line - never deducted
             // here as if it had shipped.
-            StockPackage carton = locked.carton(item.stockPackageId()).orElse(null);
-            if (carton == null || carton.status() != com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK
-                    || !carton.location().equals(item.location())) {
+            if (staged.isPresent() && (!carton.inStock() || !carton.location().equals(staged.get().to()))) {
                 throw new BusinessException(ErrorCode.CONFLICT, ("Pick line %s staged carton %s at %s, which is %s there "
                         + "now; report the line short instead of moving it to dispatch").formatted(line.pickLineId(),
-                        carton == null ? "(none)" : carton.lpn(), item.location(),
-                        carton == null ? "not" : carton.status() + " at " + carton.location()));
+                        carton.lpn(), staged.get().to(), carton.status() + " at " + carton.location()));
             }
-            requireOrderStock(item, hold);
-            deduct(item, line.reservationId(), StockMovement.ReferenceType.PICK_LINE, line.pickLineId(), actorId,
-                    locked);
-            deducted = true;
+            if (staged.isEmpty() || !locations.isStagingArea(at)) {
+                throw new IllegalStateException("Pick line %s did not stage hold %s at %s".formatted(line.pickLineId(),
+                        line.reservationId(), at));
+            }
+            requireOrderStock(carton, hold);
+            deduct(carton, line.reservationId(), StockMovement.ReferenceType.PICK_LINE, line.pickLineId(), actorId);
             log.info("Pick line {} consumed staged hold {}: {} x {} off {}", line.pickLineId(), line.reservationId(),
-                    hold.quantity(), item.sku(), item.location());
-            done.put(line.pickLineId(), toConsumed(item, hold, false));
-        }
-        if (deducted) {
-            cartons.settle(locked, clock.instant());
+                    hold.quantity(), carton.sku(), at);
+            done.put(line.pickLineId(), toConsumed(carton, at, hold, false));
         }
         return lines.stream().map(line -> done.get(line.pickLineId())).toList();
     }
@@ -404,18 +383,16 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     /**
      * {@inheritDoc}
      *
-     * <p>Locks as {@link #putBack}: the SKU, the carton {@code FOR UPDATE}, its row. The line's MOVE lines say where it
-     * stands: one, it is in the staging area it was moved to; two, it was put back already.</p>
+     * <p>Locks as {@link #putBack}: the SKU, the carton {@code FOR UPDATE}. The line's MOVE lines say where it
+     * stands: one, it is in the staging area it was moved to; two, it was put back already. The carton never left
+     * stock, so it keeps the status it has.</p>
      */
     @Override
     public void unstage(PutBackCommand command) {
         LocationId target = new LocationId(command.locationCode());
         WarehouseScope.requireLocation(target.code());
-        StockItem rowView = stockItems.findIdByReservationId(ReservationId.of(command.reservationId()))
-                .flatMap(stockItems::findById)
-                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
-                        "No reservation with id " + command.reservationId()));
-        policies.lock(rowView.sku().code());
+        StockPackage cartonView = cartonOf(command.reservationId());
+        policies.lock(cartonView.sku().code());
         List<StockMovement> moves = ledger.findAllByReference(StockMovement.MovementType.MOVE,
                 StockMovement.ReferenceType.PICK_LINE, command.pickLineId());
         if (moves.isEmpty()) {
@@ -440,15 +417,10 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                     "A staged carton is put back onto a bin, not into a staging area (%s)".formatted(target));
         }
         // Onto a bin, the carton must fit it; one that fits no bin goes to OVERFLOW, and only then (07 BR-12).
-        placement.requirePutBackTarget(target.code(), rowView.stockPackageId());
-        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(rowView.stockPackageId())).stream()
-                .findFirst().orElseThrow(() -> new IllegalStateException(
-                        "No stock package " + rowView.stockPackageId().value()));
-        StockItem row = stockItems.findByIdForUpdate(rowView.id()).orElseThrow(() ->
-                new IllegalStateException("Stock item %s vanished mid put-back".formatted(rowView.id())));
-        Reservation hold = row.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
-        if (!carton.lpn().equalsIgnoreCase(command.lpn().trim()) || !carton.location().equals(staging)
-                || !row.location().equals(staging)) {
+        placement.requirePutBackTarget(target.code(), cartonView.id());
+        StockPackage carton = lock(cartonView.id());
+        Reservation hold = carton.findReservation(ReservationId.of(command.reservationId())).orElseThrow();
+        if (!carton.lpn().equalsIgnoreCase(command.lpn().trim()) || !carton.location().equals(staging)) {
             throw new IllegalStateException("Pick line %s staged carton %s at %s; it is %s at %s".formatted(
                     command.pickLineId(), command.lpn(), staging, carton.lpn(), carton.location()));
         }
@@ -459,15 +431,14 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                     + "it leaves the staging area by dispatch").formatted(carton.lpn(), command.reservationId()));
         }
         carton.moveTo(target);
-        row.followPackageTo(target);
-        stockItems.save(row);
         stockPackages.save(carton);
-        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, row.sku(),
-                row.lotNumber(), staging, target, row.onHand().value(), row.status(), row.status(),
-                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), clock.instant())
-                .ofLot(row.lotId()).forOrder(hold.orderId()).leaving(carton.id()).arriving(carton.id()));
+        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE, carton.sku(),
+                carton.lotNumber(), staging, target, carton.stockStatus(), carton.stockStatus(),
+                StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), clock.instant(),
+                carton.id())
+                .ofLot(carton.lotId()).forOrder(hold.orderId()));
         log.info("Pick line {} put back staged carton {} ({} x {}) from {} onto {}", command.pickLineId(),
-                carton.lpn(), row.onHand(), row.sku(), staging, target);
+                carton.lpn(), carton.unitsInStock(), carton.sku(), staging, target);
     }
 
     @Override
@@ -511,80 +482,79 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     /**
      * {@inheritDoc}
      *
-     * <p>One count per slot: a short pick on a slot another count holds - open, or submitted with its variance still
+     * <p>One count per carton: a short pick on a carton another count holds - open, or submitted with its variance still
      * pending approval, whatever its trigger (the rule a plan's claim keeps) - answers with that count instead of
      * opening a second count of the same stock, whose variance would correct the books a second time. So does a
      * second short line on the same carton, or the same report again. The line counts the carton the hold is on
-     * (kltn-docs 20 §4.2 f12: that very carton at that bin) and expects its book quantity, as a plan's line does.</p>
+     * (kltn-docs 20 §4.2 f12: that very carton at that bin) and expects what the books say of it, as a plan's line
+     * does.</p>
      *
-     * <p>Reusing an <em>open</em> MANUAL count leaves the slot unfrozen until that count is submitted (only a
+     * <p>Reusing an <em>open</em> MANUAL count leaves the carton unfrozen until that count is submitted (only a
      * SHORT_PICK count freezes while open; a pending shortage freezes whatever the trigger): an accepted window in
-     * which the doubted free units may be promised again (final review C1).</p>
+     * which the doubted free cartons may be promised again (final review C1).</p>
      */
     @Override
     public com.stockflow.inventory.consumption.ShortPickRecount requestRecount(UUID reservationId, UUID pickLineId,
                                                                               int found) {
         Objects.requireNonNull(pickLineId, "pickLineId");
-        StockItem item = stockItems.findIdByReservationId(ReservationId.of(reservationId))
-                .flatMap(stockItems::findById)
+        StockPackage carton = stockPackages.findByReservationId(ReservationId.of(reservationId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
                         "No allocation with id " + reservationId));
-        WarehouseScope.requireLocation(item.location().code());
-        Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
-        if (item.stockPackageId() == null) {
-            // Allocations are whole cartons (team plan 4C-2) and counts are by carton (4C-3): a hold on loose stock is
-            // history, and there is no loose slot to count.
-            throw new BusinessException(ErrorCode.CONFLICT,
-                    "Allocation %s holds loose stock; a recount is of cartons".formatted(reservationId));
-        }
-        var slot = com.stockflow.inventory.internal.domain.CountSlot.carton(item.location(), item.sku(),
-                item.lotNumber(), item.stockPackageId());
+        WarehouseScope.requireLocation(carton.location().code());
+        Reservation hold = carton.findReservation(ReservationId.of(reservationId)).orElseThrow();
+        var slot = com.stockflow.inventory.internal.domain.CountSlot.carton(carton.location(), carton.sku(),
+                carton.lotNumber(), carton.id());
         var holding = cycleCounts.findHolding(slot);
         if (holding.isPresent()) {
             return new com.stockflow.inventory.consumption.ShortPickRecount(holding.get().id(), holding.get().number(),
                     false);
         }
-        UUID warehouse = locations.warehouseOf(item.location()).orElseThrow(() ->
-                new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + item.location()));
+        UUID warehouse = locations.warehouseOf(carton.location()).orElseThrow(() ->
+                new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + carton.location()));
         var day = com.stockflow.common.domain.BusinessCalendar.date(clock.instant());
-        int book = cycleCounts.bookQuantity(slot);
+        boolean book = cycleCounts.booked(slot);
         var recount = cycleCounts.save(com.stockflow.inventory.internal.domain.CycleCount.shortPick(
                 cycleCounts.nextNumber(day), warehouse, slot, book,
                 "Short pick: line %s found %d of %s".formatted(pickLineId, found, hold.quantity()), day));
-        log.info("Short pick at {} ({} {}): recount {} opened", item.location(), item.sku(),
-                item.lotNumber() == null ? "" : item.lotNumber(), recount.number());
+        log.info("Short pick at {} ({} {}): recount {} opened", carton.location(), carton.sku(),
+                carton.lotNumber() == null ? "" : carton.lotNumber(), recount.number());
         return new com.stockflow.inventory.consumption.ShortPickRecount(recount.id(), recount.number(), true);
     }
 
-    private void deduct(StockItem item, UUID reservationId, StockMovement.ReferenceType referenceType,
-                        UUID referenceId, UUID actorId, StockPackageContents.LockedCartons locked) {
+    /**
+     * The hold becomes a deduction and the carton leaves stock with it; one PICK ledger line, from where the carton
+     * stood, in the status it had. The carton is the caller's locked copy.
+     */
+    private void deduct(StockPackage carton, UUID reservationId, StockMovement.ReferenceType referenceType,
+                        UUID referenceId, UUID actorId) {
         Instant now = clock.instant();
-        Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
-        StockStatus status = item.status();
-        locked.tookFrom(item);
-        item.consumeReservation(ReservationId.of(reservationId), now);
-        stockItems.save(item);
-        events.publishEventsOf(item);
-        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PICK, item.sku(),
-                item.lotNumber(), item.location(), null, hold.quantity().value(), status, referenceType,
-                referenceId, null, actorId, now).ofLot(item.lotId()).forOrder(hold.orderId())
-                .leaving(item.stockPackageId()));
+        Reservation hold = carton.findReservation(ReservationId.of(reservationId)).orElseThrow();
+        StockStatus status = carton.stockStatus();
+        LocationId from = carton.location();
+        carton.consumeReservation(ReservationId.of(reservationId), now);
+        stockPackages.save(carton);
+        events.publishEventsOf(carton);
+        ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PICK, carton.sku(),
+                carton.lotNumber(), from, null, status, referenceType,
+                referenceId, null, actorId, now, carton.id()).ofLot(carton.lotId())
+                .forOrder(hold.orderId()));
     }
 
     /**
-     * The stock item holding {@code reservationId}, locked. A warehouse-bound caller reaches only holds in
-     * their own warehouses (BR-SEC-002); the system is not limited.
+     * The carton holding {@code reservationId}, locked under its SKU's lock. A warehouse-bound caller reaches only
+     * holds in their own warehouses (BR-SEC-002); the system is not limited.
      */
-    private StockItem holderOf(UUID reservationId) {
-        StockItem item = stockItems.findByReservationIdForUpdate(ReservationId.of(reservationId))
-                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
-                        "No reservation with id " + reservationId));
-        WarehouseScope.requireLocation(item.location().code());
-        return item;
+    private StockPackage lockHolderOf(UUID reservationId) {
+        StockPackage view = cartonOf(reservationId);
+        policies.lock(view.sku().code());
+        StockPackage carton = lock(view.id());
+        WarehouseScope.requireLocation(carton.location().code());
+        return carton;
     }
 
-    private static ConsumedPick toConsumed(StockItem item, Reservation hold, boolean already) {
-        return new ConsumedPick(hold.id().value(), item.sku().code(), item.location().code(), item.lotNumber(),
+    /** {@code at}: where the carton stood when it was (or is to be) taken; a consumed carton keeps its last place. */
+    private static ConsumedPick toConsumed(StockPackage carton, LocationId at, Reservation hold, boolean already) {
+        return new ConsumedPick(hold.id().value(), carton.sku().code(), at.code(), carton.lotNumber(),
                 hold.quantity().value(), already);
     }
 }

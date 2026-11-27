@@ -174,7 +174,7 @@ class ChatMessageRepositoryAdapter implements ChatMessageRepository {
                         select m.id from chat.message m
                           join chat.conversation_context x on x.id = m.context_id
                          where m.card_kind = :kind and x.kind = :aboutKind
-                           and coalesce(x.product_id, x.variant_id, x.design_id, x.design_project_id, x.quote_id,
+                           and coalesce(x.product_id, x.customer_sku_id, x.design_id, x.design_project_id, x.quote_id,
                                         x.order_id, x.contract_id, x.production_order_id, x.einvoice_id) = :aboutId
                          order by m.sent_at desc, m.id desc""")
                 .setParameter("kind", kind.name()).setParameter("aboutKind", about.kind().name())

@@ -12,8 +12,8 @@ import java.util.UUID;
 
 /**
  * A request to write one LPN carton off whole or restock it whole, and its four-eyes decision (SCRUM-145; kltn-docs
- * 20 §4.3, BR-04, BR-05; team plan 4C-3) - {@link #requestCarton}. A row in no carton, which only the paths not yet in
- * cartons still write, is adjusted in units ({@link #request}).
+ * 20 §4.3, BR-04, BR-05; team plan 4C-3) - {@link #requestCarton}. It says which way ({@link AdjustmentDirection}) and
+ * never how many units: the carton is taken whole (BR-14), and what it stands for is the carton's to say (ADR-0011).
  *
  * <p>Nobody writes stock up or down on their own say-so: the person who asks is never the person
  * who approves ({@code ck_stock_adjustment_four_eyes} says it again in the table). Approving posts
@@ -30,7 +30,7 @@ public final class StockAdjustment extends AggregateRoot {
     private final LocationId location;
     private final Sku sku;
     private final String lotNumber;
-    private final int quantityDelta;
+    private final AdjustmentDirection direction;
     private final AdjustmentReason reason;
     private final String note;
     private final UUID requestedBy;
@@ -68,7 +68,7 @@ public final class StockAdjustment extends AggregateRoot {
     private UUID countedBy;
 
     public StockAdjustment(UUID id, String number, LocationId location, Sku sku, String lotNumber,
-                           int quantityDelta, AdjustmentReason reason, String note, UUID requestedBy,
+                           AdjustmentDirection direction, AdjustmentReason reason, String note, UUID requestedBy,
                            Instant requestedAt, AdjustmentStatus status, UUID decidedBy, Instant decidedAt,
                            String rejectionReason, Instant postedAt, Instant withdrawnAt, long version) {
         this.id = Objects.requireNonNull(id, "id");
@@ -76,7 +76,7 @@ public final class StockAdjustment extends AggregateRoot {
         this.location = Objects.requireNonNull(location, "location");
         this.sku = Objects.requireNonNull(sku, "sku");
         this.lotNumber = lotNumber;
-        this.quantityDelta = quantityDelta;
+        this.direction = Objects.requireNonNull(direction, "direction");
         this.reason = Objects.requireNonNull(reason, "reason");
         this.note = note == null || note.isBlank() ? null : note.trim();
         this.requestedBy = Objects.requireNonNull(requestedBy, "requestedBy");
@@ -88,15 +88,12 @@ public final class StockAdjustment extends AggregateRoot {
         this.postedAt = postedAt;
         this.withdrawnAt = withdrawnAt;
         this.version = version;
-        if (quantityDelta == 0) {
-            throw new IllegalArgumentException("An adjustment changes the quantity");
-        }
         if (this.reason == AdjustmentReason.OTHER && this.note == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "An adjustment with reason OTHER must say why in the note");
         }
         // ck_stock_adjustment_writes_down says it again in the table.
-        if (this.reason.onlyWritesDown() && quantityDelta > 0) {
+        if (this.reason.onlyWritesDown() && direction == AdjustmentDirection.RESTOCK) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "An adjustment with reason %s can only reduce stock".formatted(this.reason));
         }
@@ -160,48 +157,42 @@ public final class StockAdjustment extends AggregateRoot {
     public UUID countedBy() { return countedBy; }
 
     /**
-     * A carton written off whole, or a LOST carton restocked whole (kltn-docs 20 §4.3; team plan 4C-3): the delta is
-     * its standard count either way, the reason one of BR-04's, the location the carton's.
-     * {@code tg_stock_adjustment_whole_carton} says it again.
+     * A carton written off whole, or a LOST carton restocked whole (kltn-docs 20 §4.3; team plan 4C-3): the reason one
+     * of BR-04's, the location the carton's. {@code tg_stock_adjustment_whole_carton} says it again.
      *
-     * @param units    the carton's standard count
      * @throws BusinessException {@code VALIDATION_FAILED} for a reason of the history, or {@code COUNT_VARIANCE}
      *         asked by hand ({@code countLineId} null)
      */
     public static StockAdjustment requestCarton(String number, StockPackageId carton, LocationId location, Sku sku,
-                                                String lotNumber, AdjustmentDirection direction, int units,
+                                                String lotNumber, AdjustmentDirection direction,
                                                 AdjustmentReason reason, String note, UUID countLineId,
                                                 UUID requestedBy, Instant now) {
         Objects.requireNonNull(carton, "carton");
-        if (units <= 0) {
-            throw new IllegalArgumentException("A carton holds at least one unit");
-        }
         if (reason == AdjustmentReason.COUNT_VARIANCE ? countLineId == null : !reason.askableByHand()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, reason == AdjustmentReason.COUNT_VARIANCE
                     ? "A count variance comes from a cycle count"
                     : "A carton is adjusted for DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER, not " + reason);
         }
-        int delta = direction == AdjustmentDirection.WRITE_OFF ? -units : units;
-        return request(number, location, sku, lotNumber, delta, reason, note, requestedBy, now)
+        return request(number, location, sku, lotNumber, direction, reason, note, requestedBy, now)
                 .inPackage(carton).forCountLine(countLineId);
     }
 
     /**
-     * A new adjustment, pending approval: loose stock (a row in no carton), or with {@link #inPackage} a carton written
-     * off whole through {@code RequestAdjustmentCommand.lpn} (team plan 4D-1). A carton is otherwise asked for with
-     * {@link #requestCarton} (4C-3).
+     * A new adjustment, pending approval, of the carton {@link #inPackage} then names: the write-off asked through
+     * {@code RequestAdjustmentCommand} (team plan 4D-1). A carton is otherwise asked for with {@link #requestCarton}
+     * (4C-3).
      *
      * @throws BusinessException {@code VALIDATION_FAILED} for a {@link AdjustmentReason#legacy() legacy} reason: a
      *         print subcontractor's loss belongs to subcontracting, which went with purchasing (4A-8)
      */
     public static StockAdjustment request(String number, LocationId location, Sku sku, String lotNumber,
-                                          int quantityDelta, AdjustmentReason reason, String note,
+                                          AdjustmentDirection direction, AdjustmentReason reason, String note,
                                           UUID requestedBy, Instant now) {
         if (reason != null && reason.legacy()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("%s is a reason of past adjustments only: "
                     + "subcontracting is gone").formatted(reason));
         }
-        return new StockAdjustment(Identifiers.newId(), number, location, sku, lotNumber, quantityDelta,
+        return new StockAdjustment(Identifiers.newId(), number, location, sku, lotNumber, direction,
                 reason, note, requestedBy, now, AdjustmentStatus.PENDING_APPROVAL, null, null, null, null, null, 0L);
     }
 
@@ -325,7 +316,9 @@ public final class StockAdjustment extends AggregateRoot {
     public LocationId location() { return location; }
     public Sku sku() { return sku; }
     public String lotNumber() { return lotNumber; }
-    public int quantityDelta() { return quantityDelta; }
+    public AdjustmentDirection direction() { return direction; }
+
+    public boolean writesOff() { return direction == AdjustmentDirection.WRITE_OFF; }
     public AdjustmentReason reason() { return reason; }
     public String note() { return note; }
     public UUID requestedBy() { return requestedBy; }

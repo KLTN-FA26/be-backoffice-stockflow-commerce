@@ -63,7 +63,6 @@ SELECT pg_temp.expect_fail('SP10 a break from 0 cartons', $q$
     INSERT INTO catalog.standard_price_tier (id, standard_price_id, min_quantity, unit_price, created_at)
     VALUES (gen_random_uuid(), md5('qa:sp:1')::uuid, 0, 1100, NOW()) $q$);
 SELECT pg_temp.expect_ok('SP11 deleting the variant deletes its standard price with it', $q$
-    DELETE FROM inventory.inventory_items WHERE sku = 'QA-SP-BLANK';
     DELETE FROM product.variants WHERE id = md5('qa:sp:blank')::uuid $q$);
 DO $d$ BEGIN
     IF EXISTS (SELECT 1 FROM catalog.standard_price WHERE id = md5('qa:sp:1')::uuid) THEN

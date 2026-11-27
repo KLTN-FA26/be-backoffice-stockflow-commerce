@@ -82,9 +82,24 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 contract.sentDocumentKey(), contract.signedOn(), contract.signedFileKey(), contract.signedFileName(),
                 contract.signedAt(), contract.signedBy(), contract.cancelledAt(), contract.cancelledBy(),
                 contract.cancellationReason(), contract.completedAt());
+        boolean wasWaiting = !created && entity.isCreditReviewPending();
         entity.applyLiquidated(contract.liquidatedAt());
         entity.agreeReturnWindow(contract.returnWindowDays());
+        entity.creditReview(contract.creditReviewPending());
         SalesContractJpaEntity saved = jpa.saveAndFlush(entity);
+        if (wasWaiting && contract.status() == SalesContractStatus.CANCELLED) {
+            // 15 BR-11: cancelled while it waited for accounting - by Sales, or with its order - its review is withdrawn
+            // with the cancellation's reason, on every path that cancels it.
+            named.update("""
+                    UPDATE ordering.contract_credit_review
+                       SET outcome = 'WITHDRAWN', decided_by = :by, decided_at = :at, note = :note,
+                           version = version + 1, last_modified_at = :at
+                     WHERE contract_id = :contract AND outcome = 'PENDING'""", new MapSqlParameterSource()
+                    .addValue("by", contract.cancelledBy())
+                    .addValue("at", java.sql.Timestamp.from(contract.cancelledAt()))
+                    .addValue("note", contract.cancellationReason())
+                    .addValue("contract", contract.id()));
+        }
         if (contract.status() == SalesContractStatus.DRAFT) {
             writeTerms(contract);
             if (!created) {
@@ -218,6 +233,7 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 e.getFreeSampleRounds(), schedule, plan, e.getSentAt(), e.getSentBy(), e.getSentDocumentKey(),
                 e.getSignedOn(), e.getSignedFileKey(), e.getSignedFileName(), e.getSignedAt(), e.getSignedBy(),
                 e.getCancelledAt(), e.getCancelledBy(), e.getCancellationReason(), e.getCompletedAt(),
-                e.getVersion()).restoreReturnWindow(e.getReturnWindowDays()).restoreLiquidated(e.getLiquidatedAt());
+                e.getVersion()).restoreReturnWindow(e.getReturnWindowDays()).restoreLiquidated(e.getLiquidatedAt())
+                .restoreCreditReview(e.isCreditReviewPending());
     }
 }

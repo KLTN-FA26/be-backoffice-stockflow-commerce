@@ -123,7 +123,8 @@ class ReturnReceiptVoucherHttpTest {
                 .andExpect(jsonPath("$.errorCode").value("INVALID_RECEIPT_TRANSITION"));
 
         asHcmStaff(() -> receipts.confirm(draft.id(), staff));
-        String lot = jdbc.queryForObject("SELECT lot_number FROM inventory.stock_item WHERE stock_package_id = ?",
+        String lot = jdbc.queryForObject("SELECT l.lot_number FROM inventory.stock_package p JOIN "
+                + "inventory.stock_lot l ON l.id = p.lot_id WHERE p.id = ?",
                 String.class, shipped.cartons().getFirst().id());
         MockHttpServletResponse answer = http.asRole(Role.WAREHOUSE_STAFF, staff, get(path))
                 .andExpect(status().isOk()).andExpect(content().contentType(MediaType.APPLICATION_PDF))

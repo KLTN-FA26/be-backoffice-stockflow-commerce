@@ -147,8 +147,8 @@ class ProductLifecycleIntegrationTest {
 
     private String createBody(String code, UUID brand, UUID category) {
         return """
-                {"code":"%s","name":"Product %s","nameEn":"Product %s","taxClass":"STANDARD"%s%s}"""
-                .formatted(code, code, code, brand == null ? "" : ",\"brandId\":\"" + brand + "\"",
+                {"code":"%s","name":"Product %s","taxClass":"STANDARD"%s%s}"""
+                .formatted(code, code, brand == null ? "" : ",\"brandId\":\"" + brand + "\"",
                         category == null ? "" : ",\"categoryId\":\"" + category + "\"");
     }
 
@@ -199,7 +199,7 @@ class ProductLifecycleIntegrationTest {
                 + "AND change_type = 'SUBMITTED'", Long.class, id)).isZero();
 
         String update = """
-                {"name":"Product","nameEn":"Product","taxClass":"STANDARD","brandId":"%s","categoryId":"%s","version":%d}"""
+                {"name":"Product","taxClass":"STANDARD","brandId":"%s","categoryId":"%s","version":%d}"""
                 .formatted(tax.brandId(), tax.categoryId(), created.path("version").asLong());
         send("PUT", editor(), "/api/v1/products/" + id, update).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.brandId").value(tax.brandId().toString()));
@@ -250,13 +250,13 @@ class ProductLifecycleIntegrationTest {
         ProductSummary draft = draftProduct();
         String path = "/api/v1/products/" + draft.productId();
         String withoutVersion = """
-                {"name":"Renamed","nameEn":"Renamed","taxClass":"STANDARD","brandId":"%s","categoryId":"%s"}"""
+                {"name":"Renamed","taxClass":"STANDARD","brandId":"%s","categoryId":"%s"}"""
                 .formatted(tax.brandId(), tax.categoryId());
         assertRefused(send("PUT", editor(), path, withoutVersion), 400, "VALIDATION_FAILED");
         send("PUT", editor(), path, withoutVersion).andExpect(jsonPath("$.fieldErrors[0].field").value("version"));
 
         String update = """
-                {"name":"Renamed","nameEn":"Renamed","taxClass":"STANDARD","brandId":"%s","categoryId":"%s","version":%d}""";
+                {"name":"Renamed","taxClass":"STANDARD","brandId":"%s","categoryId":"%s","version":%d}""";
         JsonNode first = data(send("PUT", editor(), path, update.formatted(tax.brandId(), tax.categoryId(), draft.version()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.name").value("Renamed")));
         assertThat(first.path("version").asLong()).isGreaterThan(draft.version());
@@ -280,8 +280,9 @@ class ProductLifecycleIntegrationTest {
     void discontinueWarnsAndNeverRefuses() throws Exception {
         ProductSummary approved = approvedProduct();
         UUID id = approved.productId();
-        String sku = approved.code();
         ProductionReceivables.Receivable production = openProductionOrder(approved);
+        // Orders name a customer's own SKU of the product (product.customer_skus since V20270105000100).
+        String sku = production.first().sku();
         UUID order = orderWithLine(sku, "CONFIRMED");
         String orderNumber = jdbc.queryForObject("SELECT order_number FROM ordering.customer_order WHERE id = ?", String.class, order);
 
@@ -318,6 +319,16 @@ class ProductLifecycleIntegrationTest {
         // Every variant, the default one included, is OBSOLETE (docs 01 §5.2), not BLOCKED; the documents are untouched.
         assertThat(jdbc.queryForList("SELECT status FROM product.variants WHERE product_id = ?", String.class, id))
                 .containsOnly("OBSOLETE");
+        // So is every customer's own SKU of the product - its own table now, retired with the product all the same,
+        // with the product's reason in the history.
+        assertThat(jdbc.queryForList("SELECT status FROM product.customer_skus WHERE product_id = ?", String.class, id))
+                .isNotEmpty().containsOnly("OBSOLETE");
+        assertThat(jdbc.queryForObject("SELECT obsoleted_at IS NOT NULL FROM product.customer_skus WHERE sku = ?",
+                Boolean.class, sku)).isTrue();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM product.product_change_log l JOIN product.customer_skus c ON c.id = l.subject_id
+                 WHERE c.sku = ? AND l.change_type = 'VARIANT_STATUS' AND l.to_status = 'OBSOLETE'
+                   AND l.reason = 'Het dong san pham'""", Long.class, sku)).isOne();
         assertThat(jdbc.queryForObject("SELECT status FROM ordering.customer_order WHERE id = ?", String.class, order))
                 .isEqualTo("CONFIRMED");
         assertThat(jdbc.queryForObject("SELECT discontinue_reason FROM product.products WHERE id = ?", String.class, id))
@@ -537,12 +548,13 @@ class ProductLifecycleIntegrationTest {
     // ------------------------------------------------------------------ delete
 
     @Test
-    @DisplayName("DELETE a DRAFT: 204, the product, its variant and the SKU's inventory item are gone; GET is 404")
+    @DisplayName("DELETE a DRAFT: 204, the product and its variant are gone (a variant has no inventory item); GET is 404")
     void deleteDraft() throws Exception {
         ProductSummary draft = draftProduct();
         UUID id = draft.productId();
         String sku = draft.code();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class, sku)).isOne();
+        // A catalogue variant is never stocked and has no item (V20270105000100).
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class, sku)).isZero();
         String path = "/api/v1/products/" + id + "?version=" + draft.version();
 
         // product-products:DELETE: SALES_MANAGER and SYSTEM_ADMIN have it; SALES_STAFF (create/update) and WAREHOUSE_STAFF do not.
@@ -590,7 +602,7 @@ class ProductLifecycleIntegrationTest {
         assertRefused(send("DELETE", editor(), "/api/v1/products/" + pending.productId() + "?version=" + versionOf(pending.productId()),
                 null), 409, "PRODUCT_NOT_DELETABLE");
         // Everything is still there: the refusal changed nothing.
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class, approved.code())).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM product.variants WHERE sku = ?", Long.class, approved.code())).isOne();
     }
 
     @Test
@@ -609,9 +621,8 @@ class ProductLifecycleIntegrationTest {
                 VALUES (?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb)""", design, DemoData.CUSTOMER_ID, inUse.productId()));
         assertRefused(send("DELETE", editor(), "/api/v1/products/" + inUse.productId() + "?version=" + inUse.version(), null),
                 409, "PRODUCT_IN_USE");
-        // The whole deletion was undone, including the inventory item that was deleted first.
+        // The whole deletion was undone.
         assertThat(product(inUse.productId()).path("status").asText()).isEqualTo("DRAFT");
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class, inUse.code())).isOne();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.variants WHERE product_id = ?", Long.class, inUse.productId())).isOne();
     }
 
@@ -627,11 +638,13 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.truncated").value(false));
 
         ProductionReceivables.Receivable production = openProductionOrder(approved);
-        UUID order = orderWithLine(approved.code(), "IN_PRODUCTION");
-        orderWithLine(approved.code(), "SHIPPED");   // shipped: nothing left to fulfil, not listed
+        // Orders name the customer's own SKU of the product, which its open references are found through.
+        String sku = production.first().sku();
+        UUID order = orderWithLine(sku, "IN_PRODUCTION");
+        orderWithLine(sku, "SHIPPED");   // shipped: nothing left to fulfil, not listed
         // 4B-5: a DRAFT order is made from an accepted quote, its contract being drawn up - it will ship the SKU.
-        UUID drafted = orderWithLine(approved.code(), "DRAFT");
-        orderWithLine(approved.code(), "CANCELLED");
+        UUID drafted = orderWithLine(sku, "DRAFT");
+        orderWithLine(sku, "CANCELLED");
 
         send("GET", token(UUID.randomUUID(), "SALES_STAFF"), path, null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.references.length()").value(4))

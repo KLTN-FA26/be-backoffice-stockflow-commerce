@@ -25,6 +25,8 @@ import com.stockflow.customer.api.CustomerLegalProfiles;
 import com.stockflow.customer.api.CustomerPaymentSchedules;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.DefaultPaymentSchedule;
+import com.stockflow.order.internal.domain.ContractCreditFigures;
+import com.stockflow.order.internal.domain.ContractCreditReviews;
 import com.stockflow.order.internal.domain.ContractParty;
 import com.stockflow.order.internal.domain.ContractTerms;
 import com.stockflow.order.internal.domain.CreditChecks;
@@ -102,6 +104,10 @@ class SalesContractService implements SalesContracts {
     /** The windows moved since signing, which decide whether the contract has an appendix. */
     private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
     private final LineNames lineNames;
+    /** 15 BR-11 (2026-11-26): the contracts put in front of accounting before they are sent. */
+    private final ContractCreditReviews creditReviews;
+    /** Tells accounting a contract waits for it, and Sales what accounting decided. */
+    private final SalesFollowUpService followUps;
 
     SalesContractService(OrderRepository orders, SalesContractRepository contracts, CustomerService customers,
                          CustomerLegalProfiles legalProfiles, CustomerPaymentSchedules paymentSchedules,
@@ -114,8 +120,10 @@ class SalesContractService implements SalesContracts {
                          com.stockflow.payment.api.CustomerInstallments installments,
                          SalesDocumentFacts shared,
                          com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords,
-                         LineNames lineNames) {
+                         LineNames lineNames, ContractCreditReviews creditReviews, SalesFollowUpService followUps) {
         this.lineNames = lineNames;
+        this.creditReviews = creditReviews;
+        this.followUps = followUps;
         this.shared = shared;
         this.batchRecords = batchRecords;
         this.returnPolicy = returnPolicy;
@@ -232,21 +240,35 @@ class SalesContractService implements SalesContracts {
      * Not transactional itself: the PDF is drawn and kept with no lock held - storage is slow, and the order's row lock
      * makes everyone else wait - from the version read; the contract is then sent in one short transaction if it is
      * still that version, and the PDF goes if it is not.
+     *
+     * <p>15 BR-11 (2026-11-26): a plan whose credit check fails - something overdue, or past the limit with this
+     * contract - is not sent but put in front of accounting, in the first transaction and with no PDF drawn. The check
+     * runs again in the second, since a receipt or another contract may have moved what the customer owes in between:
+     * failing there, the contract waits for accounting all the same and the PDF drawn goes. No approval is looked for
+     * here: approving sends the contract, so a draft never holds one.</p>
      */
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "sales-contract", resourceId = "#result?.id()",
             details = "{orderId: #orderId, to: 'SENT'}")
     public ContractView send(CurrentUser user, UUID orderId, long version) {
-        SalesContractDocument.Facts facts = tx.execute(status -> {
+        SendStep first = tx.execute(status -> {
             Order order = lockInScope(orderId);
             SalesContract contract = live(order, version);
             Instant now = clock.instant();
             contract.requireSendable(order, now);
             requireActiveCustomer(order);
             requireCreditFor(order, contract);
-            return facts(contract, order, LocalDate.ofInstant(now, VIETNAM), true);
+            ContractCreditFigures check = creditCheck(order, contract);
+            if (check != null && check.fails()) {
+                return new SendStep(submitForCreditReview(user, order, contract, version, check, now), null);
+            }
+            return new SendStep(null, facts(contract, order, LocalDate.ofInstant(now, VIETNAM), true));
         });
+        if (first.waiting() != null) {
+            return first.waiting();
+        }
+        SalesContractDocument.Facts facts = first.facts();
         byte[] pdf = document.render(facts);
         try (PreparedFiles prepared = IncomingFiles.sent(List.of(new FileUpload(facts.contract().contractNumber()
                         + ".pdf", "application/pdf", pdf.length, new ByteArrayInputStream(pdf))))
@@ -258,6 +280,11 @@ class SalesContractService implements SalesContracts {
                 requireActiveCustomer(order);
                 requireCreditFor(order, contract);
                 Instant now = clock.instant();
+                ContractCreditFigures check = creditCheck(order, contract);
+                if (check != null && check.fails()) {
+                    // Moved since the first step: it waits for accounting, and the PDF, never adopted, goes.
+                    return submitForCreditReview(user, order, contract, version, check, now);
+                }
                 contract.send(order, now, user.userId(), stored.key());
                 SalesContract saved = contracts.save(contract);
                 // 14 §4.3 step 13: the order now waits for the signature (4B-5).
@@ -270,6 +297,161 @@ class SalesContractService implements SalesContracts {
                 return view(saved, order, creditWarning(order, saved));
             });
         }
+    }
+
+    /** What the first step of a send found: the contract put in front of accounting, or what its PDF shows. */
+    private record SendStep(ContractView waiting, SalesContractDocument.Facts facts) { }
+
+    /**
+     * 15 BR-11: the draft waits for accounting instead of being sent - locked against edits, the figures accounting
+     * decides on kept as they are now - and whoever decides credit is told.
+     */
+    private ContractView submitForCreditReview(CurrentUser user, Order order, SalesContract contract, long version,
+                                               ContractCreditFigures check, Instant now) {
+        contract.submitForCreditReview(order, now);
+        SalesContract saved = contracts.save(contract);
+        ContractCreditReviews.Review review = creditReviews.open(saved.id(), version, check, user.userId(), now);
+        followUps.contractCreditReviewRequested(review.id(), order.id().value(), order.orderNumber().value(),
+                saved.contractNumber(), check.outcome().name(), user.userId());
+        log.info("Sales contract {} of order {} waits for accounting: credit check {}", saved.contractNumber(),
+                order.orderNumber(), check.outcome());
+        return view(saved, order, creditWarning(order, saved));
+    }
+
+    /**
+     * Not transactional itself, as {@link #send}: checked and drawn with no lock held, then approved and sent in one
+     * short transaction if the contract is still that version and still waiting. The credit is not checked again - it
+     * is what accounting decides here; whether the customer still has credit at all after delivery
+     * ({@link #requireCreditFor}) is, as at any send.
+     */
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    @Auditable(action = AuditAction.APPROVE, resourceType = "sales-contract-credit", resourceId = "#result?.id()",
+            details = "{orderId: #orderId, to: 'SENT'}")
+    public ContractView approveCredit(CurrentUser user, UUID orderId, long version, String note) {
+        String text = requireDecisionText(note, "refusal.contract.creditReview.noteRequired");
+        SalesContractDocument.Facts facts = tx.execute(status -> {
+            Order order = lockForAccounting(orderId);
+            SalesContract contract = live(order, version);
+            ContractCreditReviews.Review review = waitingReview(contract);
+            requireOtherThanSubmitter(contract, review, user);
+            Instant now = clock.instant();
+            contract.requireCreditApprovable(order, now);
+            requireActiveCustomer(order);
+            requireCreditFor(order, contract);
+            return facts(contract, order, LocalDate.ofInstant(now, VIETNAM), true);
+        });
+        byte[] pdf = document.render(facts);
+        try (PreparedFiles prepared = IncomingFiles.sent(List.of(new FileUpload(facts.contract().contractNumber()
+                        + ".pdf", "application/pdf", pdf.length, new ByteArrayInputStream(pdf))))
+                .prepare(FileCategory.DOCUMENT, files, staged)) {
+            StoredFile stored = prepared.single().file();
+            return tx.execute(status -> {
+                Order order = lockForAccounting(orderId);
+                SalesContract contract = live(order, version);
+                ContractCreditReviews.Review review = waitingReview(contract);
+                requireOtherThanSubmitter(contract, review, user);
+                requireActiveCustomer(order);
+                requireCreditFor(order, contract);
+                Instant now = clock.instant();
+                // Sent as the Sales account that asked, who follows it with the customer: the reminder of a contract
+                // left unsigned and the chat card go to them; the review names the approver.
+                UUID sales = review.submittedBy();
+                contract.approveCredit(order, now, sales, stored.key());
+                SalesContract saved = contracts.save(contract);
+                creditReviews.close(review.id(), ContractCreditReviews.Outcome.APPROVED, user.userId(), now, text);
+                order.sendContract(sales, now);
+                orders.save(order);
+                prepared.adopt();
+                files.retainAfterCommit(stored.key(), RecordRetention.SALES_CONTRACT);
+                statusChanged(saved, order, sales, now);
+                followUps.contractCreditDecided(review.id(), order.id().value(), order.orderNumber().value(),
+                        saved.contractNumber(), sales, true);
+                log.info("Sales contract {} of order {}: credit approved by accounting, sent", saved.contractNumber(),
+                        order.orderNumber());
+                return view(saved, order, creditWarning(order, saved));
+            });
+        }
+    }
+
+    @Override
+    @Auditable(action = AuditAction.REJECT, resourceType = "sales-contract-credit", resourceId = "#result?.id()",
+            details = "{orderId: #orderId}")
+    public ContractView refuseCredit(CurrentUser user, UUID orderId, long version, String reason) {
+        String text = requireDecisionText(reason, "refusal.contract.creditReview.reasonRequired");
+        Order order = lockForAccounting(orderId);
+        SalesContract contract = live(order, version);
+        ContractCreditReviews.Review review = waitingReview(contract);
+        requireOtherThanSubmitter(contract, review, user);
+        Instant now = clock.instant();
+        contract.refuseCredit();
+        SalesContract saved = contracts.save(contract);
+        creditReviews.close(review.id(), ContractCreditReviews.Outcome.REJECTED, user.userId(), now, text);
+        followUps.contractCreditDecided(review.id(), order.id().value(), order.orderNumber().value(),
+                saved.contractNumber(), review.submittedBy(), false);
+        log.info("Sales contract {} of order {}: credit refused by accounting, back to Sales", saved.contractNumber(),
+                order.orderNumber());
+        return view(saved, order, draftWarning(order, saved));
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "sales-contract-credit", resourceId = "#result?.id()",
+            details = "{orderId: #orderId}")
+    public ContractView withdrawCreditReview(CurrentUser user, UUID orderId, long version) {
+        Order order = lockInScope(orderId);
+        SalesContract contract = live(order, version);
+        ContractCreditReviews.Review review = waitingReview(contract);
+        contract.withdrawCreditReview();
+        SalesContract saved = contracts.save(contract);
+        creditReviews.close(review.id(), ContractCreditReviews.Outcome.WITHDRAWN, user.userId(), clock.instant(), null);
+        log.info("Sales contract {} of order {}: credit review withdrawn", saved.contractNumber(), order.orderNumber());
+        return view(saved, order, draftWarning(order, saved));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public com.stockflow.common.api.PageResponse<CreditReviewWaiting> creditReviewsWaiting(int page, int size) {
+        var pageable = com.stockflow.common.persistence.Pages.of(page, size,
+                org.springframework.data.domain.Sort.unsorted());
+        List<CreditReviewWaiting> items = creditReviews.waiting(pageable.getOffset(), pageable.getPageSize()).stream()
+                .map(w -> new CreditReviewWaiting(w.reviewId(), w.orderId(), w.orderNumber(), w.contractId(),
+                        w.contractNumber(), w.contractVersion(), w.customerId(), w.figures().outcome().name(),
+                        w.figures().creditLimit(), w.figures().exposure(), w.figures().afterDelivery(),
+                        w.figures().overdueAmount(), w.submittedBy(), w.submittedAt()))
+                .toList();
+        return com.stockflow.common.api.PageResponse.of(items, pageable.getPageNumber(), pageable.getPageSize(),
+                creditReviews.countWaiting());
+    }
+
+    /** The contract's review still waiting; refused when it waits for nothing (15 BR-11). */
+    private ContractCreditReviews.Review waitingReview(SalesContract contract) {
+        if (!contract.creditReviewPending()) {
+            throw new BusinessException(ErrorCode.CONTRACT_CREDIT_REVIEW_NOT_PENDING, ("Contract %s is not waiting for "
+                    + "accounting to approve the customer's credit").formatted(contract.contractNumber()))
+                    .localized("refusal.contract.creditReviewNotPending", contract.contractNumber());
+        }
+        return creditReviews.pending(contract.id()).orElseThrow(() -> new IllegalStateException(
+                "Contract " + contract.contractNumber() + " waits for accounting with no review open"));
+    }
+
+    /** 15 BR-11, four eyes: whoever sent the contract for review does not decide it. */
+    private static void requireOtherThanSubmitter(SalesContract contract, ContractCreditReviews.Review review,
+                                                  CurrentUser user) {
+        if (review.submittedBy().equals(user.userId())) {
+            throw new BusinessException(ErrorCode.CONTRACT_CREDIT_REVIEW_SELF, ("Contract %s was sent for review by you: "
+                    + "someone else decides its credit").formatted(contract.contractNumber()))
+                    .localized("refusal.contract.creditReviewSelf", contract.contractNumber());
+        }
+    }
+
+    /** A note or a reason, required and at most 500 characters ({@code ck_contract_credit_review_note}). */
+    private static String requireDecisionText(String given, String key) {
+        String text = given == null ? "" : given.strip();
+        if (text.isEmpty() || text.length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A credit decision says why, in at most 500 "
+                    + "characters").localized(key, 500);
+        }
+        return text;
     }
 
     /**
@@ -418,7 +600,7 @@ class SalesContractService implements SalesContracts {
                 full.seller(), full.buyer(), full.freeSampleRounds(), full.totals(), full.deliverySchedule(),
                 full.paymentPlan(), full.sentAt(), null, full.signedOn(), full.signedFileName(), full.signedAt(), null,
                 null, null, null, full.completedAt(), full.version(), null, full.returnWindowDays(),
-                full.appendixAvailable());
+                full.appendixAvailable(), "NONE", null);
     }
 
     @Override
@@ -467,6 +649,15 @@ class SalesContractService implements SalesContracts {
      */
     private Order lockInScope(UUID orderId) {
         return orders.findByIdInScope(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
+    }
+
+    /**
+     * The order locked for accounting's credit decision (15 BR-11), whatever the caller's data scope: credit is decided
+     * across every customer, as {@code CreditHoldService} decides an order held at signing.
+     */
+    private Order lockForAccounting(UUID orderId) {
+        return orders.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
     }
 
@@ -583,9 +774,9 @@ class SalesContractService implements SalesContracts {
     }
 
     /**
-     * 14 §4.3 step 13: Sales are warned before they send, not only after - a DRAFT contract carries the warning its plan
-     * would raise now, so they may change the plan or send it anyway knowing accounting decides at signing. Read again
-     * at each step: what the customer owes moves with every receipt.
+     * 14 §4.3 step 13: Sales are warned before they send - a DRAFT contract carries the warning its plan would raise
+     * now, so they may change the plan, or send it knowing it will wait for accounting (15 BR-11 as changed on
+     * 2026-11-26). Read again at each step: what the customer owes moves with every receipt.
      */
     private CreditWarning draftWarning(Order order, SalesContract contract) {
         return contract.status() == com.stockflow.order.internal.domain.SalesContractStatus.DRAFT
@@ -593,18 +784,17 @@ class SalesContractService implements SalesContracts {
     }
 
     /**
-     * 15 BR-11: what is paid after delivery is credit, checked when the contract is sent - a warning, never a refusal:
-     * the customer has something overdue, or the exposure with it would pass the limit.
+     * 15 BR-11: what is paid after delivery is credit, checked when the contract is sent: the customer has something
+     * overdue, or the exposure with it would pass the limit. On a draft it tells Sales the contract would wait for
+     * accounting if sent as it is (2026-11-26: a refusal to send, no longer a warning only); on a contract sent after
+     * accounting approved it, what was approved.
      */
     private CreditWarning creditWarning(Order order, SalesContract contract) {
-        CreditCheck check = creditCheck(order, contract);
-        return check == null || check.outcome() == CreditChecks.Outcome.WITHIN_LIMIT ? null
-                : new CreditWarning(check.outcome().name(), check.limit(), check.exposure(), check.afterDelivery());
+        ContractCreditFigures check = creditCheck(order, contract);
+        return check == null || !check.fails() ? null
+                : new CreditWarning(check.outcome().name(), check.creditLimit(), check.exposure(),
+                        check.afterDelivery());
     }
-
-    /** What a contract's plan asks of the customer's credit, against what they owe and may owe. */
-    private record CreditCheck(CreditChecks.Outcome outcome, BigDecimal limit, BigDecimal exposure,
-                               BigDecimal afterDelivery) { }
 
     /**
      * 15 BR-10, BR-11: the credit a contract asks for is what its plan pays after delivery; what the customer owes
@@ -613,7 +803,7 @@ class SalesContractService implements SalesContracts {
      * receivables and checkout's credit orders went). An installment overdue, or past the limit with this one: the
      * check fails. Null when the plan asks for no credit.
      */
-    private CreditCheck creditCheck(Order order, SalesContract contract) {
+    private ContractCreditFigures creditCheck(Order order, SalesContract contract) {
         BigDecimal afterDelivery = contract.plan().stream()
                 .filter(i -> i.milestone() == PaymentMilestone.AFTER_DELIVERY).map(i -> i.amount().amount())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -623,13 +813,9 @@ class SalesContractService implements SalesContracts {
         CreditPosition position = payments.creditPosition(order.customerId());
         // The other signed contracts' installments paid after delivery (15 BR-10), as every credit check counts them;
         // this contract's are not open yet - they open after.
-        BigDecimal exposure = position.outstandingReceivables();
         CreditTerms credit = customers.creditTerms(order.customerId());
-        BigDecimal limit = credit == null || credit.creditLimit() == null ? BigDecimal.ZERO : credit.creditLimit();
-        CreditChecks.Outcome outcome = position.hasOverdue() ? CreditChecks.Outcome.OVERDUE
-                : exposure.add(afterDelivery).compareTo(limit) > 0 ? CreditChecks.Outcome.OVER_LIMIT
-                : CreditChecks.Outcome.WITHIN_LIMIT;
-        return new CreditCheck(outcome, limit, exposure, afterDelivery);
+        return ContractCreditFigures.check(credit == null ? null : credit.creditLimit(),
+                position.outstandingReceivables(), afterDelivery, position.hasOverdue(), position.overdueAmount());
     }
 
     /**
@@ -637,19 +823,30 @@ class SalesContractService implements SalesContracts {
      * checked against the customer's credit - recorded either way, and a failed check holds the order for accounting,
      * as a credit order over its limit at checkout is held (the same hold row, decided at {@code /credit-approval});
      * otherwise the order waits for the installment on signing, or is confirmed. Then {@code OrderPlaced}.
+     *
+     * <p>A contract accounting approved before it was sent (15 BR-11, decision 2 of the credit plan, 2026-11-26) is not
+     * held for a check that still fails but is no worse than what was approved: the check is recorded as it came out,
+     * naming the approval. Worse - something newly overdue, or more owed - and it is held as any other.</p>
      */
     private void placeSigned(Order order, SalesContract contract, UUID by, Instant now) {
         // The customer row locked first, as checkout does (15 BR-03): two contracts of one customer signed at once are
         // checked against the limit one after the other, each seeing the other's after-delivery part.
         customers.lockCreditTerms(order.customerId());
-        CreditCheck check = creditCheck(order, contract);
-        boolean hold = check != null && check.outcome() != CreditChecks.Outcome.WITHIN_LIMIT;
+        ContractCreditFigures check = creditCheck(order, contract);
+        Optional<ContractCreditReviews.Review> approved = check != null && check.fails()
+                ? creditReviews.approved(contract.id()).filter(review -> check.noWorseThan(review.figures()))
+                : Optional.empty();
+        boolean hold = check != null && check.fails() && approved.isEmpty();
         boolean paysOnSigning = paysOnSigning(contract);
         order.contractSigned(hold, paysOnSigning, by, now);
         orders.save(order);
         if (check != null) {
-            creditChecks.record(new CreditChecks.Check(order.id().value(), now, check.limit(), check.exposure(),
-                    check.afterDelivery(), check.outcome(), null, null, "Sales contract " + contract.contractNumber()));
+            String note = approved.map(review -> "Sales contract %s; credit approved before it was sent (%s)"
+                    .formatted(contract.contractNumber(), review.id()))
+                    .orElse("Sales contract " + contract.contractNumber());
+            creditChecks.record(new CreditChecks.Check(order.id().value(), now, check.creditLimit(), check.exposure(),
+                    check.afterDelivery(), check.outcome(), null, null, note,
+                    approved.map(ContractCreditReviews.Review::id).orElse(null)));
         }
         if (hold) {
             holds.save(new com.stockflow.order.internal.entity.OrderHoldJpaEntity(Identifiers.newId(),
@@ -716,7 +913,17 @@ class SalesContractService implements SalesContracts {
                 schedule, plan, contract.sentAt(), contract.sentBy(), contract.signedOn(), contract.signedFileName(),
                 contract.signedAt(), contract.signedBy(), contract.cancelledAt(), contract.cancelledBy(),
                 contract.cancellationReason(), contract.completedAt(), contract.version(), warning,
-                contract.returnWindowDays(), appendixAvailable(contract));
+                contract.returnWindowDays(), appendixAvailable(contract),
+                contract.creditReviewPending() ? "PENDING" : "NONE",
+                creditReviews.latest(contract.id()).map(SalesContractService::creditReviewView).orElse(null));
+    }
+
+    private static CreditReviewView creditReviewView(ContractCreditReviews.Review review) {
+        ContractCreditFigures figures = review.figures();
+        return new CreditReviewView(review.id(), review.outcome().name(), figures.outcome().name(),
+                figures.creditLimit(), figures.exposure(), figures.afterDelivery(), figures.overdueAmount(),
+                review.contractVersion(), review.submittedAt(), review.submittedBy(), review.decidedAt(),
+                review.decidedBy(), review.note());
     }
 
     /**

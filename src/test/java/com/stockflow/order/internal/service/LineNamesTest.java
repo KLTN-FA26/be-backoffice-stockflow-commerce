@@ -28,13 +28,13 @@ class LineNamesTest {
     private final LineNames names = new LineNames(products, customerSkus);
 
     private static ProductSummary product(UUID id, String name) {
-        return new ProductSummary(id, "LY12", name, null, "ly12", null, null, null, null, null, null, null, null,
+        return new ProductSummary(id, "LY12", name, "ly12", null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, 1, null, null, null, null);
     }
 
     private static CustomerSku own(String sku, UUID productId, String name) {
         return new CustomerSku(UUID.randomUUID(), productId, sku, name, UUID.randomUUID(), UUID.randomUUID(),
-                "LY12-BASE", "ACTIVE");
+                UUID.randomUUID(), "LY12-BASE", "ACTIVE");
     }
 
     @Test

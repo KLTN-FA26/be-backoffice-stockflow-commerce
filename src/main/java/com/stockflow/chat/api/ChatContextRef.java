@@ -3,7 +3,7 @@ package com.stockflow.chat.api;
 import java.util.Objects;
 import java.util.UUID;
 
-/** A document a conversation is about: its kind and its id (for a customer's SKU, the variant's id). */
+/** A document a conversation is about: its kind and its id (for a customer's SKU, its {@code product.customer_skus} id). */
 public record ChatContextRef(ChatContextKind kind, UUID id) {
 
     public ChatContextRef {

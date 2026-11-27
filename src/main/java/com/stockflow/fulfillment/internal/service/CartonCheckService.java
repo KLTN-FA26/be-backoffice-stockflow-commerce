@@ -297,7 +297,7 @@ class CartonCheckService implements CartonChecks {
         CartonCheck check = load(ctx);
         check.requireReprintable(actor.userId(), isManager(actor));
         CartonCheck.Carton carton = check.carton(lpn).orElse(null);
-        CartonCheck.Spec spec = carton == null ? null : specs(List.of(carton)).get(carton.sku());
+        CartonCheck.Spec spec = carton == null ? null : specs(List.of(carton)).get(carton.lpn());
         boolean planned = carton != null && carton.stored() && measures.planned(carton.id());
         CartonCheck.Carton reprinted = check.reprint(lpn, spec, measures.divisor(), planned, fromVersion);
         store.save(check, ctx.pack());
@@ -679,9 +679,9 @@ class CartonCheckService implements CartonChecks {
         }
     }
 
-    /** The carton spec of each SKU of these cartons ({@link CartonMeasures#specs}). */
+    /** The carton spec of each of these cartons, by LPN: the carton each was received in ({@link CartonMeasures#specs}). */
     private Map<String, CartonCheck.Spec> specs(Collection<CartonCheck.Carton> cartons) {
-        return measures.specs(cartons.stream().map(CartonCheck.Carton::sku).toList());
+        return measures.specs(cartons.stream().map(CartonCheck.Carton::lpn).toList());
     }
 
     /**
@@ -734,7 +734,7 @@ class CartonCheckService implements CartonChecks {
         if (!toLabel.isEmpty()) {
             Map<String, CartonCheck.Spec> specs = specs(toLabel);
             toLabel.forEach(c -> {
-                CartonCheck.Spec spec = specs.get(c.sku());
+                CartonCheck.Spec spec = specs.get(c.lpn());
                 if (spec == null || !spec.measured()) {
                     unmeasured.add(c.sku());
                 }

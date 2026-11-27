@@ -33,6 +33,8 @@ import com.stockflow.notification.api.DeliveryAttemptSummary;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.api.ProductionOrderMail;
 import com.stockflow.notification.api.ProductionOrderResends;
+import com.stockflow.order.internal.domain.OrderId;
+import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.Producer;
 import com.stockflow.order.internal.domain.ProducerRepository;
 import com.stockflow.order.internal.domain.ProductionOrder;
@@ -67,6 +69,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -154,6 +157,7 @@ public class ProductionOrderDispatch {
     private final Clock clock;
     private final Duration linksValidFor;
     private final TransactionTemplate readOnly;
+    private final OrderRepository orders;
 
     ProductionOrderDispatch(ProductionOrderRepository productionOrders, ProductionOrderSlipRepository slips,
                             ProducerRepository producers, SalesContractRepository contracts,
@@ -164,8 +168,9 @@ public class ProductionOrderDispatch {
                             FileTransfers files, FileStorage storage, SignedLinks links,
                             ApplicationEventPublisher events, Clock clock, PlatformTransactionManager transactions,
                             @Value("${stockflow.order.production-order.file-links-valid-for:P30D}")
-                            Duration linksValidFor, WarehouseOccupancy occupancy) {
+                            Duration linksValidFor, WarehouseOccupancy occupancy, OrderRepository orders) {
         this.occupancy = occupancy;
+        this.orders = orders;
         this.productionOrders = productionOrders;
         this.slips = slips;
         this.producers = producers;
@@ -594,18 +599,36 @@ public class ProductionOrderDispatch {
     }
 
     /**
-     * Each SKU's carton, from the item's master data (the packing rule chain of load planning); a SKU with none
-     * recorded is absent. Advisory: the producer packs to the line's units per carton.
+     * Each SKU's carton as the contract was signed in it: the carton of the order line the production line was made
+     * for (Q7, Q10), measured as now - so a contract signed before the company changed carton is packed as signed, not
+     * in the variant's new carton. A line whose order line names no carton (older data) falls back to the packing rule
+     * chain of load planning, the variant's active carton. A SKU with no measured carton is absent. Advisory: the
+     * producer packs to the line's units per carton.
      */
     private Map<String, PackagingSpec.CartonSpec> cartonSizes(ProductionOrder production) {
-        List<PackagingRequest> requests = production.lines().stream()
-                .map(line -> new PackagingRequest(new Sku(line.sku()), line.totalUnits())).toList();
+        Map<UUID, UUID> signed = new HashMap<>();
+        orders.findById(new OrderId(production.salesOrderId())).ifPresent(order -> order.lines().stream()
+                .filter(line -> line.uomConversionId() != null)
+                .forEach(line -> signed.put(line.id(), line.uomConversionId())));
         Map<String, PackagingSpec.CartonSpec> sizes = new LinkedHashMap<>();
-        // A customer's SKU has its inventory item from the day it was issued (CustomerSkus.issue): no item is a data
-        // error, thrown rather than caught - caught inside the caller's transaction it would mark it rollback-only.
-        for (PackagingSpec spec : packaging.resolveAll(requests)) {
-            if (spec.status() == PackagingSpec.Status.RESOLVED && spec.carton() != null) {
-                sizes.putIfAbsent(spec.sku(), spec.carton());
+        List<PackagingRequest> unsigned = new ArrayList<>();
+        for (ProductionOrder.Line line : production.lines()) {
+            UUID unit = signed.get(line.orderLineId());
+            if (unit == null) {
+                unsigned.add(new PackagingRequest(new Sku(line.sku()), line.totalUnits()));
+            } else {
+                packaging.unitCarton(new Sku(line.sku()), unit)
+                        .ifPresent(carton -> sizes.putIfAbsent(line.sku(), carton));
+            }
+        }
+        // Every SKU of an order has its inventory item from the order's creation on (placing the order opens it, owner
+        // decision Q5): no item is a data error, thrown rather than caught - caught inside the caller's transaction it
+        // would mark it rollback-only.
+        if (!unsigned.isEmpty()) {
+            for (PackagingSpec spec : packaging.resolveAll(unsigned)) {
+                if (spec.status() == PackagingSpec.Status.RESOLVED && spec.carton() != null) {
+                    sizes.putIfAbsent(spec.sku(), spec.carton());
+                }
             }
         }
         return sizes;

@@ -30,8 +30,9 @@ public class ConversationContextJpaEntity extends BaseEntity {
     @Column(name = "product_id", updatable = false)
     private UUID productId;
 
-    @Column(name = "variant_id", updatable = false)
-    private UUID variantId;
+    /** A customer's own SKU ({@code product.customer_skus.id}; the column was variant_id until V20270105000100). */
+    @Column(name = "customer_sku_id", updatable = false)
+    private UUID customerSkuId;
 
     @Column(name = "design_id", updatable = false)
     private UUID designId;
@@ -76,7 +77,7 @@ public class ConversationContextJpaEntity extends BaseEntity {
         this.attachedAt = attachedAt;
         switch (kind) {
             case PRODUCT -> this.productId = reference;
-            case CUSTOMER_SKU -> this.variantId = reference;
+            case CUSTOMER_SKU -> this.customerSkuId = reference;
             case DESIGN -> this.designId = reference;
             case DESIGN_PROJECT -> this.designProjectId = reference;
             case QUOTE -> this.quoteId = reference;
@@ -91,7 +92,7 @@ public class ConversationContextJpaEntity extends BaseEntity {
     public UUID getReference() {
         return switch (kind) {
             case PRODUCT -> productId;
-            case CUSTOMER_SKU -> variantId;
+            case CUSTOMER_SKU -> customerSkuId;
             case DESIGN -> designId;
             case DESIGN_PROJECT -> designProjectId;
             case QUOTE -> quoteId;

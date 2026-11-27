@@ -1,15 +1,12 @@
 package com.stockflow.fulfillment.internal.service;
 
-import com.stockflow.common.domain.Sku;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadPackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanPackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
-import com.stockflow.fulfillment.internal.entity.PickLineJpaEntity;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.LoadPlanPackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PickLineJpaRepository;
 import com.stockflow.inventory.api.CartonSpec;
 import com.stockflow.inventory.api.InventoryControlService;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,25 +40,44 @@ class CartonMeasuresTest {
     private static final String CUP = "LY-GIAY-DEMO-12OZ-XANH";
 
     private final InventoryControlService itemControls = mock(InventoryControlService.class);
-    private final PickLineJpaRepository pickLines = mock(PickLineJpaRepository.class);
     private final PackageJpaRepository packages = mock(PackageJpaRepository.class);
     private final LoadPlanPackageJpaRepository planMembers = mock(LoadPlanPackageJpaRepository.class);
     private final DispatchLoadPackageJpaRepository loadParcels = mock(DispatchLoadPackageJpaRepository.class);
-    private final CartonMeasures measures = new CartonMeasures(itemControls, pickLines, packages, planMembers,
+    private final CartonMeasures measures = new CartonMeasures(itemControls, packages, planMembers,
             loadParcels, 6000);
 
     private final UUID shipment = UUID.randomUUID();
 
+    /** The spec of the carton each SKU's cartons were received in, as it stands now. */
+    private final java.util.Map<String, CartonSpec> specOfSku = new java.util.HashMap<>();
+    /** The SKU of each LPN carton made by {@link #labelled}. */
+    private final java.util.Map<String, String> skuOfLpn = new java.util.HashMap<>();
+
     @BeforeEach
     void theCupCartonSpecWasCorrected() {
         spec(CUP, "230", "95", "90", "55", true);
+        // Inventory answers by LPN: each carton is measured as the carton it was received in (plan 4.17).
+        when(itemControls.cartonSpecsOfLpns(any())).thenAnswer(call -> {
+            java.util.Map<String, CartonSpec> specs = new java.util.HashMap<>();
+            java.util.Collection<String> lpns = call.getArgument(0);
+            if (lpns == null) {
+                return specs;   // Mockito re-stubbing with any()
+            }
+            lpns.forEach(lpn -> {
+                CartonSpec spec = specOfSku.get(skuOfLpn.get(lpn));
+                if (spec != null) {
+                    specs.put(lpn, spec);
+                }
+            });
+            return specs;
+        });
     }
 
     private void spec(String sku, String length, String width, String height, String weight, boolean rotatable) {
-        when(itemControls.cartonSpec(new Sku(sku))).thenReturn(Optional.of(new CartonSpec(sku, "CARTON", 1,
+        specOfSku.put(sku, new CartonSpec(sku, "CARTON", 1,
                 length == null ? null : new BigDecimal(length), width == null ? null : new BigDecimal(width),
                 height == null ? null : new BigDecimal(height), weight == null ? null : new BigDecimal(weight),
-                rotatable)));
+                rotatable));
     }
 
     /** A LABELED carton of cups, measured as the old spec said: 215 x 95 x 90 cm, 52.5 kg. */
@@ -71,7 +87,9 @@ class CartonMeasuresTest {
         UUID line = UUID.randomUUID();
         when(carton.getId()).thenReturn(id);
         when(carton.getPickLineId()).thenReturn(line);
-        when(carton.getLpn()).thenReturn("LPN-" + id.toString().substring(0, 6));
+        String lpn = "LPN-" + id.toString().substring(0, 6);
+        when(carton.getLpn()).thenReturn(lpn);
+        skuOfLpn.put(lpn, sku);
         when(carton.getStatus()).thenReturn(PackageStatus.LABELED);
         when(carton.getShipmentId()).thenReturn(shipment);
         when(carton.getLengthCm()).thenReturn(new BigDecimal("215"));
@@ -79,17 +97,7 @@ class CartonMeasuresTest {
         when(carton.getHeightCm()).thenReturn(new BigDecimal("90"));
         when(carton.getWeightKg()).thenReturn(new BigDecimal("52.5"));
         when(carton.isRotatable()).thenReturn(true);
-        PickLineJpaEntity pickLine = mock(PickLineJpaEntity.class);
-        when(pickLine.getId()).thenReturn(line);
-        when(pickLine.getSku()).thenReturn(sku);
-        lines.add(pickLine);
         return carton;
-    }
-
-    private final java.util.List<PickLineJpaEntity> lines = new java.util.ArrayList<>();
-
-    private void linesKnown() {
-        when(pickLines.findAllById(any())).thenReturn(lines);
     }
 
     private static LoadPlanPackageJpaEntity member(PackageJpaEntity carton) {
@@ -111,7 +119,6 @@ class CartonMeasuresTest {
             + "volumetric weight 230 x 95 x 90 / 6000 = 327.750; it is saved and flushed")
     void aFreeCartonIsRemeasured() {
         PackageJpaEntity carton = labelled(CUP);
-        linesKnown();
 
         measures.refreshForPlanning(List.of(carton));
 
@@ -129,7 +136,6 @@ class CartonMeasuresTest {
         PackageJpaEntity inPlan = labelled(CUP);
         PackageJpaEntity onVehicle = labelled(CUP);
         PackageJpaEntity free = labelled(CUP);
-        linesKnown();
         LoadPlanPackageJpaEntity membership = member(inPlan);
         DispatchLoadPackageJpaEntity onBoard = loaded(onVehicle);
         when(planMembers.findByPackageIdInAndActiveTrue(anyCollection())).thenReturn(List.of(membership));
@@ -148,7 +154,6 @@ class CartonMeasuresTest {
     void unchangedSpecWritesNothing() {
         spec(CUP, "215", "95", "90", "52.5", true);
         PackageJpaEntity carton = labelled(CUP);
-        linesKnown();
 
         measures.refreshForPlanning(List.of(carton));
 
@@ -160,10 +165,9 @@ class CartonMeasuresTest {
     @DisplayName("a spec that lost its size, or a SKU with no carton unit any more, keeps the measures the carton has")
     void unmeasuredOrMissingSpecKeeps() {
         spec(CUP, null, null, null, null, true);
-        when(itemControls.cartonSpec(new Sku("LY-GIAY-DEMO-12OZ-DO"))).thenReturn(Optional.empty());
+        specOfSku.remove("LY-GIAY-DEMO-12OZ-DO");
         PackageJpaEntity blue = labelled(CUP);
         PackageJpaEntity red = labelled("LY-GIAY-DEMO-12OZ-DO");
-        linesKnown();
 
         measures.refreshForPlanning(List.of(blue, red));
 
@@ -177,7 +181,6 @@ class CartonMeasuresTest {
     void rotatableChangeCounts() {
         spec(CUP, "215", "95", "90", "52.5", false);
         PackageJpaEntity carton = labelled(CUP);
-        linesKnown();
 
         measures.refreshForPlanning(List.of(carton));
 
@@ -196,7 +199,7 @@ class CartonMeasuresTest {
 
         verify(parcel, never()).remeasure(any(), any(), any(), any(), any(), anyBoolean());
         verify(removed, never()).remeasure(any(), any(), any(), any(), any(), anyBoolean());
-        verifyNoInteractions(planMembers, loadParcels, pickLines, packages, itemControls);
+        verifyNoInteractions(planMembers, loadParcels, packages, itemControls);
     }
 
     @Test
@@ -215,17 +218,19 @@ class CartonMeasuresTest {
     }
 
     @Test
-    @DisplayName("specs: a SKU with no carton unit is missing; one with an unmeasured unit is there and not measured; a "
-            + "divisor that is not positive is a configuration error")
+    @DisplayName("specs, by LPN: an unknown LPN is missing; one whose carton is unmeasured is there and not measured; "
+            + "a divisor that is not positive is a configuration error")
     void specsAndDivisor() {
         spec("LY-GIAY-DEMO-12OZ-DO", null, "95", "20", "38", true);
-        var specs = measures.specs(List.of(CUP, "LY-GIAY-DEMO-12OZ-DO", "NO-CARTON", CUP));
+        skuOfLpn.put("LPN-CUP", CUP);
+        skuOfLpn.put("LPN-DO", "LY-GIAY-DEMO-12OZ-DO");
+        var specs = measures.specs(java.util.Arrays.asList("LPN-CUP", "LPN-DO", "LPN-UNKNOWN", "LPN-CUP", null));
 
-        assertThat(specs).containsOnlyKeys(CUP, "LY-GIAY-DEMO-12OZ-DO");
-        assertThat(specs.get(CUP).measured()).isTrue();
-        assertThat(specs.get("LY-GIAY-DEMO-12OZ-DO").measured()).isFalse();
+        assertThat(specs).containsOnlyKeys("LPN-CUP", "LPN-DO");
+        assertThat(specs.get("LPN-CUP").measured()).isTrue();
+        assertThat(specs.get("LPN-DO").measured()).isFalse();
         assertThat(measures.divisor()).isEqualTo(6000);
-        assertThatThrownBy(() -> new CartonMeasures(itemControls, pickLines, packages, planMembers, loadParcels, 0))
+        assertThatThrownBy(() -> new CartonMeasures(itemControls, packages, planMembers, loadParcels, 0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

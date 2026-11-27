@@ -9,12 +9,11 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * The units of measure of a SKU's inventory item (docs 01 §3, BR-09, BR-10). Every write joins the
- * caller's transaction and takes the SKU's lock, so two writes cannot both leave an active carton.
- * Each unit has its own version (optimistic locking, {@code OPTIMISTIC_LOCK}).
- *
- * <p>Whether a variant still sells in a unit is the product module's to know: it checks before it
- * asks to delete or retire one.</p>
+ * The cartons a SKU is packed in: its catalogue variant's (docs 01 §3, BR-03, BR-09, BR-10; owner decision Q1). Reads
+ * accept any SKU - a customer's SKU answers with its variant's cartons. Writes name the catalogue variant's own SKU
+ * (the product module refuses a customer's SKU first, the database last); every write joins the caller's transaction
+ * and takes the lock of every SKU of the variant, so two writes cannot both leave an active carton. Each unit has its
+ * own version (optimistic locking, {@code OPTIMISTIC_LOCK}).
  */
 public interface UomConversionService {
 
