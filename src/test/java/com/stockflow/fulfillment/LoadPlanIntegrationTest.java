@@ -334,7 +334,7 @@ class LoadPlanIntegrationTest {
         String customerName = jdbc.queryForObject("SELECT full_name FROM customer.customer WHERE id = ?",
                 String.class, DemoData.CUSTOMER_ID);
         String sku = cupOf(DemoData.CUSTOMER_ID).sku();
-        String productName = jdbc.queryForObject("SELECT name FROM product.variants WHERE sku = ?", String.class, sku);
+        String productName = jdbc.queryForObject("SELECT name FROM product.customer_skus WHERE sku = ?", String.class, sku);
         for (UUID shipment : List.of(shipmentA, shipmentB)) {
             JsonNode candidate = byShipment.get(shipment.toString());
             assertThat(candidate.path("customerName").asText()).isEqualTo(customerName);
