@@ -71,6 +71,13 @@ public interface OrderSearchRepository {
     Map<UUID, Integer> lineCounts(Collection<UUID> orderIds);
 
     /**
+     * The SKU of each order's first line - the line with the lowest id, the first written, as the order's lines are
+     * listed - in one query. An order with no lines is absent; empty input gives an empty map without touching the
+     * database.
+     */
+    Map<UUID, String> firstLineSkus(Collection<UUID> orderIds);
+
+    /**
      * Which of these orders have a shipment handed over (any outcome since), in one query: a list row carries no
      * shipments, and a PARTIALLY_FULFILLED order may have none yet (WF4-PF-STATUS, 2026-11-12). Empty input gives an
      * empty set without touching the database.

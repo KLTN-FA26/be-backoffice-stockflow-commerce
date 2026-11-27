@@ -15,7 +15,7 @@ final class CustomerOrderWebMapper {
     static CustomerOrderCardResponse toResponse(CustomerOrders.Card card) {
         return new CustomerOrderCardResponse(card.orderId(), card.orderNumber(), card.status().name(),
                 card.statusGroup().name(), card.total(), card.currency(), card.placedAt(), card.lineCount(),
-                card.deliveryState().name(), card.cancellationRequestStatus());
+                card.deliveryState().name(), card.cancellationRequestStatus(), card.firstItemName());
     }
 
     static CustomerOrderDetailResponse toResponse(CustomerOrders.Detail detail) {
