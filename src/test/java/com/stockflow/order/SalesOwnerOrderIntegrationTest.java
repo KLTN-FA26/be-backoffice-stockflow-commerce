@@ -233,6 +233,40 @@ class SalesOwnerOrderIntegrationTest {
         assertThat(signed.status()).as("14 §4.4 step 18: recording the signature is not checked").isEqualTo("SIGNED");
     }
 
+    @Test
+    @DisplayName("BR-25 (review fix 1): only the owner, the cover and a manager withdraw a contract's credit review; "
+            + "another salesperson is refused and the review keeps waiting")
+    void creditReviewWithdrawalFollowsTheOwner() {
+        // 1,000,000 of credit: a contract of 4,000,000 paid after delivery waits for accounting when sent (15 BR-11).
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
+                    approved_at)
+                VALUES (?, ?, 1000000, 30, ?, NOW())""", com.stockflow.common.id.Identifiers.newId(), customer,
+                manager.userId()));
+        CurrentUser cover = SalesOwners.caller(owners.salesperson(), Role.SALES_STAFF);
+        owners.cover(owner.userId(), cover.userId(), today());
+        UUID order = confirmedOrders.draft(customer, List.of(ConfirmedOrders.Line.cartons(sku, 10, PRICE)));
+        List<SalesContracts.Installment> afterDelivery = List.of(new SalesContracts.Installment("After delivery",
+                "AFTER_DELIVERY", null, new BigDecimal("100"), null, null));
+        SalesContracts.Draft draft = new SalesContracts.Draft(null, draftOf(order).deliverySchedule(), afterDelivery);
+        SalesContracts.ContractView drafted = as(owner, () -> contracts.create(owner, order, draft));
+
+        for (CurrentUser allowed : List.of(owner, cover, manager)) {
+            long version = jdbc.queryForObject("SELECT version FROM ordering.sales_contract WHERE id = ?", Long.class,
+                    drafted.id());
+            SalesContracts.ContractView waiting = as(owner, () -> contracts.send(owner, order, version));
+            assertThat(waiting.creditReview()).isEqualTo("PENDING");
+
+            refused(() -> as(other, () -> contracts.withdrawCreditReview(other, order, waiting.version())));
+            assertThat(jdbc.queryForObject("SELECT credit_review FROM ordering.sales_contract WHERE id = ?",
+                    String.class, drafted.id())).as("still waiting for accounting").isEqualTo("PENDING");
+
+            SalesContracts.ContractView withdrawn = as(allowed, () -> contracts.withdrawCreditReview(allowed, order,
+                    waiting.version()));
+            assertThat(withdrawn.creditReview()).isEqualTo("NONE");
+        }
+    }
+
     // ---- BR-32: operational work done for another ------------------------------------------------------------------
 
     @Test
