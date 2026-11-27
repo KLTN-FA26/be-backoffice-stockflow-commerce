@@ -12,6 +12,9 @@ spring:
       # Category policy still enforces 10 MiB product / 50 MiB design limits.
       max-file-size: 50MB
       max-request-size: 51MB
+      # Uploads up to 2 MB stay in memory instead of a temp file (Spring's default threshold is 0): a spoken question
+      # (ADR-0019, at most 2 MB) is then never written to disk, not even while the speech model is called.
+      file-size-threshold: 2MB
   application:
     name: stockflow-monolith
 
@@ -270,6 +273,13 @@ management:
   metrics:
     tags:
       application: stockflow-monolith
+    # The assistant's answer, model-call and tool timers publish histogram buckets, so p50 and p95 come out of Prometheus
+    # for the evaluation report (docs/assistant-design.md §10.2, §11), not out of a guess.
+    distribution:
+      percentiles-histogram:
+        "[assistant.answer]": true
+        "[gen_ai.client.operation]": true
+        "[assistant.tool]": true
   otlp:
     tracing:
       # Boot's OTLP exporter reads THIS property. It does not honour OTEL_EXPORTER_OTLP_ENDPOINT -
@@ -541,6 +551,135 @@ stockflow:
     customer-notice-period: ${CHAT_CUSTOMER_NOTICE_PERIOD:PT1H}
     # How often the SLA, auto-close and close jobs run.
     sla-job-interval: ${CHAT_SLA_JOB_INTERVAL:PT1M}
+
+  # The back-office AI assistant (ADR-0014, docs/assistant-design.md §11). Off by default; with no key it still starts
+  # and answers 503 ASSISTANT_DISABLED. The key comes from the environment only, never from this file.
+  assistant:
+    enabled: ${ASSISTANT_ENABLED:false}
+    # anthropic (ADR-0014), gemini, or openai: any server speaking OpenAI's chat-completions API, such as Ollama on
+    # this machine (openai-compatible below). The key is the chosen provider's.
+    provider: ${ASSISTANT_PROVIDER:anthropic}
+    # ASSISTANT_API_KEY, or else the chosen provider's own variable below - never another vendor's: one vendor's key
+    # sent to another is a credential disclosed to a third party. A key shaped like another vendor's is not used.
+    api-key: ${ASSISTANT_API_KEY:}
+    anthropic-api-key: ${ANTHROPIC_API_KEY:}
+    gemini-api-key: ${GEMINI_API_KEY:}
+    # The openai provider's server and its optional key. Ollama: http://localhost:11434/v1, no key; give it a context of
+    # 16k or more (OLLAMA_CONTEXT_LENGTH), since the instructions and tool definitions alone are several thousand tokens.
+    openai-compatible:
+      base-url: ${OPENAI_COMPATIBLE_BASE_URL:http://localhost:11434/v1}
+      api-key: ${OPENAI_COMPATIBLE_API_KEY:}
+      # The most an answer may take there (max_tokens is the smaller of this and max-output-tokens): a local model's
+      # context holds the prompt and the answer together.
+      max-output-tokens: ${OPENAI_COMPATIBLE_MAX_OUTPUT_TOKENS:4096}
+    # CLOUD_ALLOWED, or LOCAL_ONLY: no model, embedding server or speech model outside the company's network is ever
+    # built (loopback, private addresses, single-label and .local/.internal names). The technical half of AQ-01.
+    data-policy: ${ASSISTANT_DATA_POLICY:CLOUD_ALLOWED}
+    # What the business approved the assistant's data to reach, beside the policy (design §5.5): provider ids
+    # (anthropic, gemini, openai) and hosts outside the company's network, comma-separated; empty for any. A model,
+    # embedding server or speech model outside them is refused when the application starts, and the log says why.
+    allowed-providers: ${ASSISTANT_ALLOWED_PROVIDERS:}
+    allowed-hosts: ${ASSISTANT_ALLOWED_HOSTS:}
+    # Customers go to the model provider as KH#1, KH#2 instead of their names; the panel shows the names (ADR-0018).
+    pseudonymise-customers: ${ASSISTANT_PSEUDONYMISE_CUSTOMERS:true}
+    model: ${ASSISTANT_MODEL:claude-opus-5-5}
+    daily-message-limit: ${ASSISTANT_DAILY_LIMIT:50}
+    # Model routing (docs/assistant-design.md §11). Unset, `model` alone answers, as before. Otherwise a question
+    # starts on the first of `models` (cheapest first) whose quota is not spent. A model may name its vendor,
+    # provider/model (openai/qwen3:8b, gemini/gemini-3.5-flash); a bare name is the assistant's own provider's, and so
+    # is a name equal to `model`. A gateway's id that starts with a vendor (anthropic/claude-sonnet on OpenRouter) is
+    # written openai/anthropic/claude-sonnet: alone it names Anthropic itself. Each
+    # vendor's model gets that vendor's own key variable only, never ASSISTANT_API_KEY, and a model without one is left
+    # out with a warning. A first call refused for a spent quota or an unreachable provider goes to the next model; once
+    # a model has replied, the question stays on it. A question a model could not answer is asked once more on the next
+    # model (escalate-on-failure). Moving on needs answer-lease to still hold two of the longest calls. A spent model is
+    # skipped for quota-cooldown, an ISO-8601 duration; blank: until its vendor's quota day ends (midnight Pacific time
+    # for Gemini, UTC otherwise).
+    routing:
+      models: ${ASSISTANT_MODELS:}
+      escalate-on-failure: ${ASSISTANT_ESCALATE_ON_FAILURE:true}
+      quota-cooldown: ${ASSISTANT_QUOTA_COOLDOWN:}
+    # low | medium | high | xhigh | max. Low suits chat-style questions; raise it only if the golden set says so.
+    effort: low
+    max-tool-rounds: 6
+    max-output-tokens: 16000
+    retention-days: 90
+    # One attempt; the SDK retries a failed call twice, each attempt with this timeout again.
+    request-timeout: PT90S
+    # How long a question holds its conversation. The loop starts no model call that could outlast it, so it must hold
+    # at least two of the longest calls: request-timeout x 3 attempts x 2, checked at start-up.
+    answer-lease: PT15M
+    refusal-fallback: true
+    # Idle conversations older than retention-days are deleted daily (business time).
+    retention-cron: "0 30 3 * * *"
+    # Searching the rules by meaning beside their words (design §6.4): the rules are in English, the questions in
+    # Vietnamese. provider gemini serves a Gemini assistant only (the key is api-key below, or else the assistant's
+    # own; never an Anthropic key). provider openai is the openai-compatible server above, such as Ollama with bge-m3
+    # (model bge-m3, dimensions 1024): inside the company's network it serves any assistant, Claude included.
+    # Otherwise the search stays keyword-only.
+    embeddings:
+      enabled: ${ASSISTANT_EMBEDDINGS_ENABLED:true}
+      provider: ${ASSISTANT_EMBEDDINGS_PROVIDER:gemini}
+      api-key: ${ASSISTANT_EMBEDDINGS_API_KEY:}
+      model: ${ASSISTANT_EMBEDDINGS_MODEL:gemini-embedding-001}
+      # 128-3072. A new model or length re-embeds every passage on the next start, in the background.
+      dimensions: ${ASSISTANT_EMBEDDINGS_DIMENSIONS:768}
+    # How the knowledge search ranks (design §6.4). Each value changes only on what RetrievalEval measures (§10.2).
+    knowledge:
+      # Robust deviations above the corpus's median similarity a passage must stand to count as near a question.
+      standout: ${ASSISTANT_KNOWLEDGE_STANDOUT:3.0}
+      fusion-depth: ${ASSISTANT_KNOWLEDGE_FUSION_DEPTH:10}
+      # Embed the user's question too, beside the model's search terms; the tool then asks the model for it.
+      multi-query: ${ASSISTANT_KNOWLEDGE_MULTI_QUERY:false}
+      # text-embeddings-inference serving bge-reranker-v2-m3, inside the company's network only; blank for none.
+      reranker:
+        base-url: ${ASSISTANT_RERANKER_BASE_URL:}
+        timeout: ${ASSISTANT_RERANKER_TIMEOUT:PT5S}
+        depth: ${ASSISTANT_RERANKER_DEPTH:20}
+      # Each kltn-docs chapter's step-by-step flow (§4), beside its rules, statuses and edge cases. On since the corpus
+      # is kltn-docs (16/11): some answers live only there (the 7-day return window, 17 §4.6), and RetrievalEval's
+      # keyword-only recall@5 is 0.625 on, 0.450 off, with the same noise (design §6.1, §6.4). Off, their passages go.
+      flows: ${ASSISTANT_KNOWLEDGE_FLOWS:true}
+      # How many of a search's words a passage must hold to be found by its words (a rule it names, or a title close
+      # to it, is found regardless). Chosen on RetrievalEval's numbers; see design §6.
+      min-matched-words: ${ASSISTANT_KNOWLEDGE_MIN_MATCHED_WORDS:2}
+    # POST /api/v1/assistant/mcp (design §7): the tools for another AI client, whose answers go to whichever model
+    # provider that client uses. Off unless asked for until the business decides AQ-17; the local profile turns it on.
+    mcp:
+      enabled: ${ASSISTANT_MCP_ENABLED:false}
+    # POST /api/v1/assistant/transcriptions (ADR-0019): a spoken question, written down for the speaker to correct and
+    # send. The recording goes to the speech model and is kept nowhere. Off unless asked for, as MCP is.
+    voice:
+      enabled: ${ASSISTANT_VOICE_ENABLED:false}
+      # Blank: the chat's model, which only Gemini's can be. Otherwise a model named as in routing.models, e.g.
+      # openai/whisper-small for a Whisper server inside the company (the one choice data-policy LOCAL_ONLY leaves).
+      model: ${ASSISTANT_VOICE_MODEL:}
+      # Recordings one user may have written down a day, beside the 10 a minute questions share.
+      daily-limit: ${ASSISTANT_VOICE_DAILY_LIMIT:100}
+    # The work queue's morning digest (FE contract 3.1): one inbox message per staff user with the counts of their
+    # sections, read as that user (RunAs). Off unless asked for; never with security off.
+    digest:
+      enabled: ${ASSISTANT_DIGEST_ENABLED:false}
+      cron: ${ASSISTANT_DIGEST_CRON:0 30 7 * * MON-SAT}
+    # The watch (design §9.1, ADR-0016): every few minutes it reads, AS EACH back-office USER (their roles, scope and
+    # warehouses now), the lists below that are theirs to act on, and posts what is new to their inbox. Off unless asked
+    # for; never with security off. post: lists whose news is posted (heldOrders, the one list since the rescope,
+    # ADR-0010). roles: per list, the roles it is posted to (a business decision, design §13; Sales handle holds,
+    # kltn-docs 17 §5); a list not named goes to whoever may read it. analyse: lists whose news the assistant also
+    # answers a question about in a conversation of the user's; each is a model call, so none by default. models: where those answers go, named as
+    # in routing.models; blank for the questions' own. run-budget: no answer starts that could end later in a run.
+    watch:
+      enabled: ${ASSISTANT_WATCH_ENABLED:false}
+      cron: ${ASSISTANT_WATCH_CRON:0 */15 7-19 * * MON-SAT}
+      post: ${ASSISTANT_WATCH_POST:heldOrders}
+      roles:
+        heldOrders: ${ASSISTANT_WATCH_HELD_ORDERS_ROLES:SALES_STAFF}
+      analyse: ${ASSISTANT_WATCH_ANALYSE:}
+      daily-analyses: ${ASSISTANT_WATCH_DAILY_ANALYSES:3}
+      analyses-per-run: ${ASSISTANT_WATCH_ANALYSES_PER_RUN:5}
+      run-budget: ${ASSISTANT_WATCH_RUN_BUDGET:PT30M}
+      rebaseline-after: ${ASSISTANT_WATCH_REBASELINE_AFTER:P4D}
+      models: ${ASSISTANT_WATCH_MODELS:}
 
   payment:
     # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and

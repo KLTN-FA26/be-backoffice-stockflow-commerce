@@ -314,7 +314,17 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/credit-requests/{id}/rejection", "customer-credit-requests:APPROVE"),
             Map.entry("POST /api/v1/credit-requests/{id}/withdrawal", "customer-credit-requests:CREATE"),
             // Was sales-orders:READ + back office; its own code so ACCREAD does not open the queue.
-            Map.entry("GET /api/v1/orders/cancellation-requests", "sales-order-cancellations:READ"));
+            Map.entry("GET /api/v1/orders/cancellation-requests", "sales-order-cancellations:READ"),
+            // Contract §4.1, §5 (V20270120001300): born permission-guarded; listed so the guards cannot drift. The
+            // explanation of an error code reveals no data, so the panel's permission is enough; the review of other
+            // people's answers and the usage counts have resources of their own.
+            Map.entry("GET /api/v1/assistant/error-explanations/{errorCode}", "assistant-conversations:READ"),
+            Map.entry("GET /api/v1/assistant/feedback", "assistant-feedback:READ"),
+            Map.entry("GET /api/v1/assistant/usage", "assistant-usage:READ"),
+            // Contract 3.3 (review 27/11): a draft to a producer is the Production Coordinator's, as sending and
+            // following up a production order are (production-orders:UPDATE); reading the follow-ups is not enough.
+            Map.entry("POST /api/v1/assistant/production-follow-ups/{productionOrderId}/message-draft",
+                    "production-orders:UPDATE"));
 
     /**
      * Who holds each permission that replaced a role list, as seeded: exactly the roles the list let through, which
@@ -562,7 +572,11 @@ class PermissionMatrixTest {
                     Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             // BE3-B (V20261127000100, kltn-docs 00 §2.5): the audit trail names people - the System Admin alone reads it.
             Map.entry("platform-audit-logs:READ", Set.of(Role.SYSTEM_ADMIN)),
-            Map.entry("platform-audit-logs:VIEW_PAGE", Set.of(Role.SYSTEM_ADMIN)));
+            Map.entry("platform-audit-logs:VIEW_PAGE", Set.of(Role.SYSTEM_ADMIN)),
+            // AQ-16, contract §5 (V20270120001300): other people's questions are the System Admin's alone; the usage
+            // counts, which name nobody, the Sales Manager's too.
+            Map.entry("assistant-feedback:READ", Set.of(Role.SYSTEM_ADMIN)),
+            Map.entry("assistant-usage:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {

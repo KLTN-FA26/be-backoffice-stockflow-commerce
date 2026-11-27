@@ -1,0 +1,433 @@
+package com.stockflow.assistant.internal.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockflow.assistant.internal.domain.AnswerFeedback;
+import com.stockflow.assistant.internal.domain.AnswerFeedbackRepository;
+import com.stockflow.assistant.internal.domain.Conversation;
+import com.stockflow.assistant.internal.domain.ConversationRepository;
+import com.stockflow.assistant.internal.domain.FeedbackVerdict;
+import com.stockflow.assistant.internal.domain.History;
+import com.stockflow.assistant.internal.domain.LanguageModel;
+import com.stockflow.assistant.internal.domain.Message;
+import com.stockflow.assistant.internal.domain.MessageRole;
+import com.stockflow.assistant.internal.domain.PendingMessage;
+import com.stockflow.assistant.internal.domain.ToolChannel;
+import com.stockflow.assistant.internal.domain.ToolExecution;
+import com.stockflow.assistant.internal.domain.ToolOutcome;
+import com.stockflow.assistant.internal.domain.Turn;
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.error.NotFoundException;
+import com.stockflow.common.security.CurrentUser;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+/**
+ * Conversations and their transcripts: the short transactions around an answer, the reads behind the panel, and the
+ * verdicts people give answers.
+ *
+ * <p>Every read and write goes through the store's scoped lookups, so it runs under the OWN scope the endpoint put
+ * in force: a user reaches only their own conversations, and another user's id is a 404.</p>
+ */
+@Service
+@Transactional
+public class ConversationService {
+
+    private final ConversationRepository conversations;
+    private final AnswerFeedbackRepository verdicts;
+    private final Clock clock;
+    private final ObjectMapper json;
+    private final CustomerPseudonyms pseudonyms;
+
+    ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
+                        ObjectMapper json) {
+        this(conversations, verdicts, clock, json, CustomerPseudonyms.OFF);
+    }
+
+    /**
+     * @param pseudonyms the customer aliases answers were written with, stored with them and read back as names
+     *                   (ADR-0018)
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
+                        ObjectMapper json, CustomerPseudonyms pseudonyms) {
+        this.pseudonyms = pseudonyms;
+        this.conversations = conversations;
+        this.verdicts = verdicts;
+        this.clock = clock;
+        this.json = json;
+    }
+
+    public ConversationView start(CurrentUser user) {
+        return ConversationView.of(conversations.create(user.userId(), clock.instant()));
+    }
+
+    /** A conversation the assistant's watch opens for {@code ownerUserId}, to ask its question in (design §9.1). */
+    public ConversationView startProactive(UUID ownerUserId) {
+        return ConversationView.of(conversations.createProactive(ownerUserId, clock.instant()));
+    }
+
+    /**
+     * Deletes a proactive conversation of {@code ownerUserId}'s that is still empty: the watch's question was refused
+     * before anything was stored, and an empty conversation in their list would say nothing.
+     *
+     * @return whether it was deleted
+     */
+    public boolean discardEmptyProactive(UUID conversationId, UUID ownerUserId) {
+        return conversations.deleteEmptyProactive(conversationId, ownerUserId);
+    }
+
+    /** How many conversations the watch has opened for {@code ownerUserId} since {@code since}. */
+    @Transactional(readOnly = true)
+    public long proactiveSince(UUID ownerUserId, Instant since) {
+        return conversations.proactiveSince(ownerUserId, since);
+    }
+
+    /**
+     * Refuses a question of the watch's in a conversation it did not open: its question is not counted against the
+     * user's daily limit, which is only right where the user did not ask it.
+     *
+     * @throws NotFoundException     when the conversation is not the caller's
+     * @throws IllegalStateException when it is one the user opened
+     */
+    @Transactional(readOnly = true)
+    public void requireProactive(UUID conversationId) {
+        Conversation conversation = conversations.findInScope(conversationId)
+                .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
+        if (conversation.origin() != com.stockflow.assistant.internal.domain.ConversationOrigin.PROACTIVE
+                || conversation.messageCount() != 0) {
+            throw new IllegalStateException("conversation " + conversationId + " is not one the watch just opened");
+        }
+    }
+
+    /**
+     * Refuses its owner's question in a proactive conversation the watch has not asked in yet: the first question
+     * there is the watch's, which the daily limit does not count, so it must never be the user's.
+     *
+     * @throws NotFoundException when the conversation is not the caller's
+     * @throws BusinessException {@code ASSISTANT_BUSY} while the watch's question is still to come
+     */
+    @Transactional(readOnly = true)
+    public void requireAskable(UUID conversationId) {
+        Conversation conversation = conversations.findInScope(conversationId)
+                .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
+        if (conversation.origin() == com.stockflow.assistant.internal.domain.ConversationOrigin.PROACTIVE
+                && conversation.messageCount() == 0) {
+            throw new BusinessException(ErrorCode.ASSISTANT_BUSY,
+                    "The assistant is still asking its own question in this conversation");
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public PageResponse<ConversationView> mine(int page, int size) {
+        PageResponse<Conversation> found = conversations.listInScope(page, size);
+        return PageResponse.of(found.items().stream().map(ConversationView::of).toList(), found.page(), found.size(),
+                found.totalElements());
+    }
+
+    /**
+     * What a person reads: each question, then the answer it got — the last text the assistant wrote for it, with
+     * every tool call made for it, read exactly as the live answer is ({@link TranscriptEntry#answer}). Tool results
+     * and tool-only turns are not messages to anyone, and neither is an interim line the model wrote beside a tool
+     * call ("let me check the rule"): its calls, citations and tables belong to the answer that follows.
+     * Each answer carries the verdict its owner gave it, if any.
+     *
+     * <p>The numbers of an answer may rest on the {@value History#EARLIER_QUESTIONS} exchanges before it
+     * ({@link AnswerSources}): each exchange's grounds are kept for the answers after it, instead of being worked out
+     * again for every one of them.</p>
+     */
+    @Transactional(readOnly = true)
+    public List<TranscriptEntry> transcript(UUID conversationId) {
+        conversations.findInScope(conversationId)
+                .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
+        List<TranscriptEntry> entries = new ArrayList<>();
+        Deque<AnswerNumbers.Grounds> earlier = new ArrayDeque<>();
+        Turn.Question asked = null;
+        List<Message> exchange = new ArrayList<>();
+        for (Message message : conversations.messagesInScope(conversationId)) {
+            if (message.role() != MessageRole.USER) {
+                exchange.add(message);
+                continue;
+            }
+            answer(asked, exchange, earlier, entries);
+            asked = (Turn.Question) message.turn();
+            exchange = new ArrayList<>();
+            entries.add(TranscriptEntry.question(message));
+        }
+        answer(asked, exchange, earlier, entries);
+        // Checked as stored, with the aliases the model saw; shown with the names (ADR-0018).
+        java.util.function.UnaryOperator<String> reveal = pseudonyms.revealer(conversationId);
+        return withVerdicts(entries.stream().map(entry -> entry.revealed(reveal)).toList());
+    }
+
+    /**
+     * Adds the answer {@code exchange} holds for {@code asked}, if it holds one yet, read against the exchanges before
+     * it; then keeps this exchange's grounds for the answers after it.
+     */
+    private void answer(Turn.Question asked, List<Message> exchange, Deque<AnswerNumbers.Grounds> earlier,
+                        List<TranscriptEntry> entries) {
+        AnswerNumbers.Grounds before = earlier.stream().reduce(AnswerNumbers.Grounds.none(),
+                AnswerNumbers.Grounds::and);
+        TranscriptEntry.answer(asked, before, exchange, json).ifPresent(entries::add);
+        if (asked != null) {
+            earlier.addLast(AnswerSources.groundsOf(TranscriptEntry.turns(asked, exchange)));
+            if (earlier.size() > History.EARLIER_QUESTIONS) {
+                earlier.removeFirst();
+            }
+        }
+    }
+
+    private List<TranscriptEntry> withVerdicts(List<TranscriptEntry> entries) {
+        List<UUID> answers = entries.stream().filter(entry -> entry.role() == MessageRole.ASSISTANT)
+                .map(TranscriptEntry::messageId).toList();
+        Map<UUID, FeedbackVerdict> given = verdicts.verdictsOf(answers);
+        if (given.isEmpty()) {
+            return entries;
+        }
+        return entries.stream().map(entry -> entry.withFeedback(given.get(entry.messageId()))).toList();
+    }
+
+    /**
+     * Records the caller's verdict on one answer of their own conversation, replacing one given before (design §7).
+     *
+     * @throws NotFoundException when the conversation is not the caller's, or the message is not one of its answers
+     */
+    public void rateAnswer(UUID conversationId, UUID messageId, CurrentUser user, AnswerFeedback feedback) {
+        conversations.findInScope(conversationId)
+                .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
+        if (!verdicts.record(conversationId, messageId, user.userId(), feedback, raterOf(user))) {
+            throw new NotFoundException("Answer", messageId);
+        }
+    }
+
+    /**
+     * Who rates, by role and warehouses and never by name: the persona of the golden-set case the System Admin may turn
+     * the verdict into (contract §5.1). Warehouses only for a user limited to them (scope WAREHOUSE): a golden persona
+     * with warehouses is limited to them, and a manager who sees every warehouse is not.
+     */
+    static com.stockflow.assistant.internal.domain.MarkedAnswer.Rater raterOf(CurrentUser user) {
+        boolean limited = user.scope() == com.stockflow.common.security.DataScope.WAREHOUSE
+                && user.warehouseCodes() != null;
+        return new com.stockflow.assistant.internal.domain.MarkedAnswer.Rater(FeatureUse.roleOf(user),
+                limited ? user.warehouseCodes().stream().sorted().toList() : List.of());
+    }
+
+    /**
+     * @param claimedAt the claim's time, at the column's precision (microseconds), so the release can recognise it
+     * @see ConversationRepository#claimAndAsk
+     */
+    public List<Turn> claimAndAsk(UUID conversationId, PendingMessage question, Instant claimedAt, Duration lease) {
+        return conversations.claimAndAsk(conversationId, question, claimedAt, lease);
+    }
+
+    /**
+     * Refuses a question the way {@link #claimAndAsk} would, without claiming: for a stream, whose refusals must be
+     * ordinary responses and not events inside a 200. The claim still checks again; this only answers early.
+     *
+     * @throws NotFoundException when the conversation is not the caller's
+     * @throws BusinessException {@code ASSISTANT_BUSY} while a question in it is being answered
+     */
+    @Transactional(readOnly = true)
+    public void requireIdle(UUID conversationId, Duration lease) {
+        Conversation conversation = conversations.findInScope(conversationId)
+                .orElseThrow(() -> new NotFoundException("Conversation", conversationId));
+        if (conversation.isAnswering(clock.instant(), lease)) {
+            throw new BusinessException(ErrorCode.ASSISTANT_BUSY,
+                    "A question in this conversation is still being answered");
+        }
+    }
+
+    /** Stores what the loop produced and releases the claim ({@link ConversationRepository#appendAndRelease}). */
+    public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
+                                          List<PendingMessage> produced) {
+        return appendAndRelease(conversationId, ownerUserId, claimedAt, produced, ToolChannel.CHAT);
+    }
+
+    /** @param channel CHAT for the user's own question, PROACTIVE for the watch's: where its tool runs are recorded */
+    public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
+                                          List<PendingMessage> produced, ToolChannel channel) {
+        return appendAndRelease(conversationId, ownerUserId, claimedAt, produced, channel, null);
+    }
+
+    /**
+     * @param aliases the customer aliases the question's tools gave out, stored in this transaction: an answer stored
+     *                with "KH#3" always has the customer it stands for (ADR-0018); null for none
+     */
+    public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
+                                          List<PendingMessage> produced, ToolChannel channel, Pseudonyms aliases) {
+        List<Message> stored = conversations.appendAndRelease(conversationId, produced, clock.instant(), claimedAt,
+                channel);
+        pseudonyms.save(conversationId, aliases);
+        return stored;
+    }
+
+    /**
+     * Releases the claim made at {@code claimedAt}, in a transaction of its own, after an {@link #appendAndRelease}
+     * that failed: its rollback took the release down with the rest, and the conversation would otherwise refuse every
+     * question for the rest of the lease with nothing answering. A claim a later question took over is left alone.
+     *
+     * @see ConversationRepository#release
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void release(UUID conversationId, Instant claimedAt) {
+        conversations.release(conversationId, claimedAt);
+    }
+
+    @Transactional(readOnly = true)
+    public long questionsSince(UUID ownerUserId, Instant since) {
+        return conversations.questionsSince(ownerUserId, since);
+    }
+
+    /** @see ConversationRepository#deleteIdleBefore */
+    public int deleteIdleBefore(Instant cutoff, int limit) {
+        return conversations.deleteIdleBefore(cutoff, limit);
+    }
+
+    /** @see ConversationRepository#deleteAbandonedProactiveBefore */
+    public int deleteAbandonedProactiveBefore(Instant cutoff, int limit) {
+        return conversations.deleteAbandonedProactiveBefore(cutoff, limit);
+    }
+
+    /** @param title null until the first question */
+    /** @param origin who opened it: its owner, or the assistant's watch for them */
+    public record ConversationView(UUID id, String title, int messageCount, Instant lastActivityAt,
+                                   Instant createdAt, com.stockflow.assistant.internal.domain.ConversationOrigin origin) {
+
+        static ConversationView of(Conversation conversation) {
+            return new ConversationView(conversation.id(), conversation.title(), conversation.messageCount(),
+                    conversation.lastActivityAt(), conversation.createdAt(), conversation.origin());
+        }
+    }
+
+    /**
+     * @param toolCalls         the tools run to produce an answer; empty for a question
+     * @param cutShort          the answer hit the output limit and may be incomplete
+     * @param citations         rule anchors the answer names that its own searches returned
+     * @param tables            the rows its lookups returned, as the panel shows them under it ({@link ResultTable})
+     * @param unverifiedNumbers numbers the answer states that nothing the model was given for it holds, as written
+     *                          ({@link AnswerNumbers}); advisory
+     * @param unverifiedCodes   codes the answer writes that nothing the model was given for it holds
+     *                          ({@link AnswerCodes}); advisory
+     * @param instructionLike   the tools whose results held text a person typed that reads like an instruction to the
+     *                          assistant ({@link InstructionLikeText}); the panel warns that the answer may lean on it
+     * @param followUps         the questions its lookups lead to, before any reader's permissions are applied
+     *                          ({@link FollowUps})
+     * @param feedback          the verdict its owner gave it; null for none, and for a question
+     */
+    public record TranscriptEntry(UUID messageId, int sequence, MessageRole role, String text, Instant at,
+                                  List<ToolCallView> toolCalls, boolean cutShort, List<String> citations,
+                                  List<ResultTable.Table> tables, List<String> unverifiedNumbers,
+                                  List<String> unverifiedCodes, List<String> instructionLike,
+                                  List<FollowUps.FollowUp> followUps, FeedbackVerdict feedback) {
+
+        static TranscriptEntry question(Message message) {
+            return new TranscriptEntry(message.id(), message.sequence(), MessageRole.USER, message.text(),
+                    message.createdAt(), List.of(), false, List.of(), List.of(), List.of(), List.of(), List.of(),
+                    List.of(), null);
+        }
+
+        /**
+         * The live answer ({@code AssistantService.Answer}): {@link #answer(Turn.Question, AnswerNumbers.Grounds,
+         * List, ObjectMapper)} with the question and the exchanges before it read off {@code asked}.
+         *
+         * @param asked    the conversation's stored turns, oldest first, ending with the question answered
+         * @param exchange the messages the answer produced, in order
+         */
+        static Optional<TranscriptEntry> answer(List<Turn> asked, List<Message> exchange, ObjectMapper json) {
+            List<List<Turn>> exchanges = AnswerSources.exchanges(asked);
+            Turn.Question question = exchanges.isEmpty() ? null : (Turn.Question) exchanges.getLast().getFirst();
+            return answer(question, AnswerSources.earlierGrounds(asked), exchange, json);
+        }
+
+        /**
+         * The answer read from the messages stored for one question: its last text, every tool call made for it, the
+         * rules that text cites, the tables those calls returned, the numbers it states that nothing
+         * holds and the questions it leads to; cut short if any of its replies up to that text was — a rewrite set
+         * aside after it, stored with no text, says nothing about the answer shown. The live answer
+         * ({@code AssistantService.Answer}) and the reopened transcript are both read here, so nothing shown under an
+         * answer can move to another line, or differ, when the conversation is reopened.
+         *
+         * @param question the question answered; null only for messages stored before any question
+         * @param earlier  the grounds of the exchanges before it ({@link AnswerSources#earlierGrounds})
+         * @param exchange the messages after the question, in order
+         * @return empty while the question is still being answered: no message holds text yet
+         */
+        static Optional<TranscriptEntry> answer(Turn.Question question, AnswerNumbers.Grounds earlier,
+                                                List<Message> exchange, ObjectMapper json) {
+            Message last = null;
+            List<ToolExecution> executions = new ArrayList<>();
+            boolean cutSoFar = false;
+            boolean cutShort = false;
+            for (Message message : exchange) {
+                if (message.role() != MessageRole.ASSISTANT) {
+                    continue;
+                }
+                executions.addAll(message.executions());
+                cutSoFar |= message.stopReason() == LanguageModel.StopReason.MAX_TOKENS;
+                if (message.text() != null && !message.text().isBlank()) {
+                    last = message;
+                    cutShort = cutSoFar;
+                }
+            }
+            if (last == null) {
+                return Optional.empty();
+            }
+            AnswerNumbers.Grounds grounds = earlier.and(AnswerSources.groundsOf(turns(question, exchange)));
+            return Optional.of(new TranscriptEntry(last.id(), last.sequence(), MessageRole.ASSISTANT, last.text(),
+                    last.createdAt(), executions.stream().map(ToolCallView::of).toList(), cutShort,
+                    AnswerSources.citations(last.text(), executions, json),
+                    ResultTable.of(executions, json),
+                    AnswerNumbers.unverified(last.text(), grounds), AnswerCodes.unverified(last.text(), grounds),
+                    instructionLike(executions), FollowUps.leads(executions, json), null));
+        }
+
+        /** The tools whose results carried typed text marked as instruction-like ({@link TypedText#MARKER}). */
+        static List<String> instructionLike(List<ToolExecution> executions) {
+            return executions.stream().filter(execution -> execution.outcome() == ToolOutcome.OK
+                            && execution.result().contains(TypedText.MARKER))
+                    .map(execution -> execution.call().name()).distinct().toList();
+        }
+
+        /** The question, if any, then the turns of the messages produced for it. */
+        static List<Turn> turns(Turn.Question question, List<Message> exchange) {
+            List<Turn> turns = new ArrayList<>(exchange.size() + 1);
+            if (question != null) {
+                turns.add(question);
+            }
+            exchange.forEach(message -> turns.add(message.turn()));
+            return turns;
+        }
+
+        /** With the customers' names put back where the model was given aliases (ADR-0018). */
+        TranscriptEntry revealed(java.util.function.UnaryOperator<String> reveal) {
+            return new TranscriptEntry(messageId, sequence, role, reveal.apply(text), at, toolCalls, cutShort,
+                    citations, tables.stream().map(table -> table.revealed(reveal)).toList(),
+                    unverifiedNumbers, unverifiedCodes, instructionLike, followUps, feedback);
+        }
+
+        TranscriptEntry withFeedback(FeedbackVerdict verdict) {
+            return new TranscriptEntry(messageId, sequence, role, text, at, toolCalls, cutShort, citations,
+                    tables, unverifiedNumbers, unverifiedCodes, instructionLike, followUps, verdict);
+        }
+    }
+
+    public record ToolCallView(String tool, ToolOutcome outcome) {
+
+        static ToolCallView of(ToolExecution execution) {
+            return new ToolCallView(execution.call().name(), execution.outcome());
+        }
+    }
+}

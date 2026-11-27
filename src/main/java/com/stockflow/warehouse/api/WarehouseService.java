@@ -59,6 +59,13 @@ public interface WarehouseService {
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
 
     /**
+     * Whether a warehouse has this prefix, in either case: what a location code starts with (docs 06 BR-13). Lets a
+     * reader tell a location code of another warehouse from a code that is no location at all ({@code EVAL-CUP-12OZ}),
+     * before refusing the first as out of scope.
+     */
+    boolean isWarehousePrefix(String prefix);
+
+    /**
      * The warehouses with these ids, by id, in one query - for a list or a detail that names the warehouse beside its
      * id (code and name), so a screen needs neither the warehouse list nor {@code warehouse-warehouses:READ} to show
      * it. Null ids are ignored; an unknown id is absent from the map.

@@ -48,6 +48,12 @@ public interface CustomerSkuJpaRepository extends BaseJpaRepository<CustomerSkuJ
             + "and (:productId is null or c.productId = :productId) order by c.productId, c.sku, c.id")
     List<CustomerSkuJpaEntity> ownedBy(@Param("customerId") UUID customerId, @Param("productId") UUID productId);
 
+    /** The customers' SKUs drawn on one variant, by code. */
+    List<CustomerSkuJpaEntity> findByVariantIdOrderBySkuAscIdAsc(UUID variantId,
+                                                                 org.springframework.data.domain.Pageable page);
+
+    long countByVariantId(UUID variantId);
+
     /**
      * Every customer's SKU drawn on a product, or on one of its catalogue variants when {@code variantId} is given,
      * by code: what the product page lists before a blank is blocked or the product discontinued.

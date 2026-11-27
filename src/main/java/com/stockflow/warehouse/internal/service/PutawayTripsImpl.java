@@ -97,6 +97,14 @@ class PutawayTripsImpl implements PutawayTrips {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public Optional<UUID> assignedLocationOf(UUID putawayTaskId) {
+        return trips.findOpenTripCarrying(putawayTaskId).flatMap(trips::findById)
+                .flatMap(trip -> trip.items().stream().filter(item -> putawayTaskId.equals(item.taskId()))
+                        .map(PutawayTrip.Item::assignedLocationId).filter(java.util.Objects::nonNull).findFirst());
+    }
+
+    @Override
     public Optional<PutawayTripView> lockTripCarrying(UUID putawayTaskId) {
         return trips.findOpenTripCarrying(putawayTaskId).flatMap(trips::findByIdForUpdate).map(this::toView);
     }

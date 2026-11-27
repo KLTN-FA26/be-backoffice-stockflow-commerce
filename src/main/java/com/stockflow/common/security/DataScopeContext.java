@@ -26,7 +26,9 @@ import java.util.Optional;
  *       job runs on a different thread and sees no scope at all. That is the correct behaviour, not
  *       a limitation: a background job acts as the system, not as a user, and should call the
  *       unscoped repository methods deliberately rather than inherit whoever happened to trigger
- *       it.</li>
+ *       it. The one deliberate crossing is {@code ThreadContext.carryWithScope}: a worker that takes
+ *       over a piece of the request's own work (one tool call of the assistant's step, a streamed
+ *       answer) runs in the scope the request had, and puts back what it had after.</li>
  * </ul>
  *
  * <p>Virtual threads (enabled in {@code application.yml}) do not change any of this — a
