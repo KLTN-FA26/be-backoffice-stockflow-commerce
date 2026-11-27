@@ -27,5 +27,10 @@ public record CustomerSkuResponse(
         String taxClass,
         @Schema(description = "R5-4: that class's VAT rate today, a percentage - what a quote line drawn up today copies; "
                 + "null without a class", example = "8")
-        BigDecimal taxRate) {
+        BigDecimal taxRate,
+        @Schema(description = "The owner customer's name, so a page of several customers' SKUs needs no customer lookup")
+        String ownerCustomerName,
+        @Schema(description = "The owner as a document code spells them: their tax code, or KH and eight characters of "
+                + "the id", example = "0312345678")
+        String ownerCustomerCode) {
 }

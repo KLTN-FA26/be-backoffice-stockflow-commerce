@@ -276,6 +276,11 @@ public class CustomerSkuService implements CustomerSkus {
 
     /** Many SKUs with their source variants' codes, in one more read for them all. */
     private List<CustomerSku> views(List<CustomerSkuJpaEntity> found) {
+        return views(found, variants);
+    }
+
+    /** {@link #views(List)} for a reader of this package that holds its own variant repository. */
+    static List<CustomerSku> views(List<CustomerSkuJpaEntity> found, VariantJpaRepository variants) {
         if (found.isEmpty()) {
             return List.of();
         }
