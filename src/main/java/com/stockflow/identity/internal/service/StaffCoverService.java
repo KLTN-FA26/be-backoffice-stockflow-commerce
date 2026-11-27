@@ -63,6 +63,18 @@ public class StaffCoverService implements StaffCovers {
     }
 
     /**
+     * Where a cover stands on the business day, for the covers screen (API contract BO-1): CANCELLED, UPCOMING (not
+     * begun), ACTIVE (in force today) or ENDED (its last day passed). Only CANCELLED is stored; the rest is the date.
+     */
+    public enum Phase { ACTIVE, UPCOMING, ENDED, CANCELLED }
+
+    /** A cover with the people named and its {@link Phase} as {@code status}. */
+    public record CoverRow(UUID id, UUID userId, String userName, UUID coverUserId, String coverUserName,
+                           LocalDate from, LocalDate to, String reason, Phase status, UUID arrangedBy,
+                           String arrangedByName, Instant cancelledAt, String cancelReason, long version) {
+    }
+
+    /**
      * Arranges a cover.
      *
      * @param actorUserId   who asks
@@ -166,6 +178,39 @@ public class StaffCoverService implements StaffCovers {
                     cover.to()));
         }
         return found;
+    }
+
+    /** {@link CoverView}s as rows: the people named in one query, the phase from today's date. */
+    @Transactional(readOnly = true)
+    public List<CoverRow> rows(List<CoverView> views) {
+        java.util.Set<UUID> people = new java.util.HashSet<>();
+        views.forEach(view -> {
+            people.add(view.userId());
+            people.add(view.coverUserId());
+            people.add(view.arrangedBy());
+        });
+        people.remove(null);
+        Map<UUID, String> names = new HashMap<>();
+        if (!people.isEmpty()) {
+            users.findAllById(people).forEach(user -> names.put(user.getId(),
+                    user.getFullName() == null || user.getFullName().isBlank() ? user.getUsername()
+                            : user.getFullName()));
+        }
+        LocalDate today = today();
+        return views.stream().map(view -> new CoverRow(view.id(), view.userId(), names.get(view.userId()),
+                view.coverUserId(), names.get(view.coverUserId()), view.from(), view.to(), view.reason(),
+                phase(view, today), view.arrangedBy(), names.get(view.arrangedBy()), view.cancelledAt(),
+                view.cancelReason(), view.version())).toList();
+    }
+
+    private static Phase phase(CoverView view, LocalDate today) {
+        if (StaffCover.Status.CANCELLED.name().equals(view.status())) {
+            return Phase.CANCELLED;
+        }
+        if (today.isBefore(view.from())) {
+            return Phase.UPCOMING;
+        }
+        return today.isAfter(view.to()) ? Phase.ENDED : Phase.ACTIVE;
     }
 
     private LocalDate today() {
