@@ -120,8 +120,16 @@ public interface StockOperations {
      * As above, without the adjustments of slots under a count (open, or its variance still pending approval) for a
      * reader who may not see the books: a pending {@code COUNT_VARIANCE} is a delta against them (SCRUM-146).
      */
+    default PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
+                                                            int page, int size, String sort,
+                                                            BookVisibility visibility) {
+        return adjustments(status, sku, location, null, page, size, sort, visibility);
+    }
+
+    /** As above, kept to one warehouse by its code prefix; null for every warehouse the caller may see. */
     PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
-                                                    int page, int size, String sort, BookVisibility visibility);
+                                                    String warehousePrefix, int page, int size, String sort,
+                                                    BookVisibility visibility);
 
     /**
      * One line of the stock history, as the screen shows it. {@code lpn} names the carton the line is about

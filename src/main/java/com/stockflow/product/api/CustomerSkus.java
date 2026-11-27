@@ -93,4 +93,28 @@ public interface CustomerSkus {
 
     /** The customer's own SKUs, of one product when {@code productId} is not null. */
     List<CustomerSku> ownedBy(UUID customerId, UUID productId);
+
+    /**
+     * The customers' SKUs drawn on a catalogue variant, by code, every customer's and whatever their status: where the
+     * stock of goods of that variant is, since a catalogue variant holds none of its own (V20270105000100). For the
+     * back-office assistant, asked "how much kraft 12oz is there?" with the catalogue's code: it lists the stock of
+     * these instead of answering that the code has no stock. Read only; who may be told whose they are is the
+     * caller's to decide.
+     *
+     * @param sourceSku a catalogue variant's SKU, any case
+     * @param limit     at most this many, 1..100
+     * @return empty when {@code sourceSku} is no catalogue variant (a customer's SKU, or an unknown code)
+     */
+    Optional<DrawnSkus> drawnOn(String sourceSku, int limit);
+
+    /**
+     * @param skus  the first ones by code
+     * @param total every customer SKU drawn on the variant
+     */
+    record DrawnSkus(List<CustomerSku> skus, long total) {
+
+        public DrawnSkus {
+            skus = List.copyOf(skus);
+        }
+    }
 }

@@ -1,0 +1,1 @@
+Hỏi trợ lý kho: tồn kho, mã SKU, số lô, hạn dùng, vị trí, kệ, thùng, LPN, đơn hàng, phiếu nhập, phiếu chuyển kho, đổi trả, khách hàng, công nợ.

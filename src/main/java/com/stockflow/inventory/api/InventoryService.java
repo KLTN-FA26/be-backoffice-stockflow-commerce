@@ -70,6 +70,15 @@ public interface InventoryService {
      */
     List<StockLevel> levelsOf(Sku sku);
 
+    /**
+     * 4B-7 (20 BR-17): units of {@code sku} that orders of signed contracts hold at each warehouse by SKU, before their
+     * release, by warehouse code; a warehouse with none is absent. These holds sit on no stock row, so they are in
+     * neither {@link StockLevel#reserved()} nor {@link StockLevel#allocated()}, yet each already comes off its own
+     * warehouse's {@link StockLevel#atp()}: a screen or an answer showing the levels needs them to explain the gap.
+     * Limited to the caller's warehouses, as {@link #levelsOf} is.
+     */
+    Map<String, Integer> orderHoldsByWarehouse(Sku sku);
+
     /** Take every SKU's advisory lock, in SKU order, before holding any line: two orders holding two shared SKUs then
      * wait for each other instead of deadlocking. Must join the same transaction as the holds. */
     void prepareReservation(java.util.Set<Sku> skus);

@@ -35,6 +35,14 @@ interface ReturnReceiptJpaRepository extends BaseJpaRepository<ReturnReceiptJpaE
     List<UUID> findByReturnRequestInStatus(@Param("id") UUID returnRequestId,
                                            @Param("status") GoodsReceiptStatus status);
 
+    /** The receipts in {@code status} listing the carton, the newest first; a carton is on a handful at most. */
+    @Query("""
+            select distinct r from ReturnReceiptCartonJpaEntity c join c.receipt r
+             where c.stockPackageId = :carton and r.status = :status
+             order by r.receivedAt desc""")
+    List<ReturnReceiptJpaEntity> draftsListing(@Param("carton") UUID stockPackageId,
+                                               @Param("status") GoodsReceiptStatus status);
+
     /** How many cartons each receipt lists, for a page of the list: one query, not one per row. */
     @Query("""
             select c.receipt.id, count(c) from ReturnReceiptCartonJpaEntity c

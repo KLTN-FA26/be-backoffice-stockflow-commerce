@@ -211,6 +211,33 @@ public class DeliveryBatchService {
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<DeliveryBatch> nextToRelease(Order order) {
+        Optional<NextUnreleased> next = firstUnreleased(order);
+        if (next.isPresent() && !next.get().previousHandedOver()) {
+            DeliveryBatch batch = next.get().batch();
+            throw new BusinessException(ErrorCode.DELIVERY_BATCH_NOT_NEXT, ("Delivery batch %d of order %s is "
+                    + "released once batch %d is handed over").formatted(batch.seq(), order.orderNumber(),
+                    next.get().previousSeq()));
+        }
+        return next.map(NextUnreleased::batch);
+    }
+
+    /**
+     * The seq of the batch {@link #nextToRelease} would release now, without its refusal: empty when it would refuse
+     * (the batch before still has goods to hand over), when every batch is released, and for an order without a
+     * signed schedule. Read only - for a reader asking what an order waits for ({@code OrderStockCoverage}), who must
+     * not have a refusal thrown through a transactional proxy mark its transaction rollback-only.
+     */
+    @Transactional(readOnly = true)
+    public java.util.OptionalInt releasableNow(Order order) {
+        return firstUnreleased(order).filter(NextUnreleased::previousHandedOver)
+                .map(next -> java.util.OptionalInt.of(next.batch().seq())).orElse(java.util.OptionalInt.empty());
+    }
+
+    /** The earliest batch not released, and whether the one before it was handed over in full. */
+    private record NextUnreleased(DeliveryBatch batch, int previousSeq, boolean previousHandedOver) {
+    }
+
+    private Optional<NextUnreleased> firstUnreleased(Order order) {
         SalesContract contract = signedContract(order).orElse(null);
         if (contract == null || contract.schedule().isEmpty()) {
             return Optional.empty();
@@ -222,12 +249,8 @@ public class DeliveryBatchService {
         for (DeliveryBatch batch : sorted(contract)) {
             if (!released.contains(batch.id())) {
                 // RTM-RETURNED: a shipment of the previous batch that came back counts - its units were closed.
-                if (previous != null && handedOverUnits(order, previous.id()) < unitsOf(previous, lines)) {
-                    throw new BusinessException(ErrorCode.DELIVERY_BATCH_NOT_NEXT, ("Delivery batch %d of order %s is "
-                            + "released once batch %d is handed over").formatted(batch.seq(), order.orderNumber(),
-                            previous.seq()));
-                }
-                return Optional.of(batch);
+                return Optional.of(new NextUnreleased(batch, previous == null ? 0 : previous.seq(), previous == null
+                        || handedOverUnits(order, previous.id()) >= unitsOf(previous, lines)));
             }
             previous = batch;
         }

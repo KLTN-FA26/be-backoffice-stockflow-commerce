@@ -1,0 +1,220 @@
+package com.stockflow.assistant.eval;
+
+import com.stockflow.assistant.internal.service.AnswerCodes;
+import com.stockflow.assistant.internal.service.AnswerNumbers;
+
+import java.math.BigDecimal;
+import java.text.Normalizer;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * The mechanical checks of design §10.2. No model grades another model here: every check is string and number
+ * matching, so a score can be argued with and reproduced.
+ *
+ * <p>Answers are written for people, in Vietnamese: {@code 1.000} or {@code 1,000} for a thousand, {@code 12,5 triệu}
+ * for 12,500,000, {@code 04/11/2026} for a date. A fact matches any of those forms of itself.</p>
+ */
+public final class GoldenScorer {
+
+    /** A number as written: digits with optional thousands or decimal separators. */
+    private static final Pattern NUMBER = Pattern.compile("\\d+(?:[.,]\\d+)*");
+    /** A lookahead, not {@code \b}: Java's word boundary is ASCII-only and does not end after "tỷ". */
+    private static final Pattern MULTIPLIER = Pattern.compile(
+            "\\s*(tỷ|ty|triệu|trieu|tr|nghìn|nghin|ngàn|ngan|k)(?!\\p{L})",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+    private static final Pattern ISO_DATE = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
+
+    private GoldenScorer() {
+    }
+
+    /** Whether {@code answer} states {@code fact}: a code or name as text, a number or a date in any usual form. */
+    public static boolean states(String answer, String fact) {
+        String text = normalise(answer);
+        String value = normalise(fact).strip();
+        if (value.isEmpty()) {
+            return true;
+        }
+        if (ISO_DATE.matcher(value).matches()) {
+            return statesDate(text, value);
+        }
+        BigDecimal number = number(value);
+        if (number != null) {
+            return numbers(text).stream().anyMatch(candidate -> candidate.compareTo(number) == 0)
+                    || abbreviated(text).stream().anyMatch(candidate -> close(candidate, number));
+        }
+        return text.toLowerCase(Locale.ROOT).contains(value.toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Numbers in {@code answer} that no source contains: the hallucination check. The same definition the panel
+     * applies to every live answer ({@link AnswerNumbers}), so the eval gate and the "not found in the looked-up data"
+     * list never disagree: it reads amounts in triệu, tỷ or nghìn, a figure at the precision it was written, a
+     * result's numbers as the values they are, and what the prompt lets the model work out inside one record.
+     *
+     * @param sources the tool results of the turn, the question and its context
+     * @return the numbers as written ({@code "128,4 triệu"}), each once
+     */
+    public static List<String> ungroundedNumbers(String answer, List<String> sources) {
+        return AnswerNumbers.unverified(answer, sources);
+    }
+
+    /**
+     * Codes in {@code answer} that no source writes: a SKU, order, lot or bin nobody looked up. The panel's definition
+     * again ({@link AnswerCodes}), for the same reason as the numbers'.
+     */
+    public static List<String> ungroundedCodes(String answer, List<String> sources) {
+        return ungroundedCodes(answer, AnswerNumbers.Grounds.of(sources));
+    }
+
+    /** {@link #ungroundedCodes(String, List)} against grounds read by what each source is ({@link #grounds}). */
+    public static List<String> ungroundedCodes(String answer, AnswerNumbers.Grounds grounds) {
+        return AnswerCodes.unverified(answer, grounds);
+    }
+
+    /** {@link #ungroundedNumbers(String, List)} against grounds read by what each source is ({@link #grounds}). */
+    public static List<String> ungroundedNumbers(String answer, AnswerNumbers.Grounds grounds) {
+        return AnswerNumbers.unverified(answer, grounds);
+    }
+
+    /**
+     * What a case's answer may rest on, read as the assistant reads it: a refused or failed call's line grounds its
+     * numbers but no code, so "NOT_FOUND: CUP-A" does not make a made-up code a looked-up one.
+     *
+     * @param sources the results of calls that returned data, the question and the stored questions with their context
+     * @param errors  the lines of calls that were refused or failed
+     */
+    public static AnswerNumbers.Grounds grounds(List<String> sources, List<String> errors) {
+        AnswerNumbers.Grounds.Builder grounds = AnswerNumbers.Grounds.builder();
+        sources.forEach(grounds::source);
+        errors.forEach(grounds::error);
+        return grounds.build();
+    }
+
+    /**
+     * A placeholder of the system prompt's examples ({@code «SKU 1»}, {@code «số đơn»}) written into an answer. The
+     * prompt marks them with guillemets because the panel's text keeps them; angle brackets are removed as tags.
+     */
+    private static final Pattern PLACEHOLDER = Pattern.compile("«[^«»\\n]{1,24}»");
+
+    /** The model gave the system prompt's example as its answer, placeholder and all. */
+    public static boolean copiesAnExample(String answer) {
+        return answer != null && PLACEHOLDER.matcher(answer).find();
+    }
+
+    /**
+     * A rule or section an answer cites: a kltn-docs anchor ({@code 15 BR-08}, {@code 17 §5.1}, {@code glossary §8}), a
+     * rule number written without its chapter ({@code BR-08}), and the ids of the superseded documents
+     * ({@code BR-RMA-002}, {@code F-PO}), which no search returns any more: one in an answer was written from memory.
+     */
+    private static final Pattern RULE = Pattern.compile(
+            "(?<![\\p{L}\\p{N}])(?:\\d{1,2}\\s*)?BR-\\d{1,3}[a-z]?(?![\\p{L}\\p{N}-])"
+            + "|(?<![\\p{L}\\p{N}])(?:\\d{1,2}|glossary)\\s*§\\s*\\d+[a-z]?(?:\\.\\d+)*(?!\\p{N}|\\.\\p{N})"
+            + "|BR-[A-Z]+-\\d+[a-z]?|(?<![\\p{L}\\p{N}-])[FX]-[A-Z]{2,8}(?![\\p{L}\\p{N}-])",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * The rules and sections an answer names ({@code 15 BR-08}, {@code 17 §5.1}, {@code BR-RMA-002}), each once,
+     * upper case, spaces as the anchors write them.
+     */
+    public static List<String> namedRules(String answer) {
+        Set<String> named = new java.util.LinkedHashSet<>();
+        Matcher matcher = RULE.matcher(normalise(answer));
+        while (matcher.find()) {
+            named.add(matcher.group().toUpperCase(Locale.ROOT).replaceAll("\\s+", " ")
+                    .replaceAll("(\\d)BR-", "$1 BR-").replaceAll("\\s*§\\s*", " §"));
+        }
+        return List.copyOf(named);
+    }
+
+    static String normalise(String text) {
+        return text == null ? "" : Normalizer.normalize(text, Normalizer.Form.NFC).replace(' ', ' ');
+    }
+
+    /** Every number in the text, each in every reading its separators allow. */
+    static Set<BigDecimal> numbers(String text) {
+        Set<BigDecimal> found = new HashSet<>();
+        Matcher matcher = NUMBER.matcher(text);
+        while (matcher.find()) {
+            found.addAll(readings(matcher.group()));
+        }
+        return found;
+    }
+
+    /** {@code 1.250} is 1250 or 1.25; {@code 12,5} is 12.5 or 125; both are offered and the fact decides. */
+    static List<BigDecimal> readings(String token) {
+        List<BigDecimal> readings = new ArrayList<>();
+        readings.add(new BigDecimal(token.replace(".", "").replace(",", "")));
+        for (char decimal : new char[] {',', '.'}) {
+            int last = token.lastIndexOf(decimal);
+            if (last > 0) {
+                String whole = token.substring(0, last).replace(".", "").replace(",", "");
+                readings.add(new BigDecimal(whole + "." + token.substring(last + 1)));
+            }
+        }
+        return readings;
+    }
+
+    /** "12,5 triệu" as 12,500,000 — with how precisely it was written, for {@link #close}. */
+    private static List<BigDecimal[]> abbreviated(String text) {
+        List<BigDecimal[]> found = new ArrayList<>();
+        Matcher matcher = NUMBER.matcher(text);
+        while (matcher.find()) {
+            Matcher unit = MULTIPLIER.matcher(text.substring(matcher.end()));
+            if (!unit.lookingAt()) {
+                continue;
+            }
+            BigDecimal factor = switch (unit.group(1).toLowerCase(Locale.ROOT)) {
+                case "tỷ", "ty" -> new BigDecimal("1000000000");
+                case "triệu", "trieu", "tr" -> new BigDecimal("1000000");
+                default -> new BigDecimal("1000");
+            };
+            for (BigDecimal reading : readings(matcher.group())) {
+                // Written to one decimal of the unit: accept anything that rounds to it.
+                found.add(new BigDecimal[] {reading.multiply(factor), factor.divide(BigDecimal.valueOf(20))});
+            }
+        }
+        return found;
+    }
+
+    private static boolean close(BigDecimal[] candidate, BigDecimal fact) {
+        return candidate[0].subtract(fact).abs().compareTo(candidate[1]) <= 0;
+    }
+
+    private static boolean statesDate(String text, String iso) {
+        if (text.contains(iso)) {
+            return true;
+        }
+        try {
+            LocalDate date = LocalDate.parse(iso);
+            String day = String.valueOf(date.getDayOfMonth());
+            String month = String.valueOf(date.getMonthValue());
+            String dd = "%02d".formatted(date.getDayOfMonth());
+            String mm = "%02d".formatted(date.getMonthValue());
+            for (String form : List.of(dd + "/" + mm + "/" + date.getYear(), day + "/" + month + "/" + date.getYear(),
+                    dd + "/" + mm, day + "/" + month, dd + "-" + mm + "-" + date.getYear(),
+                    "ngày " + day + " tháng " + month)) {
+                if (text.contains(form)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (DateTimeParseException notADate) {
+            return text.contains(iso);
+        }
+    }
+
+    private static BigDecimal number(String value) {
+        if (!value.matches("-?\\d+(\\.\\d+)?")) {
+            return null;
+        }
+        return new BigDecimal(value);
+    }
+}

@@ -671,6 +671,12 @@ public enum ErrorCode {
     INSTALLMENT_NOT_FOUND("Installment not found", 404),
     /** 4B-6, 15 BR-05: a paid or cancelled installment takes no more money. */
     INSTALLMENT_NOT_PAYABLE("This installment is paid or cancelled; it takes no more money", 409),
+    /**
+     * The assistant's payment reminder (work features 2.2): an installment with no due day yet, or due beyond the
+     * collections list's week, owes nothing to chase - a letter would ask the customer for money not owed yet.
+     */
+    INSTALLMENT_NOT_DUE_SOON("This installment is not due within the week; there is nothing to remind the customer "
+            + "of yet", 409),
     /** 4B-6, 15 BR-05: a receipt pays installments of its own customer only. */
     INSTALLMENT_CUSTOMER_MISMATCH("This installment belongs to another customer", 409),
     /**
@@ -1147,6 +1153,16 @@ public enum ErrorCode {
     DESIGN_CLONE_TARGET_INVALID("This design cannot be cloned onto that variant", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
+    /** ADR-0014: a question in this conversation is still being answered; its turns must not interleave. */
+    ASSISTANT_BUSY("The assistant is still answering in this conversation", 409),
+    /** ADR-0015: a suggestion of the assistant is open for a day; an older one is asked for again, not confirmed. */
+    ASSISTANT_ACTION_EXPIRED("This suggestion has expired; ask the assistant again", 409),
+    /** ADR-0015: a suggestion already dismissed, or one already confirmed that a dismissal would not undo. */
+    ASSISTANT_ACTION_CLOSED("This suggestion has already been decided", 409),
+    /** ADR-0017: a credential that outlives the session (an MCP token) is made only just after signing in. */
+    RECENT_SIGN_IN_REQUIRED("Sign in again to do this", 403),
+    /** ADR-0017: a user holds at most ten live MCP tokens; one they no longer use is revoked first. */
+    ASSISTANT_MCP_TOKEN_LIMIT("You already have as many MCP tokens as allowed; revoke one first", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     BRAND_CODE_ALREADY_EXISTS("A brand with this code or slug already exists", 409),
     CATEGORY_CODE_ALREADY_EXISTS("A category with this code or slug already exists", 409),
@@ -1357,6 +1373,17 @@ public enum ErrorCode {
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),
+    /** ADR-0014: the per-user daily cap on assistant questions ({@code stockflow.assistant.daily-message-limit}). */
+    ASSISTANT_DAILY_LIMIT("You have asked the assistant as many questions as allowed today", 429),
+    /**
+     * ADR-0014: the model provider's own quota is used up — a daily quota, or a wait longer than
+     * a minute — for every model the assistant routes to ({@code stockflow.assistant.routing}).
+     * Not retryable: the same question meets the same refusal until the provider renews a quota,
+     * hours later. While one model still has a quota, a spent one is reported as
+     * {@code ASSISTANT_UNAVAILABLE}: asking again moves on to that model.
+     */
+    ASSISTANT_QUOTA_EXHAUSTED("The assistant has used up its model provider's quota; it answers "
+            + "again once the quota is renewed", 429),
 
     // ---- 5xx
     INTERNAL_ERROR("Internal server error", 500),
@@ -1373,7 +1400,21 @@ public enum ErrorCode {
     SECRETS_UNAVAILABLE("Secrets cannot be saved right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
-    AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);
+    AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503),
+    /**
+     * ADR-0014: the assistant's model provider could not be reached, timed out, or failed (a 5xx,
+     * a per-minute 429) after the adapter's own retries. Retryable.
+     */
+    ASSISTANT_UNAVAILABLE("The assistant cannot answer right now, please retry", 503),
+    /**
+     * ADR-0014: the model provider refused the key, the model name, the account or the request
+     * itself (400, 401, 402, 403, 404). Not retryable: nothing changes until an administrator
+     * fixes the configuration.
+     */
+    ASSISTANT_MISCONFIGURED("The assistant is not set up correctly; please tell an administrator",
+            503),
+    /** ADR-0014: the assistant is switched off, or has no credentials, in this deployment. Not retryable. */
+    ASSISTANT_DISABLED("The assistant is not available in this deployment", 503);
 
     private final String defaultMessage;
     private final int httpStatus;
@@ -1397,12 +1438,17 @@ public enum ErrorCode {
      * <p>Exposed so a client — or our own {@code RestClient} retry policy — can decide without
      * hard-coding a list of status codes. A 409 from an optimistic lock is worth retrying; a 409
      * from insufficient stock is not, because nothing about retrying makes stock appear.</p>
+     *
+     * <p>{@code ASSISTANT_QUOTA_EXHAUSTED} and {@code ASSISTANT_MISCONFIGURED} are absent on
+     * purpose, although one is a 429 and the other a 503: a spent quota comes back hours later and
+     * a refused key never does, so a client that retried would only spend the user's questions on
+     * the same refusal.</p>
      */
     public boolean isRetryable() {
         return switch (this) {
             case OPTIMISTIC_LOCK, LOCK_TIMEOUT, RATE_LIMITED,
                  EXTERNAL_SERVICE_ERROR, STORAGE_ERROR, IDEMPOTENT_REQUEST_IN_PROGRESS,
-                 AUTHORIZATION_UNAVAILABLE -> true;
+                 AUTHORIZATION_UNAVAILABLE, ASSISTANT_BUSY, ASSISTANT_UNAVAILABLE -> true;
             default -> false;
         };
     }
