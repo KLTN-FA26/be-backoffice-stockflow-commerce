@@ -44,7 +44,7 @@ class ProductVariantControllerHttpTest {
 
     private static VariantView view() {
         return new VariantView(VARIANT, PRODUCT, "CUP-RED", "Cup / Red", VariantStatus.DRAFT, false,
-                "COLOR=RED", 1, null, 0L, List.of(new VariantOption(ATTR, "COLOR", VALUE, "RED", "Red")), true);
+                "COLOR=RED", 1, null, 0L, List.of(new VariantOption(ATTR, "COLOR", VALUE, "RED", "Red")), true, null);
 
     }
 
@@ -132,7 +132,7 @@ class ProductVariantControllerHttpTest {
         Map<String, Action> expected = Map.of(
                 "list", Action.READ, "get", Action.READ,
                 "add", Action.CREATE, "generate", Action.CREATE,
-                "update", Action.UPDATE, "block", Action.UPDATE,
+                "update", Action.UPDATE, "describe", Action.UPDATE, "block", Action.UPDATE,
                 "activate", Action.APPROVE, "obsolete", Action.APPROVE);
         int guarded = 0;
         for (Method m : ProductVariantController.class.getDeclaredMethods()) {

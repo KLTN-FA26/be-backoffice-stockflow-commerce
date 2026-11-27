@@ -96,7 +96,8 @@ class ProductServiceImplTest {
         when(purchasing.openReferences(anyCollection(), anyInt())).thenReturn(List.of());
         when(selling.openReferences(anyCollection(), anyInt())).thenReturn(List.of());
         service = new ProductServiceImpl(products, search, variants, media, attributes, events, history, commerce,
-                inventory, identity, users, List.of(purchasing, selling), Clock.fixed(NOW, ZoneOffset.UTC));
+                inventory, identity, users, List.of(purchasing, selling),
+                new RichTextPolicy(new ProductMediaProperties("https://cdn.example.test")), Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     private static Product productIn(ProductStatus status, long version) {

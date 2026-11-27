@@ -29,7 +29,7 @@ class ProductAdminWebMapper {
         return new VariantResponse(v.id(), v.productId(), v.sku(), v.name(), v.status().name(), v.defaultVariant(),
                 v.attributeSignature(), v.position(), v.obsoletedAt(), v.version(),
                 v.options().stream().map(o -> new VariantOptionResponse(o.attributeId(), o.attributeCode(),
-                        o.valueId(), o.valueCode(), o.label())).toList(), v.rotatable());
+                        o.valueId(), o.valueCode(), o.label())).toList(), v.rotatable(), v.description());
 
     }
 

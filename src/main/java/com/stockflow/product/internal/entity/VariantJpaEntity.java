@@ -59,6 +59,10 @@ public class VariantJpaEntity extends BaseEntity {
     @Column(name = "rotatable", nullable = false)
     private boolean rotatable = true;
 
+    /** The variant's own description: HTML cleaned by {@code RichTextPolicy}; null shows the product's (ADR-0013). */
+    @Column(name = "description", columnDefinition = "text")
+    private String description;
+
     protected VariantJpaEntity() {
     }
 
@@ -81,6 +85,10 @@ public class VariantJpaEntity extends BaseEntity {
         this.position = position;
     }
 
+    public void describe(String description) {
+        this.description = description;
+    }
+
     public void setRotatable(boolean rotatable) {
         this.rotatable = rotatable;
     }
@@ -99,4 +107,5 @@ public class VariantJpaEntity extends BaseEntity {
     public int getPosition() { return position; }
     public Instant getObsoletedAt() { return obsoletedAt; }
     public boolean isRotatable() { return rotatable; }
+    public String getDescription() { return description; }
 }

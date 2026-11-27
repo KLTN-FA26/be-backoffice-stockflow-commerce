@@ -93,12 +93,15 @@ class ProductServiceImpl implements ProductService {
     private final CurrentUserProvider users;
     private final List<SkuReferenceProbe> probes;
     private final Clock clock;
+    /** The description is the back office editor's HTML, cleaned before it is stored (ADR-0013). */
+    private final RichTextPolicy richText;
 
     ProductServiceImpl(ProductRepository products, ProductSearchRepository search, ProductVariantService variants,
                        ProductMediaService media, ProductAttributeService attributes, ProductEventPublisher events,
                        ProductChangeLogRepository history, ProductCommerceRepository commerce,
                        InventoryService inventory, IdentityService identity, CurrentUserProvider users,
-                       List<SkuReferenceProbe> probes, Clock clock) {
+                       List<SkuReferenceProbe> probes, RichTextPolicy richText, Clock clock) {
+        this.richText = richText;
         this.products = products;
         this.search = search;
         this.variants = variants;
@@ -167,7 +170,8 @@ class ProductServiceImpl implements ProductService {
                     "SKU " + command.code() + " already belongs to another product's variant");
         }
         Product product = Product.draft(command.code(), command.name(), command.brandId(),
-                command.categoryId(), command.shortDescription(), command.description(), command.taxClass());
+                command.categoryId(), command.shortDescription(), richText.clean(command.description(), "description"),
+                command.taxClass());
         products.save(product);
         UUID productId = product.id().value();
         history.record(productId, ProductChangeType.CREATED, null, null, ProductStatus.DRAFT.name(), null, List.of());
@@ -216,7 +220,8 @@ class ProductServiceImpl implements ProductService {
         product.requireVersion(command.version());
         requireReferences(command.brandId(), command.categoryId(), product.brandId(), product.categoryId());
         List<String> changed = product.updateDetails(command.name(), command.brandId(),
-                command.categoryId(), command.shortDescription(), command.description(), command.taxClass());
+                command.categoryId(), command.shortDescription(), richText.clean(command.description(), "description"),
+                command.taxClass());
         products.save(product);
         if (!changed.isEmpty()) {
             history.record(command.productId(), ProductChangeType.UPDATED, null, null, null, null, changed);

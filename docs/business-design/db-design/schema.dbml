@@ -1590,6 +1590,7 @@ Table product.variants [headercolor: #2E86AB] {
   last_modified_at    timestamptz
   last_modified_by    varchar(100)
   rotatable           boolean [not null, default: true]
+  description         text
   indexes {
     (product_id, attribute_signature) [unique]
   }

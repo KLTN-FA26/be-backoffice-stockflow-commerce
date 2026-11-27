@@ -10,6 +10,7 @@ import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.PublicationProduct;
 import com.stockflow.product.api.PublishedProductCard;
 import com.stockflow.product.api.PublishedProductImage;
+import com.stockflow.product.api.StorefrontProduct;
 import com.stockflow.product.internal.repository.ProductCommerceRepository;
 import com.stockflow.product.internal.repository.ProductImageRepository;
 
@@ -32,13 +33,19 @@ class ProductPublicationAdapter implements ProductPublication {
     private final ProductMediaProperties media;
     private final ProductImageRepository productImages;
     private final ProductImageService productImageFiles;
+    private final ProductAttributeService attributes;
+    private final ProductVariantService variants;
 
     ProductPublicationAdapter(
             ProductCommerceRepository products,
             CurrentUserProvider users,
             ProductMediaProperties media,
             ProductImageRepository productImages,
-            ProductImageService productImageFiles) {
+            ProductImageService productImageFiles,
+            ProductAttributeService attributes,
+            ProductVariantService variants) {
+        this.attributes = attributes;
+        this.variants = variants;
         this.products = products;
         this.users = users;
         this.media = media;
@@ -127,6 +134,34 @@ class ProductPublicationAdapter implements ProductPublication {
                 m.altText(),
                 m.sortOrder(),
                 m.primary());
+    }
+
+    /**
+     * The product page's facts (ADR-0013). The description is read live: a published product's description cannot
+     * change (it is edited only while DRAFT), so the live HTML is the published one. A variant's own description can
+     * change at any time and shows as soon as it is saved, like its images once published.
+     */
+    @Transactional(readOnly = true)
+    public StorefrontProduct storefront(UUID id) {
+        if (read(id).status() != ProductStatus.PUBLISHED)
+            throw new BusinessException(ErrorCode.NOT_FOUND);
+        var facts = products.storefrontFacts(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        var described = attributes.get(id);
+        Map<UUID, String> axisNames = new HashMap<>();
+        described.axes().forEach(a -> axisNames.put(a.attributeId(), a.name()));
+        var shown = described.descriptives().stream()
+                .map(d -> new StorefrontProduct.Attribute(d.code(), d.name(), d.dataType().name(), d.unit(),
+                        d.values().stream().map(ProductAttributeService.ValueRef::label).toList(), d.text(),
+                        d.number(), d.bool()))
+                .toList();
+        var sold = variants.active(id).stream()
+                .map(v -> new StorefrontProduct.Variant(v.id(), v.sku(), v.name(),
+                        v.description() != null ? v.description() : facts.descriptionHtml(), v.description() != null,
+                        v.options().stream().map(o -> new StorefrontProduct.Option(o.attributeCode(),
+                                axisNames.getOrDefault(o.attributeId(), o.attributeCode()), o.valueCode(), o.label()))
+                                .toList()))
+                .toList();
+        return new StorefrontProduct(id, facts.descriptionHtml(), facts.brand(), facts.category(), shown, sold);
     }
 
     public void editEcommerce(UUID id, String slug, String title, String description) {

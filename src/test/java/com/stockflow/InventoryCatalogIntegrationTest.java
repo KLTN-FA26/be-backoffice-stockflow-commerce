@@ -60,8 +60,8 @@ class InventoryCatalogIntegrationTest {
         write("update product.products set status='PUBLISHED',published_at=now() where id=?", f.product());
         var source = jdbc.queryForMap("select * from product.products where id=?", f.product());
         projection.project(f.product());
-        assertThat(catalog.detail(catalog.get(f.product()).slug()).variants())
-                .extracting(CatalogCommerceService.Variant::sku).containsExactlyInAnyOrder(f.sku(), second);
+        assertThat(catalog.detail(catalog.get(f.product()).slug()).page().variants())
+                .extracting(com.stockflow.product.api.StorefrontProduct.Variant::sku).containsExactlyInAnyOrder(f.sku(), second);
         assertThat(jdbc.queryForMap("select * from product.products where id=?", f.product())).isEqualTo(source);
     }
 
@@ -231,8 +231,8 @@ values (?,?,'https://example.test/cover.jpg',true,now(),md5('demo:user:approver'
         gallery(f);
         catalog.publish(f.product());
         projection.project(f.product());
-        assertThat(catalog.detail("draft-" + f.sku().toLowerCase()).variants())
-                .extracting(CatalogCommerceService.Variant::sku).containsExactly(f.sku());
+        assertThat(catalog.detail("draft-" + f.sku().toLowerCase()).page().variants())
+                .extracting(com.stockflow.product.api.StorefrontProduct.Variant::sku).containsExactly(f.sku());
     }
 
     @Test
@@ -243,7 +243,7 @@ values (?,?,'https://example.test/cover.jpg',true,now(),md5('demo:user:approver'
         catalog.publish(f.product());
         projection.project(f.product());
         String slug = catalog.get(f.product()).slug();
-        assertThat(catalog.detail(slug).variants()).hasSize(1);
+        assertThat(catalog.detail(slug).page().variants()).hasSize(1);
         catalog.unpublish(f.product());
         assertThatThrownBy(() -> catalog.detail(slug)).isInstanceOf(BusinessException.class);
         projection.project(f.product()); // A late event must not resurrect the product.
