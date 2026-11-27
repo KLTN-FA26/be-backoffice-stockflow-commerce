@@ -1,10 +1,10 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
+import com.stockflow.customer.api.Responsible;
+import com.stockflow.customer.api.ResponsibleKind;
+import com.stockflow.customer.api.ResponsibleSales;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.StaffContact;
-import com.stockflow.identity.api.StaffUser;
 import com.stockflow.notification.api.Inbox;
 import com.stockflow.notification.api.InboxMessage;
 import com.stockflow.notification.api.InboxSeverity;
@@ -25,14 +25,15 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -42,9 +43,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * A10 (kltn-docs 14 §6) and WF-02 FLOW-1..4: whose turn it is on a contract or an order is told once each - to the
- * salesperson who sent the contract while that account is active, to the Sales team as a hand-over once it is not, and
- * an order held for credit to whoever may decide it.
+ * A10 (kltn-docs 14 §6) and WF-02 FLOW-1..4: whose turn it is on a contract or an order is told once each - since
+ * 2026-11-28 to whoever looks after the order's customer (00 §6, 15 BR-22): its owner, the owner's cover, or with no
+ * active owner the Sales Managers marked "cần phân công", never every salesperson - and an order held for credit to
+ * whoever may decide it.
  */
 class SalesFollowUpServiceTest {
 
@@ -55,36 +57,50 @@ class SalesFollowUpServiceTest {
     private final IdentityService identity = mock(IdentityService.class);
     private final PaymentService payments = mock(PaymentService.class);
     private final ContractCreditReviews creditReviews = mock(ContractCreditReviews.class);
+    private final ResponsibleSales responsible = mock(ResponsibleSales.class);
     private final UUID sales = UUID.randomUUID();
+    /** A customer {@link #sales} owns. */
+    private final UUID customer = UUID.randomUUID();
+    private final Map<UUID, Responsible> lookedAfter = new HashMap<>();
 
     @BeforeEach
     void anActiveSalesperson() {
-        when(identity.user(sales)).thenReturn(user(sales, "ACTIVE"));
+        owns(customer, sales);
+        when(responsible.responsibleFor(anyCollection(), any())).thenAnswer(call -> {
+            Map<UUID, Responsible> answer = new HashMap<>();
+            for (Object id : (Collection<?>) call.getArgument(0)) {
+                if (lookedAfter.containsKey(id)) {
+                    answer.put((UUID) id, lookedAfter.get(id));
+                }
+            }
+            return answer;
+        });
         when(inbox.post(any(), any())).thenReturn(1);
     }
 
-    private SalesFollowUpService service(Duration unsigned, Duration unpaid) {
-        return new SalesFollowUpService(followUps, inbox, new SalesRecipients(identity), identity, payments,
-                Clock.fixed(NOW, ZoneOffset.UTC), unsigned, unpaid, creditReviews, Duration.ofHours(24));
+    private void owns(UUID customerId, UUID owner) {
+        lookedAfter.put(customerId, new Responsible(customerId, ResponsibleKind.OWNER, owner, owner, List.of()));
     }
 
-    private static StaffUser user(UUID id, String status) {
-        return new StaffUser(id, "sale", null, "Sale", status, List.of("SALES_STAFF"), List.of(), false, null, null,
-                NOW, null, null, 0);
+    private SalesFollowUpService service(Duration unsigned, Duration unpaid) {
+        return new SalesFollowUpService(followUps, inbox, new SalesRecipients(responsible,
+                Clock.fixed(NOW, ZoneOffset.UTC)), identity, payments, Clock.fixed(NOW, ZoneOffset.UTC), unsigned,
+                unpaid, creditReviews, Duration.ofHours(24));
     }
 
     @Test
-    @DisplayName("past N days (3 by default): one notice per contract and per order, to its salesperson, keyed once")
+    @DisplayName("past N days (3 by default): one notice per contract and per order, to the customer's owner, keyed "
+            + "once; the owners of the whole run asked in one go")
     void remindsTheSalespersonOnce() {
         UUID contract = UUID.randomUUID();
         UUID order = UUID.randomUUID();
         UUID signedContract = UUID.randomUUID();
         when(followUps.unsignedSince(eq(NOW.minus(Duration.ofDays(3))), anyInt())).thenReturn(List.of(
                 new SalesFollowUps.UnsignedContract(contract, "HD-20261108-0001-1", UUID.randomUUID(),
-                        "SO-20261108-0001", sales, NOW.minus(Duration.ofDays(5)))));
+                        "SO-20261108-0001", customer, NOW.minus(Duration.ofDays(5)))));
         when(followUps.unpaidSince(eq(NOW.minus(Duration.ofDays(2))), anyInt())).thenReturn(List.of(
                 new SalesFollowUps.UnpaidOrder(order, "SO-20261109-0002", signedContract, "HD-20261109-0002-1",
-                        sales, NOW.minus(Duration.ofDays(2)))));
+                        customer, NOW.minus(Duration.ofDays(2)))));
 
         SalesFollowUpService.Reminded reminded = service(Duration.ofDays(3), Duration.ofDays(2)).remind();
 
@@ -99,29 +115,27 @@ class SalesFollowUpServiceTest {
         assertThat(told.getAllValues()).extracting(InboxMessage::category)
                 .containsOnly(SalesFollowUpService.CATEGORY);
         assertThat(told.getAllValues()).extracting(InboxMessage::body)
-                .allSatisfy(body -> assertThat(body).doesNotContain("không còn hoạt động"));
+                .allSatisfy(body -> assertThat(body).doesNotContain("Cần phân công"));
         assertThat(told.getAllValues().getFirst().title()).contains("HD-20261108-0001-1", "3");
         assertThat(told.getAllValues().get(1).title()).contains("SO-20261109-0002", "2");
         assertThat(told.getAllValues().get(1).link()).isEqualTo("/admin/orders/" + order);
-        verify(identity).user(sales);
+        verify(responsible, times(1)).responsibleFor(anyCollection(), any());
     }
 
     @Test
-    @DisplayName("FLOW-4: a locked or deleted salesperson's notices go to every active Sales account, as a hand-over")
-    void aLockedSalespersonHandsOver() {
-        UUID locked = UUID.randomUUID();
-        UUID gone = UUID.randomUUID();
-        UUID teamA = UUID.randomUUID();
-        UUID teamB = UUID.randomUUID();
-        when(identity.user(locked)).thenReturn(user(locked, "LOCKED"));
-        when(identity.user(gone)).thenThrow(new BusinessException(ErrorCode.USER_NOT_FOUND, "gone"));
-        when(identity.notificationRecipients(Set.of("SALES_STAFF"), null))
-                .thenReturn(List.of(new StaffContact(teamA, "a@x.vn"), new StaffContact(teamB, null)));
+    @DisplayName("D6, case 8 (was FLOW-4): a customer with no active owner - its notices go to the Sales Managers, "
+            + "marked 'cần phân công', never to every Sales account")
+    void aCustomerWithNoOwnerGoesToTheManagers() {
+        UUID unowned = UUID.randomUUID();
+        UUID managerA = UUID.randomUUID();
+        UUID managerB = UUID.randomUUID();
+        lookedAfter.put(unowned, new Responsible(unowned, ResponsibleKind.MANAGERS, UUID.randomUUID(), null,
+                List.of(managerA, managerB)));
         when(followUps.unsignedSince(any(), anyInt())).thenReturn(List.of(
-                new SalesFollowUps.UnsignedContract(UUID.randomUUID(), "HD-1", UUID.randomUUID(), "SO-1", locked, NOW),
-                new SalesFollowUps.UnsignedContract(UUID.randomUUID(), "HD-2", UUID.randomUUID(), "SO-2", locked, NOW)));
+                new SalesFollowUps.UnsignedContract(UUID.randomUUID(), "HD-1", UUID.randomUUID(), "SO-1", unowned, NOW),
+                new SalesFollowUps.UnsignedContract(UUID.randomUUID(), "HD-2", UUID.randomUUID(), "SO-2", unowned, NOW)));
         when(followUps.confirmedWithoutWarehouse(anyInt())).thenReturn(List.of(
-                new SalesFollowUps.WaitingOrder(UUID.randomUUID(), "SO-3", gone, NOW)));
+                new SalesFollowUps.WaitingOrder(UUID.randomUUID(), "SO-3", unowned, NOW)));
 
         service(Duration.ofDays(3), Duration.ofDays(3)).remind();
 
@@ -129,12 +143,47 @@ class SalesFollowUpServiceTest {
         ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
         ArgumentCaptor<InboxMessage> told = ArgumentCaptor.forClass(InboxMessage.class);
         verify(inbox, times(3)).post(to.capture(), told.capture());
-        assertThat(to.getAllValues()).allSatisfy(r -> assertThat(r).containsExactly(teamA, teamB));
+        assertThat(to.getAllValues()).allSatisfy(r -> assertThat(r).containsExactly(managerA, managerB));
         assertThat(told.getAllValues()).extracting(InboxMessage::body)
-                .allSatisfy(body -> assertThat(body).endsWith("Sale phụ trách không còn hoạt động: một người trong "
-                        + "nhóm tiếp nhận việc này."));
-        verify(identity, times(1)).user(locked);
-        verify(identity, times(1)).notificationRecipients(Set.of("SALES_STAFF"), null);
+                .allSatisfy(body -> assertThat(body).endsWith("Cần phân công: khách chưa có Sale phụ trách đang làm. "
+                        + "Vui lòng giao người phụ trách."));
+        verify(identity, never()).notificationRecipients(any(), any());
+    }
+
+    @Test
+    @DisplayName("BR-S07, case 5: while the owner is on leave the cover is followed up, unmarked")
+    void theCoverIsFollowedUp() {
+        UUID covered = UUID.randomUUID();
+        UUID cover = UUID.randomUUID();
+        lookedAfter.put(covered, new Responsible(covered, ResponsibleKind.COVER, sales, cover, List.of()));
+        when(followUps.confirmedWithoutWarehouse(anyInt())).thenReturn(List.of(
+                new SalesFollowUps.WaitingOrder(UUID.randomUUID(), "SO-4", covered, NOW)));
+
+        service(Duration.ofDays(3), Duration.ofDays(3)).remind();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
+        ArgumentCaptor<InboxMessage> told = ArgumentCaptor.forClass(InboxMessage.class);
+        verify(inbox).post(to.capture(), told.capture());
+        assertThat(to.getValue()).containsExactly(cover);
+        assertThat(told.getValue().body()).doesNotContain("Cần phân công");
+    }
+
+    @Test
+    @DisplayName("Case 12, 14 §4.4 step 20: a customer moved to another salesperson is followed up with the new one")
+    void aMovedCustomerIsFollowedUpWithTheNewOwner() {
+        UUID moved = UUID.randomUUID();
+        UUID newOwner = UUID.randomUUID();
+        owns(moved, newOwner);
+        when(followUps.unsignedSince(any(), anyInt())).thenReturn(List.of(
+                new SalesFollowUps.UnsignedContract(UUID.randomUUID(), "HD-5", UUID.randomUUID(), "SO-5", moved, NOW)));
+
+        service(Duration.ofDays(3), Duration.ofDays(3)).remind();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
+        verify(inbox).post(to.capture(), any());
+        assertThat(to.getValue()).containsExactly(newOwner);
     }
 
     @Test
@@ -150,12 +199,12 @@ class SalesFollowUpServiceTest {
         when(identity.notificationRecipientsHolding(SalesFollowUpService.DECIDES_CREDIT, null))
                 .thenReturn(List.of(new StaffContact(accountant, "kt@x.vn")));
         when(followUps.heldFor(eq("CREDIT"), anyInt())).thenReturn(List.of(
-                new SalesFollowUps.WaitingOrder(credit, "SO-C", sales, heldAt)));
+                new SalesFollowUps.WaitingOrder(credit, "SO-C", customer, heldAt)));
         when(followUps.confirmedWithoutWarehouse(anyInt())).thenReturn(List.of(
-                new SalesFollowUps.WaitingOrder(unplaced, "SO-W", sales, heldAt)));
+                new SalesFollowUps.WaitingOrder(unplaced, "SO-W", customer, heldAt)));
         when(followUps.heldAfterVoidedReceipt(anyInt())).thenReturn(List.of(
-                new SalesFollowUps.WaitingOrder(shortOrder, "SO-P", sales, heldAt),
-                new SalesFollowUps.WaitingOrder(paidAgain, "SO-R", sales, heldAt)));
+                new SalesFollowUps.WaitingOrder(shortOrder, "SO-P", customer, heldAt),
+                new SalesFollowUps.WaitingOrder(paidAgain, "SO-R", customer, heldAt)));
         when(payments.installmentStandings(List.of(shortOrder, paidAgain))).thenReturn(Map.of(
                 shortOrder, standing(shortOrder, false), paidAgain, standing(paidAgain, true)));
 
@@ -186,7 +235,7 @@ class SalesFollowUpServiceTest {
     void nobodyDecidesCredit() {
         when(identity.notificationRecipientsHolding(any(), any())).thenReturn(List.of());
         when(followUps.heldFor(eq("CREDIT"), anyInt())).thenReturn(List.of(
-                new SalesFollowUps.WaitingOrder(UUID.randomUUID(), "SO-C", sales, NOW)));
+                new SalesFollowUps.WaitingOrder(UUID.randomUUID(), "SO-C", customer, NOW)));
 
         SalesFollowUpService.Reminded reminded = service(Duration.ofDays(3), Duration.ofDays(3)).remind();
 
@@ -196,11 +245,12 @@ class SalesFollowUpServiceTest {
     }
 
     @Test
-    @DisplayName("FLOW-1b: the credit decision goes to the salesperson, keyed once per order, without the note")
+    @DisplayName("FLOW-1b, 15 BR-22: the credit decision goes to the customer's owner, keyed once per order, without "
+            + "the note")
     void creditDecisionToTheSalesperson() {
         UUID order = UUID.randomUUID();
 
-        service(Duration.ofDays(3), Duration.ofDays(3)).creditDecided(order, "SO-9", sales, false);
+        service(Duration.ofDays(3), Duration.ofDays(3)).creditDecided(order, "SO-9", customer, false);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
@@ -268,8 +318,8 @@ class SalesFollowUpServiceTest {
         UUID review = UUID.randomUUID();
         UUID order = UUID.randomUUID();
 
-        service(Duration.ofDays(3), Duration.ofDays(3)).contractCreditDecided(review, order, "SO-9", "HD-9", sales,
-                false);
+        service(Duration.ofDays(3), Duration.ofDays(3)).contractCreditDecided(review, order, "SO-9", "HD-9", customer,
+                sales, false);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
@@ -280,6 +330,22 @@ class SalesFollowUpServiceTest {
         assertThat(told.getValue().severity()).isEqualTo(InboxSeverity.WARN);
         assertThat(told.getValue().title()).contains("HD-9");
         assertThat(told.getValue().link()).isEqualTo("/admin/orders/" + order);
+    }
+
+    @Test
+    @DisplayName("15 BR-11, case 12: the customer moved while the contract waited - the asker and the new owner hear")
+    @SuppressWarnings("unchecked")
+    void contractCreditDecisionAlsoToTheNewOwner() {
+        UUID moved = UUID.randomUUID();
+        UUID newOwner = UUID.randomUUID();
+        owns(moved, newOwner);
+
+        service(Duration.ofDays(3), Duration.ofDays(3)).contractCreditDecided(UUID.randomUUID(), UUID.randomUUID(),
+                "SO-9", "HD-9", moved, sales, true);
+
+        ArgumentCaptor<Collection<UUID>> to = ArgumentCaptor.forClass(Collection.class);
+        verify(inbox).post(to.capture(), any());
+        assertThat(to.getValue()).containsExactly(sales, newOwner);
     }
 
     @Test

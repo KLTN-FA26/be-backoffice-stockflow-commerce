@@ -91,14 +91,8 @@ class NoRoleNameAccessTest {
             new Allowed("identity/internal/controller/dto/RoleResponse.java", "example = \"ACCOUNTANT\"",
                     "OpenAPI example of a role code"),
             // ---- who is told: the audience of a notification, not access
-            new Allowed("notification/internal/service/QuoteNotificationListener.java", "staff.activeStaff(Role.SALES_STAFF)",
-                    "who is told of a quote with no handler"),
             new Allowed("application.yml", "heldOrders: ${ASSISTANT_WATCH_HELD_ORDERS_ROLES",
                     "assistant watch audience (whose list it is), not access: the tool's guard still decides"),
-            new Allowed("order/internal/service/SalesRecipients.java",
-                    "identity.notificationRecipients(Set.of(Roles.SALES_STAFF), null)",
-                    "who is told of a contract or an order whose salesperson is gone (WF-02 FLOW-4): the same rule as "
-                            + "a quote with no handler, kltn-docs 00 §6 - it addresses a message, it grants no access"),
             new Allowed("notification/internal/service/WarehouseCapacityNotificationListener.java",
                     "staff.activeStaff(Role.WAREHOUSE_MANAGER, event.warehouseId())",
                     "who is told the projected free room turned negative: kltn-docs 00 §6 picks recipients by role "

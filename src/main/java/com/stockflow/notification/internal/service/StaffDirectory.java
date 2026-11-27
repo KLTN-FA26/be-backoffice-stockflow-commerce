@@ -1,17 +1,12 @@
 package com.stockflow.notification.internal.service;
 
-import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.security.Role;
 import com.stockflow.identity.api.IdentityService;
-import com.stockflow.identity.api.ListUsersQuery;
 import com.stockflow.identity.api.StaffContact;
 import com.stockflow.identity.api.StaffUser;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -23,28 +18,10 @@ import java.util.UUID;
 @Component
 class StaffDirectory {
 
-    private static final int PAGE = 100;
-
     private final IdentityService identity;
 
     StaffDirectory(IdentityService identity) {
         this.identity = identity;
-    }
-
-    /** Every ACTIVE account holding {@code role}, each once, in the identity module's order; e-mail may be null. */
-    List<StaffContact> activeStaff(Role role) {
-        Map<UUID, StaffContact> staff = new LinkedHashMap<>();
-        int page = 0;
-        PageResponse<StaffUser> users;
-        do {
-            users = identity.listUsers(new ListUsersQuery(null, "ACTIVE", role.name(), false, page++, PAGE, null));
-            for (StaffUser user : users.items()) {
-                if ("ACTIVE".equals(user.status())) {
-                    staff.putIfAbsent(user.userId(), new StaffContact(user.userId(), user.email()));
-                }
-            }
-        } while (users.hasNext());
-        return new ArrayList<>(staff.values());
     }
 
     /**
