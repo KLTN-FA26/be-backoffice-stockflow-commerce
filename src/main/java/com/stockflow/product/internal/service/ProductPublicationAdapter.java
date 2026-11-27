@@ -4,7 +4,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.storage.StorageKeys;
-import com.stockflow.identity.api.IdentityService;
 import com.stockflow.product.api.ProductEcommerce;
 import com.stockflow.product.api.ProductPublication;
 import com.stockflow.product.api.ProductStatus;
@@ -12,6 +11,7 @@ import com.stockflow.product.api.PublicationProduct;
 import com.stockflow.product.api.PublishedProductCard;
 import com.stockflow.product.api.PublishedProductImage;
 import com.stockflow.product.internal.repository.ProductCommerceRepository;
+import com.stockflow.product.internal.repository.ProductImageRepository;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,17 +30,20 @@ class ProductPublicationAdapter implements ProductPublication {
     private final ProductCommerceRepository products;
     private final CurrentUserProvider users;
     private final ProductMediaProperties media;
-    private final IdentityService identity;
+    private final ProductImageRepository productImages;
+    private final ProductImageService productImageFiles;
 
     ProductPublicationAdapter(
             ProductCommerceRepository products,
             CurrentUserProvider users,
             ProductMediaProperties media,
-            IdentityService identity) {
+            ProductImageRepository productImages,
+            ProductImageService productImageFiles) {
         this.products = products;
         this.users = users;
         this.media = media;
-        this.identity = identity;
+        this.productImages = productImages;
+        this.productImageFiles = productImageFiles;
     }
 
     public PublicationProduct lock(UUID id) {
@@ -75,11 +78,12 @@ class ProductPublicationAdapter implements ProductPublication {
     }
 
     /**
-     * One query for the published products among {@code ids}, one for their ACTIVE variants and one for their
-     * approved images, whatever {@code ids.size()} is: a list page costs the same as a single card. The image
-     * is chosen as the product page leads its gallery: across the whole product (the primary flag is unique per
-     * variant, so a product can have several primaries), primary first, then {@code sort_order}, then id; it is
-     * given the very URL the gallery returns.
+     * One query for the published products among {@code ids}, one for their own images, one for their ACTIVE
+     * variants and one for their approved variant images, whatever {@code ids.size()} is: a list page costs the same
+     * as a single card. The card shows the product's own image (ADR-0012: the product's face in a grouping), by its
+     * largest rendition. A product without one shows its variants' lead image, chosen as the product page leads its
+     * gallery: across the whole product (the primary flag is unique per variant, so a product can have several
+     * primaries), primary first, then {@code sort_order}, then id; it is given the very URL the gallery returns.
      */
     @Transactional(readOnly = true)
     public Map<UUID, PublishedProductCard> cards(Set<UUID> ids) {
@@ -90,12 +94,16 @@ class ProductPublicationAdapter implements ProductPublication {
         products.activeVariants(published).forEach(v ->
                 skus.computeIfAbsent(v.productId(), k -> new java.util.ArrayList<>())
                         .add(new PublishedProductCard.Sku(v.sku(), v.name())));
+        Map<UUID, String> own = productImages.leadRenditionKeys(published);
         Map<UUID, ProductCommerceRepository.PublishedMedia> lead = new HashMap<>();
         for (var m : approvedMedia(published)) lead.merge(m.productId(), m, (a, b) -> LEAD_FIRST.compare(a, b) <= 0 ? a : b);
         Map<UUID, PublishedProductCard> cards = new LinkedHashMap<>();
         for (UUID id : published) {
             var first = lead.get(id);
-            cards.put(id, new PublishedProductCard(first == null ? null : image(first).url(),
+            String ownKey = own.get(id);
+            String url = ownKey != null ? media.publicUrl(StorageKeys.publishedKeyOf(ownKey))
+                    : first == null ? null : image(first).url();
+            cards.put(id, new PublishedProductCard(url,
                     List.copyOf(skus.getOrDefault(id, List.of())), kinds.get(id)));
         }
         return cards;
@@ -140,6 +148,8 @@ class ProductPublicationAdapter implements ProductPublication {
         if (p.skus().isEmpty()) throw new BusinessException(ErrorCode.PRODUCT_SKU_REQUIRED);
         if (approvedMedia(List.of(id)).isEmpty())
             throw new BusinessException(ErrorCode.PRODUCT_GALLERY_REQUIRED);
+        // The product's own image has no approval of its own: it goes public with the product (ADR-0012).
+        productImageFiles.publishFor(id);
         if (p.status() != ProductStatus.PUBLISHED) products.publication(id, true, actor());
     }
 
@@ -150,21 +160,9 @@ class ProductPublicationAdapter implements ProductPublication {
         products.publication(id, false, actor());
     }
 
+    /** The published images: whoever published one, its uploader included (ADR-0012 dropped four-eyes). */
     private List<ProductCommerceRepository.PublishedMedia> approvedMedia(Collection<UUID> ids) {
-        // Auditing can record either UUID or username; comparing only UUID text permits
-        // self-approval.
-        var usernames = new HashMap<UUID, String>();
-        return products.publishedMedia(ids).stream()
-                .filter(
-                        m -> {
-                            String approver =
-                                    usernames.computeIfAbsent(
-                                            m.publishedBy(),
-                                            key -> identity.profile(key).username());
-                            return !m.publishedBy().toString().equals(m.createdBy())
-                                    && !m.createdBy().equals(approver);
-                        })
-                .toList();
+        return products.publishedMedia(ids);
     }
 
     private String actor() {

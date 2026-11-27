@@ -206,8 +206,8 @@ class ProductPimIntegrationTest {
     }
 
     @Test
-    @DisplayName("an uploaded image reaches the storefront only when someone else publishes it")
-    void imagesArePublishedByASecondPerson() throws Exception {
+    @DisplayName("an uploaded image reaches the storefront once published, by its own uploader too (ADR-0012)")
+    void imagesArePublishedByHand() throws Exception {
         var category = taxonomy.createCategory("CAT-" + suffix, null, new CategoryDetails("Ly", 0, null, null, null, true));
         var brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null);
         var created = create(brand.id(), category.id());
@@ -222,23 +222,19 @@ class ProductPimIntegrationTest {
         assertThat(media.upload(productId, variantId, png(), editor, "upload-" + suffix).id()).isEqualTo(second.id());
         assertThat(media.list(productId, variantId)).hasSize(2);
 
-        // Not before the product is approved, and never by the uploader.
+        // Not before the product is approved.
         actAs(approver);
         assertThatThrownBy(() -> media.publish(productId, variantId, List.of(image.id()), approver))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_APPROVED));
         products.submit(productId, editor);
         products.approve(productId, approver);
+        // No second person any more: the uploader publishes their own image.
         actAs(editor);
-        assertThatThrownBy(() -> media.publish(productId, variantId, List.of(image.id()), editor))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.SELF_APPROVAL_NOT_ALLOWED));
-
-        actAs(approver);
-        var published = media.publish(productId, variantId, List.of(image.id()), approver);
+        var published = media.publish(productId, variantId, List.of(image.id()), editor);
         assertThat(published).singleElement().satisfies(m -> {
             assertThat(m.published()).isTrue();
-            assertThat(m.publishedBy()).isEqualTo(approver);
+            assertThat(m.publishedBy()).isEqualTo(editor);
         });
         // The product itself is not published yet: the storefront sees nothing of it.
         assertThatThrownBy(() -> publication.publishedImages(productId)).isInstanceOf(BusinessException.class);
