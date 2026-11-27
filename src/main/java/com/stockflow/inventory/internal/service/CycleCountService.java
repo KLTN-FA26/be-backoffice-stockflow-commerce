@@ -316,7 +316,7 @@ class CycleCountService implements CycleCounts {
         }
         LocalDate day = BusinessCalendar.date(clock.instant());
         List<CountLineDraft> drafts = slots.stream()
-                .map(slot -> new CountLineDraft(slot, counts.bookQuantity(slot))).toList();
+                .map(slot -> new CountLineDraft(slot, counts.booked(slot))).toList();
         String text = "Recount of " + count.number() + (note == null || note.isBlank() ? "" : ": " + note.strip());
         counts.save(count);
         // Blind whatever the first count was: the counter must not be told what the doubted figure was.

@@ -31,9 +31,10 @@ import java.util.UUID;
  * from a half-written list (14 BR-03).</p>
  *
  * <p>4B-2 (kltn-docs 13 BR-02, BR-05, BR-06): a price is set for one of the customer's own SKUs, its tiers starting at a
- * number of cartons and pricing one piece. A price set before on a stock variant is kept, counted in units
- * ({@link PriceView#measure()} {@code UNIT}); no order is priced from it since checkout went (team plan 5-2): it can be
- * read and deleted, not set again. {@code tg_customer_price_own_sku} holds the same rule for a new row.</p>
+ * number of cartons and pricing one piece. {@code tg_customer_price_own_sku} holds the same rule for a new row, and
+ * since V20270105000100 {@code catalog.customer_price.sku} is a foreign key to {@code product.customer_skus}: a price on
+ * a catalogue variant (the {@code UNIT} measure of before 4B-2) cannot exist any more, so every price reads
+ * {@code CARTON}; the measure stays in the view for the screens that show it.</p>
  *
  * <p>Every change is audited with what changed (13 §4.2 step 3; BE3-B): the entry is under the customer, and its details
  * name the SKU and, for a price set or replaced, its new tiers ("from 5: 10500" - from 5 cartons, 10 500 VND a piece),
@@ -73,8 +74,8 @@ public class CustomerPriceService {
     /**
      * A customer's own price as stored; {@code moq} is its first tier.
      *
-     * @param measure what the tiers count: {@code CARTON} for the customer's own SKU; {@code UNIT} for a price set on
-     *                a stock variant before 4B-2, kept to read and delete
+     * @param measure what the tiers count: {@code CARTON} for the customer's own SKU; {@code UNIT} only for a price
+     *                whose SKU is not the customer's, which V20270105000100 and the foreign key no longer allow
      */
     public record PriceView(UUID customerId, String sku, String measure, int moq, List<TierInput> tiers, String note,
                             long version) {
@@ -183,12 +184,16 @@ public class CustomerPriceService {
     private String prepare(UUID customerId, String sku) {
         resolver.customer(customerId);
         String code = sku(sku);
-        if (products.nameForSku(code).isEmpty()) throw new BusinessException(ErrorCode.VARIANT_NOT_FOUND);
+        // A customer's SKU is its own table since V20270105000100: known either as one of those or as a catalogue
+        // variant (which a price is then refused for, CUSTOMER_SKU_REQUIRED), else not at all.
+        if (customerSkus.ownerOf(code).isEmpty() && products.nameForSku(code).isEmpty()) {
+            throw new BusinessException(ErrorCode.VARIANT_NOT_FOUND);
+        }
         listings.publishedProductForSku(code).ifPresent(publication::lock);
         return code;
     }
 
-    /** The shape of {@code product.variants.sku} (ck_variants_sku), upper-cased like the storefront does. */
+    /** The shape of a SKU (ck_variants_sku, ck_customer_skus_sku), upper-cased like the storefront does. */
     private static final java.util.regex.Pattern SKU = java.util.regex.Pattern.compile("[A-Z0-9][A-Z0-9._-]{0,63}");
 
     private static String sku(String raw) {

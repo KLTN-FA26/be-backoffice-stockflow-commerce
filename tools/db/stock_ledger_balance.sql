@@ -1,13 +1,14 @@
 -- =============================================================================
 -- Stock ledger balance report (2026-11-14 plan, BE2-C): for every warehouse and SKU, the whole stock ledger summed
--- must equal the stock on hand. Read-only. Run it on any database, after the demo seed or real data:
+-- must equal the stock on hand - the cartons in stock, in units. Read-only. Run it on any database, after the demo seed or real data:
 --
 --   docker exec -i sf-schema psql -U postgres -d <db> -X < tools/db/stock_ledger_balance.sql
 --
 -- Why it matters: the stock summary report (GET /api/v1/reports/stock-summary) is the ledger summed - opening is every
 -- line before the period, closing every line up to its end (StockLedgerTotals). It is only true if every change of
 -- on hand wrote its ledger line (kltn-docs 20 BR-16). A ledger line changes warehouse W by
---   quantity * ([to_location in W] - [from_location in W])
+--   nominal_qty of its carton * ([to_location in W] - [from_location in W])
+-- (a ledger line is one whole carton and keeps no quantity of its own, ADR-0011, V20261231000400)
 -- where "in W" is the location code's prefix, the part before the first '-' (06 BR-13), so moves inside a warehouse
 -- count zero; summed over the whole ledger that is what W holds of the SKU now.
 --
@@ -23,16 +24,20 @@ WITH warehouses AS (
     SELECT upper(prefix) AS prefix FROM warehouse.warehouse
 ), ledger AS (
     SELECT w.prefix, m.sku,
-           SUM(m.quantity * ((CASE WHEN upper(split_part(m.to_location_code, '-', 1)) = w.prefix THEN 1 ELSE 0 END)
+           SUM(p.nominal_qty * ((CASE WHEN upper(split_part(m.to_location_code, '-', 1)) = w.prefix THEN 1 ELSE 0 END)
                            - (CASE WHEN upper(split_part(m.from_location_code, '-', 1)) = w.prefix THEN 1 ELSE 0 END)))
                AS ledger_units
       FROM inventory.stock_movement m
+      JOIN inventory.stock_package p ON p.id = m.stock_package_id
       JOIN warehouses w ON w.prefix IN (upper(split_part(m.to_location_code, '-', 1)),
                                         upper(split_part(m.from_location_code, '-', 1)))
      GROUP BY w.prefix, m.sku
 ), books AS (
-    SELECT upper(split_part(location_code, '-', 1)) AS prefix, sku, SUM(on_hand) AS on_hand
-      FROM inventory.stock_item
+    -- The stock is the cartons in stock, each its nominal_qty (ADR-0011, V20261231000600: there is no stock_item).
+    SELECT upper(split_part(p.location_code, '-', 1)) AS prefix, i.sku, SUM(p.nominal_qty) AS on_hand
+      FROM inventory.stock_package p
+      JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+     WHERE p.status = 'IN_STOCK'
      GROUP BY 1, 2
 )
 SELECT COALESCE(l.prefix, b.prefix) AS warehouse,

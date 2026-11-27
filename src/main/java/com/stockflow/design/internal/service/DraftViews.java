@@ -99,21 +99,20 @@ class DraftViews {
         Set<UUID> customerIds = drafts.stream().map(DesignDraftJpaEntity::getCustomerId).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         Map<UUID, String> customerNames = customers.fullNames(customerIds);
-        Map<String, Integer> perCarton = piecesPerCarton(drafts, customerSkuOf);
+        Map<String, Integer> perCarton = piecesPerCarton(drafts);
         Map<UUID, DesignProjectJpaEntity> projectsById = projectsOf(drafts);
         Set<UUID> reviewers = drafts.stream().map(DesignDraftJpaEntity::getReviewedBy).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         Map<UUID, String> reviewerNames = reviewers.isEmpty() ? Map.of() : identities.displayNames(reviewers);
         return drafts.stream().map(d -> {
             Optional<ProductSummary> product = productsById.get(d.getProductId());
-            String cartonSku = customerSkuOf.getOrDefault(d.getId(), d.getSku());
             DesignProjectJpaEntity project = d.getProjectId() == null ? null : projectsById.get(d.getProjectId());
             return view(d, product.map(ProductSummary::slug).orElse(null),
                     product.map(ProductSummary::name).orElse(null), saved.get(d.getId()),
                     d.getCurrentArtifactId() == null ? null : previews.get(d.getCurrentArtifactId()),
                     variantName(d.getSku(), variantNames), customerSkuOf.get(d.getId()),
                     d.getCustomerId() == null ? null : customerNames.get(d.getCustomerId()),
-                    cartonSku == null ? null : perCarton.get(cartonSku), project,
+                    d.getSku() == null ? null : perCarton.get(d.getSku()), project,
                     d.getReviewedBy() == null ? null : reviewerNames.get(d.getReviewedBy()));
         }).toList();
     }
@@ -130,13 +129,14 @@ class DraftViews {
     }
 
     /**
-     * R5-13: the pieces in one carton of each design's SKU - its customer's own once approved, else the variant it is
-     * drawn on, whose carton spec the customer's SKU is issued with - by SKU, in one read for the page. The carton is
-     * the SKU's one carton unit, as a quote line reads it ({@link com.stockflow.inventory.api.UomConversion#cartonOf});
-     * a SKU without one is absent.
+     * R5-13: the pieces in one carton of each design, by the catalogue variant it is drawn on, in one read for the
+     * page. The carton is the variant's (owner decision Q1): the customer's SKU an approval issues is packed in it and
+     * has none of its own, so the variant answers for an approved design as for a draft. The carton is the variant's
+     * one carton unit, as a quote line reads it ({@link com.stockflow.inventory.api.UomConversion#cartonOf}); a variant
+     * without one is absent.
      */
-    private Map<String, Integer> piecesPerCarton(List<DesignDraftJpaEntity> drafts, Map<UUID, String> customerSkuOf) {
-        List<String> skus = drafts.stream().map(d -> customerSkuOf.getOrDefault(d.getId(), d.getSku()))
+    private Map<String, Integer> piecesPerCarton(List<DesignDraftJpaEntity> drafts) {
+        List<String> skus = drafts.stream().map(DesignDraftJpaEntity::getSku)
                 .filter(Objects::nonNull).distinct().toList();
         if (skus.isEmpty()) {
             return Map.of();

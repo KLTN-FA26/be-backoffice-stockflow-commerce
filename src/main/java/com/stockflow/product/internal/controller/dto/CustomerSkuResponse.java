@@ -9,12 +9,15 @@ import java.util.UUID;
  * of it copies (R5-4), so the editor shows a line's total before the draft is saved.
  */
 public record CustomerSkuResponse(
-        UUID variantId,
+        @Schema(description = "The SKU's own id (renamed from variantId, V20270105000100): what its lifecycle endpoints "
+                + "and a chat card name") UUID id,
         UUID productId,
         @Schema(example = "CUP12-0312345678-01") String sku,
         String name,
         UUID ownerCustomerId,
         UUID designSnapshotId,
+        @Schema(description = "The catalogue variant the design was drawn on, whose carton it is packed in")
+        UUID sourceVariantId,
         String sourceSku,
         @Schema(allowableValues = {"ACTIVE", "BLOCKED", "OBSOLETE"}) String status,
         @Schema(description = "R5-4: pieces in the SKU's carton, as a quote line fixes them; null while it has no single "
@@ -24,5 +27,10 @@ public record CustomerSkuResponse(
         String taxClass,
         @Schema(description = "R5-4: that class's VAT rate today, a percentage - what a quote line drawn up today copies; "
                 + "null without a class", example = "8")
-        BigDecimal taxRate) {
+        BigDecimal taxRate,
+        @Schema(description = "The owner customer's name, so a page of several customers' SKUs needs no customer lookup")
+        String ownerCustomerName,
+        @Schema(description = "The owner as a document code spells them: their tax code, or KH and eight characters of "
+                + "the id", example = "0312345678")
+        String ownerCustomerCode) {
 }

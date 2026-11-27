@@ -51,10 +51,10 @@ SELECT md5('qa30:draft')::uuid, c.id, md5('qa30:product')::uuid, 'DRAFT', NOW(),
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa30:snapshot')::uuid, md5('qa30:draft')::uuid, repeat('c', 64), 'https://example.com/c.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-SELECT md5('qa30:own')::uuid, md5('qa30:product')::uuid, 'QA-PRC-OWN', 'QA ly rieng', 'ACTIVE', FALSE, 'OWNED-SKU:QA-PRC-OWN',
-       1, 0, NOW(), c.id, md5('qa30:snapshot')::uuid, md5('qa30:blank')::uuid
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+SELECT md5('qa30:own')::uuid, md5('qa30:product')::uuid, 'QA-PRC-OWN', 'QA ly rieng', 'ACTIVE', 0, NOW(),
+       c.id, md5('qa30:snapshot')::uuid, md5('qa30:blank')::uuid
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 INSERT INTO customer.customer (id, full_name, email, status, version, created_at)
 VALUES (md5('qa30:other')::uuid, 'QA other customer', 'qa30-other@example.test', 'ACTIVE', 0, NOW());
@@ -90,15 +90,15 @@ SELECT pg_temp.expect_true('PR16 no price column on a unit: product.variant_sale
 \echo '--- the customer''s own price is the one price, for its own SKU only'
 SELECT pg_temp.expect_fail('PR7 a new customer price on a variant (quy cach) - there it would be a base price by another name', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, currency, version, created_at)
-    SELECT gen_random_uuid(), v.owner_customer_id, 'QA-PRC-BLANK', 'VND', 0, NOW()
-      FROM product.variants v WHERE v.sku = 'QA-PRC-OWN' $q$);
+    SELECT gen_random_uuid(), v.customer_id, 'QA-PRC-BLANK', 'VND', 0, NOW()
+      FROM product.customer_skus v WHERE v.sku = 'QA-PRC-OWN' $q$);
 SELECT pg_temp.expect_fail('PR8 a customer price on another customer''s SKU', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, currency, version, created_at)
     VALUES (gen_random_uuid(), md5('qa30:other')::uuid, 'QA-PRC-OWN', 'VND', 0, NOW()) $q$);
 SELECT pg_temp.expect_ok('PR9 the customer''s own price on its own SKU', $q$
     INSERT INTO catalog.customer_price (id, customer_id, sku, currency, version, created_at)
-    SELECT md5('qa30:price')::uuid, v.owner_customer_id, 'QA-PRC-OWN', 'VND', 0, NOW()
-      FROM product.variants v WHERE v.sku = 'QA-PRC-OWN' $q$);
+    SELECT md5('qa30:price')::uuid, v.customer_id, 'QA-PRC-OWN', 'VND', 0, NOW()
+      FROM product.customer_skus v WHERE v.sku = 'QA-PRC-OWN' $q$);
 SELECT pg_temp.expect_fail('PR10 a price in another currency', $q$
     UPDATE catalog.customer_price SET currency = 'USD' WHERE id = md5('qa30:price')::uuid $q$);
 SELECT pg_temp.expect_fail('PR11 a tier of a fraction of a dong', $q$

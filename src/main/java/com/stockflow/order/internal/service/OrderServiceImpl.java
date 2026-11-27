@@ -176,6 +176,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      * and the order is a DRAFT for its contract: no stock is held and no terms are applied here. The order rows and
      * their history commit with the quote's conversion, in the caller's transaction. The only way an order is created
      * since checkout went (team plan 5-2, kltn-docs 14 BR-01, BR-02) and {@code placeOrder} with it (4B-10).</p>
+     *
+     * <p>It is also where a customer's SKU gets its inventory item (owner decision Q5 of 2026-11-26): the design
+     * approval issues the SKU with none, and only goods an order names are ever received, held, counted and shipped.
+     * The items are opened in this same transaction ({@code InventoryService.openItems}), packed as the catalogue
+     * variant each SKU was drawn on, so an order never exists whose SKU inventory does not know, and a conversion that
+     * rolls back leaves no item behind. A SKU ordered before keeps its item. A retried conversion returns the order it
+     * made before; its items were opened with it.</p>
      */
     @Override
     public OrderSummary placeQuotedOrder(PlaceOrderCommand command) {
@@ -239,9 +246,39 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // signing, or confirmed (SalesContracts). How it is paid is the contract's plan's: an order has no payment terms
         // of its own since 4B-10. Its stock is held once a shipping warehouse is chosen for it (4B-7).
         Order saved = repository.save(order);
+        openInventoryItems(command);
         log.info("Order {} drafted for customer {} from an accepted quote, {} line(s), total {}",
                 saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total());
         return toSummary(saved);
+    }
+
+    /**
+     * Opens the inventory item of every SKU the order's lines name (owner decision Q5), after the order row: an order
+     * line's SKU is a customer's own SKU ({@code fk_order_line_customer_sku}), drawn on the catalogue variant whose
+     * carton the item is packed in. One read for the SKUs, one insert per SKU in code order; an item that exists is
+     * kept. No SKU advisory lock is taken: nothing is held or moved, and two conversions naming one SKU meet only on
+     * the item's unique code, where the second waits for the first and keeps its row.
+     *
+     * @throws BusinessException {@code VARIANT_NOT_FOUND} for a line SKU that is not a customer's SKU - which the
+     *         foreign key would refuse anyway, but an item packed as nothing must not be guessed first
+     */
+    private void openInventoryItems(PlaceOrderCommand command) {
+        List<String> skus = command.lines().stream().map(line -> line.sku().code()).distinct().toList();
+        if (skus.isEmpty()) {
+            return;
+        }
+        java.util.Map<String, com.stockflow.product.api.CustomerSku> known = customerSkus.findAll(skus);
+        List<com.stockflow.inventory.api.OpenInventoryItemsCommand.Item> items = new ArrayList<>();
+        for (String sku : skus) {
+            com.stockflow.product.api.CustomerSku customerSku = known.get(sku);
+            if (customerSku == null || customerSku.sourceVariantId() == null) {
+                throw new BusinessException(ErrorCode.VARIANT_NOT_FOUND,
+                        "%s is not a customer's SKU: only a customer's own SKU is ordered".formatted(sku));
+            }
+            items.add(new com.stockflow.inventory.api.OpenInventoryItemsCommand.Item(new com.stockflow.common.domain.Sku(sku),
+                    customerSku.sourceVariantId()));
+        }
+        inventory.openItems(new com.stockflow.inventory.api.OpenInventoryItemsCommand(items));
     }
 
     @Override

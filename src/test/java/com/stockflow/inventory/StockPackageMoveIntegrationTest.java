@@ -33,8 +33,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * SCRUM-473: a carton received into stock moves and is reclassified whole, keeping its LPN, its stock row and its
- * unopened state. Commits like production: the carton's rows are checked against it at commit (V20261020000200).
+ * SCRUM-473: a carton received into stock moves and is reclassified whole, keeping its LPN, its lot and its
+ * unopened state. Commits like production, so the deferred rules of the carton run at commit.
  * Each test counts a line of 2000 as two cartons of the standard 1000 and receives it, then works on the first
  * carton.
  */
@@ -96,17 +96,14 @@ class StockPackageMoveIntegrationTest {
     }
 
     private String rowState() {
-        return jdbc.queryForObject("select location_code || ':' || status || ':' || on_hand"
-                + " from inventory.stock_item where stock_package_id = ?", String.class, cartonId);
+        return jdbc.queryForObject("select location_code || ':' || stock_status || ':' || nominal_qty"
+                + " from inventory.stock_package where id = ?", String.class, cartonId);
     }
 
     @Test
-    @DisplayName("a move takes the carton and its row along: same row, one MOVE line naming the carton")
+    @DisplayName("a move takes the carton whole, stock status and all: one MOVE line naming the carton")
     void moveTakesTheRowsAlong() {
         receiveCartons();
-        UUID row = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
-                cartonId);
-
         StockPackageView moved = inventory.moveStockPackages(move(BIN)).getFirst();
 
         assertThat(moved.lpn()).isEqualTo(lpn);
@@ -114,14 +111,12 @@ class StockPackageMoveIntegrationTest {
         assertThat(moved.quantity()).isEqualTo(1000);
         assertThat(cartonState()).isEqualTo(BIN + ":IN_STOCK");
         assertThat(rowState()).isEqualTo(BIN + ":INBOUND:1000");
-        assertThat(jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?", UUID.class,
-                cartonId)).as("the row is the same one").isEqualTo(row);
         assertThat(jdbc.query("""
-                select from_stock_package_id, to_stock_package_id, quantity from inventory.stock_movement
-                 where movement_type = 'MOVE' and sku = ?""",
-                (rs, n) -> rs.getObject("from_stock_package_id", UUID.class) + "|"
-                        + rs.getObject("to_stock_package_id", UUID.class) + "|" + rs.getInt("quantity"), sku))
-                .containsExactly(cartonId + "|" + cartonId + "|1000");
+                select m.stock_package_id, p.nominal_qty as quantity
+                  from inventory.stock_movement m join inventory.stock_package p on p.id = m.stock_package_id
+                 where m.movement_type = 'MOVE' and m.sku = ?""",
+                (rs, n) -> rs.getObject("stock_package_id", UUID.class) + "|" + rs.getInt("quantity"), sku))
+                .containsExactly(cartonId + "|1000");
     }
 
     @Test
@@ -167,9 +162,9 @@ class StockPackageMoveIntegrationTest {
         assertThat(cartonState()).isEqualTo(QUARANTINE + ":IN_STOCK");
         assertThat(rowState()).isEqualTo(QUARANTINE + ":QUARANTINE:1000");
         assertThat(jdbc.query("""
-                select from_status, to_status, from_stock_package_id = to_stock_package_id as same_carton
+                select from_status, to_status, stock_package_id is not null as names_carton
                   from inventory.stock_movement where movement_type = 'MOVE' and sku = ?""",
-                (rs, n) -> rs.getString("from_status") + ">" + rs.getString("to_status") + ":" + rs.getBoolean("same_carton"),
+                (rs, n) -> rs.getString("from_status") + ">" + rs.getString("to_status") + ":" + rs.getBoolean("names_carton"),
                 sku)).containsExactly("INBOUND>QUARANTINE:true");
     }
 
@@ -184,7 +179,7 @@ class StockPackageMoveIntegrationTest {
     }
 
     @Test
-    @DisplayName("both cartons move in one call, each with its row and one MOVE line naming it")
+    @DisplayName("both cartons move in one call, each with one MOVE line naming it")
     void severalCartonsInOneCall() {
         receiveCartons();
         List<String> both = jdbc.queryForList("select lpn from inventory.stock_package where goods_receipt_line_id = ?"
@@ -198,7 +193,7 @@ class StockPackageMoveIntegrationTest {
         assertThat(moved).extracting(StockPackageView::quantity).containsExactly(1000, 1000);
         assertThat(jdbc.queryForObject("""
                 select count(*) from inventory.stock_movement
-                 where movement_type = 'MOVE' and sku = ? and from_stock_package_id = to_stock_package_id""",
+                 where movement_type = 'MOVE' and sku = ? and stock_package_id is not null""",
                 Integer.class, sku)).isEqualTo(2);
     }
 }

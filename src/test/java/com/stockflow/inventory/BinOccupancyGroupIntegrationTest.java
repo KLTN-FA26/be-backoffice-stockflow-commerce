@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
@@ -60,13 +61,11 @@ class BinOccupancyGroupIntegrationTest {
 
     /**
      * The cartons are committed into a demo bin other tests resize and count on
-     * ({@code BinResizeStrandingIntegrationTest}), so they leave it as they found it: stock rows first, then the
-     * cartons they point at.
+     * ({@code BinResizeStrandingIntegrationTest}), so they leave it as they found it.
      */
     @AfterEach
     void removeCartons() {
         tx.executeWithoutResult(s -> {
-            jdbc.update("delete from inventory.stock_item where sku in (?, ?)", sku1, sku2);
             jdbc.update("delete from inventory.stock_package where inventory_item_id in"
                     + " (select id from inventory.inventory_items where sku in (?, ?))", sku1, sku2);
         });
@@ -76,8 +75,7 @@ class BinOccupancyGroupIntegrationTest {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Group occupancy fixture", sku.toLowerCase(Locale.ROOT));
-        jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                Identifiers.newId(), product, sku, "Group occupancy fixture");
+        StockedSkus.customerSkuOn(jdbc, product, sku, "Group occupancy fixture");
     }
 
     /** One carton of {@code units} units, its unit 50 x 40 x 30 cm (0.06 m³). */

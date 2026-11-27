@@ -215,17 +215,15 @@ class PutawayConfirmationIntegrationTest {
         assertThat(done.targetLocationCode()).isEqualTo(bin);
         assertThat(ledgerLines(cartonTask)).isEqualTo(1);
         assertThat(jdbc.queryForList("""
-                SELECT m.quantity, m.to_status, m.to_location_code, p.lpn AS from_lpn, q.lpn AS to_lpn
+                SELECT p.nominal_qty AS quantity, m.to_status, m.to_location_code, p.lpn
                   FROM inventory.stock_movement m
-                  JOIN inventory.stock_package p ON p.id = m.from_stock_package_id
-                  JOIN inventory.stock_package q ON q.id = m.to_stock_package_id
+                  JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE m.reference_type = 'PUTAWAY_TASK' AND m.reference_id = ?""", cartonTask))
                 .singleElement().satisfies(row -> {
                     assertThat(row.get("quantity")).isEqualTo(10);
                     assertThat(row.get("to_status")).isEqualTo("AVAILABLE");
                     assertThat(row.get("to_location_code")).isEqualTo(bin);
-                    assertThat(row.get("from_lpn")).isEqualTo(lpn1);
-                    assertThat(row.get("to_lpn")).isEqualTo(lpn1);
+                    assertThat(row.get("lpn")).isEqualTo(lpn1);
                 });
         assertThat(recorded.matching(PutawayCompleted.class, e -> e.putawayTaskId().equals(cartonTask)))
                 .singleElement().satisfies(event -> {
@@ -333,12 +331,14 @@ class PutawayConfirmationIntegrationTest {
     @DisplayName("06 BR-01: a carton turned on the horizontal fits a bin 0.5 wide x 0.4 long - unless its item may not be turned")
     void turnedOnTheHorizontal() {
         String turned = bin(warehouse, "A01", "0.5", "0.4", "0.3", 500, "ACTIVE");
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set rotatable = false where sku = ?",
+        tx.executeWithoutResult(s -> jdbc.update("update product.variants set rotatable = false where id = "
+                + "(select variant_id from inventory.inventory_items where sku = ?)",
                 sku));
         assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, turned)).errorCode())
                 .isEqualTo(ErrorCode.CARTON_DOES_NOT_FIT_BIN);
 
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set rotatable = true where sku = ?",
+        tx.executeWithoutResult(s -> jdbc.update("update product.variants set rotatable = true where id = "
+                + "(select variant_id from inventory.inventory_items where sku = ?)",
                 sku));
         assertThat(confirmCarton(cartonTask, lpn1, turned).status()).isEqualTo("DONE");
     }
@@ -444,11 +444,10 @@ class PutawayConfirmationIntegrationTest {
         assertThat(done.sourceLocationCode()).isEqualTo(bin);
         assertThat(ledgerLines(cartonTask)).as("no MOVE between two locations").isZero();
         assertThat(jdbc.queryForList("""
-                SELECT m.quantity, m.from_status, m.to_status, m.from_location_code, m.to_location_code,
-                       p.lpn AS from_lpn, q.lpn AS to_lpn
+                SELECT p.nominal_qty AS quantity, m.from_status, m.to_status, m.from_location_code, m.to_location_code,
+                       p.lpn
                   FROM inventory.stock_movement m
-                  JOIN inventory.stock_package p ON p.id = m.from_stock_package_id
-                  JOIN inventory.stock_package q ON q.id = m.to_stock_package_id
+                  JOIN inventory.stock_package p ON p.id = m.stock_package_id
                  WHERE m.movement_type = 'STATUS_CHANGE' AND m.reference_type = 'PUTAWAY_TASK'
                    AND m.reference_id = ?""", cartonTask)).singleElement().satisfies(row -> {
             assertThat(row.get("quantity")).isEqualTo(10);
@@ -456,12 +455,11 @@ class PutawayConfirmationIntegrationTest {
             assertThat(row.get("to_status")).isEqualTo("AVAILABLE");
             assertThat(row.get("from_location_code")).isEqualTo(bin);
             assertThat(row.get("to_location_code")).isEqualTo(bin);
-            assertThat(row.get("from_lpn")).isEqualTo(lpn1);
-            assertThat(row.get("to_lpn")).isEqualTo(lpn1);
+            assertThat(row.get("lpn")).isEqualTo(lpn1);
         });
         assertThat(jdbc.queryForList("""
-                SELECT s.status, s.location_code FROM inventory.stock_item s
-                  JOIN inventory.stock_package p ON p.id = s.stock_package_id WHERE p.lpn = ?""", lpn1))
+                SELECT p.stock_status AS status, p.location_code FROM inventory.stock_package p
+                 WHERE p.lpn = ?""", lpn1))
                 .singleElement().satisfies(row -> {
                     assertThat(row.get("status")).isEqualTo("AVAILABLE");
                     assertThat(row.get("location_code")).isEqualTo(bin);
@@ -488,8 +486,8 @@ class PutawayConfirmationIntegrationTest {
         assertThat(done.status()).isEqualTo("DONE");
         assertThat(done.targetLocationCode()).isEqualTo(overflow);
         assertThat(jdbc.queryForList("""
-                SELECT s.status, s.location_code FROM inventory.stock_item s
-                  JOIN inventory.stock_package p ON p.id = s.stock_package_id WHERE p.lpn = ?""", lpn1))
+                SELECT p.stock_status AS status, p.location_code FROM inventory.stock_package p
+                 WHERE p.lpn = ?""", lpn1))
                 .singleElement().satisfies(row -> {
                     assertThat(row.get("status")).isEqualTo("AVAILABLE");
                     assertThat(row.get("location_code")).isEqualTo(overflow);
@@ -540,7 +538,7 @@ class PutawayConfirmationIntegrationTest {
                                                      location_code)
                 SELECT ?, ?, p.inventory_item_id, p.uom_conversion_id, 10, ? FROM inventory.stock_package p
                  WHERE p.lpn = ?""";
-        // Each in a transaction rolled back: only the row trigger is under test, not the carton's stock rows.
+        // Each in a transaction rolled back: only the row trigger is under test, not the carton as stock.
         assertThat(org.junit.jupiter.api.Assertions.assertThrows(org.springframework.dao.DataAccessException.class,
                 () -> tx.executeWithoutResult(s -> {
                     s.setRollbackOnly();

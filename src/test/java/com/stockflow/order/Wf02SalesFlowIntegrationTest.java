@@ -67,8 +67,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       signing, batch 1 before delivery and batch 2 after it; sent, signed - the order waits for its money with no
  *       stock held - and the receipt of the installment on signing confirms it, by itself.</li>
  *   <li><b>DS-02b</b> - the credit exception: a customer with an instalment overdue draws a contract that pays after
- *       delivery; the DRAFT and the send both carry the warning (14 §4.3 step 13, 15 BR-11 - never a refusal); signed,
- *       the order goes ON_HOLD for credit with the check OVERDUE recorded. Accounting approves - PENDING_PAYMENT, the
+ *       delivery; the DRAFT carries the warning (14 §4.3 step 13) and the send does not send it: it waits for
+ *       accounting, who approves it and it is sent (15 BR-11 as changed on 2026-11-26). More falls overdue before it
+ *       is signed - worse than approved - so, signed, the order goes ON_HOLD for credit with the check OVERDUE
+ *       recorded. Accounting approves - PENDING_PAYMENT, the
  *       deposit still owed, CONFIRMED once paid - or refuses - CANCELLED, {@code CREDIT_REJECTED}, the deposit
  *       collected while it was held made refundable (15 §4.3 step 10, §4.5). The same on the demo seed:
  *       {@code Wf02CreditExceptionSeedIntegrationTest}.</li>
@@ -307,9 +309,10 @@ class Wf02SalesFlowIntegrationTest {
     }
 
     /**
-     * DS-02b steps 1-2 on {@code orderId}: a contract paying batch 2 after delivery - warned as a DRAFT and when sent,
-     * never refused (14 §4.3 step 13, 15 BR-11) - signed: ON_HOLD for credit, OVERDUE recorded, in the accountant's
-     * queue, its instalments open (held or not, a signed contract is owed what it says), nothing held.
+     * DS-02b steps 1-2 on {@code orderId}: a contract paying batch 2 after delivery - warned as a DRAFT (14 §4.3 step
+     * 13), and sent only once accounting approved it (15 BR-11 as changed on 2026-11-26) - then more falls overdue, and
+     * signed: ON_HOLD for credit, OVERDUE recorded, in the accountant's queue, its instalments open (held or not, a
+     * signed contract is owed what it says), nothing held.
      */
     private SalesContracts.ContractView heldForCredit(UUID orderId) {
         UUID line = lineOf(orderId);
@@ -319,11 +322,23 @@ class Wf02SalesFlowIntegrationTest {
         assertThat(drafted.creditWarning().outcome()).isEqualTo("OVERDUE");
         assertThat(asSales(() -> contracts.get(orderId)).creditWarning().outcome()).as("read again, still warned")
                 .isEqualTo("OVERDUE");
-        SalesContracts.ContractView sent = asSales(() -> contracts.send(sales, orderId, drafted.version()));
-        assertThat(sent.creditWarning().outcome()).as("sent anyway, warned").isEqualTo("OVERDUE");
+        SalesContracts.ContractView waiting = asSales(() -> contracts.send(sales, orderId, drafted.version()));
+        assertThat(waiting.status()).as("not sent: it waits for accounting").isEqualTo("DRAFT");
+        assertThat(waiting.creditReview()).isEqualTo("PENDING");
+        assertThatThrownBy(() -> asSales(() -> contracts.approveCredit(sales, orderId, waiting.version(), "ok")))
+                .as("four eyes: whoever sent it does not decide it").extracting(Wf02SalesFlowIntegrationTest::code)
+                .isEqualTo(ErrorCode.CONTRACT_CREDIT_REVIEW_SELF);
+        CurrentUser accounting = new CurrentUser(accountant, "accountant-" + accountant, Set.of(Role.ACCOUNTANT),
+                Set.of(), DataScope.ALL, Set.of(), Set.of());
+        SalesContracts.ContractView sent = WithCurrentUser.call(accounting, DataScope.ALL, () -> contracts.approveCredit(
+                accounting, orderId, waiting.version(), "Khách hứa trả khoản quá hạn"));
+        assertThat(sent.status()).isEqualTo("SENT");
+        assertThat(sent.creditWarning().outcome()).as("sent as approved").isEqualTo("OVERDUE");
         assertThat(asSales(() -> contracts.get(orderId)).creditWarning()).as("a sent contract is past warning")
                 .isNull();
 
+        // Worse than approved by the signature: another instalment of the customer falls overdue.
+        owesSomethingOverdue();
         signed(orderId, sent);
         assertThat(status(orderId)).isEqualTo(OrderStatus.ON_HOLD);
         assertThat(orders.findById(orderId).orElseThrow().lifecycle().holdReason())
@@ -590,8 +605,9 @@ class Wf02SalesFlowIntegrationTest {
     }
 
     @Test
-    @DisplayName("DS-02b: a customer owing something overdue - warned on the DRAFT and on sending, never refused; signed, "
-            + "ON_HOLD for credit (OVERDUE); approved with a note: PENDING_PAYMENT, then CONFIRMED by the deposit")
+    @DisplayName("DS-02b: a customer owing something overdue - warned on the DRAFT, sent once accounting approved; more "
+            + "overdue by the signature: ON_HOLD for credit (OVERDUE); approved with a note: PENDING_PAYMENT, then "
+            + "CONFIRMED by the deposit")
     void ds02bCreditHoldApproved() {
         owesSomethingOverdue();
         UUID orderId = quotedAndConverted();

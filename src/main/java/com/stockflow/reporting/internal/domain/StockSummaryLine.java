@@ -12,7 +12,7 @@ import java.util.UUID;
  * and {@link #cartonNote()} says why.</p>
  *
  * @param warehouseId    null for a warehouse that is no longer active (the ledger keeps its lines)
- * @param ownerId        the customer whose own SKU it is (12 §4.5); null for an ordinary variant
+ * @param ownerId        the customer whose own SKU it is (12 §4.5); only customers' SKUs hold stock
  * @param unitsPerCarton the SKU's standard count per carton; null when it has no carton unit
  */
 public record StockSummaryLine(UUID warehouseId, String warehousePrefix, String warehouseName, String sku,

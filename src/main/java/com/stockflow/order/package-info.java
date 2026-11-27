@@ -12,6 +12,11 @@
  * reads a message's text when it writes it). Plus {@code common} and {@code contracts}, which are
  * available to every module.</p>
  *
+ * <p>Placing an order from an accepted quote is where a customer's SKU gets its inventory item (owner decision Q5 of
+ * 2026-11-26): {@code OrderServiceImpl.placeQuotedOrder} reads each line SKU's catalogue variant from
+ * {@code product :: api}'s {@code CustomerSkus} and opens the items through {@code inventory :: api}, in the order's
+ * transaction.</p>
+ *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
  *   <li>{@code api} — the public API, exposed as a named interface. This is all any other module

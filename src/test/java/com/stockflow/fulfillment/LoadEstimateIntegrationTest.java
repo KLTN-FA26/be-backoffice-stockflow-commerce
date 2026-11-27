@@ -1,5 +1,6 @@
 package com.stockflow.fulfillment;
 
+import com.stockflow.support.StockedSkus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.id.Identifiers;
@@ -82,15 +83,15 @@ class LoadEstimateIntegrationTest {
         customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         container = tx.execute(s -> vehicleType("ACTIVE"));
 
-        palletSku = tx.execute(s -> ReferenceRows.product(entityManager).sku());
-        tableSku = tx.execute(s -> ReferenceRows.product(entityManager).sku());
-        bareSku = tx.execute(s -> ReferenceRows.product(entityManager).sku());
+        palletSku = tx.execute(s -> ownSku());
+        tableSku = tx.execute(s -> ownSku());
+        bareSku = tx.execute(s -> ownSku());
         tx.executeWithoutResult(s -> {
             // 24 on a pallet of 181 kg, 120 x 100 x 150 cm, flagged.
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                         weight_kg, length_cm, width_cm, height_cm, active, created_by)
-                    SELECT ?, i.id, 'PALLET', 24, 181, 120, 100, 150, TRUE, 'test'
+                    SELECT ?, i.variant_id, 'PALLET', 24, 181, 120, 100, 150, TRUE, 'test'
                     FROM inventory.inventory_items i WHERE i.sku = ?""", Identifiers.newId(), palletSku);
             // A table, one to a carton of 160 x 90 x 75 cm, 45 kg.
             carton(tableSku, "TABLE", 1, "45", "160", "90", "75");
@@ -103,6 +104,18 @@ class LoadEstimateIntegrationTest {
     }
 
     // ---- fixtures ------------------------------------------------------------------------------------------------
+
+    /**
+     * A SKU of the customer's, on a catalogue variant of its own (an order names only a customer's SKU, 14 BR-04),
+     * with the item its order made (owner decision Q5): its cartons are declared on that variant.
+     */
+    private String ownSku() {
+        ReferenceRows.ProductRow product = ReferenceRows.product(entityManager);
+        String sku = product.sku() + "-C";
+        StockedSkus.customerSkuOf(jdbc, customer, product.productId(), product.variantId(), sku,
+                "Estimate fixture");
+        return sku;
+    }
 
     private UUID otherWarehouse() {
         UUID id = Identifiers.newId();
@@ -163,9 +176,9 @@ class LoadEstimateIntegrationTest {
     /** The SKU's one carton unit, the one it ships in; a null measure is one nobody declared. */
     private void carton(String sku, String code, int factor, String kg, String length, String width, String height) {
         jdbc.update("""
-                INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                     weight_kg, length_cm, width_cm, height_cm, active, created_by)
-                SELECT ?, i.id, ?, ?, ?::numeric, ?::numeric, ?::numeric, ?::numeric, TRUE, 'test'
+                SELECT ?, i.variant_id, ?, ?, ?::numeric, ?::numeric, ?::numeric, ?::numeric, TRUE, 'test'
                 FROM inventory.inventory_items i WHERE i.sku = ?""", Identifiers.newId(), code, factor, kg, length,
                 width, height, sku);
     }
@@ -232,7 +245,7 @@ class LoadEstimateIntegrationTest {
     @Test
     @DisplayName("LP2-3: when no line resolves, 422 naming each item; only the fields really missing; nothing stored")
     void noLineResolvesIsRefused() throws Exception {
-        String weightless = tx.execute(s -> ReferenceRows.product(entityManager).sku());
+        String weightless = tx.execute(s -> ownSku());
         UUID weightlessItem = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
                 weightless);
         tx.executeWithoutResult(s -> carton(weightless, "CTN", 1, null, "30", "20", "10"));

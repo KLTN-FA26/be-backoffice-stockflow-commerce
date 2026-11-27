@@ -87,8 +87,8 @@ class DesignSubmissionIntegrationTest {
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
         as(staff);
         String code = "SUB-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        UUID productId = products.create(new CreateProductCommand(code, "Ly giấy 12oz", "Paper cup 12oz", null, null,
-                "Ly", null, null, TaxClass.STANDARD, List.of())).productId();
+        UUID productId = products.create(new CreateProductCommand(code, "Ly giấy 12oz", null, null,
+                "Ly", null, TaxClass.STANDARD, List.of())).productId();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.products SET status = 'APPROVED', submitted_by = ?, submitted_at = NOW(), "
                     + "approved_by = ?, approved_at = NOW() WHERE id = ?", ReferenceRows.user(entityManager),
@@ -285,8 +285,9 @@ class DesignSubmissionIntegrationTest {
                 .andExpect(jsonPath("$.data.hasCartonSpec").value(true));
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku);
-            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE inventory_item_id = "
-                    + "(SELECT id FROM inventory.inventory_items WHERE sku = ?)", sku);
+            // The variant has no inventory item (V20270105000100): its cartons are found by its own id.
+            jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE variant_id = "
+                    + "(SELECT id FROM product.variants WHERE sku = ?)", sku);
         });
 
         JsonNode issues = json.readTree(submit(version())

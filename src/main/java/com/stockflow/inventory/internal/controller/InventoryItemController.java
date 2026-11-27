@@ -35,8 +35,8 @@ import java.util.UUID;
  * with the columns that held a choice nobody may make.</p>
  *
  * <p>The resource declares only the actions an endpoint here checks. V20260928006000 also seeded CREATE and EXPORT
- * for it, but items are created by the variant trigger and nothing exports them, so the role matrix would offer
- * grants that guard nothing. Undeclared grants are left alone by the matrix rather than shown or removed.</p>
+ * for it, but an item is opened by placing an order (owner decision Q5, {@code InventoryService.openItems}), never
+ * here, and nothing exports them, so the role matrix would offer grants that guard nothing. Undeclared grants are left alone by the matrix rather than shown or removed.</p>
  */
 @RestController
 @RequestMapping("/api/v1/inventory/items")

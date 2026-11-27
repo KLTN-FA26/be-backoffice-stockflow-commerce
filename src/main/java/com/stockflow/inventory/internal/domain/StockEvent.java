@@ -13,7 +13,7 @@ import java.util.UUID;
  * aggregate collects.
  *
  * <p>Two constraints pull in opposite directions. {@code contracts} records must stay flat and
- * import nothing, so they cannot implement {@code DomainEvent}. But {@link StockItem} wants to
+ * import nothing, so they cannot implement {@code DomainEvent}. But {@link StockPackage} wants to
  * register events with an id and a timestamp so they can be de-duplicated and ordered. A sealed
  * wrapper satisfies both: the payload published to listeners is still the plain contract record,
  * while the envelope carries the metadata.</p>

@@ -93,12 +93,15 @@ class ProductServiceImpl implements ProductService {
     private final CurrentUserProvider users;
     private final List<SkuReferenceProbe> probes;
     private final Clock clock;
+    /** The description is the back office editor's HTML, cleaned before it is stored (ADR-0013). */
+    private final RichTextPolicy richText;
 
     ProductServiceImpl(ProductRepository products, ProductSearchRepository search, ProductVariantService variants,
                        ProductMediaService media, ProductAttributeService attributes, ProductEventPublisher events,
                        ProductChangeLogRepository history, ProductCommerceRepository commerce,
                        InventoryService inventory, IdentityService identity, CurrentUserProvider users,
-                       List<SkuReferenceProbe> probes, Clock clock) {
+                       List<SkuReferenceProbe> probes, RichTextPolicy richText, Clock clock) {
+        this.richText = richText;
         this.products = products;
         this.search = search;
         this.variants = variants;
@@ -139,8 +142,8 @@ class ProductServiceImpl implements ProductService {
     }
 
     /**
-     * A draft product and its variants; each variant creates its SKU's inventory item (trigger), where
-     * its logistics are then filled in.
+     * A draft product and its variants. A variant has no inventory item (V20270105000100): it is never stocked, and
+     * its customers' SKUs get theirs when an order names them.
      *
      * <p>Without axes the product gets one default variant whose SKU is the product code, so that code
      * must be free as a SKU too. With axes (spec D2) the axes are written and every combination of their
@@ -166,8 +169,8 @@ class ProductServiceImpl implements ProductService {
             throw new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS,
                     "SKU " + command.code() + " already belongs to another product's variant");
         }
-        Product product = Product.draft(command.code(), command.name(), command.nameEn(), command.brandId(),
-                command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
+        Product product = Product.draft(command.code(), command.name(), command.brandId(),
+                command.categoryId(), command.shortDescription(), richText.clean(command.description(), "description"),
                 command.taxClass());
         products.save(product);
         UUID productId = product.id().value();
@@ -216,8 +219,8 @@ class ProductServiceImpl implements ProductService {
         Product product = requireProductForUpdate(command.productId());
         product.requireVersion(command.version());
         requireReferences(command.brandId(), command.categoryId(), product.brandId(), product.categoryId());
-        List<String> changed = product.updateDetails(command.name(), command.nameEn(), command.brandId(),
-                command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
+        List<String> changed = product.updateDetails(command.name(), command.brandId(),
+                command.categoryId(), command.shortDescription(), richText.clean(command.description(), "description"),
                 command.taxClass());
         products.save(product);
         if (!changed.isEmpty()) {
@@ -326,9 +329,9 @@ class ProductServiceImpl implements ProductService {
      * then while a SKU's inventory item is used by any document ({@code InventoryService.skusInUse}: stock, the
      * ledger, warehouse tasks, a price, procurement), and then by the foreign keys for everything else (order and
      * cart lines, designs, a storefront listing): that is the last line of defence, and it is a 409
-     * {@code PRODUCT_IN_USE}, never a 500. The inventory item each SKU got when its variant was created is deleted
-     * with it, its stock alerts too (a note about the item, not a use of it); the stored image files are removed
-     * only after the commit.</p>
+     * {@code PRODUCT_IN_USE}, never a 500. A draft product's variants have no item since V20270105000100 and it has
+     * no customer's SKU, so the item checks find nothing; they stay as the last word should that ever change. The
+     * stored image files are removed only after the commit.</p>
      */
     @Override
     @Auditable(action = AuditAction.DELETE, resourceType = "product", resourceId = "#productId")

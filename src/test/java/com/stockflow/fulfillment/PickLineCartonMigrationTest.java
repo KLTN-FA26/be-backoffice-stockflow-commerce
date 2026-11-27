@@ -1,5 +1,6 @@
 package com.stockflow.fulfillment;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.InventoryService;
@@ -27,8 +28,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * V20261028003000 (SCRUM-473 picking by carton): a pick line names the carton of the hold it consumes - that carton's
- * LPN exactly. A hold on loose units (which named no carton)
- * cannot exist since review C4 M-5 ({@code ck_stock_item_whole_cartons}): its case went with it.
+ * LPN exactly. Since V20261231000600 the hold names its carton itself ({@code stock_reservation.stock_package_id}),
+ * so the trigger reads it from there; a hold on loose units cannot exist at all.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -59,12 +60,12 @@ class PickLineCartonMigrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Carton fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Carton fixture");
+            UUID variant = Identifiers.newId();
+            StockedSkus.customerSkuOn(jdbc, product, variant, sku, "Carton fixture");
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             unit = Identifiers.newId();
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 10)", unit, item);
+            jdbc.update("insert into inventory.uom_conversions (id, variant_id, unit_of_measure, factor)"
+                    + " values (?, ?, 'CARTON', 10)", unit, variant);
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                         currency, placed_at, version, created_at, contract_signed_at)
@@ -78,27 +79,20 @@ class PickLineCartonMigrationTest {
         });
     }
 
-    /** A sealed carton of 10 on the shelf; returns its LPN. */
+    /** A sealed AVAILABLE carton of 10 on the shelf, in the UNTRACED lot of its receipt; returns its LPN. */
     private String carton(String name) {
         String lpn = "LPN-" + sku + "-" + name;
         tx.executeWithoutResult(s -> {
             UUID id = Identifiers.newId();
             jdbc.update("""
                     insert into inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
-                        received_qty, location_code, status) values (?, ?, ?, ?, 10, 10, ?, 'IN_STOCK')""",
-                    id, lpn, item, unit, SHELF);
-            stockRow(10, id);
+                        counted_at, location_code, status, stock_status, lot_id, received_at)
+                    values (?, ?, ?, ?, 10, now(), ?, 'IN_STOCK', 'AVAILABLE', ?, ?)""",
+                    id, lpn, item, unit, SHELF,
+                    com.stockflow.support.CartonRows.lot(jdbc, sku, com.stockflow.support.CartonRows.DEFAULT_LOT, RECEIVED),
+                    java.sql.Timestamp.from(RECEIVED));
         });
         return lpn;
-    }
-
-    private UUID stockRow(int onHand, UUID carton) {
-        UUID id = Identifiers.newId();
-        jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved, status,
-                    version, created_at, stock_package_id) values (?, ?, ?, 'UNTRACED', ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                id, sku, SHELF, java.sql.Timestamp.from(RECEIVED), onHand, carton);
-        return id;
     }
 
     /** Reserves and allocates {@code quantity} for the order - one whole carton; returns the one hold it made. */
@@ -139,8 +133,8 @@ class PickLineCartonMigrationTest {
         String other = carton("B");
         UUID reservation = hold(10);
         String held = jdbc.queryForObject("""
-                select p.lpn from inventory.stock_reservation r join inventory.stock_item s on s.id = r.stock_item_id
-                  join inventory.stock_package p on p.id = s.stock_package_id where r.id = ?""", String.class, reservation);
+                select p.lpn from inventory.stock_reservation r
+                  join inventory.stock_package p on p.id = r.stock_package_id where r.id = ?""", String.class, reservation);
         String wrong = held.equals(other) ? "LPN-" + sku + "-A" : other;
 
         assertThatThrownBy(() -> line(reservation, wrong, false)).isInstanceOf(DataAccessException.class)

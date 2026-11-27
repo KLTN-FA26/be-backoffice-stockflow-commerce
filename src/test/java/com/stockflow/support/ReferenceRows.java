@@ -77,9 +77,10 @@ public final class ReferenceRows {
     }
 
     /**
-     * A DRAFT {@code product.products} row with its default ACTIVE variant; the variant insert creates
-     * the SKU's inventory item (trigger). Since C1, a design draft's {@code product_id} and an order
-     * line's {@code sku} are foreign keys to these.
+     * A DRAFT {@code product.products} row with its default ACTIVE variant - a catalogue variant, which has no
+     * inventory item and holds no stock (V20270105000100): a test that stocks, quotes or orders goods issues a
+     * customer's SKU on it ({@link CustomerSkuRows}). Since C1 a design draft's {@code product_id} is a foreign key
+     * to these.
      */
     public static ProductRow product(EntityManager em) {
         UUID productId = Identifiers.newId();

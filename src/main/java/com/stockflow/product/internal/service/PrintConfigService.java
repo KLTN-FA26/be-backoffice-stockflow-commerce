@@ -354,7 +354,7 @@ public class PrintConfigService implements PrintConfigs {
             return List.of();
         }
         List<VariantJpaEntity> active = variants.findByProductIdOrderByPositionAscIdAsc(productId).stream()
-                .filter(v -> v.getStatus() == VariantStatus.ACTIVE && v.getOwnerCustomerId() == null)
+                .filter(v -> v.getStatus() == VariantStatus.ACTIVE)
                 .toList();
         if (active.isEmpty()) {
             return List.of();
@@ -390,7 +390,7 @@ public class PrintConfigService implements PrintConfigs {
     public boolean designable(UUID templateId) {
         return templates.findById(templateId)
                 .flatMap(template -> variants.findById(template.getVariantId()))
-                .filter(variant -> variant.getStatus() == VariantStatus.ACTIVE && variant.getOwnerCustomerId() == null)
+                .filter(variant -> variant.getStatus() == VariantStatus.ACTIVE)
                 .flatMap(variant -> products.findById(variant.getProductId()))
                 .filter(product -> product.getKind() == ProductKind.CUSTOMIZABLE
                         && (product.getStatus() == ProductStatus.APPROVED || product.getStatus() == ProductStatus.PUBLISHED))

@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -43,14 +44,13 @@ class InventoryItemHttpIntegrationTest {
         suffix = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
     }
 
-    /** A variant makes its inventory item; the barcode is then set on that item. */
+    /** A customer's SKU with the item its order made (owner decision Q5); the barcode is then set on that item. */
     private UUID item(String sku, String barcode) {
         return tx.execute(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Item fixture", slugOf(sku));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Item fixture','')", Identifiers.newId(), product, sku);
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Item fixture");
             jdbc.update("update inventory.inventory_items set barcode=? where sku=?", barcode, sku);
             return jdbc.queryForObject("select id from inventory.inventory_items where sku=?", UUID.class, sku);
         });
@@ -66,7 +66,8 @@ class InventoryItemHttpIntegrationTest {
     }
 
     private static String logisticsBody(long version) {
-        // weightKg is what an older client still sends: the item has no weight any more, so it is ignored.
+        // weightKg and rotatable are what an older client still sends: the item has no weight any more, and whether a
+        // carton may be turned is its variant's (owner decision Q9), so both are ignored.
         return "{\"version\":" + version + ",\"unitOfMeasure\":\"EACH\","
                 + "\"rotatable\":false,\"weightKg\":0.120}";
     }
@@ -91,7 +92,8 @@ class InventoryItemHttpIntegrationTest {
                         .content(logisticsBody(v)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(v + 1))
-                .andExpect(jsonPath("$.data.logistics.rotatable").value(false))
+                .andExpect(jsonPath("$.data.logistics.rotatable").doesNotExist())
+
                 .andExpect(jsonPath("$.data.logistics.weightKg").doesNotExist())
                 .andExpect(jsonPath("$.data.policy").doesNotExist());
     }
@@ -109,9 +111,9 @@ class InventoryItemHttpIntegrationTest {
     void packagingPreviewResolvesTheItemsCarton() throws Exception {
         UUID id = item("HTTP-K-" + suffix, null);
         tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                insert into inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                     weight_kg, length_cm, width_cm, height_cm, active)
-                values (gen_random_uuid(), ?, 'CARTON', 2, 0.7, 12, 9, 7, true)""", id));
+                values (gen_random_uuid(), (select variant_id from inventory.inventory_items where id = ?), 'CARTON', 2, 0.7, 12, 9, 7, true)""", id));
         mvc.perform(get(BASE + "/" + id + "/packaging-preview").param("quantity", "4"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("RESOLVED"))

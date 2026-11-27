@@ -16,12 +16,12 @@ import java.util.UUID;
  */
 public interface ProductService {
 
-    /** Whether {@code sku} is one of this product's variants. Prevents attaching a valid design for a
-     *  different product to an order SKU. */
+    /** Whether {@code sku} is one of this product's variants or customers' own SKUs (any status). Prevents
+     *  attaching a valid design for a different product to an order SKU. */
     boolean containsSku(UUID productId, String sku);
 
-    /** Procurement fallback for an omitted line description: the name of the product the variant
-     *  {@code sku} belongs to. Never exposes persistence objects. */
+    /** Procurement fallback for an omitted line description: the name of the product the variant or customer's
+     *  own SKU {@code sku} belongs to. Never exposes persistence objects. */
     Optional<String> nameForSku(String sku);
 
     /**
@@ -32,8 +32,9 @@ public interface ProductService {
 
     /**
      * The name of the variant each of {@code skus} is (its {@code variants.name}, what a customer sees the variant
-     * called), by SKU as stored, any status: a design drawn on a variant since blocked still shows its name. An unknown
-     * SKU is absent. One query, for a page of designs.
+     * called) - or of the customer's own SKU it is ({@code customer_skus.name}) - by SKU as stored, any status: a
+     * design drawn on a variant since blocked still shows its name. An unknown SKU is absent. One query per table,
+     * for a page of designs.
      */
     java.util.Map<String, String> variantNamesOf(java.util.Collection<String> skus);
 
@@ -93,8 +94,9 @@ public interface ProductService {
     ProductSummary resume(UUID productId, long version);
 
     /**
-     * Deletes a DRAFT product with its variants, their images and the inventory items the variants
-     * created (kltn-docs 01 BR-02); the stored image files go after the commit.
+     * Deletes a DRAFT product with its variants and their images (kltn-docs 01 BR-02); the stored image files go
+     * after the commit. A variant has no inventory item (V20270105000100), and a DRAFT product has no customer's SKU
+     * (one is issued only on an approved product's ACTIVE variant).
      *
      * @throws com.stockflow.common.error.BusinessException {@code PRODUCT_NOT_FOUND}, {@code OPTIMISTIC_LOCK},
      *         {@code PRODUCT_NOT_DELETABLE} (not a draft), {@code PRODUCT_IN_USE} (stock, a production order,

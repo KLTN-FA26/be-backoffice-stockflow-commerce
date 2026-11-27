@@ -59,8 +59,7 @@ class UomConversionHttpIntegrationTest {
         when(users.current()).thenReturn(Optional.of(new CurrentUser(editor, "test-" + editor, Set.of(), Set.of(),
                 DataScope.ALL, Set.of())));
         String suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        ProductSummary created = products.create(new CreateProductCommand("UOM-" + suffix, "Ly giấy 12oz",
-                "Paper cup 12oz", null, null, "Ly", null, null, TaxClass.STANDARD,
+        ProductSummary created = products.create(new CreateProductCommand("UOM-" + suffix, "Ly giấy 12oz", null, null, "Ly", null, TaxClass.STANDARD,
                 List.of()));
         UUID variantId = variants.list(created.productId(), 0, 1).items().getFirst().id();
         base = "/api/v1/products/" + created.productId() + "/variants/" + variantId + "/uom-conversions";

@@ -203,6 +203,11 @@ public class ShippingWarehouseService {
      * The warehouses the order may ship from (17 §4.2 step 2), in the order C3 and 17 §4.2 step 2 suggest them
      * ({@link #RANKING}).
      *
+     * <p>A line is offered the cartons of its own count each warehouse can still promise
+     * ({@code cartonsToPromiseByWarehouse}), the figure the hold is taken against (ADR-0011): free cartons of another
+     * count never serve it, and their units divided by the line's count would show a warehouse as covering a line it
+     * cannot hold.</p>
+     *
      * @throws BusinessException {@code NOT_FOUND}; {@code ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED} for an order not of a
      *         contract
      */
@@ -211,9 +216,11 @@ public class ShippingWarehouseService {
         Order order = read(orderId);
         requireContract(order);
         List<OrderLine> lines = cartonLines(order);
+        // Cartons to promise by (SKU, count), then by warehouse: two lines of one SKU in one count ask once.
         Map<String, Map<String, Integer>> atp = new HashMap<>();
         for (OrderLine line : lines) {
-            atp.computeIfAbsent(line.sku().code(), sku -> inventory.availableToPromiseByWarehouse(new Sku(sku)));
+            atp.computeIfAbsent(atpKey(line), key -> inventory.cartonsToPromiseByWarehouse(line.sku(),
+                    line.unitsPerCarton()));
         }
         // What the order holds already is available to it at its shipping warehouse, though no longer to others.
         Map<UUID, Integer> own = heldUnitsByLine(order);
@@ -231,9 +238,9 @@ public class ShippingWarehouseService {
         List<Option> options = new ArrayList<>();
         for (WarehouseDirectory.Warehouse warehouse : active) {
             List<LineAvailability> availability = lines.stream().map(line -> new LineAvailability(line.id(),
-                    line.sku().code(), line.cartons(), (atp.get(line.sku().code()).getOrDefault(warehouse.code(), 0)
-                    + (warehouse.code().equals(chosen) ? own.getOrDefault(line.id(), 0) : 0))
-                    / line.unitsPerCarton())).toList();
+                    line.sku().code(), line.cartons(), atp.get(atpKey(line)).getOrDefault(warehouse.code(), 0)
+                    + (warehouse.code().equals(chosen) ? own.getOrDefault(line.id(), 0) / line.unitsPerCarton() : 0)))
+                    .toList();
             boolean every = availability.stream().allMatch(a -> a.availableCartons() >= a.cartons());
             int cartons = availability.stream().mapToInt(a -> Math.min(a.availableCartons(), a.cartons())).sum();
             options.add(option(warehouse, every, cartons, availability, boards.get(warehouse.id()), production,
@@ -241,6 +248,10 @@ public class ShippingWarehouseService {
         }
         options.sort(RANKING);
         return new Options(orderId, order.shippingWarehouseId(), true, options);
+    }
+
+    private static String atpKey(OrderLine line) {
+        return line.sku().code() + "/" + line.unitsPerCarton();
     }
 
     /**
@@ -796,17 +807,37 @@ public class ShippingWarehouseService {
                     holdersOf(cover));
             return 0;
         }
-        Map<UUID, List<com.stockflow.inventory.api.SkuHoldCover.Hold>> holdsOfOrder = new HashMap<>();
-        cover.holds().forEach(h -> holdsOfOrder.computeIfAbsent(h.orderId(), id -> new ArrayList<>()).add(h));
-        int left = cover.uncoveredUnits();
+        // ADR-0011: a hold is covered by cartons of its own count only, so each short count is made up from holds of
+        // that count. Cutting a hold of another count would free cartons the short holds cannot take: they would stay
+        // over-promised, and the next announcement would cut another covered hold.
+        List<Order> ranked = orderedToGiveUp(locked.values());
+        Map<UUID, Integer> givenUpBy = new HashMap<>();
         int givenUp = 0;
-        for (Order order : orderedToGiveUp(locked.values())) {
-            if (left <= 0) {
-                break;
+        for (Map.Entry<Integer, Integer> shortOf : cover.uncoveredCartonsByCount().entrySet()) {
+            int count = shortOf.getKey();
+            int left = shortOf.getValue() * count;
+            Map<UUID, List<com.stockflow.inventory.api.SkuHoldCover.Hold>> holdsOfOrder = new HashMap<>();
+            cover.holds().stream().filter(h -> h.unitsPerCarton() == count)
+                    .forEach(h -> holdsOfOrder.computeIfAbsent(h.orderId(), id -> new ArrayList<>()).add(h));
+            for (Order order : ranked) {
+                if (left <= 0) {
+                    break;
+                }
+                int cut = giveUpOf(order, holdsOfOrder.getOrDefault(order.id().value(), List.of()), left, sku);
+                left -= cut;
+                givenUp += cut;
+                if (cut > 0) {
+                    givenUpBy.merge(order.id().value(), cut, Integer::sum);
+                }
             }
-            int cut = giveUpOf(order, holdsOfOrder.getOrDefault(order.id().value(), List.of()), left, sku, warehouseCode);
-            left -= cut;
-            givenUp += cut;
+        }
+        for (Order order : ranked) {
+            Integer cut = givenUpBy.get(order.id().value());
+            if (cut != null) {
+                orders.save(order);
+                log.info("Order {}: {} unit(s) of {} held at {} given up after a count's shortage; the order is short "
+                        + "of them again", order.orderNumber(), cut, sku, warehouseCode);
+            }
         }
         return givenUp;
     }
@@ -836,12 +867,12 @@ public class ShippingWarehouseService {
     /**
      * One order's cut: its holds of the SKU given up - the latest batch first (a hold of no batch counts as the
      * latest), then the newest hold - until {@code left} units are made up or its holds run out; whole cartons (17
-     * BR-21), so the cut is rounded up to the line's carton. Saves the order when it gave anything up.
+     * BR-21), so the cut is rounded up to the hold's own carton count ({@code shrinkHold} refuses anything else; the
+     * line's count can differ on a hold migrated from units). The caller passes holds of one count and saves the order.
      *
      * @return the units given up
      */
-    private int giveUpOf(Order order, List<com.stockflow.inventory.api.SkuHoldCover.Hold> holds, int left, String sku,
-                         String warehouseCode) {
+    private int giveUpOf(Order order, List<com.stockflow.inventory.api.SkuHoldCover.Hold> holds, int left, String sku) {
         UUID orderId = order.id().value();
         Map<UUID, OrderLine> lineOfHold = new HashMap<>();
         order.lines().forEach(line -> line.reservationIds().forEach(id -> lineOfHold.put(id, line)));
@@ -864,13 +895,14 @@ public class ShippingWarehouseService {
                 break;
             }
             OrderLine line = lineOfHold.get(hold.reservationId());
-            if (line == null || line.unitsPerCarton() == null || line.unitsPerCarton() <= 0) {
-                log.warn("Order {}: hold {} of {} is on no carton line of the order; left as it is", order.orderNumber(),
+            if (line == null) {
+                log.warn("Order {}: hold {} of {} is on no line of the order; left as it is", order.orderNumber(),
                         hold.reservationId(), sku);
                 continue;
             }
-            int cartons = (left + line.unitsPerCarton() - 1) / line.unitsPerCarton();
-            int cut = Math.min(hold.quantity(), cartons * line.unitsPerCarton());
+            int count = hold.unitsPerCarton();
+            int cartons = (left + count - 1) / count;
+            int cut = Math.min(hold.quantity(), cartons * count);
             java.util.Optional<UUID> kept = inventory.shrinkHold(hold.reservationId(), hold.quantity() - cut);
             if (kept.isPresent()) {
                 order.holdMore(line.id(), List.of(kept.get()));
@@ -881,11 +913,6 @@ public class ShippingWarehouseService {
             }
             left -= cut;
             givenUp += cut;
-        }
-        if (givenUp > 0) {
-            orders.save(order);
-            log.info("Order {}: {} unit(s) of {} held at {} given up after a count's shortage; the order is short of them "
-                    + "again", order.orderNumber(), givenUp, sku, warehouseCode);
         }
         return givenUp;
     }

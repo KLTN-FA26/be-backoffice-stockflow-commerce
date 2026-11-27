@@ -16,9 +16,9 @@ import java.util.UUID;
  * a design printed in more colours is priced up by Sales, which needs nobody's approval.
  *
  * <p>The breaks follow {@link PriceTiers}, as a customer's own price: from {@code minQuantity} cartons on, each piece is
- * {@code unitPrice} whole VND, until the next break starts; below the first there is no standard price. Only a variant
- * that no customer owns has one ({@code tg_standard_price_variant}): a customer's own SKU is priced by the customer's
- * own price. The same invariants are CHECKs and a unique key on {@code catalog.standard_price_tier}.</p>
+ * {@code unitPrice} whole VND, until the next break starts; below the first there is no standard price. Only a
+ * catalogue variant has one ({@code fk_standard_price_variant}; a customer's own SKU is no variant since
+ * V20270105000100): a customer's own SKU is priced by the customer's own price. The same invariants are CHECKs and a unique key on {@code catalog.standard_price_tier}.</p>
  */
 public final class StandardPrice {
 

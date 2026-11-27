@@ -51,4 +51,10 @@ public final class SalesContractRequests {
 
     /** Cancelling the contract before it is signed. */
     public record Cancellation(@NotNull Long version, @NotBlank @Size(max = 500) String reason) { }
+
+    /**
+     * 15 BR-11: accounting's decision on a contract waiting before it is sent, against the version read - the note an
+     * approval keeps, or the reason a refusal gives Sales.
+     */
+    public record CreditDecision(@NotNull Long version, @NotBlank @Size(max = 500) String note) { }
 }
