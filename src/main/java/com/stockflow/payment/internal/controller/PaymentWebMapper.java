@@ -65,6 +65,15 @@ final class PaymentWebMapper {
             java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels,
             java.util.Map<java.util.UUID, String> names, Boolean voidable,
             com.stockflow.common.error.ErrorCode voidBlockedBy) {
+        return toResponse(r, installments, labels, names, voidable, voidBlockedBy, java.util.List.of());
+    }
+
+    static com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse toResponse(
+            com.stockflow.payment.internal.domain.PaymentReceipt r,
+            java.util.Map<java.util.UUID, com.stockflow.payment.internal.domain.Installment> installments,
+            java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels,
+            java.util.Map<java.util.UUID, String> names, Boolean voidable,
+            com.stockflow.common.error.ErrorCode voidBlockedBy, java.util.List<String> loadingLoadCodes) {
         var label = labelOf(labels, r.customerId());
         return new com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse(r.id(), r.customerId(),
                 label == null ? null : label.name(), label == null ? null : label.code(),
@@ -78,7 +87,7 @@ final class PaymentWebMapper {
                             i == null ? null : i.milestone().name());
                 }).toList(), r.recordedBy() == null ? null : names.get(r.recordedBy()),
                 r.voidedBy() == null ? null : names.get(r.voidedBy()), voidable,
-                voidBlockedBy == null ? null : voidBlockedBy.name());
+                voidBlockedBy == null ? null : voidBlockedBy.name(), loadingLoadCodes);
     }
 
     /** The label of a customer from a batch read; null when there is no batch (a customer's own view) or no such customer. */

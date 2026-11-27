@@ -913,7 +913,7 @@ class DispatchService implements Dispatching {
             }
             requireOnManifest(load, removal.shipments());
         }
-        if (!load.cancelControlled(code, note, actor.userId(), now)) {
+        if (!load.cancelControlled(code, note, takingOff ? removal.shipments() : Set.of(), actor.userId(), now)) {
             // Called off before: answered as it is, with the vehicle's live load when another took its place.
             DispatchLoadJpaEntity live = ctx.vehicle() == null ? null : planVehicles.liveLoads(ctx.plan())
                     .get(ctx.vehicle().id());

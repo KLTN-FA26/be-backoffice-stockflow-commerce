@@ -232,7 +232,10 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
                         ? cb.isNotNull(root.get("reachedAt")) : cb.isNull(root.get("reachedAt")))
                 .and(filter.overdueOn() == null ? null : overdue(filter.overdueOn(), filter.overdue()))
                 // Specs.in: null is any customer, empty is none - a search that matched no customer finds nothing.
-                .and(Specs.in("customerId", filter.customerIds()))
+                .and(filter.searchTerm() == null ? Specs.in("customerId", filter.customerIds())
+                        : Specs.<InstallmentJpaEntity>in("customerId", filter.customerIds())
+                                .or(Specs.contains("orderNumber", filter.searchTerm()))
+                                .or(Specs.contains("contractNumber", filter.searchTerm())))
                 .and(Boolean.TRUE.equals(filter.owing()) ? owing() : null)
                 .and(Boolean.TRUE.equals(filter.unannounced()) ? (root, query, cb) -> cb.or(
                         cb.isNull(root.get("overdueAnnouncedFor")),

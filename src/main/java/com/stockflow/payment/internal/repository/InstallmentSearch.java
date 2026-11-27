@@ -38,11 +38,19 @@ public interface InstallmentSearch {
     record InstallmentFilter(UUID customerId, UUID orderId, InstallmentStatus status, InstallmentMilestone milestone,
                              LocalDate dueBefore, Boolean reached, Boolean overdue, LocalDate overdueOn,
                              LocalDate dueFrom, java.util.Collection<UUID> customerIds, Boolean owing,
-                             Boolean unannounced) {
+                             Boolean unannounced, String searchTerm) {
 
         public InstallmentFilter {
             overdueOn = overdue == null ? null : java.util.Objects.requireNonNull(overdueOn, "overdueOn");
             customerIds = customerIds == null ? null : java.util.List.copyOf(customerIds);
+        }
+
+        public InstallmentFilter(UUID customerId, UUID orderId, InstallmentStatus status,
+                                 InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
+                                 Boolean overdue, LocalDate overdueOn, LocalDate dueFrom,
+                                 java.util.Collection<UUID> customerIds, Boolean owing, Boolean unannounced) {
+            this(customerId, orderId, status, milestone, dueBefore, reached, overdue, overdueOn, dueFrom,
+                    customerIds, owing, unannounced, null);
         }
 
         /** Without the overdue scan's reading. */

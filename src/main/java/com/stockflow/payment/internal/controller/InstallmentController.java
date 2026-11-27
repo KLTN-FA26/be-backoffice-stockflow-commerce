@@ -94,8 +94,9 @@ class InstallmentController {
         // Customers hold payment-installments:READ for /me; this list is every customer's.
         ScopeGuards.requireBackOffice(user);
         LocalDate today = installments.today();
-        var found = installments.installments(customerId, customersMatching(search), orderId, status, milestone,
-                dueBefore, reached, overdue, owing, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
+        var found = installments.installments(customerId, customersMatching(search), search, orderId, status,
+                milestone, dueBefore, reached, overdue, owing, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
         // One query for the names of the whole page - not one per row.
         var labels = customers.labels(found.items().stream().map(i -> i.customerId()).toList());
         return ApiResponse.ok(found.map(i -> PaymentWebMapper.toResponse(i, null, today, labels)));

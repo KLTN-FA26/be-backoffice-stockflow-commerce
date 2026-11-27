@@ -444,13 +444,23 @@ public class InstallmentService {
                                                   UUID orderId, InstallmentStatus status,
                                                   InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
                                                   Boolean overdue, Boolean owing, int page, int size, String sort) {
+        return installments(customerId, customerIds, null, orderId, status, milestone, dueBefore, reached,
+                overdue, owing, page, size, sort);
+    }
+
+    @Transactional(readOnly = true)
+    public PageResponse<Installment> installments(UUID customerId, java.util.Collection<UUID> customerIds,
+                                                  String searchTerm, UUID orderId, InstallmentStatus status,
+                                                  InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
+                                                  Boolean overdue, Boolean owing, int page, int size, String sort) {
         if (status == InstallmentStatus.OVERDUE) {
             throw new BusinessException(ErrorCode.INSTALLMENT_OVERDUE_IS_A_FLAG,
                     "OVERDUE is not an installment status any more; filter with overdue=true")
                     .localized("refusal.payment.overdueIsAFlag");
         }
         return Pages.toResponse(search.installments(new InstallmentSearch.InstallmentFilter(customerId, orderId, status,
-                milestone, dueBefore, reached, overdue, overdue == null ? null : today(), null, customerIds, owing),
+                milestone, dueBefore, reached, overdue, overdue == null ? null : today(), null, customerIds, owing,
+                null, searchTerm),
                 Pages.of(page, size, SORT.parse(sort))));
     }
 

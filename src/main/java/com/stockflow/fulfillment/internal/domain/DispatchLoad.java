@@ -888,6 +888,12 @@ public final class DispatchLoad {
      * @return whether it changed the load
      */
     public boolean cancelControlled(UnloadReasonCode reasonCode, String note, UUID by, Instant at) {
+        return cancelControlled(reasonCode, note, java.util.Set.of(), by, at);
+    }
+
+    /** A removed shipment and a shipment moving to the replacement vehicle need different unload reasons. */
+    public boolean cancelControlled(UnloadReasonCode reasonCode, String note, java.util.Set<UUID> removedShipments,
+                                    UUID by, Instant at) {
         if (status == LoadStatus.CANCELLED) {
             return false;
         }
@@ -910,7 +916,10 @@ public final class DispatchLoad {
         for (Loaded parcel : List.copyOf(loaded.values())) {
             if (parcel.active()) {
                 loaded.put(parcel.packageId(), unloaded(parcel, by, at));
-                unloads.putIfAbsent(parcel.packageId(), new Unload(parcel.packageId(), parcel.shipmentId(), why, at,
+                String parcelReason = removedShipments.contains(parcel.shipmentId())
+                        ? "Lô giao được gỡ khỏi xe: " + why
+                        : removedShipments.isEmpty() ? why : "Lô giao chuyển sang chuyến thay thế: " + why;
+                unloads.putIfAbsent(parcel.packageId(), new Unload(parcel.packageId(), parcel.shipmentId(), parcelReason, at,
                         null, null, reasonCode, false, null));
             }
         }

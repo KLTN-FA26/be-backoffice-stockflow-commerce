@@ -580,6 +580,29 @@ class DispatchLoadTest {
     }
 
     @Test
+    @DisplayName("WF4 U78: parcels removed from a vehicle and parcels waiting for its replacement have distinct reasons")
+    void cancelledUnderControlSeparatesUnloadReasons() {
+        DispatchLoad load = vehicle();
+        UUID removed = UUID.randomUUID();
+        UUID remaining = UUID.randomUUID();
+        UUID removedParcel = UUID.randomUUID();
+        UUID remainingParcel = UUID.randomUUID();
+        load.addShipment(ftl(removed, null), DISPATCHER, NOW);
+        load.addShipment(ftl(remaining, null), DISPATCHER, NOW);
+        load.book(GHN, "51C-1", DRIVER, null, DISPATCHER, NOW);
+        load.startLoading(DISPATCHER, NOW);
+        load.scan(UUID.randomUUID(), placed(removedParcel, ftl(removed, null), HERE), DISPATCHER, NOW);
+        load.scan(UUID.randomUUID(), placed(remainingParcel, ftl(remaining, null), HERE), DISPATCHER, NOW);
+
+        assertThat(load.cancelControlled(UnloadReasonCode.KIEN_KHONG_VUA, "Kiện không vừa", Set.of(removed),
+                DISPATCHER, NOW)).isTrue();
+        assertThat(load.pendingUnloads()).filteredOn(u -> u.packageId().equals(removedParcel))
+                .singleElement().satisfies(u -> assertThat(u.reason()).contains("gỡ khỏi xe"));
+        assertThat(load.pendingUnloads()).filteredOn(u -> u.packageId().equals(remainingParcel))
+                .singleElement().satisfies(u -> assertThat(u.reason()).contains("chuyến thay thế"));
+    }
+
+    @Test
     @DisplayName("UNLOAD-DROP: a vehicle still PLANNED is dropped from its plan - CANCELLED with code, note, actor and "
             + "time, its shipments leave the manifest, nothing is locked (nothing was scanned); a code and a note are "
             + "required; a booked or loading vehicle is refused; again changes nothing")
