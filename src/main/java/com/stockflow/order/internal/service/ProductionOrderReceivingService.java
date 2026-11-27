@@ -69,22 +69,24 @@ public class ProductionOrderReceivingService implements ProductionOrderReceiving
     @Override
     @Transactional(readOnly = true)
     public Optional<ReceivableProductionOrder> find(UUID productionOrderId) {
-        return productionOrders.findById(productionOrderId).map(production -> view(production, new HashMap<>()));
+        return productionOrders.findById(productionOrderId)
+                .map(production -> view(production, new HashMap<>(), new HashMap<>()));
     }
 
     @Override
     @Transactional(readOnly = true)
     public Map<UUID, ReceivableProductionOrder> findAll(Collection<UUID> productionOrderIds) {
         Map<UUID, String> producerNames = new HashMap<>();
+        Map<UUID, Map<UUID, UUID>> cartonsBySalesOrder = new HashMap<>();
         Map<UUID, ReceivableProductionOrder> found = new LinkedHashMap<>();
-        productionOrders.findAllById(productionOrderIds)
-                .forEach(production -> found.put(production.id(), view(production, producerNames)));
+        productionOrders.findAllById(productionOrderIds).forEach(production ->
+                found.put(production.id(), view(production, producerNames, cartonsBySalesOrder)));
         return found;
     }
 
     @Override
     public Optional<ReceivableProductionOrder> lock(UUID productionOrderId) {
-        return locked(productionOrderId).map(production -> view(production, new HashMap<>()));
+        return locked(productionOrderId).map(production -> view(production, new HashMap<>(), new HashMap<>()));
     }
 
     @Override
@@ -126,7 +128,7 @@ public class ProductionOrderReceivingService implements ProductionOrderReceiving
         Registered registered = registered(production, receiptId);
         if (registered.status() == Status.CONFIRMED) {
             // Counted in already (a retried confirmation): the production order is answered as it stands.
-            return view(production, new HashMap<>());
+            return view(production, new HashMap<>(), new HashMap<>());
         }
         if (registered.status() == Status.CANCELLED) {
             throw new IllegalStateException("Receipt %s of production order %s was cancelled: nothing is counted in"
@@ -138,7 +140,7 @@ public class ProductionOrderReceivingService implements ProductionOrderReceiving
         log.info("Production order {}: receipt {} counted in {} carton(s), now {}", saved.code(),
                 registered.receiptNumber(), cartonsByProductionOrderLine.values().stream().mapToInt(Integer::intValue)
                         .sum(), saved.status());
-        return view(stopIfItsOrderWasCancelled(saved, actorId, at), new HashMap<>());
+        return view(stopIfItsOrderWasCancelled(saved, actorId, at), new HashMap<>(), new HashMap<>());
     }
 
     /**
@@ -198,16 +200,36 @@ public class ProductionOrderReceivingService implements ProductionOrderReceiving
         return productionOrders.findByIdForUpdate(productionOrderId);
     }
 
-    private ReceivableProductionOrder view(ProductionOrder production, Map<UUID, String> producerNames) {
+    /**
+     * The production order as receiving sees it. Each line carries the carton of the sales order line it was made for
+     * (Q7, Q10 of 2026-11-26): the goods come back in the carton the contract was signed in, even after the company
+     * retired it and declared another, so receiving never takes "the SKU's carton of today".
+     *
+     * @param cartonsBySalesOrder the order lines' cartons of each sales order already read, by order line id
+     */
+    private ReceivableProductionOrder view(ProductionOrder production, Map<UUID, String> producerNames,
+                                           Map<UUID, Map<UUID, UUID>> cartonsBySalesOrder) {
         String producerName = producerNames.computeIfAbsent(production.producerId(), id -> producers.findById(id)
                 .map(Producer::name).orElse(null));
+        Map<UUID, UUID> cartons = cartonsBySalesOrder.computeIfAbsent(production.salesOrderId(),
+                this::cartonsOfLines);
         List<ReceivableProductionOrder.Line> lines = production.lines().stream()
                 .map(line -> new ReceivableProductionOrder.Line(line.id(), line.orderLineId(), line.sku(),
-                        line.cartons(), line.unitsPerCarton(), line.receivedCartons()))
+                        line.cartons(), line.unitsPerCarton(), line.receivedCartons(),
+                        cartons.get(line.orderLineId())))
                 .toList();
         return new ReceivableProductionOrder(production.id(), production.code(), production.status().name(),
                 production.receivable(), production.whyNotReceivable().orElse(null),
                 production.receivingWarehouseId(), production.producerId(), producerName, lines);
+    }
+
+    /** The carton of each line of the sales order that has one, by order line id. */
+    private Map<UUID, UUID> cartonsOfLines(UUID salesOrderId) {
+        Map<UUID, UUID> cartons = new HashMap<>();
+        orders.findById(new OrderId(salesOrderId)).ifPresent(order -> order.lines().stream()
+                .filter(line -> line.uomConversionId() != null)
+                .forEach(line -> cartons.put(line.id(), line.uomConversionId())));
+        return cartons;
     }
 
     private static BusinessException notFound(UUID id) {

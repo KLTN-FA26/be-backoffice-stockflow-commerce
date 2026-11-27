@@ -9,7 +9,9 @@ import jakarta.validation.constraints.Size;
 /**
  * PUT replaces the logistics of one inventory item. {@code version} is the item's, as the last read returned it.
  * The item has no weight or size to send: those are the carton's, on its carton unit (kltn-docs 01 BR-03); a client
- * still sending the old measure fields has them ignored.
+ * still sending the old measure fields has them ignored. Whether a carton may be turned is set on the catalogue
+ * variant (owner decision Q9); a client still sending {@code rotatable} here has it ignored.
+
  */
 public record UpdateItemLogisticsRequest(
         @NotNull(message = "version is required") @Min(0)
@@ -21,10 +23,6 @@ public record UpdateItemLogisticsRequest(
         String unitOfMeasure,
 
         @Size(min = 1, max = 64, message = "barcode must be 1-64 characters")
-        String barcode,
-
-        @Schema(description = "Packages of this SKU may be turned 6 ways when a truck is loaded (docs 01, 08, 09), "
-                + "and its cartons turned on the horizontal to fit a bin (06 BR-01); true when absent")
-        Boolean rotatable
+        String barcode
 ) {
 }

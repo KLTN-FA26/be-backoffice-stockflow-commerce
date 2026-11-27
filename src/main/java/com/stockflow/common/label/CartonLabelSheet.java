@@ -69,10 +69,11 @@ public final class CartonLabelSheet {
      *
      * @param name        the item's name; null or blank leaves the field out
      * @param lot         the lot the carton is in; null or blank leaves the field out
-     * @param receivedQty what was counted into the carton, null while it is still to be counted
+     * @param counted     whether the carton has been counted in: it then holds {@code nominalQty}, and the badge says
+     *                    so; false while it is still to be counted
      * @param unit        the packing unit's code
      */
-    public record CartonLabel(String lpn, String sku, String name, String lot, Integer receivedQty, int nominalQty,
+    public record CartonLabel(String lpn, String sku, String name, String lot, boolean counted, int nominalQty,
                               String unit) {
     }
 
@@ -160,7 +161,7 @@ public final class CartonLabelSheet {
         /** The count as a black badge, what a picker checks first; a carton not counted yet says so beside it. */
         private void badge(PDPageContentStream out, Cell cell, CartonLabel label, double left, double badgeTop,
                            double maxWidth) throws IOException {
-            String count = "%s / %d %s".formatted(label.receivedQty() == null ? "-" : label.receivedQty().toString(),
+            String count = "%s / %d %s".formatted(label.counted() ? Integer.toString(label.nominalQty()) : "-",
                     label.nominalQty(), label.unit());
             count = cut(bold, count, maxWidth - 2 * BADGE_PADDING_MM, BADGE_POINTS); // cut makes it drawable
             double badgeWidth = LabelDrawing.widthMm(bold, count, BADGE_POINTS) + 2 * BADGE_PADDING_MM;
@@ -170,7 +171,7 @@ public final class CartonLabelSheet {
             out.setNonStrokingColor(1f);
             LabelDrawing.text(out, cell, bold, BADGE_POINTS, count, left + BADGE_PADDING_MM, baseline);
             out.setNonStrokingColor(0f);
-            if (label.receivedQty() == null) {
+            if (!label.counted()) {
                 double captionLeft = left + badgeWidth + BADGE_PADDING_MM;
                 double room = left + maxWidth - captionLeft;
                 // Bilingual when it fits; else the Vietnamese the warehouse reads, cut only if even that is too long.

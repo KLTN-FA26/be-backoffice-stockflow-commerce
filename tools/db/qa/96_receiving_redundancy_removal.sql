@@ -75,9 +75,9 @@ END $$;
 \echo '--- A2 fixture: a SENT production order of 5 cartons of 10 blue cups at HCM, a DRAFT receipt against it'
 -- The demo cup already has its one active carton (01 BR-03, B below): retired, so the fixture's own is the one.
 UPDATE inventory.uom_conversions SET active = FALSE
- WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-VALUES (md5('qa96:carton')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12);
+ WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH');
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
+VALUES (md5('qa96:carton')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH'), 'CARTON10', 10, 60, 40, 50, 12);
 SET LOCAL session_replication_role = replica;
 INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
                                        receiving_warehouse_id, need_by_date, status, sample_approval_required,
@@ -181,15 +181,30 @@ SELECT pg_temp.expect_true('A4.2 the column, its index and its CHECK are gone', 
     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_uom_conversions_default_purchase') $c$);
 INSERT INTO product.products (id, code, name, slug, status, kind, tax_class, version, created_at)
 VALUES (md5('qa96:a4:product')::uuid, 'QA96A4', 'QA a4', 'qa96-a4', 'DRAFT', 'CUSTOMIZABLE', 'STANDARD', 0, NOW());
--- An item is born with its variant (tg_variant_inventory_item), counted in EACH; it has no unit row until a carton is declared.
-SELECT pg_temp.expect_ok('A4.3 a variant, and with it an inventory item, is inserted', $q$
-    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                                  created_at)
-    VALUES (md5('qa96:a4:variant')::uuid, md5('qa96:a4:product')::uuid, 'QA96-A4-ITEM', 'QA a4', 'ACTIVE', TRUE,
-            'DEFAULT', 0, 0, NOW()) $q$);
+-- An item is a customer's SKU's, made when an order names it (V20270105000100), counted in EACH; it has no unit row
+-- until a carton is declared on its variant.
+-- Since V20270105000100 an item is a customer's SKU's, made when an order names it: a variant, a customer's SKU on
+-- it, and the item.
+INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
+                              created_at)
+VALUES (md5('qa96:a4:variant')::uuid, md5('qa96:a4:product')::uuid, 'QA96-A4-BLANK', 'QA a4', 'ACTIVE', TRUE,
+        'DEFAULT', 0, 0, NOW());
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
+SELECT md5('qa96:a4:draft')::uuid, c.id, md5('qa96:a4:product')::uuid, 'DRAFT', NOW(), '{}'::jsonb
+  FROM customer.customer c ORDER BY c.id LIMIT 1;
+INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
+VALUES (md5('qa96:a4:snap')::uuid, md5('qa96:a4:draft')::uuid, repeat('a', 64), 'https://example.com/a.pdf', NOW(),
+        NOW(), '[]'::jsonb);
+INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku, name)
+SELECT md5('qa96:a4:sku')::uuid, md5('qa96:a4:product')::uuid, md5('qa96:a4:variant')::uuid, d.customer_id,
+       md5('qa96:a4:snap')::uuid, 'QA96-A4-ITEM', 'QA a4'
+  FROM design.design_draft d WHERE d.id = md5('qa96:a4:draft')::uuid;
+SELECT pg_temp.expect_ok('A4.3 the inventory item of a customer''s SKU is inserted', $q$
+    INSERT INTO inventory.inventory_items (id, sku, variant_id)
+    VALUES (gen_random_uuid(), 'QA96-A4-ITEM', md5('qa96:a4:variant')::uuid) $q$);
 SELECT pg_temp.expect_true('A4.4 its base unit is its own unit_of_measure, with no unit row (V20261226000200)', $c$
     (SELECT i.unit_of_measure = 'EACH'
-            AND NOT EXISTS (SELECT 1 FROM inventory.uom_conversions u WHERE u.inventory_item_id = i.id)
+            AND NOT EXISTS (SELECT 1 FROM inventory.uom_conversions u WHERE u.variant_id = i.variant_id)
        FROM inventory.inventory_items i WHERE i.sku = 'QA96-A4-ITEM') $c$);
 SELECT pg_temp.expect_true('A4.5 no function body names default_purchase any more', $c$
     NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -199,14 +214,14 @@ SELECT pg_temp.expect_true('A4.5 no function body names default_purchase any mor
 \echo '--- B one active non-base unit per inventory item'
 -- QA96-A4-ITEM (A4) has only its base unit.
 SELECT pg_temp.expect_ok('B.1 the first active carton is declared', $q$
-    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-    VALUES (md5('qa96:b:c1')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM'), 'CARTON1', 12, 60, 40, 50, 12) $q$);
+    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
+    VALUES (md5('qa96:b:c1')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM'), 'CARTON1', 12, 60, 40, 50, 12) $q$);
 SELECT pg_temp.expect_fail_like('B.2 a second active unit of the item', 'uk_uom_conversions_one_carton', $q$
-    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-    VALUES (md5('qa96:b:c2')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM'), 'CARTON2', 24, 60, 40, 50, 12) $q$);
+    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
+    VALUES (md5('qa96:b:c2')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM'), 'CARTON2', 24, 60, 40, 50, 12) $q$);
 SELECT pg_temp.expect_ok('B.3 a retired unit beside the active one', $q$
-    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active, length_cm, width_cm, height_cm, weight_kg)
-    VALUES (md5('qa96:b:c3')::uuid, (SELECT id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM'), 'CARTON3', 24, FALSE, 60, 40, 50, 12) $q$);
+    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active, length_cm, width_cm, height_cm, weight_kg)
+    VALUES (md5('qa96:b:c3')::uuid, (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM'), 'CARTON3', 24, FALSE, 60, 40, 50, 12) $q$);
 SELECT pg_temp.expect_fail_like('B.4 re-activating the retired one beside the active one', 'uk_uom_conversions_one_carton', $q$
     UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa96:b:c3')::uuid $q$);
 SELECT pg_temp.expect_ok('B.5 retiring the active one, then re-activating the other', $q$
@@ -214,6 +229,6 @@ SELECT pg_temp.expect_ok('B.5 retiring the active one, then re-activating the ot
     UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa96:b:c3')::uuid $q$);
 SELECT pg_temp.expect_true('B.6 the one active unit is the carton: the item''s own unit has no row (V20261226000200)', $c$
     (SELECT count(*) FROM inventory.uom_conversions
-      WHERE inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM') AND active) = 1 $c$);
+      WHERE variant_id = (SELECT variant_id FROM inventory.inventory_items WHERE sku = 'QA96-A4-ITEM') AND active) = 1 $c$);
 
 ROLLBACK;

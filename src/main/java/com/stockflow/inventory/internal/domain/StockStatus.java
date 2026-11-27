@@ -19,8 +19,8 @@ package com.stockflow.inventory.internal.domain;
  * <p>{@link #EXPIRED} is no longer reached: cups and packaging have no expiry date and the expiry sweep is gone
  * (kltn-docs 01 BR-17, 20 BR-13; team plan 5-1).</p>
  *
- * <p>{@link StockItem#receive} still creates {@link #QUARANTINE} stock; the receipt flow that
- * starts goods as {@link #INBOUND} arrives with SCRUM-435.</p>
+ * <p>A carton has one of these exactly while it is in stock ({@link StockPackage#stockStatus()},
+ * {@code ck_stock_package_stock_status}); a receipt starts it {@link #INBOUND} ({@link StockPackage#putInStock}).</p>
  */
 public enum StockStatus {
 
@@ -42,7 +42,7 @@ public enum StockStatus {
 
     /**
      * Legacy: past its expiry date, set by the nightly expiry sweep removed in team plan 5-1. Nothing enters it any more
-     * ({@code tg_stock_item_no_new_expired}); kept because rows and ledger lines recorded before carry it. Never
+     * ({@code tg_stock_package_lot}); kept because cartons and ledger lines recorded before carry it. Never
      * sellable; an approved adjustment writes what is left off.
      */
     EXPIRED,
@@ -50,7 +50,7 @@ public enum StockStatus {
     /**
      * Legacy: blanks issued to the in-house print shop or a subcontractor (SCRUM-397/441). Nothing enters it since
      * in-house production was removed (kltn-docs 07/11; V20261108000100 released the holds still on such rows). Kept
-     * because stock rows and ledger lines recorded before carry it ({@code ck_stock_item_status}). Never sellable; an
+     * because cartons and ledger lines recorded before carry it ({@code ck_stock_package_stock_status_value}). Never sellable; an
      * approved adjustment writes what is left off.
      */
     IN_PRODUCTION;

@@ -109,9 +109,10 @@ class ReturnReceiptIntegrationTest {
 
     private Map<String, Object> carton(String lpn) {
         return jdbc.queryForMap("""
-                SELECT p.status AS package_status, p.location_code AS package_location, s.status AS row_status,
-                       s.location_code, s.lot_number, s.on_hand
-                  FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
+                SELECT p.status AS package_status, p.location_code AS package_location, p.stock_status AS row_status,
+                       p.location_code, l.lot_number,
+                       CASE WHEN p.status = 'IN_STOCK' THEN p.nominal_qty ELSE 0 END AS on_hand
+                  FROM inventory.stock_package p JOIN inventory.stock_lot l ON l.id = p.lot_id
                  WHERE p.lpn = ?""", lpn);
     }
 
@@ -130,7 +131,8 @@ class ReturnReceiptIntegrationTest {
     void aReturnedShipmentComesBackWhole() {
         UUID order = deliveredOrder();
         ShippedCartons.Shipped shipped = shipped(order, 3, "LOT-RTO-" + order.toString().substring(0, 8), "RETURNED");
-        String lot = jdbc.queryForObject("SELECT lot_number FROM inventory.stock_item WHERE stock_package_id = ?",
+        String lot = jdbc.queryForObject("SELECT l.lot_number FROM inventory.stock_package p JOIN "
+                + "inventory.stock_lot l ON l.id = p.lot_id WHERE p.id = ?",
                 String.class, shipped.cartons().getFirst().id());
         int atpBefore = inventory.availableToPromise(new Sku(sku));
         assertThat(shipped.cartons()).allSatisfy(c -> assertThat(carton(c.lpn()).get("package_status")).isEqualTo("CONSUMED"));
@@ -241,17 +243,10 @@ class ReturnReceiptIntegrationTest {
         // A carton of the shipment that is back in the warehouse already (by hand, outside any receipt).
         String home = mine.lpns().getFirst();
         tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL, "
-                    + "location_code = 'HCM-A01-1-A' WHERE lpn = ?", home);
-            // The carton's own row filled again, as the application restocks a carton of its very receipt: the FIFO
-            // trigger lets a row grow in place only when it is named for the statement (stockflow.same_receipt_merge).
-            UUID row = jdbc.queryForObject("SELECT id FROM inventory.stock_item WHERE stock_package_id = (SELECT id FROM "
-                    + "inventory.stock_package WHERE lpn = ?)", UUID.class, home);
-            jdbc.queryForObject("SELECT set_config('stockflow.same_receipt_merge', ?, true)", String.class,
-                    row.toString());
-            jdbc.update("UPDATE inventory.stock_item SET on_hand = ? WHERE id = ?", mine.cartons().getFirst().quantity(),
-                    row);
-            jdbc.queryForObject("SELECT set_config('stockflow.same_receipt_merge', '', true)", String.class);
+            // In stock again as the application restocks a put-back carton: AVAILABLE, with the lot and the FIFO date it
+            // always had (ck_stock_package_stock_status: a carton in stock has a stock status).
+            jdbc.update("UPDATE inventory.stock_package SET status = 'IN_STOCK', stock_status = 'AVAILABLE', "
+                    + "closed_at = NULL, location_code = 'HCM-A01-1-A' WHERE lpn = ?", home);
         });
         assertThat(code(catchThrowable(() -> scan(draft.id(), home)))).isEqualTo(ErrorCode.RETURN_CARTON_IN_WAREHOUSE);
 

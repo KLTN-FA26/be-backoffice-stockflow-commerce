@@ -14,12 +14,12 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * JPA mapping of one image of a variant (table {@code product.media}, decision D5: images belong to
- * a variant, not to the product).
+ * JPA mapping of one image of a variant (table {@code product.media}, decision D5: the gallery images belong to
+ * a variant; the product's single image of its own is on its row, ADR-0012).
  *
  * <p>An uploaded image keeps its original private and carries one object per display size in
- * {@code renditions}. It reaches the storefront only once {@code is_published}, which a second person
- * sets (four-eyes; {@code ProductPublication} filters out a row published by its own uploader). The
+ * {@code renditions}. It reaches the storefront only once {@code is_published}, which whoever publishes it
+ * sets - its uploader included since ADR-0012 dropped the four-eyes rule. The
  * row is either an external URL (data carried over from before uploads existed) or a stored file,
  * never both — {@code ck_media_source}.</p>
  */

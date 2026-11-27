@@ -23,7 +23,7 @@ public record StockSummaryResponse(
             @Schema(example = "HCM") String warehousePrefix,
             String warehouseName,
             String sku,
-            @Schema(description = "The customer whose own SKU it is; null for an ordinary variant") UUID ownerId,
+            @Schema(description = "The customer whose own SKU it is; only customers' SKUs hold stock (V20270105000100)") UUID ownerId,
             String ownerCode,
             String ownerName,
             @Schema(description = "The SKU's standard count per carton; null when it has no carton unit")

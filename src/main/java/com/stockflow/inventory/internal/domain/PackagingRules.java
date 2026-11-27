@@ -22,7 +22,7 @@ import java.util.UUID;
  * No clock, no randomness, no I/O: the same input gives the same answer, which the load estimate relies on.
  * {@link com.stockflow.inventory.api.PackagingSpecResolver} documents the contract.
  *
- * <p><b>The carton is the item's one active unit</b> (01 BR-03, {@code uk_uom_conversions_one_carton}): it is level
+ * <p><b>The carton is the variant's one active unit</b> (01 BR-03, {@code uk_uom_conversions_one_carton}): it is level
  * {@link com.stockflow.inventory.api.RuleLevel#DEFAULT_SHIPPING_UNIT}. The "largest packing unit" level is only reached
  * with several active units, which the database refuses; it is kept so the function stays total.</p>
  *

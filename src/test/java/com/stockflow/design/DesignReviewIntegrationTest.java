@@ -112,8 +112,8 @@ class DesignReviewIntegrationTest {
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
         as(staff, false);
         String code = "REV-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        UUID productId = products.create(new CreateProductCommand(code, "Ly giấy 12oz", "Paper cup 12oz", null, null,
-                "Ly", null, null, TaxClass.STANDARD, List.of())).productId();
+        UUID productId = products.create(new CreateProductCommand(code, "Ly giấy 12oz", null, null,
+                "Ly", null, TaxClass.STANDARD, List.of())).productId();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.products SET status = 'APPROVED', submitted_by = ?, submitted_at = NOW(), "
                     + "approved_by = ?, approved_at = NOW() WHERE id = ?", ReferenceRows.user(entityManager),
@@ -295,8 +295,11 @@ class DesignReviewIntegrationTest {
         String customerSku = snapshot.get("customerSku").asText();
         assertThat(customerSku).startsWith(jdbc.queryForObject("SELECT code FROM product.products p JOIN "
                 + "product.variants v ON v.product_id = p.id WHERE v.sku = ?", String.class, sku) + "-" + taxCode + "-");
-        assertThat(jdbc.queryForObject("SELECT status FROM product.variants WHERE sku = ?", String.class, customerSku))
-                .isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForObject("SELECT status FROM product.customer_skus WHERE sku = ?", String.class,
+                customerSku)).isEqualTo("ACTIVE");
+        // Q5: the approval issues the SKU and nothing in inventory; its item comes with the first order of it.
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class,
+                customerSku)).isZero();
 
         // The snapshot adds up, layout and images included, and the files are where it says.
         UUID snapshotId = UUID.fromString(snapshot.get("id").asText());
@@ -380,8 +383,8 @@ class DesignReviewIntegrationTest {
         assertThat(queued.get("customerSku")).as("no SKU before the approval").isNull();
 
         JsonNode approved = data(decide(version(), true, null).andExpect(status().isOk()));
-        String issued = jdbc.queryForObject("SELECT v.sku FROM product.variants v JOIN design.design_snapshot s "
-                + "ON s.id = v.design_snapshot_id WHERE s.draft_id = ?::uuid", String.class, design);
+        String issued = jdbc.queryForObject("SELECT c.sku FROM product.customer_skus c JOIN design.design_snapshot s "
+                + "ON s.id = c.design_snapshot_id WHERE s.draft_id = ?::uuid", String.class, design);
         assertThat(approved.get("customerSku").asText()).isEqualTo(issued);
         assertThat(approved.get("customerName").asText()).isEqualTo(customerName);
 

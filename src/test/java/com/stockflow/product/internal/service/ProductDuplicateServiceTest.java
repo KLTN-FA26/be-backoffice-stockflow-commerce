@@ -33,8 +33,8 @@ class ProductDuplicateServiceTest {
     private final ProductDuplicateService service = new ProductDuplicateService(search);
 
     private static ProductSummary product(String code, String name) {
-        return new ProductSummary(UUID.randomUUID(), code, name, null, code.toLowerCase(), BRAND, "Brand", CATEGORY,
-                null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, ProductStatus.DRAFT, NOW, "u", NOW, "u",
+        return new ProductSummary(UUID.randomUUID(), code, name, code.toLowerCase(), BRAND, "Brand", CATEGORY,
+                null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, ProductStatus.DRAFT, NOW, "u", NOW, "u",
                 null, null, null, null, null, null, null, 0L, null, null, null, "Category");
     }
 

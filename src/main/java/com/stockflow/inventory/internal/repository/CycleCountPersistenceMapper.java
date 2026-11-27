@@ -15,7 +15,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Hand-written for the reason {@link StockItemPersistenceMapper} gives: rehydration goes through the domain
+ * Hand-written for the reason {@code StockPackageRepositoryAdapter} gives: rehydration goes through the domain
  * constructors so the invariants are re-checked, and the slot is a value object over four columns.
  */
 final class CycleCountPersistenceMapper {
@@ -31,10 +31,10 @@ final class CycleCountPersistenceMapper {
     }
 
     private static CycleCountLine toDomain(CycleCountLineJpaEntity l) {
-        StockPackageId pkg = l.getStockPackageId() == null ? null : new StockPackageId(l.getStockPackageId());
         return new CycleCountLine(l.getId(),
-                new CountSlot(new LocationId(l.getLocationCode()), new Sku(l.getSku()), l.getLotNumber(), pkg),
-                l.getExpectedQty(), l.getCountedQty(), l.getCountedBy(), l.getCountedAt(), l.isRecountRequired());
+                CountSlot.carton(new LocationId(l.getLocationCode()), new Sku(l.getSku()), l.getLotNumber(),
+                        new StockPackageId(l.getStockPackageId())),
+                l.isBooked(), l.getFound(), l.getCountedBy(), l.getCountedAt(), l.isRecountRequired());
     }
 
     static CycleCountJpaEntity toNewEntity(CycleCount count) {
@@ -71,13 +71,13 @@ final class CycleCountPersistenceMapper {
         if (!row.getLocationCode().equals(line.slot().location().code())) {
             row.relocate(line.slot().location().code());
         }
-        row.apply(line.expectedQty(), line.countedQty(), line.countedBy(), line.countedAt(), line.recountRequired());
+        row.apply(line.booked(), line.found(), line.countedBy(), line.countedAt(), line.recountRequired());
     }
 
     private static CycleCountLineJpaEntity toNewEntity(CycleCountLine line) {
         CountSlot slot = line.slot();
         return new CycleCountLineJpaEntity(line.id(), slot.location().code(), slot.sku().code(), slot.lotNumber(),
-                slot.stockPackageId() == null ? null : slot.stockPackageId().value(), line.expectedQty(),
-                line.countedQty(), line.countedBy(), line.countedAt(), line.recountRequired());
+                slot.stockPackageId().value(), line.booked(), line.found(), line.countedBy(), line.countedAt(),
+                line.recountRequired());
     }
 }

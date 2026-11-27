@@ -62,6 +62,9 @@ class DraftViewsTest {
         DesignDraftJpaEntity cup = design(customer, product, DesignStatus.APPROVED);
         DesignDraftJpaEntity mug = design(customer, product, DesignStatus.APPROVED);
         DesignDraftJpaEntity draft = design(other, product, DesignStatus.DRAFT);
+        // The cup is drawn on a variant with a carton of 1,000, the mug on one with no carton; the draft on none yet.
+        cup.drawOn(UUID.randomUUID(), "LY12-TRANG", UUID.randomUUID(), "T1");
+        mug.drawOn(UUID.randomUUID(), "LY12-KRAFT", UUID.randomUUID(), "T2");
         UUID cupSnapshot = UUID.randomUUID();
         UUID mugSnapshot = UUID.randomUUID();
         when(products.findById(product)).thenReturn(Optional.empty());
@@ -71,15 +74,15 @@ class DraftViewsTest {
         when(customerSkus.ofSnapshots(anyCollection())).thenReturn(Map.of(
                 cupSnapshot, sku(cupSnapshot, "LY12-0101-001"), mugSnapshot, sku(mugSnapshot, "LY12-0101-002")));
         when(customers.fullNames(anyCollection())).thenReturn(Map.of(customer, "Quán A", other, "Quán B"));
-        // R5-13: the cup's SKU has one carton of 1,000; the mug's has only its base unit, so no carton.
+        // R5-13: the carton is the variant's (owner decision Q1): the cup's variant has one of 1,000, the mug's none.
         when(units.conversionsOf(anyCollection())).thenReturn(Map.of(
-                "LY12-0101-001", List.of(unit("LY12-0101-001", "CTN", 1000)),
-                "LY12-0101-002", List.<com.stockflow.inventory.api.UomConversion>of()));
+                "LY12-TRANG", List.of(unit("LY12-TRANG", "CTN", 1000)),
+                "LY12-KRAFT", List.<com.stockflow.inventory.api.UomConversion>of()));
 
         var shown = views.of(List.of(cup, mug, draft));
 
         assertThat(shown).extracting(DesignWorkflowService.DraftView::unitsPerCarton)
-                .as("an approved design reads its own SKU's carton; one without a carton, or on no variant, none")
+                .as("a design reads its variant's carton, approved or not; one without a carton, or on no variant, none")
                 .containsExactly(1000, null, null);
         verify(units, times(1)).conversionsOf(anyCollection());
 
@@ -165,6 +168,6 @@ class DraftViewsTest {
 
     private static CustomerSku sku(UUID snapshot, String code) {
         return new CustomerSku(UUID.randomUUID(), UUID.randomUUID(), code, "Ly", UUID.randomUUID(), snapshot,
-                "LY12", "ACTIVE");
+                UUID.randomUUID(), "LY12", "ACTIVE");
     }
 }

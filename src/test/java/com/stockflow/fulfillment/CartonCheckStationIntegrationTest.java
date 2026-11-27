@@ -658,8 +658,8 @@ class CartonCheckStationIntegrationTest {
                 .andExpect(jsonPath("$.data.putBackLocationCode").value(QUARANTINE_AREA));
         assertThat(jdbc.queryForMap("SELECT location_code, status FROM inventory.stock_package WHERE lpn = ?", damaged))
                 .containsEntry("location_code", QUARANTINE_AREA).containsEntry("status", "IN_STOCK");
-        assertThat(jdbc.queryForMap("SELECT s.location_code, s.status, s.on_hand FROM inventory.stock_item s JOIN "
-                + "inventory.stock_package p ON p.id = s.stock_package_id WHERE p.lpn = ?", damaged))
+        assertThat(jdbc.queryForMap("SELECT p.location_code, p.stock_status AS status, p.nominal_qty AS on_hand FROM "
+                + "inventory.stock_package p WHERE p.lpn = ? AND p.status = 'IN_STOCK'", damaged))
                 .containsEntry("location_code", QUARANTINE_AREA).containsEntry("status", "QUARANTINE")
                 .containsEntry("on_hand", 1);
         assertThat(jdbc.queryForList("SELECT to_status FROM inventory.stock_movement WHERE movement_type = 'PUT_BACK' "
@@ -669,8 +669,8 @@ class CartonCheckStationIntegrationTest {
                 .andExpect(status().isOk());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE movement_type = 'PUT_BACK' "
                 + "AND reference_id = ?::uuid", Long.class, lineId)).isOne();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_item s JOIN inventory.stock_package p ON "
-                + "p.id = s.stock_package_id WHERE p.lpn = ? AND s.status = 'AVAILABLE'", Long.class, damaged))
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_package p "
+                + "WHERE p.lpn = ? AND p.stock_status = 'AVAILABLE'", Long.class, damaged))
                 .as("never AVAILABLE, not even for an instant").isZero();
     }
 
@@ -742,8 +742,8 @@ class CartonCheckStationIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("PUT_BACK_LOCATION_INVALID"));
         asPacker(body(post(url(task, "/pick-lines/" + lineId + "/put-back")), "{\"locationCode\":\"" + bin
                 + "\",\"lpn\":\"" + mine.get(0) + "\"}")).andExpect(status().isOk());
-        assertThat(jdbc.queryForMap("SELECT s.status, s.location_code FROM inventory.stock_item s JOIN "
-                + "inventory.stock_package p ON p.id = s.stock_package_id WHERE p.lpn = ?", mine.get(0)))
+        assertThat(jdbc.queryForMap("SELECT p.stock_status AS status, p.location_code FROM "
+                + "inventory.stock_package p WHERE p.lpn = ?", mine.get(0)))
                 .containsEntry("status", "AVAILABLE").containsEntry("location_code", bin);
         // The session of a cancelled order is not worked.
         start(packer, "WAREHOUSE_STAFF", task).andExpect(status().isConflict());
@@ -909,9 +909,9 @@ class CartonCheckStationIntegrationTest {
             + "active carton unit; measured only with a size and a weight")
     void theCartonSpecOfASku() {
         // A SKU of the test's own: its carton unit put through every shape (a SKU needs a catalogue variant to exist at all).
-        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2).sku();
-        UUID first = jdbc.queryForObject("SELECT u.id FROM inventory.uom_conversions u JOIN inventory.inventory_items i "
-                + "ON i.id = u.inventory_item_id WHERE i.sku = ? AND u.active", UUID.class, sku);
+        CustomerSkuRows.Issued issued = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2);
+        String sku = issued.sku();
+        UUID first = issued.uomConversionId();
         UUID second = Identifiers.newId();
         assertThat(itemControls.cartonSpec(new Sku("CK-NO-SUCH-SKU"))).as("unknown SKU").isEmpty();
         write("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", first);
@@ -935,8 +935,8 @@ class CartonCheckStationIntegrationTest {
         assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().measured()).as("a size without a weight")
                 .isFalse();
 
-        write("INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active) "
-                + "SELECT ?, id, 'CARTON24', 24, FALSE FROM inventory.inventory_items WHERE sku = ?", second, sku);
+        write("INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active) "
+                + "VALUES (?, ?, 'CARTON24', 24, FALSE)", second, issued.sourceVariantId());
         assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure())
                 .as("a retired unit beside it is not a candidate").isEqualTo("CARTON");
         write("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", first);

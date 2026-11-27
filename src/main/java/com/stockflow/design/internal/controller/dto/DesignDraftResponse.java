@@ -16,9 +16,9 @@ import java.util.UUID;
  * longer published. {@code customerSku} is the customer's own SKU, issued when the design is approved and absent
  * before; {@code customerName} names the customer. A list of approved designs, the review queue and the answer to an
  * approval show them without a snapshot read per design, which only the owner may make. {@code unitsPerCarton} (R5-13)
- * is how many pieces one carton of it holds - the customer's SKU's carton once approved, the variant's it is drawn on
- * before (the SKU is issued with that carton spec) - so a quote request can say "1 carton = N pieces"; null while the
- * SKU has no single carton unit, or the design is on no variant. {@code projectName} and {@code projectStatus}
+ * is how many pieces one carton of it holds - the carton of the variant it is drawn on, which the customer's SKU an
+ * approval issues is packed in too (owner decision Q1) - so a quote request can say "1 carton = N pieces"; null while
+ * the variant has no single carton unit, or the design is on no variant. {@code projectName} and {@code projectStatus}
  * ({@code ACTIVE}, {@code ARCHIVED}) name the design project it is in, read for the whole page, so the studio does not
  * read every project to label its designs; null when it is in none. {@code reviewedByName} is who {@code reviewedBy} is
  * (full name, else username), so a returned or approved design says who decided it; null before a decision, or when

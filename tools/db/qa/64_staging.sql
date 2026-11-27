@@ -68,10 +68,10 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
 VALUES (md5('qa64:order2')::uuid, 'SO-QA-64B', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PENDING_PAYMENT', 1, 'VND', NOW(), NOW());
 
 CREATE TEMP TABLE qa64_carton AS
-SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_id, p.lpn, s.on_hand AS units
-  FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
- WHERE s.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK'
-   AND s.on_hand = p.nominal_qty AND s.reserved = 0
+SELECT row_number() OVER (ORDER BY p.lpn) AS n, p.id AS package_id, p.lpn, p.nominal_qty AS units
+  FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+ WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND p.location_code = 'HCM-A01-2-B' AND p.stock_status = 'AVAILABLE'
+   AND NOT EXISTS (SELECT 1 FROM inventory.stock_reservation a WHERE a.stock_package_id = p.id AND a.status = 'HELD')
  ORDER BY p.lpn LIMIT 10;
 
 \echo '--- the demo seed: PACKING is merged into DISPATCH, a staging area exists (06 BR-22)'
@@ -85,8 +85,8 @@ SELECT pg_temp.expect_true('ST3 no area is PACKING any more',
     NOT EXISTS (SELECT 1 FROM warehouse.area WHERE type = 'PACKING'));
 
 -- Holds on the first six cartons, as an allocation leaves them (a hold takes the whole carton: all its units).
-INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
-SELECT md5('qa64:res:' || n)::uuid, row_id, md5('qa64:order')::uuid, gen_random_uuid(), gen_random_uuid(), units, NOW(), NULL,
+INSERT INTO inventory.stock_reservation (id, stock_package_id, order_id, root_request_id, request_id, cartons, units_per_carton, reserved_at, status)
+SELECT md5('qa64:res:' || n)::uuid, package_id, md5('qa64:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, units, NOW(),
        'HELD'
   FROM qa64_carton WHERE n <= 6;
 
@@ -118,12 +118,10 @@ SELECT pg_temp.expect_fail_by('SA9 an unknown type is refused as before', 'ck_ar
     UPDATE warehouse.area SET type = 'WAITING' WHERE code = 'QAD' AND warehouse_id = md5('demo:wh:HCM')::uuid $q$);
 
 \echo '--- an area holding stock does not turn into a STAGING area, nor out of one (20 BR-20)'
--- Carton 9 stands in the DISPATCH area, carton 10 in the staging area (moved as the rows and the carton move together).
+-- Carton 9 stands in the DISPATCH area, carton 10 in the staging area (a carton is one row: it moves by itself).
 SELECT pg_temp.expect_ok('SB1 stock in a DISPATCH area and in a STAGING area', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-QAD' WHERE id = (SELECT package_id FROM qa64_carton WHERE n = 9);
-    UPDATE inventory.stock_item SET location_code = 'HCM-QAD' WHERE id = (SELECT row_id FROM qa64_carton WHERE n = 9);
-    UPDATE inventory.stock_package SET location_code = 'HCM-STG01' WHERE id = (SELECT package_id FROM qa64_carton WHERE n = 10);
-    UPDATE inventory.stock_item SET location_code = 'HCM-STG01' WHERE id = (SELECT row_id FROM qa64_carton WHERE n = 10) $q$);
+    UPDATE inventory.stock_package SET location_code = 'HCM-STG01' WHERE id = (SELECT package_id FROM qa64_carton WHERE n = 10) $q$);
 SELECT pg_temp.expect_fail_by('SB2 the DISPATCH area holding stock turns into STAGING', 'holds stock', $q$
     UPDATE warehouse.area SET type = 'STAGING' WHERE code = 'QAD' AND warehouse_id = md5('demo:wh:HCM')::uuid $q$);
 SELECT pg_temp.expect_fail_by('SB3 the STAGING area holding stock turns into DISPATCH', 'holds stock', $q$
@@ -135,22 +133,18 @@ SELECT pg_temp.expect_ok('SB5 its other columns change freely while it holds sto
     UPDATE warehouse.area SET name = 'Khu chờ xuất (renamed)' WHERE code = 'STG01' AND warehouse_id = md5('demo:wh:HCM')::uuid $q$);
 -- Carton 10 goes back to its bin, so the staging area is empty for the rest of the script.
 UPDATE inventory.stock_package SET location_code = 'HCM-A01-2-B' WHERE id = (SELECT package_id FROM qa64_carton WHERE n = 10);
-UPDATE inventory.stock_item SET location_code = 'HCM-A01-2-B' WHERE id = (SELECT row_id FROM qa64_carton WHERE n = 10);
 
 \echo '--- stock enters and leaves a staging area only by picking (11 BR-09, 20 BR-20)'
 CREATE FUNCTION pg_temp.move_sql(movement TEXT, from_loc TEXT, to_loc TEXT, ref_type TEXT, ref UUID, carton INT DEFAULT NULL,
                                  from_status TEXT DEFAULT NULL, to_status TEXT DEFAULT NULL) RETURNS TEXT LANGUAGE sql AS $$
     SELECT format($f$
-        INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, quantity,
+        INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code,
                                               from_status, to_status, reference_type, reference_id, occurred_at,
-                                              from_stock_package_id, to_stock_package_id)
-        SELECT gen_random_uuid(), %L, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', %L, %L, coalesce(c.units, 1), %L, %L, %L,
-               %L::uuid, NOW(),
-               CASE WHEN %L IS NOT NULL AND %L IS NOT NULL THEN c.package_id END,
-               CASE WHEN %L IS NOT NULL AND %L IS NOT NULL THEN c.package_id END
+                                              stock_package_id)
+        SELECT gen_random_uuid(), %L, 'LY-GIAY-DEMO-12OZ-XANH', 'UNTRACED', %L, %L, %L, %L, %L,
+               %L::uuid, NOW(), c.package_id
           FROM (SELECT 1) one LEFT JOIN qa64_carton c ON c.n = %s $f$,
-        movement, from_loc, to_loc, from_status, to_status, ref_type, ref,
-        from_loc, carton, to_loc, carton, coalesce(carton, 0))
+        movement, from_loc, to_loc, from_status, to_status, ref_type, ref, coalesce(carton, 0))
 $$;
 SELECT pg_temp.expect_fail_by('LG1 a return line moves a loose unit into the staging area', 'cannot touch staging area',
     pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-STG01', 'RETURN_REQUEST_LINE', gen_random_uuid()));
@@ -165,7 +159,7 @@ SELECT pg_temp.expect_fail_by('LG5 a status change on stock standing in the stag
 SELECT pg_temp.expect_fail_by('LG6 a receipt straight into the staging area', 'cannot touch staging area',
     pg_temp.move_sql('RECEIPT', NULL, 'HCM-STG01', 'GOODS_RECEIPT_LINE', gen_random_uuid()));
 SELECT pg_temp.expect_ok('LG7 a MOVE between two ordinary bins is what it was',
-    pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-A01-1-A', 'RETURN_REQUEST_LINE', gen_random_uuid()));
+    pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-A01-1-A', 'RETURN_REQUEST_LINE', gen_random_uuid(), 7));
 -- A pick line stages its carton out of its bin, and puts it back out of the staging area.
 SELECT pg_temp.expect_ok('LG8 a pick line stages a carton: a MOVE naming the line, bin to staging',
     pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-STG01', 'PICK_LINE', md5('qa64:line:A')::uuid, 7));
@@ -173,7 +167,6 @@ SELECT pg_temp.expect_fail_by('LG9 the same line stages out of the same place ag
     pg_temp.move_sql('MOVE', 'HCM-A01-2-B', 'HCM-STG01', 'PICK_LINE', md5('qa64:line:A')::uuid, 7));
 -- Cartons 7 and 8 stand in the staging area from here (a ledger line names the carton where it leaves from).
 UPDATE inventory.stock_package SET location_code = 'HCM-STG01' WHERE id IN (SELECT package_id FROM qa64_carton WHERE n IN (7, 8));
-UPDATE inventory.stock_item SET location_code = 'HCM-STG01' WHERE id IN (SELECT row_id FROM qa64_carton WHERE n IN (7, 8));
 SELECT pg_temp.expect_ok('LG10 ... its order cancelled, it puts the carton back: a second MOVE, out of the staging area',
     pg_temp.move_sql('MOVE', 'HCM-STG01', 'HCM-A01-1-A', 'PICK_LINE', md5('qa64:line:A')::uuid, 7));
 SELECT pg_temp.expect_fail_by('LG11 a third MOVE of the line out of the staging area', 'uk_stock_movement_pick_line_move',
@@ -182,12 +175,12 @@ SELECT pg_temp.expect_ok('LG12 a task moved to dispatch deducts from the staging
     pg_temp.move_sql('PICK', 'HCM-STG01', NULL, 'PICK_LINE', md5('qa64:line:B')::uuid, 8, 'AVAILABLE'));
 SELECT pg_temp.expect_fail_by('LG13 a second PICK of the line', 'uk_stock_movement_pick_line',
     pg_temp.move_sql('PICK', 'HCM-STG01', NULL, 'PICK_LINE', md5('qa64:line:B')::uuid, 8, 'AVAILABLE'));
-UPDATE inventory.stock_package SET location_code = 'HCM-A01-2-B' WHERE id IN (SELECT package_id FROM qa64_carton WHERE n IN (7, 8));
-UPDATE inventory.stock_item SET location_code = 'HCM-A01-2-B' WHERE id IN (SELECT row_id FROM qa64_carton WHERE n IN (7, 8));
+-- The write-downs name the carton they take, still standing in the staging area (V20261231000200: a line names its carton).
 SELECT pg_temp.expect_ok('LG14 a count corrects a staging area (20 section 4.9 step 4): COUNT_CORRECTION out of it',
-    pg_temp.move_sql('COUNT_CORRECTION', 'HCM-STG01', NULL, 'CYCLE_COUNT_LINE', gen_random_uuid(), NULL, 'AVAILABLE'));
+    pg_temp.move_sql('COUNT_CORRECTION', 'HCM-STG01', NULL, 'CYCLE_COUNT_LINE', gen_random_uuid(), 7, 'AVAILABLE'));
 SELECT pg_temp.expect_ok('LG15 ... and an approved adjustment writes it down: ADJUSTMENT out of it',
-    pg_temp.move_sql('ADJUSTMENT', 'HCM-STG01', NULL, 'STOCK_ADJUSTMENT', gen_random_uuid(), NULL, 'AVAILABLE'));
+    pg_temp.move_sql('ADJUSTMENT', 'HCM-STG01', NULL, 'STOCK_ADJUSTMENT', gen_random_uuid(), 8, 'AVAILABLE'));
+UPDATE inventory.stock_package SET location_code = 'HCM-A01-2-B' WHERE id IN (SELECT package_id FROM qa64_carton WHERE n IN (7, 8));
 -- Review L5: never up - found units there would be nobody's, out of ATP, unpickable and unmovable.
 SELECT pg_temp.expect_fail_by('LG16 an ADJUSTMENT into a staging area (a surplus)', 'cannot add to staging area',
     pg_temp.move_sql('ADJUSTMENT', NULL, 'HCM-STG01', 'STOCK_ADJUSTMENT', gen_random_uuid(), NULL, NULL, 'AVAILABLE'));

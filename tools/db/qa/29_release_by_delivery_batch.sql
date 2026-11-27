@@ -51,15 +51,15 @@ SELECT md5('qa29:draft')::uuid, c.id, md5('qa29:product')::uuid, 'DRAFT', NOW(),
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa29:snap')::uuid, md5('qa29:draft')::uuid, repeat('b', 64), 'https://example.com/b.pdf', NOW(), NOW(),
         '[]'::jsonb);
-INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
-                              created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-SELECT md5('qa29:own')::uuid, md5('qa29:product')::uuid, 'QA-DB-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
-       'OWNED-SKU:QA-DB-OWN', 1, 0, NOW(), c.id, md5('qa29:snap')::uuid, md5('qa29:blank')::uuid
+INSERT INTO product.customer_skus (id, product_id, sku, name, status, version, created_at, customer_id,
+                                  design_snapshot_id, variant_id)
+SELECT md5('qa29:own')::uuid, md5('qa29:product')::uuid, 'QA-DB-OWN', 'QA ly in logo', 'ACTIVE', 0, NOW(),
+       c.id, md5('qa29:snap')::uuid, md5('qa29:blank')::uuid
   FROM customer.customer c ORDER BY c.id LIMIT 1;
-INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active,
+INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, active,
                                        version, created_at)
-SELECT md5('qa29:carton')::uuid, i.id, 'CARTON', 50, TRUE, 0, NOW()
-  FROM inventory.inventory_items i WHERE i.sku = 'QA-DB-OWN';
+SELECT md5('qa29:carton')::uuid, i.variant_id, 'CARTON', 50, TRUE, 0, NOW()
+  FROM product.customer_skus i WHERE i.sku = 'QA-DB-OWN';
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 SELECT md5('qa29:order')::uuid, 'SO-QA-DB', c.id, gen_random_uuid(), 'DRAFT', 2200000, 200000, 'VND', NOW(), NOW()
@@ -319,12 +319,12 @@ SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 -- Inventory's holds of both orders, written past inventory's own triggers: what they promise is not checked here.
 SET session_replication_role = replica;
-INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity, reserved_at, status, sku,
-                                         warehouse_code)
-VALUES (md5('qa29:res-own')::uuid, md5('qa29:order')::uuid, gen_random_uuid(), gen_random_uuid(), 50, NOW(), 'HELD',
+INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons, units_per_carton,
+                                         reserved_at, status, sku, warehouse_code)
+VALUES (md5('qa29:res-own')::uuid, md5('qa29:order')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 50, NOW(), 'HELD',
         'QA-DB-OWN', 'HCM'),
-       (md5('qa29:res-other')::uuid, md5('qa29:order2')::uuid, gen_random_uuid(), gen_random_uuid(), 50, NOW(), 'HELD',
-        'QA-DB-OWN', 'HCM');
+       (md5('qa29:res-other')::uuid, md5('qa29:order2')::uuid, gen_random_uuid(), gen_random_uuid(), 1, 50, NOW(),
+        'HELD', 'QA-DB-OWN', 'HCM');
 SET session_replication_role = DEFAULT;
 SELECT pg_temp.expect_fail('BR27 a hold for a line its batch does not carry (another order''s line)', $q$
     INSERT INTO ordering.delivery_batch_hold (reservation_id, delivery_batch_id, order_id, order_line_id)

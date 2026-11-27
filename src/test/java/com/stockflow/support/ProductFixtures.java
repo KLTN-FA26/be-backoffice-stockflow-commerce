@@ -12,7 +12,7 @@ import java.util.UUID;
 /**
  * Products as the product module itself makes them, for tests of what happens around a product's life
  * (SCRUM-461): created with a brand and a category, submitted and approved by two different people, so the
- * default variant is ACTIVE and the SKU has an inventory item.
+ * default variant is ACTIVE. A catalogue variant has no inventory item (V20270105000100).
  */
 public final class ProductFixtures {
 
@@ -32,8 +32,8 @@ public final class ProductFixtures {
 
     /** A DRAFT product with the given taxonomy; its code, and its default variant's SKU, is {@code FX-<suffix>}. */
     public static ProductSummary draft(ProductService products, Taxonomy taxonomy, String suffix) {
-        return products.create(new CreateProductCommand("FX-" + suffix, "Fixture " + suffix, "Fixture " + suffix,
-                taxonomy.brandId(), taxonomy.categoryId(), null, null, null, TaxClass.STANDARD, null));
+        return products.create(new CreateProductCommand("FX-" + suffix, "Fixture " + suffix,
+                taxonomy.brandId(), taxonomy.categoryId(), null, null, TaxClass.STANDARD, null));
     }
 
     /** Submitted by {@code editor}, approved by {@code approver}: APPROVED, its variant ACTIVE. */

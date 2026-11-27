@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.support.CartonRows;
@@ -63,8 +64,7 @@ class CartonQuarantineHttpTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Quarantine HTTP fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Quarantine HTTP fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Quarantine HTTP fixture");
         });
         lpn = tx.execute(s -> CartonRows.stock(jdbc, sku, SHELF, 1, 10, null,
                 Instant.parse("2026-01-02T00:00:00Z"))).getFirst().lpn();
@@ -94,7 +94,7 @@ class CartonQuarantineHttpTest {
 
     private String stockStatus() {
         return jdbc.queryForObject("""
-                SELECT i.status FROM inventory.stock_item i JOIN inventory.stock_package p ON p.id = i.stock_package_id
+                SELECT p.stock_status FROM inventory.stock_package p
                  WHERE p.lpn = ?""", String.class, lpn);
     }
 

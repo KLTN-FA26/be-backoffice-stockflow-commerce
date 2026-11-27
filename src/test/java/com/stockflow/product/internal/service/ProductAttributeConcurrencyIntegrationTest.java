@@ -91,8 +91,7 @@ class ProductAttributeConcurrencyIntegrationTest {
                 DataScope.ALL, Set.of())));
         String suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         code = "CONC-" + suffix;
-        productId = tx.execute(s -> products.create(new CreateProductCommand(code, "Ten " + suffix,
-                "Name " + suffix, null, null, null, null, null, TaxClass.STANDARD, List.of()))
+        productId = tx.execute(s -> products.create(new CreateProductCommand(code, "Ten " + suffix, null, null, null, null, TaxClass.STANDARD, List.of()))
                 .productId());
         blue = tx.execute(s -> newValue("BLUE" + suffix));
         red = tx.execute(s -> newValue("RED" + suffix));

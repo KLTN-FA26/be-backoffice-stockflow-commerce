@@ -55,7 +55,7 @@ final class CartonStationSupport {
         tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE inventory.uom_conversions u SET weight_kg = ?
                   FROM inventory.inventory_items i
-                 WHERE i.id = u.inventory_item_id AND i.sku = ? AND u.active""", kg, sku));
+                 WHERE i.variant_id = u.variant_id AND i.sku = ? AND u.active""", kg, sku));
     }
 
     /** The carton spec of {@code sku}, a SKU the test made itself, declares no size: for a test of unmeasured cartons. */
@@ -64,7 +64,7 @@ final class CartonStationSupport {
         tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE inventory.uom_conversions u SET length_cm = NULL, width_cm = NULL, height_cm = NULL, weight_kg = NULL
                   FROM inventory.inventory_items i
-                 WHERE i.id = u.inventory_item_id AND i.sku = ? AND u.active""", sku));
+                 WHERE i.variant_id = u.variant_id AND i.sku = ? AND u.active""", sku));
     }
 
     /** The manager corrects the SKU's carton spec (08 edge case: the real carton differs from the declared one). */
@@ -79,7 +79,7 @@ final class CartonStationSupport {
                 UPDATE inventory.uom_conversions u SET length_cm = ?::numeric, width_cm = ?::numeric,
                        height_cm = ?::numeric, weight_kg = ?::numeric
                   FROM inventory.inventory_items i
-                 WHERE i.id = u.inventory_item_id AND i.sku = ? AND u.active""",
+                 WHERE i.variant_id = u.variant_id AND i.sku = ? AND u.active""",
                 length, width, height, weight, sku);
     }
 

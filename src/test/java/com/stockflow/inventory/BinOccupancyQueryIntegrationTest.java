@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Need;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
@@ -59,8 +60,7 @@ class BinOccupancyQueryIntegrationTest {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Occupancy fixture", sku.toLowerCase(Locale.ROOT));
-        jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                Identifiers.newId(), product, sku, "Occupancy fixture");
+        StockedSkus.customerSkuOn(jdbc, product, sku, "Occupancy fixture");
     }
 
     /** One carton of exactly {@code onHand} units, its unit neither measured nor weighed. */
@@ -119,11 +119,12 @@ class BinOccupancyQueryIntegrationTest {
     }
 
     @Test
-    @DisplayName("what a carton takes: its unit's size, the item's rotatable flag, the unit's weight or none")
+    @DisplayName("what a carton takes: its unit's size, the variant's rotatable flag, the unit's weight or none")
     void needsOfCartons() {
         cartonUnit(skuA, 10, "12");
         cartonUnit(skuB, 10, null);
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set rotatable = false where sku = ?",
+        tx.executeWithoutResult(s -> jdbc.update("update product.variants set rotatable = false where id = "
+                + "(select variant_id from inventory.inventory_items where sku = ?)",
                 skuB));
         UUID a = tx.execute(s -> CartonRows.stock(jdbc, skuA, BIN, 1, 10, "LOT-1", Instant.now())).get(0).id();
         UUID b = tx.execute(s -> CartonRows.stock(jdbc, skuB, BIN, 1, 10, "LOT-1", Instant.now())).get(0).id();

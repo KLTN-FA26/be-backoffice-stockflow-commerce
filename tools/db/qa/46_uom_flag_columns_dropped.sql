@@ -56,7 +56,7 @@ SELECT pg_temp.expect_true('UF3 no function body names them (a body naming a dro
                    AND (p.prosrc ~ '\mis_base\M' OR p.prosrc ~ '\mdefault_shipping\M')));
 SELECT pg_temp.expect_fail('UF4 an old script marking the default shipping unit', $q$
     UPDATE inventory.uom_conversions SET default_shipping = TRUE
-     WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items
+     WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items
                                             WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
 
 \echo '--- one active carton per item still (01 BR-03): the index was rebuilt on active alone'
@@ -64,14 +64,14 @@ SELECT pg_temp.expect_true('UF5 uk_uom_conversions_one_carton is unique on the i
     (SELECT i.indisunique AND pg_get_expr(i.indpred, i.indrelid) = 'active'
        FROM pg_index i WHERE i.indexrelid = 'inventory.uk_uom_conversions_one_carton'::regclass));
 SELECT pg_temp.expect_fail('UF6 a second active carton beside the blue cup''s THUNG (uk_uom_conversions_one_carton)', $q$
-    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, weight_kg, length_cm,
+    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, weight_kg, length_cm,
                                            width_cm, height_cm, active)
-    SELECT md5('qa46:second')::uuid, id, 'QA46', 500, 5, 50, 40, 30, TRUE
+    SELECT md5('qa46:second')::uuid, variant_id, 'QA46', 500, 5, 50, 40, 30, TRUE
       FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
 SELECT pg_temp.expect_ok('UF7 a retired carton beside it, as history (BR-10)', $q$
-    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, weight_kg, length_cm,
+    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor, weight_kg, length_cm,
                                            width_cm, height_cm, active)
-    SELECT md5('qa46:retired')::uuid, id, 'QA46OLD', 500, 5, 50, 40, 30, FALSE
+    SELECT md5('qa46:retired')::uuid, variant_id, 'QA46OLD', 500, 5, 50, 40, 30, FALSE
       FROM inventory.inventory_items WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH' $q$);
 SELECT pg_temp.expect_fail('UF8 that retired carton made active again beside the active one', $q$
     UPDATE inventory.uom_conversions SET active = TRUE WHERE id = md5('qa46:retired')::uuid $q$);
@@ -79,19 +79,19 @@ SELECT pg_temp.expect_fail('UF8 that retired carton made active again beside the
 \echo '--- a unit a document uses keeps its code and factor (BR-10): the trigger was rebuilt without is_base'
 SELECT pg_temp.expect_true('UF9 the blue cup''s THUNG is used by its cartons',
     (SELECT inventory.unit_in_use(u.id) FROM inventory.uom_conversions u
-       JOIN inventory.inventory_items i ON i.id = u.inventory_item_id
+       JOIN inventory.inventory_items i ON i.variant_id = u.variant_id
       WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND u.active));
 SELECT pg_temp.expect_fail('UF10 its code renamed (tg_uom_conversions_locked_in_use)', $q$
     UPDATE inventory.uom_conversions SET unit_of_measure = 'THUNG2'
-     WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items
+     WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items
                                             WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
 SELECT pg_temp.expect_fail('UF11 its factor changed (tg_uom_conversions_locked_in_use)', $q$
     UPDATE inventory.uom_conversions SET factor = 999
-     WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items
+     WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items
                                             WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
 SELECT pg_temp.expect_ok('UF12 its size changed: that is not what a document counts in', $q$
     UPDATE inventory.uom_conversions SET height_cm = 51
-     WHERE active AND inventory_item_id = (SELECT id FROM inventory.inventory_items
+     WHERE active AND variant_id = (SELECT variant_id FROM inventory.inventory_items
                                             WHERE sku = 'LY-GIAY-DEMO-12OZ-XANH') $q$);
 SELECT pg_temp.expect_ok('UF13 a retired unit no document uses renamed', $q$
     UPDATE inventory.uom_conversions SET unit_of_measure = 'QA46OLD2' WHERE id = md5('qa46:retired')::uuid $q$);
@@ -104,7 +104,7 @@ SELECT pg_temp.expect_fail('UF14 a carton made in a retired unit with no receipt
 SELECT pg_temp.expect_fail('UF15 a carton holding other than its unit''s factor', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
     SELECT gen_random_uuid(), 'QA46-LPN-2', i.id, u.id, 999, 'QA46-NOWHERE'
-      FROM inventory.inventory_items i JOIN inventory.uom_conversions u ON u.inventory_item_id = i.id
+      FROM inventory.inventory_items i JOIN inventory.uom_conversions u ON u.variant_id = i.variant_id
      WHERE i.sku = 'LY-GIAY-DEMO-12OZ-XANH' AND u.active $q$);
 -- check_goods_receipt_line (the line's carton holds the production order line's count) is exercised by QA 22, PR15.
 ROLLBACK;

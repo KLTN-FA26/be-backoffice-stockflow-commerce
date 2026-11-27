@@ -45,15 +45,15 @@ class ProductControllerCreateHttpTest {
     @BeforeEach
     void created() {
         Instant now = Instant.parse("2026-10-28T03:00:00Z");
-        when(service.create(any())).thenReturn(new ProductSummary(UUID.randomUUID(), "CUP-12", "Ly", "Cup", "cup-12",
-                null, null, null, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, ProductStatus.DRAFT, now,
+        when(service.create(any())).thenReturn(new ProductSummary(UUID.randomUUID(), "CUP-12", "Ly", "cup-12",
+                null, null, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, ProductStatus.DRAFT, now,
                 "u", now, "u", null, null, null, null, null, null, null, 0L, null, null, null, null));
     }
 
     @Test
     void axesReachTheCommand() throws Exception {
         mvc.perform(post("/api/v1/products").contentType("application/json").content("""
-                        {"code":"cup-12","name":"Ly","nameEn":"Cup","taxClass":"STANDARD",
+                        {"code":"cup-12","name":"Ly","taxClass":"STANDARD",
                          "axes":[{"attributeId":"%s","optionValueIds":["%s"]}]}""".formatted(ATTR, VALUE)))
                 .andExpect(status().isCreated());
 
@@ -70,7 +70,7 @@ class ProductControllerCreateHttpTest {
     @Test
     void withoutAxesTheCommandHasNone() throws Exception {
         mvc.perform(post("/api/v1/products").contentType("application/json").content("""
-                        {"code":"CUP-13","name":"Ly","nameEn":"Cup","taxClass":"STANDARD"}"""))
+                        {"code":"CUP-13","name":"Ly","taxClass":"STANDARD"}"""))
                 .andExpect(status().isCreated());
 
         ArgumentCaptor<CreateProductCommand> command = ArgumentCaptor.forClass(CreateProductCommand.class);
@@ -81,11 +81,11 @@ class ProductControllerCreateHttpTest {
     @Test
     void anAxisWithoutAttributeOrANullAxisIsABadRequest() throws Exception {
         mvc.perform(post("/api/v1/products").contentType("application/json").content("""
-                        {"code":"CUP-15","name":"Ly","nameEn":"Cup","taxClass":"STANDARD",
+                        {"code":"CUP-15","name":"Ly","taxClass":"STANDARD",
                          "axes":[{"optionValueIds":["%s"]}]}""".formatted(VALUE)))
                 .andExpect(status().isBadRequest());
         mvc.perform(post("/api/v1/products").contentType("application/json").content("""
-                        {"code":"CUP-16","name":"Ly","nameEn":"Cup","taxClass":"STANDARD","axes":[null]}"""))
+                        {"code":"CUP-16","name":"Ly","taxClass":"STANDARD","axes":[null]}"""))
                 .andExpect(status().isBadRequest());
         verify(service, never()).create(any());
     }
@@ -97,7 +97,7 @@ class ProductControllerCreateHttpTest {
                 .thenThrow(new QueryTimeoutException("statement timeout"));
 
         mvc.perform(post("/api/v1/products").contentType("application/json").content("""
-                        {"code":"CUP-17","name":"Ly","nameEn":"Cup","taxClass":"STANDARD"}"""))
+                        {"code":"CUP-17","name":"Ly","taxClass":"STANDARD"}"""))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.code").value("CUP-12"))
                 .andExpect(jsonPath("$.data.possibleDuplicates").doesNotExist());
@@ -106,7 +106,7 @@ class ProductControllerCreateHttpTest {
     @Test
     void anAxisWithoutOptionsIsABadRequest() throws Exception {
         mvc.perform(post("/api/v1/products").contentType("application/json").content("""
-                        {"code":"CUP-14","name":"Ly","nameEn":"Cup","taxClass":"STANDARD",
+                        {"code":"CUP-14","name":"Ly","taxClass":"STANDARD",
                          "axes":[{"attributeId":"%s","optionValueIds":[]}]}""".formatted(ATTR)))
                 .andExpect(status().isBadRequest());
         verify(service, never()).create(any());

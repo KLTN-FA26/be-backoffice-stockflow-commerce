@@ -179,9 +179,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * saved - so a new line's row exists for the cartons' foreign key - does inventory label, recount, move and void
      * them; the response then carries their LPNs.</p>
      *
-     * <p>The cartons are labelled in the SKU's one active carton unit (01 BR-03, {@link #cartonUnit}); a line's
-     * {@code unitOfMeasure}, when given, must name it. A carton labelled in a unit since retired (BR-10) cannot be
-     * named again: leaving it out voids it, and the new cartons are labelled in the unit that replaced it.</p>
+     * <p>The cartons are labelled in the carton of the order line the production line was made for (Q7, Q10,
+     * {@link #cartonUnit}), even one the company has retired since; a line's {@code unitOfMeasure}, when given, must
+     * name it. A carton labelled in any other unit cannot be named again: leaving it out voids it.</p>
      */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "goods-receipt", resourceId = "#receiptId")
@@ -247,8 +247,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             }
             InventoryItemPolicy item = items.get(line.sku());
             if (item == null) {
+                // Placing the order opened the item of every SKU it names (owner decision Q5): none is a data error,
+                // reported on the line rather than met as a null further on.
                 errors.add(i, "productionOrderLineId", ErrorCode.INVENTORY_ITEM_NOT_FOUND,
-                        "No inventory item with SKU " + line.sku());
+                        "No inventory item with SKU %s: the order that names it opens it".formatted(line.sku()));
                 continue;
             }
             ReceivingLocation location = errors.area(i, in.locationCode(), RECEIVING, receipt.warehouseId());
@@ -322,11 +324,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     }
 
     /**
-     * The packing unit a production line's cartons are in: the SKU's one active carton specification (kltn-docs 01 BR-03,
-     * BR-11), which must hold the line's standard count. {@code unitOfMeasure}, when given, must name it. Null, with the
-     * refusal recorded on {@code unitOfMeasure}, when the SKU has no active carton, its carton holds another count, or
-     * another unit is named. Cartons already labelled in an earlier unit (retired and replaced since, BR-10) are not
-     * kept while the line changes unit: they are left out to be voided (SCRUM-473 design §3 rule 7).
+     * The packing unit a production line's cartons are in: the carton of the sales order line the production line was
+     * made for (owner decisions Q7, Q10 of 2026-11-26), which must hold the line's standard count. It is the carton the
+     * contract was signed in, so it is taken even when the company has retired it since and declared another: the goods
+     * of that contract come back packed as it was signed ({@code check_goods_receipt_line_unit} allows exactly that).
+     * An order line that never had a carton falls back to the variant's one active carton (kltn-docs 01 BR-03, BR-11).
+     * {@code unitOfMeasure}, when given, must name it. Null, with the refusal recorded on {@code unitOfMeasure}, when
+     * there is no such carton, it holds another count, or another unit is named. Cartons already labelled in another
+     * unit are not kept while the line changes unit: they are left out to be voided (SCRUM-473 design §3 rule 7).
      */
     private static UomConversion cartonUnit(LineErrors errors, int index, NewLine in,
                                             ReceivableProductionOrder.Line line, List<UomConversion> itemUnits,
@@ -338,10 +343,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                     "%s has no unit %s".formatted(line.sku(), code));
             return null;
         }
-        UomConversion unit = itemUnits.stream().filter(UomConversion::active).findFirst().orElse(null);
+        UomConversion unit = receivingCarton(itemUnits, line).orElse(null);
         if (unit == null) {
-            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("%s has no active carton: its "
-                    + "carton specification is set up first (01 BR-11)").formatted(line.sku()));
+            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, (line.uomConversionId() == null
+                    ? "%s has no active carton: its carton specification is set up first (01 BR-11)"
+                    : "%s is not packed in the carton its order line was signed in (Q10)").formatted(line.sku()));
             return null;
         }
         if (named.isPresent() && !named.get().id().equals(unit.id())) {
@@ -407,9 +413,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         for (ReceiptLine line : receipt.lines()) {
             List<StockPackageView> labelled = cartons.getOrDefault(line.id(), List.of()).stream()
                     .filter(carton -> "RECEIVING".equals(carton.status())).toList();
-            boolean standard = labelled.stream().allMatch(carton -> Objects.equals(carton.receivedQty(),
-                    carton.nominalQty()));
-            if (labelled.isEmpty() || !standard || countedIntoCartons(labelled) != line.receivedQuantity()) {
+            boolean counted = labelled.stream().allMatch(carton -> carton.countedAt() != null);
+            if (labelled.isEmpty() || !counted || countedIntoCartons(labelled) != line.receivedQuantity()) {
                 throw new BusinessException(ErrorCode.RECEIPT_CARTON_NOT_STANDARD, ("Receipt %s: a line of %d units has "
                         + "%d carton(s) holding %d; every unit is received in a carton of its standard count (BR-12, "
                         + "BR-13) - count the line again").formatted(receipt.number(), line.receivedQuantity(),
@@ -487,6 +492,18 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     private static Optional<UomConversion> unitByCode(List<UomConversion> itemUnits, String code) {
         String wanted = code.strip().toUpperCase(Locale.ROOT);
         return itemUnits.stream().filter(unit -> unit.unitOfMeasure().equals(wanted)).findFirst();
+    }
+
+    /**
+     * The carton a production line is received in, among the SKU's units (its variant's, retired ones included): the
+     * carton of the order line it was made for, active or retired (Q7, Q10); the active one when the order line has
+     * none. Empty when that carton is not among them.
+     */
+    private static Optional<UomConversion> receivingCarton(List<UomConversion> itemUnits,
+                                                           ReceivableProductionOrder.Line line) {
+        return line.uomConversionId() == null
+                ? itemUnits.stream().filter(UomConversion::active).findFirst()
+                : itemUnits.stream().filter(unit -> unit.id().equals(line.uomConversionId())).findFirst();
     }
 
     /** A line's cartons as counted, for inventory once the count is saved. {@code unitId} null voids them all. */
@@ -689,7 +706,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     /** What was counted into a line's cartons: the line less this is its loose remainder (design §3 rule 5). */
     private static int countedIntoCartons(List<StockPackageView> cartons) {
-        return cartons.stream().mapToInt(c -> c.receivedQty() == null ? 0 : c.receivedQty()).sum();
+        return cartons.stream().mapToInt(StockPackageView::countedUnits).sum();
     }
 
     /** The item with this SKU, or empty for an unknown or malformed one. */
@@ -760,26 +777,29 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                         .map(ReceiptLine::productionOrderLineId).toList(), receipt.id());
         List<LineView> lines = receipt.lines().stream().map(line -> {
             InventoryItemPolicy item = items.get(line.inventoryItemId());
+            Optional<ReceivableProductionOrder.Line> ordered = production == null ? Optional.empty()
+                    : production.line(line.productionOrderLineId());
+            List<UomConversion> itemUnits = item == null ? List.of() : unitsBySku.getOrDefault(item.sku(), List.of());
+            // Q10: a production line is counted in the carton its order line was signed in, retired or not - the one
+            // unit the counting screen offers; a line of no production order offers the active one.
+            List<UomConversion> offered = ordered.map(o -> receivingCarton(itemUnits, o).stream().toList())
+                    .orElseGet(() -> itemUnits.stream().filter(UomConversion::active).toList());
             List<PackageView> packages = cartons.getOrDefault(line.id(), List.of()).stream()
                     .map(c -> new PackageView(c.id(), c.lpn(), c.quantity() == null ? 0 : c.quantity(),
-                            c.receivedQty() == null ? 0 : c.receivedQty(), c.nominalQty(), c.status(),
+                            c.countedAt(), c.nominalQty(), c.status(),
                             c.locationCode()))
                     .toList();
             // Design §3 rule 5: loose is what was not counted into a carton. Not what is in the cartons now - a
             // confirmed receipt is frozen (BR-05), and units picked from a carton later were never loose.
-            int inCartons = packages.stream().mapToInt(PackageView::receivedQty).sum();
+            int inCartons = packages.stream().mapToInt(PackageView::countedUnits).sum();
             return new LineView(line.id(), line.inventoryItemId(), item == null ? null : item.sku(),
                     line.receivedQuantity(), line.lotNumber(), code(where, line.locationId()), line.note(),
                     line.receivedQuantity(),
                     line.uomConversionId() == null ? null : unitCodes.get(line.uomConversionId()),
                     line.receivedQuantity() - inCartons, packages,
-                    item == null ? List.of() : unitsBySku.getOrDefault(item.sku(), List.of()).stream()
-                            .map(u -> new UnitView(u.unitOfMeasure(), u.factor(), u.active()))
-                            .toList(),
-                    line.productionOrderLineId(), production == null ? null
-                            : production.line(line.productionOrderLineId())
-                            .map(ordered -> progress(ordered, line, pending,
-                                    elsewhere.getOrDefault(ordered.id(), 0))).orElse(null));
+                    offered.stream().map(u -> new UnitView(u.unitOfMeasure(), u.factor(), u.active())).toList(),
+                    line.productionOrderLineId(), ordered.map(o -> progress(o, line, pending,
+                            elsewhere.getOrDefault(o.id(), 0))).orElse(null));
         }).toList();
         var warehouse = warehouses.findWarehouse(receipt.warehouseId());
         return new ReceiptView(receipt.id(), receipt.number(), receipt.warehouseId(),

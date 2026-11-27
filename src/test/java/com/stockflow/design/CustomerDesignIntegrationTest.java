@@ -123,8 +123,8 @@ class CustomerDesignIntegrationTest {
 
     private UUID approvedProduct(ProductKind kind) {
         String code = "CDS-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        UUID id = products.create(new CreateProductCommand(code, "Ly giấy 12oz", "Paper cup 12oz", null, null, "Ly",
-                null, null, TaxClass.STANDARD, List.of())).productId();
+        UUID id = products.create(new CreateProductCommand(code, "Ly giấy 12oz", null, null, "Ly",
+                null, TaxClass.STANDARD, List.of())).productId();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.products SET status = 'APPROVED', submitted_by = ?, submitted_at = NOW(), "
                     + "approved_by = ?, approved_at = NOW() WHERE id = ?", ReferenceRows.user(entityManager),

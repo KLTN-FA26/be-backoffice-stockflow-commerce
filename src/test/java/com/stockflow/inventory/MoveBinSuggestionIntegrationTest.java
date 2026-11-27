@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.id.Identifiers;
@@ -84,25 +85,19 @@ class MoveBinSuggestionIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Move suggestion fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Move suggestion fixture");
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Move suggestion fixture");
         });
     }
 
     @AfterEach
     void removeCartons() {
         tx.executeWithoutResult(s -> {
-            jdbc.update("update inventory.stock_item set location_code = ? where sku = ? and stock_package_id in"
-                    + " (select from_stock_package_id from inventory.stock_movement where sku = ?)", OVERFLOW, sku, sku);
             jdbc.update("update inventory.stock_package set location_code = ? where id in"
-                    + " (select from_stock_package_id from inventory.stock_movement where sku = ?)", OVERFLOW, sku);
-            jdbc.update("delete from inventory.stock_item where sku = ? and stock_package_id not in"
-                    + " (select from_stock_package_id from inventory.stock_movement where sku = ?"
-                    + "  and from_stock_package_id is not null)", sku, sku);
+                    + " (select stock_package_id from inventory.stock_movement where sku = ?)", OVERFLOW, sku);
             jdbc.update("delete from inventory.stock_package where inventory_item_id in"
                     + " (select id from inventory.inventory_items where sku = ?) and id not in"
-                    + " (select from_stock_package_id from inventory.stock_movement where sku = ?"
-                    + "  and from_stock_package_id is not null)", sku, sku);
+                    + " (select stock_package_id from inventory.stock_movement where sku = ?"
+                    + "  and stock_package_id is not null)", sku, sku);
         });
     }
 

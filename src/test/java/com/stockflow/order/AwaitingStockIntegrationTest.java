@@ -208,17 +208,17 @@ class AwaitingStockIntegrationTest {
             UUID variant = Identifiers.newId();
             String code = product.sku() + "-W" + variant.toString().substring(24, 28).toUpperCase(Locale.ROOT);
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Printed cup', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), code, "OWNED-SKU:" + code, customerId, design.snapshotId(),
-                    product.variantId());
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Printed cup', 'ACTIVE', 0, NOW())""",
+                    variant, product.productId(), product.variantId(), customerId, design.snapshotId(), code);
+            // The order of the SKU made its inventory item (owner decision Q5); the test stocks or receives it.
+            UUID item = com.stockflow.support.CartonRows.item(jdbc, code);
             UUID carton = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                         weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
-                    VALUES (?, ?, 'CARTON', ?, 4.2, 60, 40, 35, TRUE, 0, NOW())""",
+                    VALUES (?, (select variant_id from inventory.inventory_items where id = ?), 'CARTON', ?, 4.2, 60, 40, 35, TRUE, 0, NOW())""",
                     carton, item, PER_CARTON);
             return new IssuedSku(code, carton);
         });
@@ -408,7 +408,7 @@ class AwaitingStockIntegrationTest {
                 .isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(history(orderId)).last().satisfies(row -> assertThat(row).startsWith("AWAITING_STOCK>READY_TO_FULFILL"));
         assertThat(jdbc.queryForObject("""
-                SELECT COALESCE(sum(quantity), 0) FROM inventory.stock_reservation
+                SELECT COALESCE(sum(cartons * units_per_carton), 0) FROM inventory.stock_reservation
                  WHERE order_id = ? AND allocated_from_id IS NOT NULL AND status = 'HELD'""", Long.class, orderId))
                 .as("4B-8 (17 BR-29): the release is batch 1's - its 12 cartons allocated on the bin")
                 .isEqualTo(12L * PER_CARTON);
@@ -434,7 +434,7 @@ class AwaitingStockIntegrationTest {
     }
 
     @Test
-    @DisplayName("QD-16: a legacy print line - a blank with a design snapshot - is still not released")
+    @DisplayName("QD-16: a legacy print line - a line carrying a design snapshot - is still not released")
     void legacyPrintLineStillRefused() {
         UUID hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
         UUID draft = Identifiers.newId();
@@ -459,7 +459,9 @@ class AwaitingStockIntegrationTest {
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
                                                      design_checksum) VALUES (?, ?, ?, 10, 2000, 'VND', ?, ?)""",
-                    Identifiers.newId(), order, DemoData.BLANK_CUP, snapshot, "a".repeat(64));
+                    // A blank cannot be ordered since V20270105000100 (fk_order_line_customer_sku): the legacy shape
+                    // that is left is a line of the customer's own SKU carrying the snapshot.
+                    Identifiers.newId(), order, DemoData.SKU_STOCKED, snapshot, "a".repeat(64));
         });
 
         assertThatThrownBy(() -> releases.release(order, hcm, coordinator))

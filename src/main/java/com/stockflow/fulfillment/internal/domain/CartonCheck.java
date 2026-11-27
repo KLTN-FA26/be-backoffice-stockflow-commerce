@@ -270,14 +270,16 @@ public final class CartonCheck {
     }
 
     /**
-     * Shipping labels for the cartons named, or every CHECKED carton when none is (08 §4.3 steps 5-6): each gets its
-     * SKU's carton-spec size, full weight, may-rotate flag and volumetric weight, and label version 1; it is LABELED. A
+     * Shipping labels for the cartons named, or every CHECKED carton when none is (08 §4.3 steps 5-6): each gets the
+     * size, full weight and may-rotate flag of the carton it was received in, its volumetric weight, and label version
+     * 1; it is LABELED. A
      * carton labelled already is left as it is. All or nothing: any SKU without a measured spec stops every label.
      * Retry-safe: asking again for the cartons named labels nothing more; asking for "every CHECKED one" again, once
      * none is CHECKED and one is labelled, is the same call repeated after it worked - it labels nothing and says so by
      * an empty answer, not by an error that would tell the worker their labels failed.
      *
-     * @param specs   the carton spec of each SKU named, by SKU; a SKU missing or not measured has no spec
+     * @param specs   the carton spec of each carton, by LPN (the carton it was received in); missing or not measured
+     *                means no spec
      * @param divisor the volumetric divisor (08 BR-09, 6000 by default)
      * @return the cartons labelled now; none on a retry
      * @throws BusinessException {@code CARTON_NOT_IN_TASK}; {@code CARTON_NOT_CHECKED} for a carton not scanned yet, or
@@ -313,7 +315,7 @@ public final class CartonCheck {
         }
         Set<String> unmeasured = new TreeSet<>();
         chosen.forEach(c -> {
-            Spec spec = specs.get(c.sku);
+            Spec spec = specs.get(c.lpn);
             if (spec == null || !spec.measured()) {
                 unmeasured.add(c.sku);
             }
@@ -325,7 +327,7 @@ public final class CartonCheck {
                     .map(sku -> new FieldError("sku", sku, "CartonSpecUnmeasured")).toList());
         }
         for (Carton carton : chosen) {
-            carton.measure(specs.get(carton.sku), divisor);
+            carton.measure(specs.get(carton.lpn), divisor);
             carton.status = PackageStatus.LABELED;
             carton.labelVersion = 1;
             carton.labeledAt = now;

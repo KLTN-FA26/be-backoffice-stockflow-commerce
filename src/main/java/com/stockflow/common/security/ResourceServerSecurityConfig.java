@@ -198,6 +198,10 @@ public class ResourceServerSecurityConfig {
                         // or the HMAC signature it was configured with is the credential, checked by the service. POST
                         // only.
                         .requestMatchers(HttpMethod.POST, "/api/v1/fulfillment/carrier-webhooks/*").permitAll()
+                        // The bank feed's webhook (credit plan 2026-11-26 part C): SePay holds no token; the HMAC
+                        // signature or the API key the webhook was configured with is the credential, checked by the
+                        // service. POST only.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/bank-transactions/webhooks/*").permitAll()
                         // A producer's links to its production order's slip and print files (4A-3, kltn-docs 17 §4.3
                         // step 7): a producer holds no account; the HMAC-signed, time-limited link is the credential,
                         // checked by the service with everything else on each use. GET, and HEAD, which mail link

@@ -57,7 +57,7 @@ class StockBrowsingImplTest {
 
     private static StockBrowseSearch.ReservationRow reservationAt(String location) {
         return new StockBrowseSearch.ReservationRow(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "CUP-12OZ",
-                location, "L1", 12, ReservationStatus.HELD, NOW, NOW.plusSeconds(1800), null, null,
+                location, "L1", 12, 1, ReservationStatus.HELD, NOW, null, null,
                 "SO-20261125-0001");
     }
 
@@ -288,7 +288,7 @@ class StockBrowsingImplTest {
             var free = stock(StockStatus.AVAILABLE, 30, 0);
             when(warehouses.prefixOf(HCM)).thenReturn(Optional.of("HCM"));
             when(search.stock(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(held, free)));
-            when(underCount.stockItemsUnderCount(any())).thenReturn(Set.of(held.stockItemId()));
+            when(underCount.cartonsUnderCount(any())).thenReturn(Set.of(held.stockItemId()));
 
             var rows = service.warehouseStock(HCM, query(null), BookVisibility.HIDE_COUNTED_SLOTS).items();
 
@@ -307,7 +307,7 @@ class StockBrowsingImplTest {
             var row = stock(StockStatus.AVAILABLE, 50, 12);
 
             assertThat(oneStockRow(row).onHand()).isEqualTo(50);
-            verify(underCount, never()).stockItemsUnderCount(any());
+            verify(underCount, never()).cartonsUnderCount(any());
         }
 
         @Test

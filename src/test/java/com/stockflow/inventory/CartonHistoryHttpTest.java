@@ -35,8 +35,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * A carton's history through the real filter chain, permission aspect and data scope (#455; kltn-docs 20 §4.1, the
  * carton as a lookup key, and 11, stock moved by whole carton): {@code GET /inventory/movements?lpn=} keeps the ledger
- * lines that took units out of the carton or put units into it, and every line names its cartons as
- * {@code fromLpn} / {@code toLpn}. One carton is received into a warehouse of its own, put away into one bin and moved
+ * lines about the carton, and every line names it as {@code lpn}. One carton is received into a warehouse of its
+ * own, put away into one bin and moved
  * by hand into another: three lines, newest first.
  */
 @SecuredProductionReceiptTest
@@ -166,17 +166,15 @@ class CartonHistoryHttpTest {
                 .andExpect(jsonPath("$.data.items[0].referenceType").value("MOVE_TASK"))
                 .andExpect(jsonPath("$.data.items[0].fromLocation").value(firstBin))
                 .andExpect(jsonPath("$.data.items[0].toLocation").value(secondBin))
-                .andExpect(jsonPath("$.data.items[0].fromLpn").value(lpn))
-                .andExpect(jsonPath("$.data.items[0].toLpn").value(lpn))
+                .andExpect(jsonPath("$.data.items[0].lpn").value(lpn))
                 .andExpect(jsonPath("$.data.items[1].referenceType").value("PUTAWAY_TASK"))
                 .andExpect(jsonPath("$.data.items[1].fromLocation").value(receiving))
                 .andExpect(jsonPath("$.data.items[1].toLocation").value(firstBin))
-                .andExpect(jsonPath("$.data.items[1].fromLpn").value(lpn))
-                .andExpect(jsonPath("$.data.items[1].toLpn").value(lpn))
+                .andExpect(jsonPath("$.data.items[1].lpn").value(lpn))
                 .andExpect(jsonPath("$.data.items[2].type").value("RECEIPT"))
                 .andExpect(jsonPath("$.data.items[2].toLocation").value(receiving))
-                .andExpect(jsonPath("$.data.items[2].fromLpn").doesNotExist())
-                .andExpect(jsonPath("$.data.items[2].toLpn").value(lpn));
+                .andExpect(jsonPath("$.data.items[2].fromLocation").doesNotExist())
+                .andExpect(jsonPath("$.data.items[2].lpn").value(lpn));
     }
 
     @Test
@@ -190,7 +188,7 @@ class CartonHistoryHttpTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[0].type").value("RECEIPT"))
-                .andExpect(jsonPath("$.data.items[0].toLpn").value(otherLpn));
+                .andExpect(jsonPath("$.data.items[0].lpn").value(otherLpn));
     }
 
     @Test

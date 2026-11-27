@@ -115,7 +115,7 @@ class StockPackageLabelHttpTest {
     }
 
     @Test
-    @DisplayName("a received carton reprinted by LPN prints the lot its stock row carries")
+    @DisplayName("a received carton reprinted by LPN prints the lot the carton is of")
     void reprintPrintsTheStockRowsLot() throws Exception {
         ProductionReceivables.Receivable goods = receivables.sent(WAREHOUSE_HCM, 1, 1000);
         UUID receiptId = receivables.received(goods, RECEIVING, 1, clerk).id();
@@ -124,8 +124,8 @@ class StockPackageLabelHttpTest {
                   JOIN procurement.goods_receipt_lines l ON l.id = p.goods_receipt_line_id
                  WHERE l.receipt_id = ?""", String.class, receiptId);
         String rowLot = jdbc.queryForObject("""
-                SELECT s.lot_number FROM inventory.stock_item s
-                  JOIN inventory.stock_package p ON p.id = s.stock_package_id
+                SELECT l.lot_number FROM inventory.stock_package p
+                  JOIN inventory.stock_lot l ON l.id = p.lot_id
                  WHERE p.lpn = ?""", String.class, lpn);
         assertThat(rowLot).isEqualTo(goods.productionCode());
 
@@ -145,8 +145,8 @@ class StockPackageLabelHttpTest {
         String lot = jdbc.queryForObject("SELECT lot_number FROM procurement.goods_receipt_lines WHERE id = ?",
                 String.class, receiptLineId);
         String name = jdbc.queryForObject("""
-                SELECT v.name FROM product.variants v
-                  JOIN inventory.inventory_items i ON i.sku = v.sku
+                SELECT c.name FROM product.customer_skus c
+                  JOIN inventory.inventory_items i ON i.sku = c.sku
                   JOIN inventory.stock_package p ON p.inventory_item_id = i.id
                  WHERE p.lpn = ?""", String.class, lpns.get(0));
         byte[] pdf = print(Role.WAREHOUSE_STAFF, clerk,

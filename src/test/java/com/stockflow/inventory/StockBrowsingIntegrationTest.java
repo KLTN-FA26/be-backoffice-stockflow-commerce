@@ -1,5 +1,6 @@
 package com.stockflow.inventory;
 
+import com.stockflow.support.StockedSkus;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -67,14 +68,13 @@ class StockBrowsingIntegrationTest {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Browse fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Browse fixture','')", Identifiers.newId(), product, sku);
+            StockedSkus.customerSkuOn(jdbc, product, sku, "Browse fixture");
             // Two sealed cartons of 3: the older one is allocated whole, the other stays free.
             com.stockflow.support.CartonRows.stock(jdbc, sku, "HCM-A01-1-B", 1, 3, null,
                     java.time.Instant.parse("2026-01-01T00:00:00Z"));
             com.stockflow.support.CartonRows.stock(jdbc, sku, "HCM-A01-1-A", 1, 3, null,
                     java.time.Instant.parse("2026-02-01T00:00:00Z"));
-            // A quarantined carton of 4, and an emptied loose row of the history (stock is whole cartons only).
+            // A quarantined carton of 4, and a carton that left stock long ago (it holds nothing: listed only on request).
             com.stockflow.support.CartonRows.carton(jdbc, sku, "HCM-A02-2-A", 4, null,
                     java.time.Instant.parse("2026-01-15T00:00:00Z"), "QUARANTINE");
             emptied("HCM-A01-2-B");
@@ -94,11 +94,13 @@ class StockBrowsingIntegrationTest {
 
     private UUID softReservation;
 
-    /** A loose row emptied long ago: the only kind a row in no carton may be (ck_stock_item_whole_cartons). */
+    /** A carton consumed long ago at {@code location}: out of stock, so it stands for no unit (ADR-0011). */
     private void emptied(String location) {
-        jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at)
-                VALUES (?, ?, ?, 'UNTRACED', 0, 0, 'AVAILABLE', 0, NOW())""", Identifiers.newId(), sku, location);
+        UUID carton = com.stockflow.support.CartonRows.unitOf(jdbc, sku, 3);
+        UUID id = com.stockflow.support.CartonRows.stockOfUnit(jdbc, sku, carton, location, 1, null,
+                java.time.Instant.parse("2025-12-01T00:00:00Z"), "AVAILABLE").getFirst().id();
+        jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', stock_status = NULL, closed_at = NOW()"
+                + " WHERE id = ?", id);
     }
 
     private static ErrorCode codeOf(Throwable thrown) {
@@ -155,7 +157,7 @@ class StockBrowsingIntegrationTest {
     }
 
     @Test
-    @DisplayName("every stock row of a warehouse in any status, the empty ones on request, available only when sellable")
+    @DisplayName("every carton in stock of a warehouse in any status, the ones out of stock on request, available only when sellable")
     void warehouseStock() {
         var rows = browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, false)).items();
         assertThat(rows).extracting(StockBrowsing.StockRow::locationCode)

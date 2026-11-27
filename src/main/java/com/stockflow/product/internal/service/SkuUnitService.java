@@ -22,13 +22,15 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The units of a product's SKU: the units of measure of its inventory item (docs 01 §3 "Đơn vị quy đổi",
- * BR-09, BR-10) and the variant's sales units (§3 "Đơn vị bán", BR-11). Both are edited through the
- * product, under the same guard as the logistics: not while it is under review, never once discontinued.
+ * The units of a product's SKU: the cartons of its catalogue variant (docs 01 §3, BR-03, BR-09, BR-10) and the
+ * variant's sales units (§3, BR-11). Both are edited through the product, under the same guard as the logistics: not
+ * while it is under review, never once discontinued. A customer's own SKU is not a variant (V20270105000100): its id
+ * is unknown to these screens ({@code NOT_FOUND}), and it is packed in its variant's cartons (owner decision Q1).
+ * Neither the variant nor its customers' SKUs need an inventory item for this: inventory finds the variant itself.
  *
  * <p>Sales unit: a SKU is sold by the carton of its carton specification, which the system assigns (kltn-docs 01 §3
  * "Đơn vị bán", BR-11): quotes, orders and contracts count cartons, priced per piece. So there is nothing to list or
- * choose - the sales unit <em>is</em> the item's one active packing unit (01 BR-03,
+ * choose - the sales unit <em>is</em> the variant's one active carton (01 BR-03,
  * {@code uk_uom_conversions_one_carton}), read when asked for; a SKU with no carton yet has none. The table that once
  * listed units a variant sells in ({@code product.variant_sales_units}, dropped by V20261226000100) recorded that same
  * fact a second time, was never written by the system, and kept a carton from being retired (BR-10) while it was
@@ -100,7 +102,7 @@ public class SkuUnitService {
 
     // ---- sales unit ---------------------------------------------------------------------------------------
 
-    /** The unit the variant is sold in: its item's one active carton; an empty page while it has none. */
+    /** The unit the variant is sold in: its catalogue variant's one active carton; an empty page while it has none. */
     @Transactional(readOnly = true)
     public PageResponse<SalesUnitView> salesUnits(UUID productId, UUID variantId, int page, int size) {
         Sku sku = readSku(productId, variantId);

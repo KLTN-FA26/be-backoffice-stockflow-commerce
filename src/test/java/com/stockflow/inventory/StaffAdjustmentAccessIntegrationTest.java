@@ -105,16 +105,17 @@ class StaffAdjustmentAccessIntegrationTest {
     }
 
     @Test
-    @DisplayName("an adjustment named by bin and lot, with or without a lot, is STOCK_NOT_IN_CARTON: stock is adjusted by "
-            + "carton only (review C4 P-3; was STOCK_ADJUSTMENT_LOT_REQUIRED for the loose layer, 5-5 review)")
-    void adjustmentWithoutALotIsRefused() {
-        // Since 4C-3 the HTTP request names a carton by LPN and carries no lot; since P-3 the inventory API's loose
-        // path (InventoryService.requestAdjustment without an LPN) is refused before its lot is looked at.
-        for (String lot : new String[] {null, "  ", "L-ANY"}) {
+    @DisplayName("an adjustment named by bin and SKU and no LPN is STOCK_NOT_IN_CARTON: stock is adjusted by carton "
+            + "only (review C4 P-3; was STOCK_ADJUSTMENT_LOT_REQUIRED for the loose layer, 5-5 review)")
+    void adjustmentWithoutACartonIsRefused() {
+        // Since 4C-3 the HTTP request names a carton by LPN; since P-3 the inventory API's request without an LPN
+        // (InventoryService.requestAdjustment) is refused, and since ADR-0011 the command carries neither a lot nor a
+        // quantity to name loose stock by. A missing and a blank LPN are the same request.
+        for (String lpn : new String[] {null, "  "}) {
             BusinessException refused = org.assertj.core.api.Assertions.catchThrowableOfType(BusinessException.class,
-                    () -> inventory.requestAdjustment(new RequestAdjustmentCommand("HCM-A01-1-B",
-                            new Sku(DemoData.SKU_STOCKED), lot, -1, StockAdjustmentReason.DAMAGED, null, clerk)));
-            org.assertj.core.api.Assertions.assertThat(refused).as("lot %s", lot).isNotNull();
+                    () -> inventory.requestAdjustment(new RequestAdjustmentCommand(lpn, "HCM-A01-1-B",
+                            new Sku(DemoData.SKU_STOCKED), StockAdjustmentReason.DAMAGED, null, clerk)));
+            org.assertj.core.api.Assertions.assertThat(refused).as("lpn '%s'", lpn).isNotNull();
             org.assertj.core.api.Assertions.assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_NOT_IN_CARTON);
         }
     }

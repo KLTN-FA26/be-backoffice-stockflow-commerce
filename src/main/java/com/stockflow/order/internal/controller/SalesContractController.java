@@ -124,14 +124,28 @@ class SalesContractController {
 
     @PostMapping("/sending")
     @Operation(summary = "Send the draft to the customer (14 §4.3 step 13): every delivery window set and not in the "
-            + "past; the PDF sent is kept. A plan paying after delivery is checked against the customer's credit and "
-            + "warned about (creditWarning), never refused (15 BR-11)")
+            + "past; the PDF sent is kept. A plan paying after delivery is checked against the customer's credit: "
+            + "OVERDUE or OVER_LIMIT and it is NOT sent but waits for accounting - the answer is the contract still "
+            + "DRAFT with creditReview PENDING (15 BR-11, 2026-11-26). 409 CONTRACT_CREDIT_REVIEW_PENDING when it "
+            + "waits already")
     @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
     public ApiResponse<SalesContracts.ContractView> send(@PathVariable UUID orderId,
                                                          @Valid @RequestBody SalesContractRequests.Version request,
                                                          @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(contracts.send(user, orderId, request.version()));
+    }
+
+    @PostMapping("/credit-review/withdrawal")
+    @Operation(summary = "Take a contract waiting for accounting back, to change it (15 BR-11): creditReview NONE, "
+            + "the review WITHDRAWN. 409 CONTRACT_CREDIT_REVIEW_NOT_PENDING when it waits for nothing")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
+    public ApiResponse<SalesContracts.ContractView> withdrawCreditReview(@PathVariable UUID orderId,
+                                                                         @Valid @RequestBody
+                                                                         SalesContractRequests.Version request,
+                                                                         @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.withdrawCreditReview(user, orderId, request.version()));
     }
 
     @PostMapping("/signed-file/uploads")

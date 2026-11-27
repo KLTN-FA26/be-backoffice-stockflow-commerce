@@ -485,15 +485,14 @@ stockflow:
       # SKUs one availability call may ask about: a page's worth, not the whole catalogue.
       max-skus-per-request: 50
     search:
-      # Ranking weights (SCRUM-182): score = text-rank*w1 + title-similarity*w2 + exact-SKU*w3 + in-stock*w4.
-      # Text rank and similarity are 0..1, so an exact SKU always wins and stock only breaks near ties.
+      # Ranking weights (SCRUM-182): score = text-rank*w1 + title-similarity*w2 + exact-SKU*w3.
+      # Text rank and similarity are 0..1, so an exact SKU always wins. Blanks are never stocked: no stock weight.
       text-rank-weight: 1.0
       similarity-weight: 1.0
       exact-sku-weight: 10.0
-      in-stock-weight: 0.25
       # Typo fallback when nothing matches exactly: minimum trigram similarity with the title.
       fallback-similarity: 0.2
-      # Best matches that are ranked and pageable (stock is ranked in memory, over this many).
+      # Best matches that are ranked and pageable.
       ranking-window: 500
 
   product-media:
@@ -554,6 +553,32 @@ stockflow:
       # The bank's six-digit NAPAS BIN: the chat's transfer card (kltn-docs 16 BR-06) draws a VietQR code with it. Without
       # it the card shows the account, with no QR code.
       bank-bin: ${COMPANY_BANK_BIN:}
+    # What the review of a credit request warns the accountant about (QĐ-A, owner decision 2026-11-26): warnings only,
+    # nothing is refused. Fewer settled contracts than min-settled-contracts: too little history. The suggested limit is
+    # suggested-months months of what the customer paid a month on average over the last twelve.
+    credit:
+      min-settled-contracts: ${CREDIT_MIN_SETTLED_CONTRACTS:2}
+      suggested-months: ${CREDIT_SUGGESTED_MONTHS:1}
+    # The bank feed (credit plan 2026-11-26 part C; kltn-docs 15 BR-02): SePay reads the company account and calls
+    # POST /api/v1/bank-transactions/webhooks/sepay for each incoming transfer; a transfer whose content names one
+    # installment becomes a receipt by itself, anything else waits in the Accountant's queue. Off unless
+    # BANK_FEED_ENABLED=true; then the webhook needs one credential, as configured on my.sepay.vn: the HMAC secret
+    # (recommended) or the API key. docs/bank-feed-sepay.md says how to set it up and demo it.
+    bank-feed:
+      enabled: ${BANK_FEED_ENABLED:false}
+      # The account customers pay into; a transfer into another account waits for the Accountant. Blank: any account.
+      account-number: ${BANK_FEED_ACCOUNT_NUMBER:${stockflow.payment.company-bank.account-number:}}
+      webhook:
+        hmac-secret: ${BANK_FEED_WEBHOOK_HMAC_SECRET:}
+        api-key: ${BANK_FEED_WEBHOOK_API_KEY:}
+        max-skew: ${BANK_FEED_WEBHOOK_MAX_SKEW:PT5M}
+      # SePay's API v2, read every night for transfers the webhook missed. A Test-mode token works only on
+      # https://userapi-sandbox.sepay.vn/v2. No token: the catch-up only retries transfers a failure left unhandled.
+      api:
+        base-url: ${BANK_FEED_API_BASE_URL:https://userapi.sepay.vn/v2}
+        token: ${BANK_FEED_API_TOKEN:}
+        lookback: ${BANK_FEED_API_LOOKBACK:P3D}
+      catch-up-cron: ${BANK_FEED_CATCH_UP_CRON:0 40 1 * * *}
 
   # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11) and an e-invoice is issued by (WF-05 E1/E2).
   # Blank here on purpose: local, dev and test carry a demo one, and in the prod profile the application refuses

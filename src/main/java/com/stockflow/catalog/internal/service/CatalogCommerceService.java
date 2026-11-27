@@ -9,6 +9,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.CatalogListingChanged;
 import com.stockflow.product.api.ProductPublication;
 import com.stockflow.product.api.ProductKind;
+import com.stockflow.product.api.StorefrontProduct;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.PublishedProductImage;
 
@@ -114,19 +115,17 @@ public class CatalogCommerceService {
     }
 
     /**
-     * A variant (quy cách) on the product page: what a customer looks at and designs on - no price, no stock indicator
-     * (kltn-docs 13 BR-04, BR-11). {@code name} is the variant's name, as a list card's {@link CardSku} carries it.
+     * A product page. {@code page} carries what the product module shows of it (ADR-0013): the description as HTML,
+     * brand, category, descriptive attributes, and the variants (quy cách) a customer looks at and designs on - no
+     * price, no stock indicator (kltn-docs 13 BR-04, BR-11).
      */
-    public record Variant(String sku, String name) {}
-
     public record PublicView(
             UUID productId,
             String slug,
             String title,
-            String description,
             String seoTitle,
             String seoDescription,
-            List<Variant> variants,
+            StorefrontProduct page,
             ProductKind kind) {}
 
     /**
@@ -147,15 +146,13 @@ public class CatalogCommerceService {
         var product = products.read(listing.productId());
         if (product.status() != ProductStatus.PUBLISHED)
             throw new BusinessException(ErrorCode.NOT_FOUND);
-        var variants = product.skus().stream().map(s -> new Variant(s.sku(), s.name())).toList();
         return new PublicView(
                 listing.productId(),
                 listing.slug(),
                 listing.publishedTitle(),
-                listing.publishedDescription(),
                 listing.publishedSeoTitle(),
                 listing.publishedSeoDescription(),
-                variants,
+                products.storefront(listing.productId()),
                 product.kind());
     }
 

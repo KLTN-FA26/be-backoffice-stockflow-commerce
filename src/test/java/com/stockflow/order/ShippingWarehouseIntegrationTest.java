@@ -211,13 +211,23 @@ class ShippingWarehouseIntegrationTest {
                     received, "AVAILABLE");
             int rest = units % PER_CARTON;
             if (rest > 0) {
-                UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
-                        sku.sku());
+                UUID item = CartonRows.item(jdbc, sku.sku());
                 UUID odd = CartonRows.cartonUnit(jdbc, item, "PK" + rest, rest);
                 CartonRows.stockOfUnit(jdbc, sku.sku(), odd, warehouse.bin(), 1, null, received, "AVAILABLE");
                 // 01 BR-03: one active carton; the SKU's own is its active unit again after the odd one is made.
                 CartonRows.reactivate(jdbc, sku.uomConversionId());
             }
+        });
+    }
+
+    /** {@code cartons} whole cartons of {@code perCarton} pieces of the test's SKU in {@code warehouse}'s bin. */
+    private void stockInCartonsOf(Warehouse warehouse, int cartons, int perCarton) {
+        Instant received = Instant.now().minus(Duration.ofDays(2));
+        tx.executeWithoutResult(s -> {
+            UUID item = CartonRows.item(jdbc, sku.sku());
+            UUID unit = CartonRows.cartonUnit(jdbc, item, "PK" + perCarton, perCarton);
+            CartonRows.stockOfUnit(jdbc, sku.sku(), unit, warehouse.bin(), cartons, null, received, "AVAILABLE");
+            CartonRows.reactivate(jdbc, sku.uomConversionId());
         });
     }
 
@@ -314,8 +324,8 @@ class ShippingWarehouseIntegrationTest {
     /** Every reservation row of the order: SKU reservations and allocations alike. */
     private List<Map<String, Object>> reservationsOf(UUID orderId) {
         return jdbc.queryForList("""
-                SELECT id, sku, warehouse_code, stock_item_id, expires_at, status, quantity, allocated_from_id,
-                       release_reason
+                SELECT id, sku, warehouse_code, stock_package_id, status, cartons * units_per_carton AS quantity, cartons,
+                       units_per_carton, allocated_from_id, release_reason
                   FROM inventory.stock_reservation WHERE order_id = ? ORDER BY reserved_at, id""", orderId);
     }
 
@@ -344,15 +354,18 @@ class ShippingWarehouseIntegrationTest {
         return inventory.availableToPromise(new Sku(sku.sku()));
     }
 
-    /** A warehouse-bound SKU reservation written straight to the table, as nothing in the application writes it. */
+    /**
+     * A warehouse-bound SKU reservation written straight to the table, as nothing in the application writes it:
+     * {@code units} in cartons of {@link #PER_CARTON}, the count of every carton the fixture stocks.
+     */
     private UUID insertHold(UUID orderId, String warehouseCode, int units) {
         UUID id = Identifiers.newId();
         UUID request = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity,
-                    reserved_at, status, sku, warehouse_code)
-                VALUES (?, ?, ?, ?, ?, NOW(), 'HELD', ?, ?)""", id, orderId, request, request, units, sku.sku(),
-                warehouseCode));
+                INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, cartons,
+                    units_per_carton, reserved_at, status, sku, warehouse_code)
+                VALUES (?, ?, ?, ?, ?, ?, NOW(), 'HELD', ?, ?)""", id, orderId, request, request, units / PER_CARTON,
+                PER_CARTON, sku.sku(), warehouseCode));
         return id;
     }
 
@@ -530,9 +543,9 @@ class ShippingWarehouseIntegrationTest {
                 .containsEntry("warehouse_code", a.code())
                 .containsEntry("sku", sku.sku())
                 .containsEntry("status", "HELD")
-                .containsEntry("quantity", CARTONS * PER_CARTON);
-        assertThat(hold.get("stock_item_id")).as("on no stock item: bins are chosen at release").isNull();
-        assertThat(hold.get("expires_at")).isNull();
+                .containsEntry("quantity", CARTONS * PER_CARTON).containsEntry("cartons", CARTONS)
+                .containsEntry("units_per_carton", PER_CARTON);
+        assertThat(hold.get("stock_package_id")).as("on no carton: cartons are chosen at release").isNull();
         UUID reservationId = (UUID) hold.get("id");
         assertThat(lineReservations(line)).containsExactly(reservationId);
 
@@ -627,8 +640,7 @@ class ShippingWarehouseIntegrationTest {
                 .satisfies(r -> {
                     assertThat(r).containsEntry("quantity", 5 * PER_CARTON).containsEntry("warehouse_code", a.code())
                             .containsEntry("status", "HELD");
-                    assertThat(r.get("expires_at")).isNull();
-                    assertThat(r.get("stock_item_id")).isNull();
+                    assertThat(r.get("stock_package_id")).isNull();
                 });
         assertThat(atp(a)).isZero();
     }
@@ -793,20 +805,23 @@ class ShippingWarehouseIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_reservation WHERE id = ?", String.class,
                 reservationId)).as("the SKU reservation became allocations").isEqualTo("ALLOCATED");
         List<Map<String, Object>> allocations = jdbc.queryForList("""
-                SELECT r.id, r.quantity, r.status, r.expires_at, s.location_code
-                  FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
+                SELECT r.id, r.cartons * r.units_per_carton AS quantity, r.cartons, r.status, s.location_code
+                  FROM inventory.stock_reservation r JOIN inventory.stock_package s ON s.id = r.stock_package_id
                  WHERE r.allocated_from_id = ?""", reservationId);
         assertThat(allocations).isNotEmpty();
         assertThat(allocations).extracting(r -> r.get("location_code")).as("on bins of A only").containsOnly(a.bin());
         assertThat(allocations).extracting(r -> r.get("status")).containsOnly("HELD");
         assertThat(allocations.stream().mapToInt(r -> (Integer) r.get("quantity")).sum())
                 .isEqualTo(CARTONS * PER_CARTON);
-        assertThat(allocations).allSatisfy(r -> assertThat(r.get("expires_at")).isNull());
+        assertThat(allocations).as("each allocation is one carton").allSatisfy(r ->
+                assertThat(r.get("cartons")).isEqualTo(1));
         assertThat(lineReservations(line)).as("the line now names the allocations")
                 .containsExactlyInAnyOrderElementsOf(allocations.stream().map(r -> (UUID) r.get("id")).toList());
         assertThat(jdbc.queryForObject("""
-                SELECT COALESCE(SUM(reserved), 0) FROM inventory.stock_item WHERE sku = ? AND location_code = ?""",
-                Long.class, sku.sku(), b.bin())).as("B's stock untouched").isZero();
+                SELECT count(*) FROM inventory.stock_reservation r
+                  JOIN inventory.stock_package p ON p.id = r.stock_package_id
+                 WHERE r.sku = ? AND r.status = 'HELD' AND p.location_code = ?""",
+                Long.class, sku.sku(), b.bin())).as("B's stock untouched: no live allocation names a carton there").isZero();
     }
 
     @Test
@@ -840,7 +855,7 @@ class ShippingWarehouseIntegrationTest {
         // 600 at A: the system as a whole has 1,500, but A has 500 - the per-warehouse rule refuses it.
         assertThatThrownBy(() -> insertHold(orderId, a.code(), 600))
                 .isInstanceOf(DataAccessException.class)
-                .hasMessageContaining("exceed its unheld available stock there")
+                .hasMessageContaining("exceed its free available cartons of that count there")
                 .hasMessageContaining(a.code());
         assertThat(reservationsOf(orderId)).isEmpty();
 
@@ -848,7 +863,7 @@ class ShippingWarehouseIntegrationTest {
         assertThatThrownBy(() -> insertHold(orderId, a.code(), PER_CARTON))
                 .as("A's 500 are all held now")
                 .isInstanceOf(DataAccessException.class)
-                .hasMessageContaining("exceed its unheld available stock there");
+                .hasMessageContaining("exceed its free available cartons of that count there");
         assertThat(insertHold(orderId, b.code(), PER_CARTON)).as("B still has its own").isNotNull();
 
         // Where a hold is held never changes.
@@ -906,6 +921,31 @@ class ShippingWarehouseIntegrationTest {
 
         assertThat(shippingWarehouses.coverage(holder).fullyHeld()).isTrue();
         assertThat(releases.release(holder, a.id(), coordinator).status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
+    }
+
+    @Test
+    @DisplayName("ADR-0011: a line is offered only the cartons of its own count a warehouse has, which it can then hold")
+    void optionsCountOnlyCartonsOfTheLinesCount() {
+        // A: 10 cartons of 100, 40 of 25 and 4 of 50 - 2,200 free pieces, 44 cartons of 50 if they were divided.
+        stockInCartonsOf(a, 10, 100);
+        stockInCartonsOf(a, 40, 25);
+        stock(a, 4 * PER_CARTON);
+        UUID orderId = confirmedOrder();
+        UUID line = lineOf(orderId);
+        assertThat(atp(a)).as("in units, every count is still counted").isEqualTo(2_200);
+
+        Option offered = optionOf(shippingWarehouses.options(orderId).warehouses(), a);
+        assertThat(offered.holdsEveryLine()).as("4 cartons of 50 for a line of 20").isFalse();
+        assertThat(offered.availableCartons()).isEqualTo(4);
+        assertThat(offered.lines()).singleElement().satisfies(l -> assertThat(l.availableCartons()).isEqualTo(4));
+        assertThat(choose(orderId, a).lines()).as("what was offered is what is held")
+                .containsExactly(new LineCoverage(line, sku.sku(), CARTONS, 4, 16));
+
+        stock(a, 16 * PER_CARTON);
+        Option again = optionOf(shippingWarehouses.options(orderId).warehouses(), a);
+        assertThat(again.holdsEveryLine()).as("its own 4 held there, and 16 more of 50 free").isTrue();
+        assertThat(again.lines()).singleElement()
+                .satisfies(l -> assertThat(l.availableCartons()).isEqualTo(CARTONS));
     }
 
     @Test

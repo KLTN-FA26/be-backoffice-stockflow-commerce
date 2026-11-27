@@ -96,12 +96,13 @@ class ProductServiceImplTest {
         when(purchasing.openReferences(anyCollection(), anyInt())).thenReturn(List.of());
         when(selling.openReferences(anyCollection(), anyInt())).thenReturn(List.of());
         service = new ProductServiceImpl(products, search, variants, media, attributes, events, history, commerce,
-                inventory, identity, users, List.of(purchasing, selling), Clock.fixed(NOW, ZoneOffset.UTC));
+                inventory, identity, users, List.of(purchasing, selling),
+                new RichTextPolicy(new ProductMediaProperties("https://cdn.example.test")), Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     private static Product productIn(ProductStatus status, long version) {
         boolean approvedOnce = status != ProductStatus.DRAFT && status != ProductStatus.PENDING_APPROVAL;
-        return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy", "Paper cup", BRAND, CATEGORY, null, null, null,
+        return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy", BRAND, CATEGORY, null, null,
                 TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, status, version,
                 status == ProductStatus.DRAFT ? null : PEOPLE, status == ProductStatus.DRAFT ? null : NOW,
                 approvedOnce ? UUID.randomUUID() : null, approvedOnce ? NOW : null, false, null,
@@ -120,8 +121,8 @@ class ProductServiceImplTest {
     }
 
     private static ProductSummary summary(Product product, ProductStatus status) {
-        return new ProductSummary(product.id().value(), product.code(), product.name(), null, "cup-12oz", BRAND, "Brand",
-                CATEGORY, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, status, NOW, "u", NOW, "u", null, null,
+        return new ProductSummary(product.id().value(), product.code(), product.name(), "cup-12oz", BRAND, "Brand",
+                CATEGORY, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, status, NOW, "u", NOW, "u", null, null,
                 null, null, null, null, null, product.version() + 1, null, null, null, "Category");
     }
 
@@ -383,7 +384,7 @@ class ProductServiceImplTest {
     @DisplayName("delete: a foreign key still holding an inventory item is PRODUCT_IN_USE, and the rows stay")
     void deleteRefusedByInventoryForeignKey() {
         Product product = locked(ProductStatus.DRAFT, 3, ProductStatus.DRAFT);
-        var held = new DataIntegrityViolationException("fk_stock_item_inventory_item");
+        var held = new DataIntegrityViolationException("fk_stock_package_item");
         org.mockito.Mockito.doThrow(held).when(inventory).deleteUnusedItems(anyCollection());
 
         BusinessException refused = refusal(catchThrowable(() -> service.deleteDraft(product.id().value(), 3)));
@@ -402,7 +403,7 @@ class ProductServiceImplTest {
         Product product = locked(ProductStatus.DRAFT, 5, ProductStatus.DRAFT);
 
         BusinessException refused = refusal(catchThrowable(() -> service.update(new UpdateProductCommand(product.id().value(), 4,
-                "Ly mới", "New", BRAND, CATEGORY, null, null, null, TaxClass.STANDARD))));
+                "Ly mới", BRAND, CATEGORY, null, null, TaxClass.STANDARD))));
 
         assertThat(refused.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         assertThat(product.name()).isEqualTo("Ly giấy");
@@ -417,13 +418,13 @@ class ProductServiceImplTest {
         when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.ACTIVE);
         when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.ACTIVE);
 
-        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
-                null, null, TaxClass.STANDARD));
+        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", BRAND, CATEGORY, null,
+                null, TaxClass.STANDARD));
 
         verify(history).record(product.id().value(), ProductChangeType.UPDATED, null, null, null, null, List.of("name"));
 
-        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
-                null, null, TaxClass.STANDARD));
+        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", BRAND, CATEGORY, null,
+                null, TaxClass.STANDARD));
 
         verify(history, org.mockito.Mockito.times(1)).record(any(), eq(ProductChangeType.UPDATED), any(), any(), any(), any(), anyList());
     }
@@ -431,7 +432,7 @@ class ProductServiceImplTest {
     // ------------------------------------------------------------------ the brand and category chosen (SCRUM-87)
 
     private static CreateProductCommand create(UUID brand, UUID category) {
-        return new CreateProductCommand("CUP-NEW", "Ly mới", "New cup", brand, category, null, null, null,
+        return new CreateProductCommand("CUP-NEW", "Ly mới", brand, category, null, null,
                 TaxClass.STANDARD, List.of());
     }
 
@@ -476,8 +477,8 @@ class ProductServiceImplTest {
         when(products.brandStatus(BRAND)).thenReturn(ReferenceStatus.INACTIVE);
         when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.INACTIVE);
 
-        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
-                null, null, TaxClass.STANDARD));
+        service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", BRAND, CATEGORY, null,
+                null, TaxClass.STANDARD));
 
         assertThat(product.name()).isEqualTo("Ly mới");
         verify(products).save(product);
@@ -492,7 +493,7 @@ class ProductServiceImplTest {
         when(products.categoryStatus(retired)).thenReturn(ReferenceStatus.INACTIVE);
 
         BusinessException refused = refusal(catchThrowable(() -> service.update(new UpdateProductCommand(
-                product.id().value(), 5, "Ly mới", "Paper cup", BRAND, retired, null, null, null, TaxClass.STANDARD))));
+                product.id().value(), 5, "Ly mới", BRAND, retired, null, null, TaxClass.STANDARD))));
 
         assertThat(refused.errorCode()).isEqualTo(ErrorCode.CATEGORY_INACTIVE);
         assertThat(product.categoryId()).isEqualTo(CATEGORY);

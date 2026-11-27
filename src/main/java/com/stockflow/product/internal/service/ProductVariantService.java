@@ -8,7 +8,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Pages;
-import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.domain.Attribute;
 import com.stockflow.product.internal.domain.AttributeRepository;
@@ -130,26 +129,31 @@ public class ProductVariantService {
     private final ProductAttributeSetRepository attributeSets;
     private final AttributeRepository attributes;
     private final ProductChangeLogRepository history;
-    private final InventoryService inventory;
+    private final com.stockflow.product.internal.repository.CustomerSkuJpaRepository customerSkus;
+    private final RichTextPolicy richText;
     private final Clock clock;
 
     public ProductVariantService(ProductRepository products, VariantJpaRepository variants,
                                  VariantAttributeValueJpaRepository variantOptions,
                                  ProductAttributeSetRepository attributeSets, AttributeRepository attributes,
-                                 ProductChangeLogRepository history, InventoryService inventory, Clock clock) {
+                                 ProductChangeLogRepository history,
+                                 com.stockflow.product.internal.repository.CustomerSkuJpaRepository customerSkus,
+                                 RichTextPolicy richText, Clock clock) {
+        this.richText = richText;
+        this.customerSkus = customerSkus;
         this.products = products;
         this.variants = variants;
         this.variantOptions = variantOptions;
         this.attributeSets = attributeSets;
         this.attributes = attributes;
         this.history = history;
-        this.inventory = inventory;
         this.clock = clock;
     }
 
+    /** {@code rotatable}: whether a carton of the variant may be turned (owner decision Q9). */
     public record VariantView(UUID id, UUID productId, String sku, String name, VariantStatus status,
                               boolean defaultVariant, String attributeSignature, int position, Instant obsoletedAt,
-                              long version, List<VariantOption> options) {
+                              long version, List<VariantOption> options, boolean rotatable, String description) {
     }
 
     /** The option a variant takes on one axis, with the dictionary's code and label. */
@@ -160,9 +164,14 @@ public class ProductVariantService {
     /**
      * A variant to add or the new state of one. {@code optionValueIds} name one value per axis; null
      * on an update means "leave the options alone". {@code sku} and {@code name} are optional on a
-     * product with axes (a rule and a generated name fill them in).
+     * product with axes (a rule and a generated name fill them in). {@code rotatable} null keeps the current value
+     * (true for a new variant).
      */
-    public record NewVariant(String sku, String name, List<UUID> optionValueIds, Integer position) {
+    public record NewVariant(String sku, String name, List<UUID> optionValueIds, Integer position, Boolean rotatable) {
+
+        public NewVariant(String sku, String name, List<UUID> optionValueIds, Integer position) {
+            this(sku, name, optionValueIds, position, null);
+        }
     }
 
     public record Generated(List<VariantView> created, int skipped) {
@@ -195,6 +204,11 @@ public class ProductVariantService {
      * "default variant is never made obsolete" rule of {@link #obsolete} is about taking one SKU off a
      * product that goes on, and the whole product is going away here. Each move is written to the history
      * with the product's reason.
+     *
+     * <p>The customers' own SKUs of the product go with it: they are rows of {@code product.customer_skus} since
+     * V20270105000100, no longer variants of the product, so they are retired here by name - the same move, the
+     * same history, the same reason - and none is quoted or shown to its customer once the product is gone, while its
+     * stock is still shipped and adjusted away (01 §5.2) because OBSOLETE, unlike BLOCKED, stops nothing running.</p>
      */
     public void obsoleteAll(UUID productId, String reason) {
         Instant now = clock.instant();
@@ -208,8 +222,34 @@ public class ProductVariantService {
                     VariantStatus.OBSOLETE.name(), reason, List.of());
         }
         variants.flush();
+        for (var sku : customerSkus.findByProductIdOrderBySkuAscIdAsc(productId)) {
+            var from = sku.getStatus();
+            if (from == com.stockflow.product.internal.domain.CustomerSkuStatus.OBSOLETE) {
+                continue;
+            }
+            sku.moveTo(com.stockflow.product.internal.domain.CustomerSkuStatus.OBSOLETE, now);
+            history.record(productId, ProductChangeType.VARIANT_STATUS, sku.getId(), from.name(),
+                    com.stockflow.product.internal.domain.CustomerSkuStatus.OBSOLETE.name(), reason, List.of());
+        }
+        customerSkus.flush();
     }
 
+
+    /**
+     * The product's ACTIVE variants - the ones a customer is shown - in display order, each with its options: one query
+     * for the variants and one for all their options, whatever their number (the storefront page, ADR-0013).
+     */
+    @Transactional(readOnly = true)
+    public List<VariantView> active(UUID productId) {
+        Catalog catalog = catalog(requireProduct(productId));
+        List<VariantJpaEntity> active = variants.findByProductIdOrderByPositionAscIdAsc(productId).stream()
+                .filter(v -> v.getStatus() == VariantStatus.ACTIVE).toList();
+        Map<UUID, List<VariantAttributeValueJpaEntity>> optionRows = active.isEmpty() ? Map.of()
+                : variantOptions.findByVariantIdIn(active.stream().map(VariantJpaEntity::getId).toList()).stream()
+                .collect(Collectors.groupingBy(VariantAttributeValueJpaEntity::getVariantId));
+        return active.stream()
+                .map(v -> view(v, catalog.optionsOf(optionRows.getOrDefault(v.getId(), List.of())))).toList();
+    }
 
     @Transactional(readOnly = true)
     public PageResponse<VariantView> list(UUID productId, int page, int size) {
@@ -223,16 +263,6 @@ public class ProductVariantService {
         return Pages.toResponse(found.map(v -> view(v, catalog.optionsOf(optionRows.getOrDefault(v.getId(), List.of())))));
     }
 
-    /**
-     * The inventory item id of each variant's SKU, in one query for the whole batch. A separate call rather than a
-     * field of {@link VariantView}: the controller asks after the write that created or renamed the variant has
-     * committed, so an item made by the database trigger is visible, and a SKU without an item is just absent.
-     */
-    @Transactional(readOnly = true)
-    public Map<String, UUID> inventoryItemIds(Collection<VariantView> variants) {
-        return inventory.itemIdsOf(variants.stream().map(VariantView::sku).distinct().toList());
-    }
-
     @Transactional(readOnly = true)
     public VariantView get(UUID productId, UUID variantId) {
         Catalog catalog = catalog(requireProduct(productId));
@@ -241,6 +271,17 @@ public class ProductVariantService {
 
     @Auditable(action = AuditAction.CREATE, resourceType = "product-variant", resourceId = "#result?.id()")
     public VariantView add(UUID productId, NewVariant command) {
+        VariantView added = addVariant(productId, command);
+        if (command.rotatable() == null || command.rotatable() == added.rotatable()) {
+            return added;
+        }
+        VariantJpaEntity variant = requireVariant(productId, added.id());
+        variant.setRotatable(command.rotatable());
+        variants.saveAndFlush(variant);
+        return view(variant, added.options());
+    }
+
+    private VariantView addVariant(UUID productId, NewVariant command) {
         Product product = requireChangeable(productId);
         Catalog catalog = catalog(product);
         if (catalog.axes.isEmpty()) {
@@ -384,8 +425,9 @@ public class ProductVariantService {
                 throw new BusinessException(ErrorCode.INVALID_VARIANT_TRANSITION,
                         "The SKU of a variant is fixed once it has left DRAFT");
             }
+            // A DRAFT variant is named by nothing yet: no customer's SKU is drawn on it (only an ACTIVE one is a
+            // source), and it has no inventory item (V20270105000100), so freeing the old code is all a rename needs.
             requireSkuFree(requested);
-            requireSkuUnused(sku);
             sku = requested.code();
         }
 
@@ -428,6 +470,10 @@ public class ProductVariantService {
         if (!name.equals(variant.getName())) changed.add("name");
         if (!signature.equals(variant.getAttributeSignature())) changed.add("attributeSignature");
         if (position != variant.getPosition()) changed.add("position");
+        if (command.rotatable() != null && command.rotatable() != variant.isRotatable()) {
+            changed.add("rotatable");
+            variant.setRotatable(command.rotatable());
+        }
         variant.setDetails(sku, name, signature, position);
         try {
             if (newCombination != null) {
@@ -487,6 +533,25 @@ public class ProductVariantService {
         variants.saveAndFlush(variant);
         history.record(productId, ProductChangeType.VARIANT_STATUS, variant.getId(), from.name(), target.name(), null,
                 List.of());
+        return viewWithOptions(variant, catalog(product));
+    }
+
+    /**
+     * The variant's own description (ADR-0013): the back office editor's HTML, cleaned by {@link RichTextPolicy}
+     * before it is stored. Null or an empty editor removes it, and the storefront then shows the product's. Allowed
+     * in any variant status while the product takes changes: a description is selling copy, not a SKU's identity.
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "product-variant", resourceId = "#variantId")
+    public VariantView describe(UUID productId, UUID variantId, String html) {
+        Product product = requireChangeable(productId);
+        var variant = requireVariant(productId, variantId);
+        String description = richText.clean(html, "description");
+        if (!java.util.Objects.equals(description, variant.getDescription())) {
+            variant.describe(description);
+            variants.saveAndFlush(variant);
+            history.record(productId, ProductChangeType.VARIANT_UPDATED, variantId, null, null, null,
+                    List.of("description"));
+        }
         return viewWithOptions(variant, catalog(product));
     }
 
@@ -584,19 +649,11 @@ public class ProductVariantService {
     }
 
     /**
-     * kltn-docs 01 BR-01: a SKU is fixed once a document uses it. Asked before the UPDATE so the refusal is a plain
-     * answer, not a failed statement; the database guard ({@code inventory.guard_item_sku_rename}, the same
-     * {@code inventory.item_in_use}) still holds for a reference that appears in between.
+     * A code names one thing: neither another variant nor a customer's own SKU may hold it (uk_variants_sku,
+     * {@code tg_variants_code_free} in the database).
      */
-    private void requireSkuUnused(String current) {
-        if (!inventory.skusInUse(List.of(current)).isEmpty()) {
-            throw new BusinessException(ErrorCode.INVALID_VARIANT_TRANSITION,
-                    "This SKU is referenced and can no longer be renamed");
-        }
-    }
-
     private void requireSkuFree(Sku sku) {
-        if (variants.existsBySku(sku.code())) {
+        if (variants.existsBySku(sku.code()) || customerSkus.existsBySku(sku.code())) {
             throw new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS, "SKU " + sku + " is taken");
         }
     }
@@ -607,19 +664,18 @@ public class ProductVariantService {
     }
 
     /**
-     * What a failed flush means. Only the two unique indexes are a request that raced past the checks;
-     * the inventory rename guard (a DRAFT SKU that something already references) is a refused
-     * transition; anything else is not ours to explain and goes to the global handler unchanged.
+     * What a failed flush means. The two unique indexes, and the rule that a code is never also a customer's own SKU's
+     * ({@code tg_variants_code_free}, V20270105000100), are a request that raced past the checks; anything else is not
+     * ours to explain and goes to the global handler unchanged. (The inventory rename guard a DRAFT variant once met
+     * is gone with the variant's item.)
      */
     private static RuntimeException translate(DataIntegrityViolationException e) {
-        if (violates(e, "uk_variants_sku") || violates(e, "uk_variants_combination")) {
-            return new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS,
-                    "A variant with this SKU or combination was created meanwhile");
-        }
         String message = e.getMostSpecificCause().getMessage();
-        if (message != null && message.contains("Only an unused DRAFT variant can rename")) {
-            return new BusinessException(ErrorCode.INVALID_VARIANT_TRANSITION,
-                    "This SKU is referenced and can no longer be renamed");
+        if (violates(e, "uk_variants_sku") || violates(e, "uk_variants_combination")
+                || violates(e, "tg_variants_code_free")
+                || (message != null && message.contains("the code is a customer's SKU"))) {
+            return new BusinessException(ErrorCode.VARIANT_SKU_ALREADY_EXISTS,
+                    "A variant or a customer's SKU with this SKU or combination was created meanwhile");
         }
         return e;
     }
@@ -658,7 +714,7 @@ public class ProductVariantService {
     static VariantView view(VariantJpaEntity v, List<VariantOption> options) {
         return new VariantView(v.getId(), v.getProductId(), v.getSku(), v.getName(), v.getStatus(),
                 v.isDefaultVariant(), v.getAttributeSignature(), v.getPosition(), v.getObsoletedAt(), v.getVersion(),
-                options);
+                options, v.isRotatable(), v.getDescription());
     }
 
     private Catalog catalog(Product product) {

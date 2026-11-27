@@ -6,11 +6,12 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Works out the carton an order line is packed in, from the inventory item's carton unit (SCRUM-287, decisions
+ * Works out the carton an order line is packed in, from the carton of the SKU's catalogue variant (owner decision
+ * Q1; SCRUM-287, decisions
  * LP2-2 to LP2-4). For each SKU, the first level that has a full size (length, width, height) and weight wins:
  *
  * <ol>
- *   <li>the item's one active unit, its carton;</li>
+ *   <li>the variant's one active unit, its carton;</li>
  *   <li>should an item have several active units, the largest that has them (most base units per unit, then by
  *       code).</li>
  * </ol>
@@ -48,7 +49,7 @@ public interface PackagingSpecResolver {
      * One carton of the packing unit {@code uomConversionId} of {@code sku}, as its unit of measure declares it (SCRUM-287
      * PR T, LP2-8): an unopened stock carton shipped as it is starts from these measures - the packer still weighs and
      * measures it. Empty when the unit is not the SKU's or lacks a full size or weight (nothing is defaulted, LP2-3);
-     * the rotatable flag is the item's.
+     * the rotatable flag is the variant's (owner decision Q9).
      */
     java.util.Optional<PackagingSpec.CartonSpec> unitCarton(Sku sku, UUID uomConversionId);
 }

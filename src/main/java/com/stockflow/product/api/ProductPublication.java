@@ -24,6 +24,13 @@ public interface ProductPublication {
      */
     Map<UUID, PublishedProductCard> cards(Set<UUID> productIds);
 
+    /**
+     * The product page's facts of a published product (ADR-0013): description HTML, brand, category, descriptive
+     * attributes and the ACTIVE variants with their options and descriptions. {@code NOT_FOUND} for a product that is
+     * not published, or unknown.
+     */
+    StorefrontProduct storefront(UUID productId);
+
     ProductEcommerce ecommerce(UUID productId);
 
     void editEcommerce(UUID productId, String slug, String seoTitle, String seoDescription);

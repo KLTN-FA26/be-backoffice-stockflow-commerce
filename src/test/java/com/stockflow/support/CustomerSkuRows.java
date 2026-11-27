@@ -9,19 +9,24 @@ import java.util.UUID;
 
 /**
  * A customer's own SKU as the design approval leaves it (kltn-docs 12 §4.5, 01 §4.8, BR-03; 2F-7): an approved
- * customizable product, a design snapshot of the customer's, the SKU drawn on the product's default variant and owned by
- * the customer, and its carton unit - what quotes and orders name since 4B-2 (14 BR-04, BR-08). Written as rows, the way
+ * customizable product, a design snapshot of the customer's, the SKU - a row of {@code product.customer_skus} since
+ * V20270105000100 (owner decision Q4) - drawn on the product's default variant and owned by the customer, packed in that
+ * variant's carton unit (owner decision Q1: the SKU has none of its own) - what quotes and orders name since 4B-2 (14
+ * BR-04, BR-08). The approval makes no inventory item (Q5): a SKU {@link #produced} before, or stocked through
+ * {@link CartonRows}, gets the one its order would have made ({@link CartonRows#item}). Written as rows, the way
  * {@link ReferenceRows} writes another module's: issuing through {@code CustomerSkus.issue} is
  * {@code CustomerSkuIntegrationTest}'s subject, and a test about quotes needs only what it leaves behind.
  */
 public final class CustomerSkuRows {
 
     /**
-     * @param uomConversionId its carton unit
+     * @param id              the SKU's own id ({@code product.customer_skus.id})
+     * @param sourceVariantId the catalogue variant it was drawn on, whose carton it is packed in
+     * @param uomConversionId its carton unit: its source variant's
      * @param unitsPerCarton  the carton unit's factor
      */
-    public record Issued(String sku, UUID variantId, UUID productId, UUID snapshotId, UUID uomConversionId,
-                         int unitsPerCarton) {
+    public record Issued(String sku, UUID id, UUID productId, UUID snapshotId, UUID sourceVariantId,
+                         UUID uomConversionId, int unitsPerCarton) {
     }
 
     private CustomerSkuRows() {
@@ -55,11 +60,13 @@ public final class CustomerSkuRows {
 
     /**
      * Marks {@code sku} produced before (4B-3, 14 BR-17): a confirmed credit order of it, as an earlier sale left it -
-     * what {@code SkuProductionHistory} reads until production orders exist.
+     * what {@code SkuProductionHistory} reads until production orders exist - with the inventory item that order made
+     * (owner decision Q5).
      */
     public static void produced(JdbcTemplate jdbc, TransactionTemplate tx, UUID customerId, String sku) {
         UUID order = Identifiers.newId();
         tx.executeWithoutResult(s -> {
+            CartonRows.item(jdbc, sku);
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                         currency, placed_at, created_at, contract_signed_at)
@@ -137,28 +144,23 @@ public final class CustomerSkuRows {
                             'Logo front, 2 colours')""",
                         snapshot, draft, "c".repeat(64), art, approvedBy, approvedBy);
             }
-            UUID variant = Identifiers.newId();
-            String sku = product.sku() + "-C" + variant.toString().substring(24, 28).toUpperCase();
+            UUID id = Identifiers.newId();
+            String sku = product.sku() + "-C" + id.toString().substring(24, 28).toUpperCase();
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Ly in logo khach', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), sku, "OWNED-SKU:" + sku, customerId, snapshot, product.variantId());
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
-            UUID carton = Identifiers.newId();
-            jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
-                        weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
-                    VALUES (?, ?, 'CARTON', ?, 4.2, 60, 40, 35, TRUE, 0, NOW())""",
-                    carton, item, unitsPerCarton);
-            return new Issued(sku, variant, product.productId(), snapshot, carton, unitsPerCarton);
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Ly in logo khach', 'ACTIVE', 0, NOW())""",
+                    id, product.productId(), product.variantId(), customerId, snapshot, sku);
+            // The SKU is packed in its source variant's carton (owner decision Q1), never one of its own.
+            UUID carton = CartonRows.ofVariant(jdbc, product.variantId(), unitsPerCarton, "4.2", "60", "40", "35");
+            return new Issued(sku, id, product.productId(), snapshot, product.variantId(), carton, unitsPerCarton);
         });
     }
 
     /**
-     * A SKU of {@code customerId} that handles like the catalogue SKU {@code like}: the same rotatable flag, the same
-     * carton size and weight, and a barcode of its own. The item has no weight or size of its own to copy
-     * (V20261215000100): only the carton is measured.
+     * A SKU of {@code customerId} that handles like the catalogue SKU {@code like}: its variant turns the same way
+     * (rotatable, on the variant since V20270104000200), its carton has the same size and weight, and it has a barcode
+     * of its own. The SKU is issued on a product of its own, so its variant's carton is set here and no other SKU's.
      * What a test of picking, packing or loading needs since every order is a contract's, whose lines are only ever the
      * customer's own SKUs (14 BR-04): the demo catalogue's goods, as the customer's.
      */
@@ -167,25 +169,29 @@ public final class CustomerSkuRows {
         Issued issued = issue(jdbc, tx, em, customerId, unitsPerCarton);
         String barcode = "29" + String.format("%011d", Math.floorMod(UUID.randomUUID().getLeastSignificantBits(),
                 100_000_000_000L));
+        tx.executeWithoutResult(s -> {
+            CartonRows.item(jdbc, issued.sku());
+            jdbc.update("UPDATE inventory.inventory_items SET barcode = ? WHERE sku = ?", barcode, issued.sku());
+        });
+        UUID likeVariant = tx.execute(s -> CartonRows.variantOf(jdbc, like));
         tx.executeWithoutResult(s -> jdbc.update("""
-                UPDATE inventory.inventory_items i
-                   SET rotatable = c.rotatable, barcode = ?
-                  FROM inventory.inventory_items c
-                 WHERE i.sku = ? AND c.sku = ?""", barcode, issued.sku(), like));
-        // Since 4C-6 a parcel is a checked LPN carton, sized by its carton unit (08 BR-07): the issued carton takes the
-        // catalogue SKU's carton size and weight as they are now (a test sets them first, CartonStationSupport), so a
-        // load plan counts the customer's cartons as it counted the catalogue's. Kept as issued where the catalogue
-        // declares none.
+                UPDATE product.variants v
+                   SET rotatable = c.rotatable
+                  FROM product.variants c
+                 WHERE v.id = ? AND c.id = ?""", issued.sourceVariantId(), likeVariant));
+        // Since 4C-6 a parcel is a checked LPN carton, sized by its carton unit (08 BR-07): the issued SKU's carton - its
+        // variant's - takes the catalogue SKU's carton size and weight as they are now (a test sets them first,
+        // CartonStationSupport), so a load plan counts the customer's cartons as it counted the catalogue's. Kept as
+        // issued where the catalogue declares none.
         tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE inventory.uom_conversions u
                    SET length_cm = COALESCE(c.length_cm, u.length_cm), width_cm = COALESCE(c.width_cm, u.width_cm),
                        height_cm = COALESCE(c.height_cm, u.height_cm), weight_kg = COALESCE(c.weight_kg, u.weight_kg)
                   FROM (SELECT cu.length_cm, cu.width_cm, cu.height_cm, cu.weight_kg
                           FROM inventory.uom_conversions cu
-                          JOIN inventory.inventory_items ci ON ci.id = cu.inventory_item_id
-                         WHERE ci.sku = ? AND cu.active
+                         WHERE cu.variant_id = ? AND cu.active
                          ORDER BY cu.created_at, cu.id LIMIT 1) c
-                 WHERE u.id = ?""", like, issued.uomConversionId()));
+                 WHERE u.id = ?""", likeVariant, issued.uomConversionId()));
         return issued;
     }
 
@@ -196,8 +202,8 @@ public final class CustomerSkuRows {
     public static void withoutStandardPrice(JdbcTemplate jdbc, TransactionTemplate tx, String sku) {
         tx.executeWithoutResult(s -> jdbc.update("""
                 DELETE FROM catalog.standard_price p
-                 USING product.variants v JOIN product.variants s ON s.id = v.source_variant_id
-                 WHERE v.sku = ? AND p.sku = s.sku""", sku));
+                 USING product.customer_skus c JOIN product.variants s ON s.id = c.variant_id
+                 WHERE c.sku = ? AND p.sku = s.sku""", sku));
     }
 
     /** The barcode of {@code sku}'s item. */
@@ -211,6 +217,7 @@ public final class CustomerSkuRows {
      */
     public static void stock(JdbcTemplate jdbc, TransactionTemplate tx, String sku, int units) {
         tx.executeWithoutResult(s -> {
+            CartonRows.item(jdbc, sku);
             UUID unit = CartonRows.unit(jdbc, sku, units);
             int factor = jdbc.queryForObject("SELECT factor FROM inventory.uom_conversions WHERE id = ?",
                     Integer.class, unit);

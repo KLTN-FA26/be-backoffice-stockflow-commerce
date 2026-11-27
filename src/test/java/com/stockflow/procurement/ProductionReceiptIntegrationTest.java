@@ -40,6 +40,7 @@ import com.stockflow.procurement.internal.service.GoodsReceipts.NewPackage;
 import com.stockflow.procurement.internal.service.GoodsReceipts.PackageView;
 import com.stockflow.procurement.internal.service.GoodsReceipts.ReceiptView;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -115,8 +116,8 @@ class ProductionReceiptIntegrationTest {
     private record Warehouse(UUID id, String code, String receiving, String bin) {
     }
 
-    /** The test's own customer SKU, its confirmed design and its carton unit. */
-    private record IssuedSku(String sku, UUID itemId, UUID uomConversionId) {
+    /** The test's own customer SKU, its item, the carton it is packed in and the catalogue variant that carton is of. */
+    private record IssuedSku(String sku, UUID itemId, UUID uomConversionId, UUID variantId) {
     }
 
     /** Created once per database: more would only grow every list. */
@@ -231,8 +232,9 @@ class ProductionReceiptIntegrationTest {
     }
 
     /**
-     * A customer SKU as the design approval leaves it, made to a design the customer really confirmed, with its
-     * logistics complete (a receipt line refuses an item without them, BR-03) and a CARTON of 50.
+     * A customer SKU as the design approval leaves it, made to a design the customer really confirmed, packed in its
+     * catalogue variant's CARTON of 50 (owner decision Q1, V20270104000100: the carton is the variant's, the customer's
+     * SKU has none of its own).
      */
     private IssuedSku issueSku() throws Exception {
         ReferenceRows.ProductRow product = tx.execute(s -> ReferenceRows.approvedProduct(entityManager));
@@ -242,22 +244,22 @@ class ProductionReceiptIntegrationTest {
         ConfirmedDesigns.Design design = ConfirmedDesigns.confirmedFor(storage, jdbc, tx, entityManager, customerId,
                 product.productId());
         return tx.execute(s -> {
-            UUID variant = Identifiers.newId();
-            String code = product.sku() + "-R" + variant.toString().substring(24, 28).toUpperCase(Locale.ROOT);
+            UUID id = Identifiers.newId();
+            String code = product.sku() + "-R" + id.toString().substring(24, 28).toUpperCase(Locale.ROOT);
             jdbc.update("""
-                    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature,
-                        position, version, created_at, owner_customer_id, design_snapshot_id, source_variant_id)
-                    VALUES (?, ?, ?, 'Printed cup', 'ACTIVE', FALSE, ?, 1, 0, NOW(), ?, ?, ?)""",
-                    variant, product.productId(), code, "OWNED-SKU:" + code, customerId, design.snapshotId(),
-                    product.variantId());
-            UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
+                    INSERT INTO product.customer_skus (id, product_id, variant_id, customer_id, design_snapshot_id, sku,
+                        name, status, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Printed cup', 'ACTIVE', 0, NOW())""",
+                    id, product.productId(), product.variantId(), customerId, design.snapshotId(), code);
+            // The order the production order is for named the SKU, which made its item (owner decision Q5).
+            UUID item = CartonRows.item(jdbc, code);
             UUID carton = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                         weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
                     VALUES (?, ?, 'CARTON', ?, 1.2, 60, 40, 35, TRUE, 0, NOW())""",
-                    carton, item, PER_CARTON);
-            return new IssuedSku(code, item, carton);
+                    carton, product.variantId(), PER_CARTON);
+            return new IssuedSku(code, item, carton, product.variantId());
         });
     }
 
@@ -569,33 +571,80 @@ class ProductionReceiptIntegrationTest {
     }
 
     @Test
-    @DisplayName("01 BR-03: the carton unit was retired and replaced after counting: naming the old cartons is refused, leaving them out voids them")
-    void recountAfterTheCartonUnitWasRetired() {
+    @DisplayName("Q7, Q10: the company retired the carton the contract was signed in and declared another; the goods of "
+            + "that contract are still received in the signed carton")
+    void receivedInTheCartonTheContractWasSignedInAfterItWasRetired() {
         UUID orderId = confirmedOrderAtA();
         ProductionOrder production = sentWithoutSample(orderId, 1);
         ReceiptView receipt = start(production);
         List<PackageView> counted = count(receipt, lineId(production), cartons(2)).lines().getFirst().packages();
 
-        // BR-10: a unit a document counts in is retired, never changed; its replacement has the same count.
+        // BR-10, Q8: the company changes carton for every customer of the variant - retire, then declare the new one.
+        UUID replacement = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", sku.uomConversionId());
             jdbc.update("""
-                    INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor,
+                    INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
                         weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
                     VALUES (?, ?, 'CARTON2', ?, 1.2, 60, 40, 35, TRUE, 0, NOW())""",
-                    Identifiers.newId(), sku.itemId(), PER_CARTON);
+                    replacement, sku.variantId(), PER_CARTON);
         });
+        assertThat(receiving.find(production.id()).orElseThrow().lines()).singleElement()
+                .extracting(ReceivableProductionOrder.Line::uomConversionId)
+                .as("the order line's carton, not the variant's carton of today").isEqualTo(sku.uomConversionId());
 
-        Throwable named = catchThrowable(() -> count(receipt, lineId(production), List.of(
-                new NewPackage(counted.get(0).lpn()), new NewPackage(null))));
-        assertThat(fields(named)).containsExactly("lines[0].unitOfMeasure:RECEIPT_LINE_HAS_PACKAGES");
+        GoodsReceipts.LineView recounted = count(receipt, lineId(production), List.of(
+                new NewPackage(counted.get(0).lpn()), new NewPackage(counted.get(1).lpn()), new NewPackage(null)))
+                .lines().getFirst();
+        assertThat(recounted.unitOfMeasure()).as("the carton the contract was signed in").isEqualTo("CARTON");
+        assertThat(recounted.units()).as("the one carton the counting screen offers")
+                .singleElement().satisfies(unit -> {
+                    assertThat(unit.unitOfMeasure()).isEqualTo("CARTON");
+                    assertThat(unit.active()).isFalse();
+                });
+        assertThat(recounted.packages()).hasSize(3)
+                .extracting(PackageView::lpn).contains(counted.get(0).lpn(), counted.get(1).lpn());
+        assertThat(jdbc.queryForList("""
+                SELECT uom_conversion_id FROM inventory.stock_package
+                 WHERE goods_receipt_line_id = ? AND status <> 'VOID'""", UUID.class, recounted.id()))
+                .as("every carton labelled in the signed carton").hasSize(3).containsOnly(sku.uomConversionId());
+        assertThat(jdbc.queryForList("""
+                SELECT nominal_qty FROM inventory.stock_package
+                 WHERE goods_receipt_line_id = ? AND status <> 'VOID'""", Integer.class, recounted.id()))
+                .as("each of the signed count").containsOnly(PER_CARTON);
 
-        GoodsReceipts.LineView recounted = count(receipt, lineId(production), cartons(2)).lines().getFirst();
-        assertThat(recounted.unitOfMeasure()).isEqualTo("CARTON2");
-        assertThat(recounted.packages()).extracting(PackageView::lpn)
-                .doesNotContainAnyElementsOf(counted.stream().map(PackageView::lpn).toList());
-        counted.forEach(old -> assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?",
-                String.class, old.lpn())).as("the carton labelled in the retired unit").isEqualTo("VOID"));
+        // Naming the company's carton of today is naming another carton than the one signed.
+        Throwable cartonOfToday = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
+                new NewLine(lineId(production), null, a.receiving(), null, "CARTON2", cartons(1), null))));
+        assertThat(fields(cartonOfToday)).containsExactly("lines[0].unitOfMeasure:RECEIPT_LINE_UNIT_INVALID");
+    }
+
+    @Test
+    @DisplayName("Q10: a retired carton that is not the one its order line was signed in takes no goods - the database "
+            + "refuses it too")
+    void aRetiredCartonNotSignedForTheLineIsRefused() {
+        UUID orderId = confirmedOrderAtA();
+        ProductionOrder production = sentWithoutSample(orderId, 1);
+        ReceiptView receipt = start(production);
+        UUID countedLine = count(receipt, lineId(production), cartons(1)).lines().getFirst().id();
+        UUID retiredElsewhere = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.uom_conversions (id, variant_id, unit_of_measure, factor,
+                    weight_kg, length_cm, width_cm, height_cm, active, version, created_at)
+                VALUES (?, ?, 'OLDBOX', ?, 1.2, 60, 40, 35, FALSE, 0, NOW())""",
+                retiredElsewhere, sku.variantId(), PER_CARTON));
+
+        Throwable named = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
+                new NewLine(lineId(production), null, a.receiving(), null, "OLDBOX", cartons(1), null))));
+        assertThat(fields(named)).containsExactly("lines[0].unitOfMeasure:RECEIPT_LINE_UNIT_INVALID");
+
+        assertThatThrownBy(() -> sqlAtCommit(
+                "UPDATE procurement.goods_receipt_lines SET uom_conversion_id = ? WHERE id = ?",
+                retiredElsewhere, countedLine))
+                .as("check_goods_receipt_line_unit: retired, and not the order line's carton")
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("retired");
+        assertThat(jdbc.queryForObject("SELECT uom_conversion_id FROM procurement.goods_receipt_lines WHERE id = ?",
+                UUID.class, countedLine)).isEqualTo(sku.uomConversionId());
     }
 
     @Test
@@ -673,11 +722,10 @@ class ProductionReceiptIntegrationTest {
         assertThat(registration(receipt.id())).isEqualTo("CONFIRMED");
         // INBOUND in its cartons at the receiving area, nothing loose (BR-04, BR-12).
         assertThat(jdbc.queryForList("""
-                SELECT si.on_hand FROM inventory.stock_item si
-                 WHERE si.sku = ? AND si.status = 'INBOUND' AND si.location_code = ? AND si.stock_package_id IS NOT NULL""",
+                SELECT p.nominal_qty FROM inventory.stock_package p
+                 WHERE p.inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = ?)
+                   AND p.status = 'IN_STOCK' AND p.stock_status = 'INBOUND' AND p.location_code = ?""",
                 Integer.class, sku.sku(), a.receiving())).hasSize(5).containsOnly(PER_CARTON);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_item WHERE sku = ? "
-                + "AND stock_package_id IS NULL", Long.class, sku.sku())).isZero();
         assertThat(jdbc.queryForList("SELECT DISTINCT status FROM inventory.stock_package WHERE "
                 + "goods_receipt_line_id = ? AND status <> 'VOID'", String.class, confirmed.lines().getFirst().id()))
                 .containsExactly("IN_STOCK");
@@ -689,9 +737,11 @@ class ProductionReceiptIntegrationTest {
                 .doesNotContainKey("goods_receipt_id")   // dropped with the GOODS_RECEIPT origin (V20261214000200)
                 .doesNotContainKey("purchase_order_id")   // dropped with purchasing (V20261117000200)
                 .containsEntry("warehouse_id", a.id());
-        assertThat(jdbc.queryForList("SELECT DISTINCT lot_id FROM inventory.stock_item WHERE sku = ?", UUID.class,
+        assertThat(jdbc.queryForList("SELECT DISTINCT lot_id FROM inventory.stock_package WHERE status = 'IN_STOCK' "
+                + "AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = ?)", UUID.class,
                 sku.sku())).containsExactly((UUID) lot.get("id"));
-        assertThat(jdbc.queryForList("SELECT DISTINCT lot_number FROM inventory.stock_item WHERE sku = ?",
+        assertThat(jdbc.queryForList("SELECT DISTINCT l.lot_number FROM inventory.stock_package p JOIN "
+                + "inventory.stock_lot l ON l.id = p.lot_id WHERE p.status = 'IN_STOCK' AND l.sku = ?",
                 String.class, sku.sku())).containsExactly(production.code());
 
         // BR-15: still SENT, so in production first - when the goods came - then partly received.
@@ -721,8 +771,9 @@ class ProductionReceiptIntegrationTest {
         assertThat(replayed.lines()).singleElement().extracting(ReceivableProductionOrder.Line::receivedCartons)
                 .isEqualTo(5);
         assertThat(history(production.id())).hasSize(4);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_item WHERE sku = ?", Long.class,
-                sku.sku())).isEqualTo(5);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_package WHERE status = 'IN_STOCK' AND "
+                + "inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = ?)", Long.class,
+                sku.sku())).as("a replay puts no carton into stock twice").isEqualTo(5);
 
         // A second receipt brings the other 7: the same lot, and the production order is received.
         ReceiptView rest = start(after);
@@ -730,9 +781,11 @@ class ProductionReceiptIntegrationTest {
         assertThat(receipts.confirm(rest.id(), clerk).productionOrderStatus()).isEqualTo("RECEIVED");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_lot WHERE sku = ?", Long.class,
                 sku.sku())).as("one lot across receipts (BR-03)").isEqualTo(1);
-        assertThat(jdbc.queryForList("SELECT DISTINCT lot_id FROM inventory.stock_item WHERE sku = ?", UUID.class,
+        assertThat(jdbc.queryForList("SELECT DISTINCT lot_id FROM inventory.stock_package WHERE status = 'IN_STOCK' "
+                + "AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = ?)", UUID.class,
                 sku.sku())).containsExactly((UUID) lot.get("id"));
-        assertThat(jdbc.queryForObject("SELECT sum(on_hand) FROM inventory.stock_item WHERE sku = ?", Long.class,
+        assertThat(jdbc.queryForObject("SELECT sum(nominal_qty) FROM inventory.stock_package WHERE status = 'IN_STOCK' "
+                + "AND inventory_item_id = (SELECT id FROM inventory.inventory_items WHERE sku = ?)", Long.class,
                 sku.sku())).isEqualTo(12L * PER_CARTON);
         ProductionOrder received = reread(production.id());
         assertThat(received.status()).isEqualTo(ProductionOrderStatus.RECEIVED);
@@ -810,8 +863,9 @@ class ProductionReceiptIntegrationTest {
         Await.until("the receipt to close", Duration.ofSeconds(20), () -> status(receipt.id()).equals("CLOSED"));
         Await.until("the order to hold the cartons put away", Duration.ofSeconds(30),
                 () -> shippingWarehouses.coverage(orderId).lines().getFirst().heldCartons() == 3);
-        assertThat(jdbc.queryForObject("SELECT sum(on_hand) FROM inventory.stock_item WHERE sku = ? "
-                + "AND status = 'AVAILABLE' AND location_code = ?", Long.class, sku.sku(), a.bin()))
+        assertThat(jdbc.queryForObject("SELECT sum(nominal_qty) FROM inventory.stock_package WHERE inventory_item_id = "
+                + "(SELECT id FROM inventory.inventory_items WHERE sku = ?) AND stock_status = 'AVAILABLE' "
+                + "AND location_code = ?", Long.class, sku.sku(), a.bin()))
                 .isEqualTo(3L * PER_CARTON);
         assertThat(reread(production.id()).status()).isEqualTo(ProductionOrderStatus.PARTIALLY_RECEIVED);
     }

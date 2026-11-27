@@ -19,7 +19,8 @@ class ReceivingPackagePlanTest {
     private static final LocationId RECEIVING = new LocationId("HCM-RCV01");
 
     private static StockPackage carton(String lpn) {
-        return StockPackage.receiving(new StockPackageId(UUID.randomUUID()), lpn, UUID.randomUUID(),
+        return StockPackage.receiving(new StockPackageId(UUID.randomUUID()), lpn,
+                new com.stockflow.common.domain.Sku("CUP-PP-500"), UUID.randomUUID(),
                 UUID.randomUUID(), 1000, RECEIVING, UUID.randomUUID());
     }
 
