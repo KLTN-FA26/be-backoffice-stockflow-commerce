@@ -156,10 +156,17 @@ public final class ConfirmedOrders {
         return bean(TransactionTemplate.class);
     }
 
-    /** The Sales user who draws up and signs; created once per fixture. */
+    /**
+     * The Sales user who draws up and signs; created once per fixture. It holds SALES_STAFF and SALES_MANAGER in the
+     * database: strict mode (kltn-docs 14 BR-25, 2026-11-28) never blocks a manager, so the fixture draws contracts for
+     * any customer - the demo's, which have owners, included - as it did before customers had owners.
+     */
     public CurrentUser sales() {
         if (sales == null) {
             UUID id = tx().execute(s -> ReferenceRows.user(bean(EntityManager.class)));
+            tx().executeWithoutResult(s -> jdbc().update("INSERT INTO identity.user_role (id, user_id, role_id, "
+                    + "version, created_at) SELECT gen_random_uuid(), ?, id, 0, NOW() FROM identity.app_role "
+                    + "WHERE code IN ('SALES_STAFF', 'SALES_MANAGER')", id));
             sales = new CurrentUser(id, "sales-" + id, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL, Set.of(),
                     Set.of());
         }

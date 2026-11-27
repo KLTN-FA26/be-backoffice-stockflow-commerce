@@ -8,6 +8,7 @@ import com.stockflow.contracts.DesignReviewed;
 import com.stockflow.identity.api.StaffContact;
 import com.stockflow.notification.api.InboxMessage;
 import com.stockflow.notification.api.InboxSeverity;
+import com.stockflow.notification.api.SalesAudiences.SalesAudience;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
@@ -18,19 +19,21 @@ import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
 /**
- * Tells the sales staff of a customer's quote request on a design (kltn-docs 12 §4.8; 16 §4.2 step 5), and again when
- * the coordinator decides a design one is open on (12 §4.5 step 17: approved, it can be quoted now; returned, the
- * request stays open and follows the design - B40). The recipients are the holders of {@value #SALES}, system-wide:
- * the chat's routing to the responsible salesperson (16 §4.1) comes with the chat module; until then every one of them
- * hears, as the general queue would.
+ * Tells Sales of a customer's quote request on a design (kltn-docs 12 §4.8; 16 §4.2 step 5), and again when the
+ * coordinator decides a design one is open on (12 §4.5 step 17: approved, it can be quoted now; returned, the request
+ * stays open and follows the design - B40). The recipients are whoever looks after the customer today (00 §6, 14 §4.1
+ * step 1 as changed on 2026-11-28; {@link SalesNotices}): its owner or the owner's cover; a customer with no active
+ * owner reaches the Sales Managers only, marked "cần phân công" - the manager assigns a salesperson, who then draws the
+ * quote up. No longer every holder of {@value #SALES}: a general inbox where the quickest took the customer was the
+ * hole the plan closed.
  *
  * <p>Delivered as every staff notice ({@link StaffNotices}): in-app first, one inbox row per person per ask or
  * decision - asking again on an open request is a new ask, with what it asks now - then e-mail best effort to the
  * people newly told, so a redelivered event tells nobody twice. System text only: SKUs and numbers, never the design's
  * name, which the customer typed.</p>
  *
- * <p>Every holder of the right hears and may read the design while the request is open (plan D7 says "the salesperson
- * with the card"): with no chat to route a request to one salesperson yet, the right is the general queue's.</p>
+ * <p>Who may <i>read</i> the request is unchanged: every holder of {@value #SALES} still sees the cards (14 BR-25);
+ * drawing the quote up is for whoever may act for the customer.</p>
  *
  * <p>A project's request may name designs not approved yet (12 BR-25): its notice says how many are, and a second one
  * tells the staff when the last is - the request can be quoted now ({@link DesignProjectQuoteRequestReady}).</p>
@@ -50,18 +53,19 @@ class DesignQuoteRequestNotificationListener {
     static final String PROJECT_SOURCE_TYPE = "DESIGN_PROJECT";
 
     private final NotificationSender sender;
-    private final StaffDirectory staff;
+    private final SalesNotices sales;
     private final StaffNotices notices;
 
-    DesignQuoteRequestNotificationListener(NotificationSender sender, StaffDirectory staff, StaffNotices notices) {
+    DesignQuoteRequestNotificationListener(NotificationSender sender, SalesNotices sales, StaffNotices notices) {
         this.sender = sender;
-        this.staff = staff;
+        this.sales = sales;
         this.notices = notices;
     }
 
     @ApplicationModuleListener
     public void on(DesignQuoteRequested event) {
-        tell(message(event), "Quote request " + event.requestId());
+        tell(sales.audiences().ofCustomer(event.customerId()).orElse(null), message(event),
+                "Quote request " + event.requestId());
     }
 
     @ApplicationModuleListener
@@ -69,30 +73,35 @@ class DesignQuoteRequestNotificationListener {
         if (event.openQuoteRequestId() == null) {
             return;
         }
-        tell(message(event), "Decision on design " + event.designId());
+        tell(sales.audiences().ofCustomerAccount(event.ownerUserId()).orElse(null), message(event),
+                "Decision on design " + event.designId());
     }
 
     /** One quote asked over designs of a project (kltn-docs 12 §4.11, BR-25): one notice, every line in it. */
     @ApplicationModuleListener
     public void on(DesignProjectQuoteRequested event) {
-        tell(message(event), "Project quote request " + event.requestId());
+        tell(sales.audiences().ofCustomer(event.customerId()).orElse(null), message(event),
+                "Project quote request " + event.requestId());
     }
 
     /** Every design of a project's open request is approved now (12 BR-25.2): it can be quoted. */
     @ApplicationModuleListener
     public void on(DesignProjectQuoteRequestReady event) {
-        tell(message(event), "Project quote request " + event.requestId() + " ready");
+        tell(sales.audiences().ofCustomer(event.customerId()).orElse(null), message(event),
+                "Project quote request " + event.requestId() + " ready");
     }
 
-    private void tell(InboxMessage message, String what) {
-        List<StaffContact> recipients = staff.activeHolders(SALES, null);
+    private void tell(SalesAudience audience, InboxMessage plain, String what) {
+        List<StaffContact> recipients = audience == null ? List.of() : sales.contacts(audience);
         if (recipients.isEmpty()) {
-            log.warn("{}: nobody active holds {}; nobody was notified", what, SALES);
+            log.warn("{}: nobody looks after the customer and no manager is active; nobody was notified", what);
             return;
         }
+        InboxMessage message = SalesNotices.marked(plain, audience.needsAssignment());
         int told = notices.deliver(recipients, message, emails -> sender.sendStaffNotice(emails, message,
                 "staff_design_quote_request"));
-        log.info("{}: {} salesperson(s), {} newly told", what, recipients.size(), told);
+        log.info("{}: {} account(s){}, {} newly told", what, recipients.size(),
+                audience.needsAssignment() ? " (the customer needs an owner)" : "", told);
     }
 
     static InboxMessage message(DesignQuoteRequested event) {

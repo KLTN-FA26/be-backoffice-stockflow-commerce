@@ -9,7 +9,6 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.PartialShipmentRequest;
-import com.stockflow.order.internal.service.PartialShipments;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -40,10 +39,11 @@ import java.util.UUID;
         actions = {Action.UPDATE})
 class PartialShipmentController {
 
-    private final PartialShipments partialShipments;
+    /** 17 BR-32: the decision, recorded as done on the owner's behalf when someone else makes it. */
+    private final com.stockflow.order.internal.service.OrderOperations operations;
 
-    PartialShipmentController(PartialShipments partialShipments) {
-        this.partialShipments = partialShipments;
+    PartialShipmentController(com.stockflow.order.internal.service.OrderOperations operations) {
+        this.operations = operations;
     }
 
     @PutMapping("/{orderId}/partial-shipment")
@@ -54,7 +54,7 @@ class PartialShipmentController {
     public ApiResponse<OrderResponse> decide(@PathVariable UUID orderId,
                                              @Valid @RequestBody PartialShipmentRequest request,
                                              @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(OrderWebMapper.toResponse(partialShipments.decide(orderId, request.allowed(),
+        return ApiResponse.ok(OrderWebMapper.toResponse(operations.decidePartialShipment(orderId, request.allowed(),
                 request.note(), user.userId())));
     }
 }

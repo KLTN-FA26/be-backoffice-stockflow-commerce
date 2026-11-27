@@ -14,9 +14,10 @@ import java.util.UUID;
 /**
  * Reports a completion that leaves an installment due before delivery unpaid (kltn-docs 08 §4.4 step 9; owner decision
  * RTM-PAYNOTIFY, 2026-11-19), so the warehouse managers and the order's Sales are told in-app. Published in the
- * completion's own transaction: the event goes out only if the shipment is made. The Sales account is the order's
- * {@code responsibleUserId} ({@code order :: api}, who sent the quote the order came from): the notification module
- * cannot read orders, so the event carries it.
+ * completion's own transaction: the event goes out only if the shipment is made. The Sales account the event names is the
+ * order's {@code responsibleUserId} ({@code order :: api}: whoever looks after its customer today), for the record;
+ * notification asks again whom to tell when it writes the notice ({@code SalesAudiences}), so a customer with no active
+ * owner reaches the Sales Managers (08 §4.4 step 9 as changed on 2026-11-28).
  */
 @Component
 class PaymentDueReports {

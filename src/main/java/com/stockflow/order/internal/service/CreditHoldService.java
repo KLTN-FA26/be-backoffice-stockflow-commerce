@@ -141,7 +141,7 @@ public class CreditHoldService {
         decide(order, CreditChecks.Outcome.APPROVED, note, by);
         repository.save(order);
         events.publishEventsOf(order);
-        followUps.creditDecided(orderId, order.orderNumber().value(), salesOf(contract), true);
+        followUps.creditDecided(orderId, order.orderNumber().value(), order.customerId(), true);
         log.info("Credit approved for order {} by {}", order.orderNumber(), by);
         return orderService.findById(orderId).orElseThrow();
     }
@@ -154,10 +154,10 @@ public class CreditHoldService {
     public OrderSummary refuse(UUID orderId, String note, UUID by) {
         requireNote(note);
         Order order = lockHeld(orderId);
-        UUID sales = salesOf(signedContract(order));
         decide(order, CreditChecks.Outcome.REJECTED, note, by);
         orders.cancelLoaded(order, new CancelOrderCommand(CancellationReasonCode.CREDIT_REJECTED, note, null, by));
-        followUps.creditDecided(orderId, order.orderNumber().value(), sales, false);
+        // 15 BR-22: whoever looks after the order's customer hears of it, not who sent the contract.
+        followUps.creditDecided(orderId, order.orderNumber().value(), order.customerId(), false);
         log.info("Credit refused for order {} by {}", order.orderNumber(), by);
         return orderService.findById(orderId).orElseThrow();
     }
@@ -166,11 +166,6 @@ public class CreditHoldService {
     private java.util.Optional<com.stockflow.order.internal.domain.SalesContract> signedContract(Order order) {
         return contracts.findLiveByOrderId(order.id().value())
                 .filter(c -> c.status() == com.stockflow.order.internal.domain.SalesContractStatus.SIGNED);
-    }
-
-    /** WF-02 FLOW-1b, Q-11: the salesperson of an order is who sent its contract, or who recorded it signed. */
-    private static UUID salesOf(java.util.Optional<com.stockflow.order.internal.domain.SalesContract> contract) {
-        return contract.map(c -> c.sentBy() != null ? c.sentBy() : c.signedBy()).orElse(null);
     }
 
     private Order lockHeld(UUID orderId) {

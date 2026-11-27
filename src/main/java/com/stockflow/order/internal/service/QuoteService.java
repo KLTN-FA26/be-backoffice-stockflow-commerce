@@ -128,6 +128,8 @@ class QuoteService implements Quotes {
     private final QuotePriceReviews priceReviews;
     /** 14 BR-10: how far below its reference, in percent, a price break may be before the quote waits for approval. */
     private final BigDecimal priceApprovalPercent;
+    /** 14 BR-25, BR-26: who may work on a customer's quotes, and whose customer it is when one is drawn up. */
+    private final CustomerOwnership ownership;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, CustomerService customers,
                  UomConversionService units, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json,
@@ -139,13 +141,15 @@ class QuoteService implements Quotes {
                  com.stockflow.identity.api.IdentityService identities, LineNames lineNames,
                  QuotePriceReviews priceReviews,
                  @org.springframework.beans.factory.annotation.Value(
-                         "${stockflow.order.quote.price-approval-percent:10}") BigDecimal priceApprovalPercent) {
+                         "${stockflow.order.quote.price-approval-percent:10}") BigDecimal priceApprovalPercent,
+                 CustomerOwnership ownership) {
         if (priceApprovalPercent == null || priceApprovalPercent.signum() < 0
                 || priceApprovalPercent.compareTo(BigDecimal.valueOf(100)) >= 0) {
             throw new IllegalArgumentException("stockflow.order.quote.price-approval-percent must be in [0, 100)");
         }
         this.priceReviews = priceReviews;
         this.priceApprovalPercent = priceApprovalPercent;
+        this.ownership = ownership;
         this.lineNames = lineNames;
         this.skuDesigns = skuDesigns;
         this.identities = identities;
@@ -180,9 +184,13 @@ class QuoteService implements Quotes {
             return view(earlier.get());
         }
         requireNewWorkFor(customerId);
+        // 14 BR-25: the owner, their cover, a manager - or anyone while the customer has no active owner. Drawing the
+        // quote up claims nobody (D43).
+        ownership.requireMayActFor(user, customerId);
         Quote.Offer offer = offer(customerId, command.draft());
         requireActiveSkus(null, offer);
-        Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), command.requestId(), customerId, offer);
+        Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), command.requestId(), customerId, offer,
+                ownership.ownerAtDrawingUp(customerId));
         quotes.save(quote);
         transition(quote,1, null, QuoteStatus.DRAFT, null, null, clock.instant(), user.userId());
         log.info("Quote {} drafted for customer {} ({} line(s))", quote.quoteNumber(), customerId, offer.lines().size());
@@ -353,6 +361,7 @@ class QuoteService implements Quotes {
     public QuoteView send(CurrentUser user, UUID quoteId, long version) {
         ScopeGuards.requireBackOffice(user);
         Quote quote = lock(user, quoteId, version);
+        ownership.requireMayActFor(user, quote.customerId());
         requireCustomerSkus(quote, "sent");
         requireNewWorkFor(quote.customerId());
         requireActiveSkus(quote.quoteNumber(), quote.offer());
@@ -447,6 +456,8 @@ class QuoteService implements Quotes {
     public QuoteView withdrawPriceReview(CurrentUser user, UUID quoteId, long version) {
         ScopeGuards.requireBackOffice(user);
         Quote quote = lock(user, quoteId, version);
+        // 14 BR-25: a salesperson who lost the customer no longer withdraws what they sent for approval.
+        ownership.requireMayActFor(user, quote.customerId());
         QuotePriceReviews.Review review = waitingReview(quote);
         quote.withdrawPriceReview();
         quotes.save(quote);
@@ -625,9 +636,11 @@ class QuoteService implements Quotes {
         return expired;
     }
 
+    /** Edit, reopen (a revision) and cancel: each a step 14 BR-25 keeps to whoever may act for the customer. */
     private QuoteView backOffice(CurrentUser user, UUID quoteId, long version, Consumer<Quote> change, String reason) {
         ScopeGuards.requireBackOffice(user);
         Quote quote = lock(user, quoteId, version);
+        ownership.requireMayActFor(user, quote.customerId());
         QuoteStatus from = quote.status();
         int revision = quote.revision();
         change.accept(quote);
