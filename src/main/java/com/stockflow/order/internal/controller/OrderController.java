@@ -72,6 +72,13 @@ import java.util.UUID;
         actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.EXPORT})
 class OrderController {
 
+    /**
+     * The payment module's installments resource. Its permission decides whether a reader of the order list also reads
+     * what each order paid and owes (audit bo-17): the warehouse manager and the production coordinator read orders but
+     * not installments, and the list must not hand them what {@code GET /api/v1/installments/orders/{orderId}} refuses.
+     */
+    static final String PAYMENT_INSTALLMENTS = "payment-installments";
+
     private final OrderService orderService;
     private final CustomerService customerService;
     private final CustomerOrders customerOrders;
@@ -83,6 +90,7 @@ class OrderController {
     private final com.stockflow.order.internal.service.OrderSources sources;
     private final com.stockflow.order.internal.service.OrderSettlementService settlements;
     private final com.stockflow.warehouse.api.WarehouseService warehouses;
+    private final com.stockflow.payment.api.PaymentService payments;
 
     OrderController(OrderService orderService, CustomerService customerService,
                     CustomerOrders customerOrders,
@@ -92,7 +100,9 @@ class OrderController {
                     com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility,
                     com.stockflow.order.internal.service.OrderSources sources,
                     com.stockflow.order.internal.service.OrderSettlementService settlements,
-                    com.stockflow.warehouse.api.WarehouseService warehouses) {
+                    com.stockflow.warehouse.api.WarehouseService warehouses,
+                    com.stockflow.payment.api.PaymentService payments) {
+        this.payments = payments;
         this.warehouses = warehouses;
         this.sources = sources;
         this.settlements = settlements;
@@ -238,6 +248,11 @@ class OrderController {
      * to warehouses - the warehouse manager, since team plan 5-7 - lists only the orders shipping from or released to
      * their warehouses ({@code OrderWarehouseVisibility}), none when assigned none.
      * Parameters follow FE #12: {@code search}, {@code status} repeated, {@code sort=field,dir}.
+     *
+     * <p>Audit bo-17: each row carries what the order paid, still owes and owes past its due day, read for the whole
+     * page in one batch from the payment module - the list would otherwise call the order's installments once per row.
+     * Only for a caller who reads installments ({@link #PAYMENT_INSTALLMENTS}); null for anyone else, and for an order
+     * with no installments yet.</p>
      */
     @GetMapping
     @Operation(summary = "List orders for the back office: search, status, customer, placed date, sort")
@@ -264,8 +279,12 @@ class OrderController {
         // And one for their warehouses.
         var sites = warehouses.findWarehouses(found.items().stream().map(OrderSummary::warehouseId)
                 .filter(java.util.Objects::nonNull).distinct().toList());
-        return ApiResponse.ok(found.map(order -> OrderWebMapper.withWarehouse(OrderWebMapper.toResponse(order,
-                OrderWebMapper.labelOf(labels, order.customerId())), sites)));
+        // And one for what they paid and owe, for a caller who may read it.
+        var money = user.can(PAYMENT_INSTALLMENTS, Action.READ)
+                ? payments.paymentAmounts(found.items().stream().map(OrderSummary::orderId).toList())
+                : java.util.Map.<UUID, com.stockflow.payment.api.OrderPaymentAmounts>of();
+        return ApiResponse.ok(found.map(order -> OrderWebMapper.withPayment(OrderWebMapper.withWarehouse(
+                OrderWebMapper.toResponse(order, OrderWebMapper.labelOf(labels, order.customerId())), sites), money)));
     }
 
     @GetMapping("/{orderId}/history")

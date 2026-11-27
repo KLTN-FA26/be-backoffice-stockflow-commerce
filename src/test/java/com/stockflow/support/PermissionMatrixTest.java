@@ -111,6 +111,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/notifications/me/unread-count", "the caller's own unread count (recipient_id = the token's subject)"),
             Map.entry("POST /api/v1/notifications/me/read-all", "marks only the caller's own inbox read (recipient_id = the token's subject)"),
             Map.entry("GET /api/v1/quotes", "portal list: the caller's own customer's quotes, sent ones only (SCRUM-448)"),
+            Map.entry("GET /api/v1/quotes/status-counts",
+                    "counts of that same list: the caller's own customer's quotes, whatever customerId is sent"),
             Map.entry("GET /api/v1/catalog/products/availability",
                     "stock indicator of the caller's own ACTIVE customer's own SKUs, the customer taken from the token "
                             + "(SCRUM-429, 5-3)"),
@@ -758,6 +760,11 @@ class PermissionMatrixTest {
     }
 
     Object value(Class<?> type, String name, Handler h) {
+        // A batched read over many customers (GET /orders/sales-contacts) binds its ids before any guard runs: "x" would
+        // be a 400 from binding and prove nothing, so it is asked about the victim, as a single customerId is.
+        if (java.util.Collection.class.isAssignableFrom(type) && name.equals("customerIds")) {
+            return victimCustomer.toString();
+        }
         if (type == UUID.class || type == String.class) {
             UUID v = switch (name) {
                 case "customerId" -> victimCustomer;

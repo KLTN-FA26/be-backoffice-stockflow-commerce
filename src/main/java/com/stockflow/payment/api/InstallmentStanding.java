@@ -27,6 +27,15 @@ public record InstallmentStanding(UUID orderId, boolean opened, boolean onSignin
                 BigDecimal.ZERO, null);
     }
 
+    /**
+     * What the installments not cancelled still owe: {@code total} less {@code paid}, never below zero (an order whose
+     * installments were all cancelled keeps what it paid in {@code paid} and owes nothing). The one definition the
+     * order's installments screen and the order list both show.
+     */
+    public BigDecimal outstanding() {
+        return total.subtract(paid).max(BigDecimal.ZERO);
+    }
+
     /** kltn-docs 15 §5.2: worked out from the installments, never stored. */
     public enum ContractPaymentStatus {
         UNPAID,

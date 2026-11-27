@@ -38,6 +38,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -64,6 +65,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class CreditPositionApiIntegrationTest {
 
     private static final String MINE = "/api/v1/orders/credit-position/me";
+    private static final String MANY = "/api/v1/orders/credit-positions";
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
@@ -73,6 +75,7 @@ class CreditPositionApiIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
+    @Autowired com.stockflow.payment.api.PaymentService payments;
 
     private ConfirmedOrders confirmedOrders;
     private UUID user;
@@ -91,6 +94,16 @@ class CreditPositionApiIntegrationTest {
                 VALUES (?, ?, 'Credit customer', ?, 'ACTIVE', 0, NOW())""", customer, user,
                 "credit-" + customer + "@example.com"));
         sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 50);
+    }
+
+    /** Another customer, with no sign-in of its own. */
+    private UUID anotherCustomer(String name) {
+        UUID id = Identifiers.newId();
+        UUID login = tx.execute(s -> ReferenceRows.user(entityManager));
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO customer.customer (id, user_id, full_name, email, status, version, created_at)
+                VALUES (?, ?, ?, ?, 'ACTIVE', 0, NOW())""", id, login, name, "credit-" + id + "@example.com"));
+        return id;
     }
 
     private SecuredMvc http() {
@@ -147,6 +160,123 @@ class CreditPositionApiIntegrationTest {
     @DisplayName("15 §4.1 step 4, BR-11: what is still unpaid on installments past their due date, and the oldest date")
     void overdueAmountAndOldestDueDate() throws Exception {
         credit();
+        LocalDate today = signedWithOverdueOnSigning();
+
+        http().asCustomer(user, get(MINE)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.hasOverdue").value(true))
+                .andExpect(jsonPath("$.data.overdueAmount").value(5000000))
+                .andExpect(jsonPath("$.data.oldestOverdueDueDate").value(today.minusDays(3).toString()))
+                // The installment on signing is no receivable: only the 70% after delivery is exposure.
+                .andExpect(jsonPath("$.data.exposure").value(14000000));
+        http().asRole(Role.ACCOUNTANT, accountant, get("/api/v1/orders/credit-position/" + customer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.overdueAmount").value(5000000))
+                .andExpect(jsonPath("$.data.oldestOverdueDueDate").value(today.minusDays(3).toString()));
+    }
+
+    @Test
+    @DisplayName("audit bo-29: the credit of a page of customers in one call - each item what the single position "
+            + "says, in the order asked; a repeat once, an unknown id left out")
+    void positionsOfAPage() throws Exception {
+        credit();
+        LocalDate today = signedWithOverdueOnSigning();
+        UUID overLimit = anotherCustomer("Over the limit");
+        customers.saveCreditTerms(new SaveCreditTermsCommand(overLimit, new BigDecimal("10000000"), 15, "test terms",
+                accountant, null));
+        confirmedOrders.signed(overLimit, List.of(share("AFTER_DELIVERY", "100", 15)),
+                ConfirmedOrders.Line.cartons(CustomerSkuRows.issue(jdbc, tx, entityManager, overLimit, 50), 10,
+                        40_000));
+        UUID noCredit = anotherCustomer("No credit");
+        UUID unknown = Identifiers.newId();
+
+        http().asRole(Role.ACCOUNTANT, accountant, get(MANY)
+                        .param("customerIds", noCredit + "," + customer + "," + unknown + "," + overLimit + ","
+                                + noCredit))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(3))
+                .andExpect(jsonPath("$.data[0].customerId").value(noCredit.toString()))
+                .andExpect(jsonPath("$.data[0].creditLimit").doesNotExist())
+                .andExpect(jsonPath("$.data[0].exposure").value(0))
+                .andExpect(jsonPath("$.data[0].availableCredit").doesNotExist())
+                .andExpect(jsonPath("$.data[0].hasOverdue").value(false))
+                .andExpect(jsonPath("$.data[1].customerId").value(customer.toString()))
+                .andExpect(jsonPath("$.data[1].creditLimit").value(50000000))
+                .andExpect(jsonPath("$.data[1].creditTermDays").value(30))
+                .andExpect(jsonPath("$.data[1].exposure").value(14000000))
+                .andExpect(jsonPath("$.data[1].availableCredit").value(36000000))
+                .andExpect(jsonPath("$.data[1].currency").value("VND"))
+                .andExpect(jsonPath("$.data[1].hasOverdue").value(true))
+                .andExpect(jsonPath("$.data[1].overdueAmount").value(5000000))
+                .andExpect(jsonPath("$.data[1].oldestOverdueDueDate").value(today.minusDays(3).toString()))
+                .andExpect(jsonPath("$.data[2].customerId").value(overLimit.toString()))
+                .andExpect(jsonPath("$.data[2].exposure").value(20000000))
+                .andExpect(jsonPath("$.data[2].availableCredit").value(0))
+                .andExpect(jsonPath("$.data[2].hasOverdue").value(false));
+        // Sales reads the list's credit with the same grant as the single position; the parameter may be repeated.
+        http().asRole(Role.SALES_STAFF, Identifiers.newId(), get(MANY).param("customerIds", customer.toString())
+                        .param("customerIds", overLimit.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].exposure").value(14000000))
+                .andExpect(jsonPath("$.data[1].exposure").value(20000000));
+    }
+
+    @Test
+    @DisplayName("audit bo-29: the grouped statement reads what creditPosition reads, customer by customer - "
+            + "receivable, overdue on signing, nothing owed, never heard of")
+    void positionsReadAsTheSinglePosition() throws Exception {
+        credit();
+        signedWithOverdueOnSigning();
+        UUID afterDelivery = anotherCustomer("After delivery only");
+        customers.saveCreditTerms(new SaveCreditTermsCommand(afterDelivery, new BigDecimal("8000000"), 30,
+                "test terms", accountant, null));
+        confirmedOrders.signed(afterDelivery, List.of(share("AFTER_DELIVERY", "100", 30)),
+                ConfirmedOrders.Line.cartons(CustomerSkuRows.issue(jdbc, tx, entityManager, afterDelivery, 50), 4,
+                        25_000));
+        UUID nothing = anotherCustomer("Owes nothing");
+        UUID unknown = Identifiers.newId();
+        List<UUID> ids = List.of(customer, afterDelivery, nothing, unknown);
+
+        var many = payments.creditPositions(ids);
+
+        assertThat(many).containsOnlyKeys(ids);
+        for (UUID id : ids) {
+            assertThat(many.get(id)).as("customer %s", id).usingRecursiveComparison()
+                    .withComparatorForType(BigDecimal::compareTo, BigDecimal.class)
+                    .isEqualTo(payments.creditPosition(id));
+        }
+        assertThat(many.get(customer).outstandingReceivables()).isEqualByComparingTo("14000000");
+        assertThat(many.get(customer).overdueAmount()).isEqualByComparingTo("5000000");
+        assertThat(many.get(afterDelivery).outstandingReceivables()).isEqualByComparingTo("5000000");
+        assertThat(many.get(nothing).hasOverdue()).isFalse();
+        assertThat(payments.creditPositions(List.of())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("audit bo-29: the page's credit is the back office's - a customer gets 403, a role without "
+            + "customer-credit-profiles:READ 403, anonymous 401; past 200 ids 400 UNSUPPORTED_PARAMETER")
+    void positionsRefused() throws Exception {
+        http().asCustomer(user, get(MANY).param("customerIds", customer.toString()))
+                .andExpect(status().isForbidden());
+        http().asRole(Role.WAREHOUSE_STAFF, Identifiers.newId(), get(MANY).param("customerIds", customer.toString()))
+                .andExpect(status().isForbidden());
+        http().anonymous(get(MANY).param("customerIds", customer.toString())).andExpect(status().isUnauthorized());
+        String tooMany = java.util.stream.Stream.generate(Identifiers::newId).limit(201).map(UUID::toString)
+                .collect(java.util.stream.Collectors.joining(","));
+        http().asRole(Role.ACCOUNTANT, accountant, get(MANY).param("customerIds", tooMany))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("UNSUPPORTED_PARAMETER"));
+        http().asRole(Role.ACCOUNTANT, accountant, get(MANY).param("customerIds", "not-a-uuid"))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * 10 cartons at 40,000 signed five days ago, 30% due on signing two days after sending (fell due three days ago,
+     * 1,000,000 of its 6,000,000 paid) and 70% 30 days after delivery: 5,000,000 overdue, 14,000,000 exposure.
+     *
+     * @return today, in Vietnam
+     */
+    private LocalDate signedWithOverdueOnSigning() throws Exception {
         UUID orderId = confirmedOrders.draft(customer, List.of(ConfirmedOrders.Line.cartons(sku, 10, 40_000)));
         confirmedOrders.legalProfile(customer);
         LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);
@@ -174,17 +304,7 @@ class CreditPositionApiIntegrationTest {
         UUID onSigning = jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ? AND seq = 1",
                 UUID.class, orderId);
         confirmedOrders.pay(customer, onSigning, new BigDecimal("1000000"));   // 6,000,000 due: 5,000,000 left
-
-        http().asCustomer(user, get(MINE)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.hasOverdue").value(true))
-                .andExpect(jsonPath("$.data.overdueAmount").value(5000000))
-                .andExpect(jsonPath("$.data.oldestOverdueDueDate").value(today.minusDays(3).toString()))
-                // The installment on signing is no receivable: only the 70% after delivery is exposure.
-                .andExpect(jsonPath("$.data.exposure").value(14000000));
-        http().asRole(Role.ACCOUNTANT, accountant, get("/api/v1/orders/credit-position/" + customer))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.overdueAmount").value(5000000))
-                .andExpect(jsonPath("$.data.oldestOverdueDueDate").value(today.minusDays(3).toString()));
+        return today;
     }
 
     @Test

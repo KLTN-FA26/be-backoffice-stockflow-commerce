@@ -47,6 +47,24 @@ public interface QuoteSearch {
 
     Page<Row> search(Criteria criteria, Pageable pageable);
 
+    /**
+     * The quotes of one stored status that {@link #search} would find, counted.
+     *
+     * @param total              all of them
+     * @param pastValidity       of those, SENT and past their validity at {@link Criteria#now}: read as EXPIRED
+     * @param sent               of those, sent at least once ({@code sent_at} set): a DRAFT among them is a revision being
+     *                           written, which the customer reads as CHANGES_REQUESTED
+     * @param priceReviewPending of those, waiting for the Sales Manager to approve their prices (14 BR-10)
+     */
+    record StatusCount(QuoteStatus status, long total, long pastValidity, long sent, long priceReviewPending) {
+    }
+
+    /**
+     * {@link #search}'s quotes under the same criteria, counted per stored status in one grouped statement; a status
+     * with none is absent. The caller reads each as its list does.
+     */
+    List<StatusCount> statusCounts(Criteria criteria);
+
     /** Oldest first. */
     List<Transition> history(UUID quoteId);
 

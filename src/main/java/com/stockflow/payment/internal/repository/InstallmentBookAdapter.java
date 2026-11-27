@@ -14,6 +14,7 @@ import jakarta.persistence.LockModeType;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Root;
+import org.hibernate.query.criteria.HibernateCriteriaBuilder;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -78,6 +79,15 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     }
 
     @Override
+    public List<Installment> findAll(Collection<UUID> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        return installments.findAllById(ids.stream().filter(Objects::nonNull).distinct().toList()).stream()
+                .map(InstallmentBookAdapter::toDomain).toList();
+    }
+
+    @Override
     public List<Installment> ofOrders(Collection<UUID> orderIds) {
         if (orderIds == null || orderIds.isEmpty()) {
             return List.of();
@@ -136,6 +146,31 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
                 .setParameter("today", today)
                 .getSingleResult();
         return new Overdue(decimal(row[0]), localDate(row[1]));
+    }
+
+    @Override
+    public Map<UUID, Owing> owing(Collection<UUID> customerIds, LocalDate today) {
+        if (customerIds == null || customerIds.isEmpty()) {
+            return Map.of();
+        }
+        // afterDeliveryUnpaid and overdue above as two FILTERs of one pass, grouped by customer: the rows both read are
+        // the installments not PAID or CANCELLED, so the outer WHERE is theirs and each FILTER is the rest of one.
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT customer_id,
+                               COALESCE(SUM(amount - reduced_amount - paid_amount) FILTER (WHERE milestone IN
+                                   ('AFTER_DELIVERY', 'CANCELLATION_FEE', 'FAILED_TRIP_FEE')), 0),
+                               COALESCE(SUM(amount - reduced_amount - paid_amount) FILTER (WHERE due_date < :today), 0),
+                               MIN(due_date) FILTER (WHERE due_date < :today)
+                          FROM payment.installment
+                         WHERE customer_id IN (:customers)
+                           AND status NOT IN ('PAID', 'CANCELLED')
+                         GROUP BY customer_id""")
+                .setParameter("customers", customerIds)
+                .setParameter("today", today)
+                .getResultList();
+        return rows.stream().collect(Collectors.toMap(row -> (UUID) row[0],
+                row -> new Owing(decimal(row[1]), new Overdue(decimal(row[2]), localDate(row[3])))));
     }
 
     @Override
@@ -231,13 +266,44 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
                 .and(filter.reached() == null ? null : (root, query, cb) -> filter.reached()
                         ? cb.isNotNull(root.get("reachedAt")) : cb.isNull(root.get("reachedAt")))
                 .and(filter.overdueOn() == null ? null : overdue(filter.overdueOn(), filter.overdue()))
-                // Specs.in: null is any customer, empty is none - a search that matched no customer finds nothing.
-                .and(Specs.in("customerId", filter.customerIds()))
+                // Specs.in: null is any customer, empty is none - a search that matched no customer finds nothing,
+                // unless the term is in a contract or order number.
+                .and(customersOrNumbers(filter.customerIds(), filter.search()))
+                .and(filter.outstanding() == null ? null : outstanding(filter.outstanding()))
                 .and(Boolean.TRUE.equals(filter.owing()) ? owing() : null)
                 .and(Boolean.TRUE.equals(filter.unannounced()) ? (root, query, cb) -> cb.or(
                         cb.isNull(root.get("overdueAnnouncedFor")),
                         cb.notEqual(root.get("overdueAnnouncedFor"), root.get("dueDate"))) : null);
         return installments.findAll(spec, pageable).map(InstallmentBookAdapter::toDomain);
+    }
+
+    /**
+     * The accountant's search ({@link InstallmentSearch.InstallmentFilter}): one of {@code customerIds}, or a contract
+     * or order number containing {@code search}. Without a term, {@code customerIds} alone; without customers, the
+     * term alone.
+     */
+    private static Specification<InstallmentJpaEntity> customersOrNumbers(Collection<UUID> customerIds,
+                                                                          String search) {
+        if (search == null) {
+            return Specs.in("customerId", customerIds);
+        }
+        Specification<InstallmentJpaEntity> numbers = Specification
+                .<InstallmentJpaEntity>where(Specs.contains("contractNumber", search))
+                .or(Specs.contains("orderNumber", search));
+        return customerIds == null || customerIds.isEmpty() ? numbers
+                : Specification.<InstallmentJpaEntity>where(Specs.in("customerId", customerIds)).or(numbers);
+    }
+
+    /**
+     * Still owing exactly {@code amount}: {@link Installment#outstanding} as a predicate - the amount less what was paid
+     * and taken off, zero for a cancelled one - so the filter keeps the rows whose {@code outstanding} the list shows
+     * equal to it.
+     */
+    private static Specification<InstallmentJpaEntity> outstanding(BigDecimal amount) {
+        return (root, query, cb) -> cb.equal(cb.<BigDecimal>selectCase()
+                .when(cb.equal(root.get("status"), InstallmentStatus.CANCELLED), BigDecimal.ZERO)
+                .otherwise(cb.diff(cb.diff(root.<BigDecimal>get("amount"), root.<BigDecimal>get("paidAmount")),
+                        root.<BigDecimal>get("reducedAmount"))), amount);
     }
 
     /**
@@ -300,7 +366,39 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
                 .and(filter.receivedFrom() == null ? null
                         : (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("receivedOn"), filter.receivedFrom()))
                 .and(filter.receivedTo() == null ? null
-                        : (root, query, cb) -> cb.lessThanOrEqualTo(root.get("receivedOn"), filter.receivedTo()));
+                        : (root, query, cb) -> cb.lessThanOrEqualTo(root.get("receivedOn"), filter.receivedTo()))
+                .and(filter.search() == null ? null : searched(filter));
+    }
+
+    /**
+     * The accountant's search box on receipts ({@link ReceiptFilter#search}): one of the customers the term matched, or
+     * a line paying an installment whose contract or order number contains it. The lines are plain rows with no entity
+     * (see the class comment), so the second half is {@link #lineNumberMatches} as a SQL fragment - the same one the
+     * export's {@code WHERE} uses, so the list, its total and its file keep matching the same receipts.
+     */
+    private static Specification<PaymentReceiptJpaEntity> searched(ReceiptFilter filter) {
+        String pattern = filter.searchPattern();
+        Specification<PaymentReceiptJpaEntity> numbers = (root, query, cb) -> {
+            HibernateCriteriaBuilder hcb = (HibernateCriteriaBuilder) cb;
+            return hcb.isTrue(hcb.sql(lineNumberMatches("?", "?"), Boolean.class, root.get("id"),
+                    hcb.literal(pattern), hcb.literal(pattern)));
+        };
+        return filter.searchCustomers().isEmpty() ? numbers
+                : Specification.<PaymentReceiptJpaEntity>where(Specs.in("customerId", filter.searchCustomers()))
+                .or(numbers);
+    }
+
+    /**
+     * SQL true when a line of receipt {@code receipt} paid an installment whose contract or order number, lowered,
+     * is {@code LIKE} {@code pattern} ({@link ReceiptFilter#searchPattern}, backslash the escape). Both arguments are
+     * placeholders or column references, never a value: the caller binds the pattern. The numbers are ASCII, so
+     * {@code lower} folds them whatever the database's locale. {@code uk_payment_receipt_line (receipt_id, ...)}
+     * finds a receipt's lines.
+     */
+    static String lineNumberMatches(String receipt, String pattern) {
+        return ("EXISTS (SELECT 1 FROM payment.payment_receipt_line sl JOIN payment.installment si"
+                + " ON si.id = sl.installment_id WHERE sl.receipt_id = %s AND (lower(si.contract_number) LIKE %s"
+                + " ESCAPE '\\' OR lower(si.order_number) LIKE %s ESCAPE '\\'))").formatted(receipt, pattern, pattern);
     }
 
     private Map<UUID, List<PaymentReceipt.Line>> linesOf(List<UUID> receiptIds) {

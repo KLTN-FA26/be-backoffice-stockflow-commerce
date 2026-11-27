@@ -303,31 +303,44 @@ public interface Quotes {
      *                      on the customer's copy while that order is a DRAFT (17 §5.2, as the quote's own view)
      * @param priceReviewPending 14 BR-10: the draft waits for the Sales Manager to approve its prices; false on the
      *                      customer's copy
+     * @param convertedOrderStatus the status of that order now, read in the statement that reads its number, so a list
+     *                      tells a converted quote whose order is under way from one whose order was cancelled without
+     *                      opening each; null exactly when {@code convertedOrderNumber} is
      */
     record Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version,
                BigDecimal total, Integer lineCount, String firstItemName, String customerName, String customerCode,
-               String convertedOrderNumber, boolean priceReviewPending) {
+               String convertedOrderNumber, boolean priceReviewPending, OrderStatus convertedOrderStatus) {
+
+        public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
+                   Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version,
+                   BigDecimal total, Integer lineCount, String firstItemName, String customerName, String customerCode,
+                   String convertedOrderNumber, boolean priceReviewPending) {
+            this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
+                    version, total, lineCount, firstItemName, customerName, customerCode, convertedOrderNumber,
+                    priceReviewPending, null);
+        }
 
         public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                    Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version,
                    BigDecimal total, Integer lineCount, String firstItemName, String customerName, String customerCode,
                    String convertedOrderNumber) {
             this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
-                    version, total, lineCount, firstItemName, customerName, customerCode, convertedOrderNumber, false);
+                    version, total, lineCount, firstItemName, customerName, customerCode, convertedOrderNumber, false,
+                    null);
         }
 
         public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                    Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version,
                    BigDecimal total, Integer lineCount, String firstItemName) {
             this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
-                    version, total, lineCount, firstItemName, null, null, null, false);
+                    version, total, lineCount, firstItemName, null, null, null, false, null);
         }
 
         public Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
                    Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version) {
             this(id, quoteNumber, customerId, status, revision, validUntil, sentAt, convertedOrderId, createdAt,
-                    version, null, null, null, null, null, null, false);
+                    version, null, null, null, null, null, null, false, null);
         }
     }
 
@@ -338,6 +351,19 @@ public interface Quotes {
         public Criteria(UUID customerId, List<QuoteStatus> statuses, String search, int page, int size, String sort) {
             this(customerId, statuses, search, page, size, sort, false);
         }
+    }
+
+    /**
+     * How many quotes the list would hold under each status, for the list's status tabs.
+     *
+     * @param byStatus           every {@link QuoteStatus}, zero included, counted by the status the list shows the
+     *                           reader: a SENT quote past its validity under EXPIRED, and to a customer a revision Sales
+     *                           are writing under CHANGES_REQUESTED, as {@link #list} reads them
+     * @param total              the sum of {@code byStatus}: the list's own total under the same criteria
+     * @param priceReviewPending 14 BR-10: of those, the drafts waiting for the Sales Manager to approve their prices;
+     *                           always 0 to a customer, who never sees a draft
+     */
+    record StatusCounts(Map<QuoteStatus, Long> byStatus, long total, long priceReviewPending) {
     }
 
     /** @param cartons per line id; a line not named is accepted at its proposed cartons */
@@ -351,6 +377,12 @@ public interface Quotes {
     QuoteView create(CurrentUser user, Create command);
 
     PageResponse<Row> list(CurrentUser user, Criteria criteria);
+
+    /**
+     * {@link #list}'s quotes under the same criteria and the same visibility, counted per status in one grouped
+     * statement instead of listed; the criteria's page, size and sort are ignored.
+     */
+    StatusCounts statusCounts(CurrentUser user, Criteria criteria);
 
     QuoteView get(CurrentUser user, UUID quoteId);
 

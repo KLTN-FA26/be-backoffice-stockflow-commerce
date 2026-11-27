@@ -2,6 +2,7 @@ package com.stockflow.order.internal.service;
 
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.customer.api.CreditTerms;
+import com.stockflow.customer.api.CustomerCredits;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
@@ -25,6 +26,8 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -56,10 +59,11 @@ class CreditHoldServiceTest {
     private final PaymentService paymentService = mock(PaymentService.class);
     private final OrderSummary summary = mock(OrderSummary.class);
     private final SalesFollowUpService followUps = mock(SalesFollowUpService.class);
+    private final CustomerCredits credits = mock(CustomerCredits.class);
     private final CreditHoldService service = new CreditHoldService(repository, orders, orderService, events,
             creditChecks, holds, customers, mock(CreditHoldSearch.class), paymentService,
             Clock.fixed(NOW, ZoneOffset.UTC), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class),
-            followUps);
+            followUps, credits);
 
     private static CreditTerms terms(UUID customer, String limit) {
         return new CreditTerms(customer, true, limit == null ? null : new BigDecimal(limit), 30, "VND", null, null,
@@ -130,6 +134,38 @@ class CreditHoldServiceTest {
 
             assertThat(position.available()).isNull();
             assertThat(position.exposure()).isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("audit bo-29: a page of customers in two reads - their terms, then what they owe - in the order "
+                + "asked, each by the single position's rule; an unknown customer is left out, a repeat counted once")
+        void positionsOfAPage() {
+            UUID withCredit = UUID.randomUUID();
+            UUID without = UUID.randomUUID();
+            UUID unknown = UUID.randomUUID();
+            when(credits.creditTermsOf(List.of(without, withCredit, unknown))).thenReturn(Map.of(
+                    withCredit, terms(withCredit, "1000000"), without, CreditTerms.none(without)));
+            when(paymentService.creditPositions(any())).thenReturn(Map.of(
+                    withCredit, new CreditPosition(new BigDecimal("1700000"), true, new BigDecimal("200000"),
+                            LocalDate.of(2026, 10, 1)),
+                    without, new CreditPosition(BigDecimal.ZERO, false)));
+
+            var positions = service.positions(List.of(without, withCredit, unknown, without));
+
+            assertThat(positions).extracting(p -> p.terms().customerId()).containsExactly(without, withCredit);
+            assertThat(positions.get(0).available()).isNull();
+            assertThat(positions.get(1).exposure()).isEqualByComparingTo("1700000");
+            assertThat(positions.get(1).available()).isEqualByComparingTo("0");
+            assertThat(positions.get(1).overdueAmount()).isEqualByComparingTo("200000");
+            verify(paymentService, never()).creditPosition(any());
+            verify(customers, never()).creditTerms(any());
+        }
+
+        @Test
+        @DisplayName("no customers asked: nothing read")
+        void positionsOfNothing() {
+            assertThat(service.positions(List.of())).isEmpty();
+            verify(credits, never()).creditTermsOf(any());
         }
     }
 
