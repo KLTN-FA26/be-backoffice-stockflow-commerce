@@ -51,8 +51,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * BE-7 (WF4-OVERDUE-*; kltn-docs 15 §4.3 step 11) against the real database and event plumbing: an installment that
- * turned overdue is announced by the daily scan to the holders of the hold permission once, however often the scan
- * runs; the scan reads back only a few days; and whoever is about to release the customer's order is warned when the
+ * turned overdue is announced by the daily scan once, however often the scan runs, to whoever looks after the customer
+ * (since 2026-11-28, 15 BR-22: its owner - no longer every holder of the hold permission); the scan reads back only a few days; and whoever is about to release the customer's order is warned when the
  * dialog opens, the release itself unaffected.
  *
  * <p>The contract is drawn up, sent and signed through {@link SalesContracts} (never inserted), sent six days ago and
@@ -107,6 +107,8 @@ class OverdueInstallmentNoticeIntegrationTest {
                 INSERT INTO customer.customer (id, user_id, full_name, email, status, version, created_at)
                 VALUES (?, ?, 'Overdue customer', ?, 'ACTIVE', 0, NOW())""", customer, user,
                 "overdue-" + customer + "@example.com"));
+        // 15 BR-22: Sales A owns the customer and is the one told.
+        new com.stockflow.support.SalesOwners(context).own(customer, salesA);
         customers.saveCreditTerms(new SaveCreditTermsCommand(customer, new BigDecimal("50000000"), 30, "test terms",
                 confirmedOrders.accountant(), null));
         CustomerSkuRows.Issued sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 50);
@@ -150,7 +152,7 @@ class OverdueInstallmentNoticeIntegrationTest {
         UUID marker = UUID.randomUUID();
         // Published in a transaction: a listener of @ApplicationModuleListener runs after its commit.
         tx.executeWithoutResult(s -> publisher.publishEvent(new InstallmentOverdue(marker, UUID.randomUUID(),
-                "HD-MARKER", UUID.randomUUID(), "SO-MARKER", UUID.randomUUID(), 1, LocalDate.now(), BigDecimal.ONE,
+                "HD-MARKER", UUID.randomUUID(), "SO-MARKER", customer, 1, LocalDate.now(), BigDecimal.ONE,
                 "VND")));
         Await.until("the marker is told", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
                 + "notification.user_notification WHERE recipient_id = ? AND source_id = ?", Long.class, salesA,
@@ -158,18 +160,17 @@ class OverdueInstallmentNoticeIntegrationTest {
     }
 
     @Test
-    @DisplayName("the scan tells every active holder of the hold permission once; a second run, and the other roles, "
-            + "get nothing more or nothing at all")
+    @DisplayName("15 BR-22: the scan tells the customer's owner once; a second run, another salesperson and the other "
+            + "roles get nothing more or nothing at all")
     void salesAreToldOncePerInstallment() {
         installments.announceNewlyOverdue();
         Await.until("Sales A is told", ASYNC, () -> told(salesA) >= 1);
-        Await.until("Sales B is told", ASYNC, () -> told(salesB) >= 1);
 
         installments.announceNewlyOverdue();
         afterMarker();
 
         assertThat(told(salesA)).as("run twice, told once").isEqualTo(1);
-        assertThat(told(salesB)).isEqualTo(1);
+        assertThat(told(salesB)).as("D6: not every salesperson").isZero();
         assertThat(told(salesLocked)).as("a locked account is not told").isZero();
         assertThat(told(accountant)).as("accounting does not hold orders by hand").isZero();
         assertThat(told(warehouseManager)).isZero();
