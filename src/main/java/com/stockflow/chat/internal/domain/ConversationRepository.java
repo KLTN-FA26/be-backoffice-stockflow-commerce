@@ -30,8 +30,8 @@ public interface ConversationRepository extends AggregateRepository<Conversation
     Slice<Conversation> ofCustomer(UUID customerId, ContextRef about, int page, int size);
 
     /**
-     * The staff's queue: the overdue first (a late first answer or a late resolution, BR-09), then the most recently
-     * active.
+     * The staff's queue: first those put back because their agent's account stopped working (BR-S08), then the overdue
+     * (a late first answer or a late resolution, BR-09), then the most recently active.
      */
     Slice<Conversation> inbox(InboxFilter filter, Instant now, int page, int size);
 
@@ -56,11 +56,29 @@ public interface ConversationRepository extends AggregateRepository<Conversation
     /** The customer's most recently active conversation that has not ended, about anything. */
     Optional<Conversation> newestOpenOf(UUID customerId);
 
+    /** The customer's conversations that have not ended, in id order (the order they are locked in). */
+    List<UUID> openOf(UUID customerId);
+
+    /** The conversations that have not ended and are {@code agentId}'s, in id order (the order they are locked in). */
+    List<UUID> openAssignedTo(UUID agentId);
+
     /**
-     * The agents who looked after the customer, the most recent first, at most {@code limit}, leaving out
-     * {@code except} (16 §4.1 step 2.2: "Sale đã chăm sóc khách gần nhất").
+     * Per agent with a conversation that has not ended: how many, and how many of them are overdue (BR-09, the queue's
+     * own predicate). One grouped statement.
      */
-    List<UUID> recentAgentsOf(UUID customerId, UUID except, int limit);
+    List<AgentLoad> openLoad(Instant now);
+
+    /** One agent's open conversations (the managers' assignment board, sales-owner plan §10.4). */
+    record AgentLoad(UUID agentId, long open, long overdue) {
+    }
+
+    /**
+     * Records that the chat applied the owner change of {@code customerId} made at {@code changedAt} (BR-S06), unless
+     * it did already.
+     *
+     * @return true the first time; false when that change was applied before (a redelivered event)
+     */
+    boolean recordOwnerChangeApplied(UUID customerId, Instant changedAt, UUID toUserId, Instant now);
 
     /** Conversations whose first answer is late and whose supervisors were not told yet (BR-09), at most {@code limit}. */
     List<UUID> firstResponseOverdueUnalerted(Instant now, int limit);
