@@ -16,6 +16,7 @@ import com.stockflow.common.storage.StagedUploads;
 import com.stockflow.common.storage.StoredFile;
 import com.stockflow.common.storage.UploadSlot;
 import com.stockflow.common.storage.UploadSlotRequest;
+import com.stockflow.order.api.ConsentMessages;
 import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.BatchInFlight;
@@ -63,6 +64,9 @@ public class DeliveryBatchService {
 
     private static final Logger log = LoggerFactory.getLogger(DeliveryBatchService.class);
 
+    /** How many of the customer's latest messages the picker offers as consent. */
+    static final int CONSENT_MESSAGES_LIMIT = 50;
+
     /** §5.5: the state of a batch, worked out. */
     public enum BatchState { AWAITING_STOCK, READY, IN_DELIVERY, DELIVERED, CLOSED }
 
@@ -76,7 +80,26 @@ public class DeliveryBatchService {
      */
     public record WindowChangeView(UUID id, LocalDate oldStart, LocalDate oldEnd, LocalDate newStart, LocalDate newEnd,
                                    WindowChangeReason reason, String note, String evidenceFileName,
-                                   UUID evidenceMessageId, UUID changedBy, String changedByName, Instant changedAt) {
+                                   UUID evidenceMessageId, EvidenceMessage evidenceMessage, UUID changedBy,
+                                   String changedByName, Instant changedAt) {
+    }
+
+    /**
+     * The chat message a window move cites as the customer's consent, as it reads now (17 BR-28): so the history shows
+     * what the customer said and when, not an id. {@code text} is null for files without a caption and for a message
+     * taken back since ({@code deleted}: its text and files are no longer shown to anyone).
+     */
+    public record EvidenceMessage(String kind, String text, Instant sentAt, boolean deleted) {
+    }
+
+    /**
+     * A message of the customer Sales may cite as consent for a window move (17 BR-28), newest first.
+     *
+     * @param kind    {@code TEXT} or {@code ATTACHMENT}
+     * @param text    null for files without a caption
+     * @param subject the subject of the conversation it is in, when it has one
+     */
+    public record ConsentMessageView(UUID messageId, String kind, String text, String subject, Instant sentAt) {
     }
 
     /**
@@ -103,7 +126,7 @@ public class DeliveryBatchService {
     private final SalesContractRepository contracts;
     private final DeliveryBatchRecords records;
     private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
-    private final com.stockflow.order.api.ConsentMessages consentMessages;
+    private final ConsentMessages consentMessages;
     private final com.stockflow.identity.api.IdentityService identities;
     private final ShippingWarehouseService shippingWarehouses;
     private final FileTransfers files;
@@ -115,7 +138,7 @@ public class DeliveryBatchService {
                          ShippingWarehouseService shippingWarehouses, FileTransfers files, StagedUploads staged,
                          TransactionTemplate tx, Clock clock,
                          com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders,
-                         com.stockflow.order.api.ConsentMessages consentMessages,
+                         ConsentMessages consentMessages,
                          com.stockflow.identity.api.IdentityService identities) {
         this.identities = identities;
         this.consentMessages = consentMessages;
@@ -161,6 +184,9 @@ public class DeliveryBatchService {
         Map<UUID, String> movers = staffNames ? identities.displayNames(changes.values().stream()
                 .flatMap(List::stream).map(DeliveryBatchRecords.WindowChange::changedBy)
                 .filter(java.util.Objects::nonNull).distinct().toList()) : Map.of();
+        Map<UUID, ConsentMessages.Excerpt> cited = staffNames ? consentMessages.excerpts(changes.values().stream()
+                .flatMap(List::stream).map(DeliveryBatchRecords.WindowChange::evidenceMessageId)
+                .filter(java.util.Objects::nonNull).distinct().toList()) : Map.of();
         LocalDate today = BusinessCalendar.date(clock.instant());
         List<BatchView> batches = new ArrayList<>();
         for (DeliveryBatch batch : sorted(contract)) {
@@ -181,7 +207,7 @@ public class DeliveryBatchService {
             DeliveryBatchRecords.Release release = releases.get(batch.id());
             batches.add(new BatchView(batch.id(), batch.seq(), batch.windowStart(), batch.windowEnd(), start, end,
                     state, late, release == null ? null : release.releasedAt(), batchLines,
-                    moved.stream().map(c -> view(c, movers)).toList()));
+                    moved.stream().map(c -> staffNames ? view(c, movers, cited) : customerView(c)).toList()));
         }
         return new Schedule(order.id().value(), order.orderNumber().value(), contract.contractNumber(), batches);
     }
@@ -374,6 +400,21 @@ public class DeliveryBatchService {
     }
 
     /**
+     * The messages the order's customer sent that Sales may cite as consent to move {@code batchId}'s window (17 BR-28):
+     * in the customer's own conversations about this order or about none, newest first, at most
+     * {@link #CONSENT_MESSAGES_LIMIT}. The same reach as {@link #changeWindow} accepts. A read, as
+     * {@link #beginEvidenceUpload}: the order as the caller's data scope sees it.
+     */
+    @Transactional(readOnly = true)
+    public List<ConsentMessageView> consentMessages(UUID orderId, UUID batchId) {
+        Order order = orders.findByIdInScopeForReading(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
+        batchOf(order, batchId);
+        return consentMessages.customerMessages(order.customerId(), order.id().value(), CONSENT_MESSAGES_LIMIT).stream()
+                .map(m -> new ConsentMessageView(m.messageId(), m.kind(), m.text(), m.subject(), m.sentAt())).toList();
+    }
+
+    /**
      * Sales moves a batch's window (17 BR-28): only Sales, only while no carton of it was handed over, not into the
      * past, keeping the schedule's order, with a reason, a note and the customer's consent - a file or a chat message.
      * SKUs, cartons and the number of batches do not change. Not transactional itself: an evidence file is checked and
@@ -558,9 +599,22 @@ public class DeliveryBatchService {
                 .mapToInt(s -> s.quantities().values().stream().mapToInt(Integer::intValue).sum()).sum();
     }
 
-    private static WindowChangeView view(DeliveryBatchRecords.WindowChange c, Map<UUID, String> movers) {
+    /** The staff's view: who moved it, why in their words, and the consent (file name, or the message's text and time). */
+    private static WindowChangeView view(DeliveryBatchRecords.WindowChange c, Map<UUID, String> movers,
+                                         Map<UUID, ConsentMessages.Excerpt> cited) {
+        ConsentMessages.Excerpt message = c.evidenceMessageId() == null ? null : cited.get(c.evidenceMessageId());
         return new WindowChangeView(c.id(), c.oldStart(), c.oldEnd(), c.newStart(), c.newEnd(), c.reason(), c.note(),
-                c.evidenceFileName(), c.evidenceMessageId(), c.changedBy(),
-                c.changedBy() == null ? null : movers.get(c.changedBy()), c.changedAt());
+                c.evidenceFileName(), c.evidenceMessageId(),
+                message == null ? null : new EvidenceMessage(message.kind(), message.text(), message.sentAt(), message.deleted()),
+                c.changedBy(), c.changedBy() == null ? null : movers.get(c.changedBy()), c.changedAt());
+    }
+
+    /**
+     * The customer's view (17 §5.2): that the window moved, from which window to which, why (the reason code) and when -
+     * not the Sale's note, the consent behind it, or who moved it, which are internal.
+     */
+    private static WindowChangeView customerView(DeliveryBatchRecords.WindowChange c) {
+        return new WindowChangeView(c.id(), c.oldStart(), c.oldEnd(), c.newStart(), c.newEnd(), c.reason(), null, null,
+                null, null, null, null, c.changedAt());
     }
 }

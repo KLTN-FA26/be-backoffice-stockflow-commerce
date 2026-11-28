@@ -4,6 +4,7 @@ import com.stockflow.common.id.Identifiers;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -26,6 +27,12 @@ public final class ChatRows {
      */
     public static UUID message(JdbcTemplate jdbc, TransactionTemplate tx, UUID customerId, UUID orderId,
                                String senderType) {
+        return message(jdbc, tx, customerId, orderId, senderType, "Dong y doi lich giao", Instant.now());
+    }
+
+    /** As {@link #message(JdbcTemplate, TransactionTemplate, UUID, UUID, String)}, saying {@code body} at {@code sentAt}. */
+    public static UUID message(JdbcTemplate jdbc, TransactionTemplate tx, UUID customerId, UUID orderId,
+                               String senderType, String body, Instant sentAt) {
         UUID conversation = Identifiers.newId();
         UUID message = Identifiers.newId();
         UUID sender = "SYSTEM".equals(senderType) ? null : Identifiers.newId();
@@ -44,11 +51,16 @@ public final class ChatRows {
             jdbc.update("""
                     INSERT INTO chat.message (id, conversation_id, seq, sender_type, sender_id, body, sent_at, version,
                                               created_at)
-                    VALUES (?, ?, 1, ?, ?, 'Dong y doi lich giao', NOW(), 0, NOW())""", message, conversation,
-                    senderType, sender);
+                    VALUES (?, ?, 1, ?, ?, ?, ?, 0, NOW())""", message, conversation,
+                    senderType, sender, body, java.sql.Timestamp.from(sentAt));
             jdbc.update("UPDATE chat.conversation SET last_message_seq = 1, last_message_at = NOW() WHERE id = ?",
                     conversation);
         });
         return message;
+    }
+
+    /** The author took the message back: soft-deleted, its text no longer shown (kltn-docs 16). */
+    public static void takeBack(JdbcTemplate jdbc, TransactionTemplate tx, UUID messageId) {
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE chat.message SET deleted_at = NOW() WHERE id = ?", messageId));
     }
 }

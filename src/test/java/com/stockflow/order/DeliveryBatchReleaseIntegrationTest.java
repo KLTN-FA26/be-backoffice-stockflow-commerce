@@ -185,6 +185,87 @@ class DeliveryBatchReleaseIntegrationTest {
                 .isEqualTo(ErrorCode.NOT_FOUND);
     }
 
+    /**
+     * BR-28 (the picker behind "tin nhắn của khách"): Sales is offered exactly what {@code changeWindow} accepts - the
+     * customer's own words in their conversations about this order or about none, newest first, a message taken back
+     * not among them - and the window's history then shows what that message said and when, not its id. The customer's
+     * own read of the schedule carries the move (windows, reason, time) but no note, no consent, no mover.
+     */
+    @Test
+    void theCustomersMessagesAreOfferedAndShownInTheHistory() {
+        ConfirmedOrders orders = new ConfirmedOrders(context);
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        UUID stranger = tx.execute(s -> ReferenceRows.customer(entityManager));
+        CustomerSkuRows.Issued sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2);
+        UUID orderId = orders.pay(orders.signedInBatches(customer, 2, ConfirmedOrders.Line.cartons(sku, 4, 6_000)))
+                .orderId();
+        UUID elsewhere = orders.pay(orders.signed(customer, ConfirmedOrders.Line.cartons(sku, 1, 6_000))).orderId();
+        CurrentUser sales = orders.sales();
+        LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);
+        UUID second = schedule(orderId).batches().get(1).batchId();
+        java.time.Instant now = java.time.Instant.now();
+
+        UUID oldest = ChatRows.message(jdbc, tx, customer, orderId, "CUSTOMER", "Em dong y nhan hang som", now.minusSeconds(900));
+        UUID general = ChatRows.message(jdbc, tx, customer, null, "CUSTOMER", "Cho em nhan dot 2 vao 28/11", now.minusSeconds(300));
+        UUID takenBack = ChatRows.message(jdbc, tx, customer, orderId, "CUSTOMER", "Nham don", now.minusSeconds(120));
+        ChatRows.takeBack(jdbc, tx, takenBack);
+        ChatRows.message(jdbc, tx, customer, orderId, "AGENT", "Da ghi nhan, em bao kho", now.minusSeconds(60));
+        ChatRows.message(jdbc, tx, customer, elsewhere, "CUSTOMER", "Ve don khac", now.minusSeconds(30));
+        ChatRows.message(jdbc, tx, stranger, null, "CUSTOMER", "Khach khac", now.minusSeconds(10));
+
+        List<DeliveryBatchService.ConsentMessageView> offered = WithCurrentUser.call(sales, DataScope.ALL,
+                () -> batches.consentMessages(orderId, second));
+        assertThat(offered).extracting(DeliveryBatchService.ConsentMessageView::messageId)
+                .as("the customer's own words about this order or none, newest first; no agent, no other order, "
+                        + "no stranger, nothing taken back")
+                .containsExactly(general, oldest);
+        assertThat(offered.getFirst().text()).isEqualTo("Cho em nhan dot 2 vao 28/11");
+        assertThat(offered.getFirst().kind()).isEqualTo("TEXT");
+        assertThat(offered.getFirst().sentAt()).isNotNull();
+        assertThat(offered.getFirst().subject()).isEqualTo("Lich giao");
+        assertThat(((BusinessException) catchThrowable(() -> WithCurrentUser.call(sales, DataScope.ALL,
+                () -> batches.consentMessages(orderId, UUID.randomUUID())))).errorCode())
+                .isEqualTo(ErrorCode.DELIVERY_BATCH_NOT_FOUND);
+        assertThat(((BusinessException) catchThrowable(() -> WithCurrentUser.call(sales, DataScope.ALL,
+                () -> batches.consentMessages(UUID.randomUUID(), second)))).errorCode())
+                .isEqualTo(ErrorCode.NOT_FOUND);
+
+        WithCurrentUser.call(sales, DataScope.ALL, () -> batches.changeWindow(sales, orderId, second,
+                new DeliveryBatchService.WindowChange(today.plusDays(21), today.plusDays(23),
+                        WindowChangeReason.CUSTOMER_REQUEST, "Khach xin nhan som qua chat", null, general)));
+
+        DeliveryBatchService.WindowChangeView staff = schedule(orderId).batches().get(1).windowChanges().getFirst();
+        assertThat(staff.evidenceMessageId()).isEqualTo(general);
+        assertThat(staff.evidenceMessage()).isNotNull().satisfies(m -> {
+            assertThat(m.kind()).isEqualTo("TEXT");
+            assertThat(m.text()).as("what the customer said, not its id").isEqualTo("Cho em nhan dot 2 vao 28/11");
+            assertThat(m.sentAt()).isNotNull();
+            assertThat(m.deleted()).isFalse();
+        });
+        assertThat(staff.note()).isEqualTo("Khach xin nhan som qua chat");
+
+        DeliveryBatchService.WindowChangeView theirs = as(() -> batches.scheduleOfCustomer(customer, orderId))
+                .batches().get(1).windowChanges().getFirst();
+        assertThat(theirs.newStart()).isEqualTo(today.plusDays(21));
+        assertThat(theirs.reason()).isEqualTo(WindowChangeReason.CUSTOMER_REQUEST);
+        assertThat(theirs.changedAt()).isNotNull();
+        assertThat(theirs.note()).as("the Sale's note is internal").isNull();
+        assertThat(theirs.evidenceMessageId()).isNull();
+        assertThat(theirs.evidenceMessage()).isNull();
+        assertThat(theirs.evidenceFileName()).isNull();
+        assertThat(theirs.changedBy()).as("no staff id for the customer").isNull();
+        assertThat(theirs.changedByName()).isNull();
+
+        ChatRows.takeBack(jdbc, tx, general);
+        assertThat(schedule(orderId).batches().get(1).windowChanges().getFirst().evidenceMessage())
+                .as("taken back since: the time stays, the text is gone")
+                .satisfies(m -> {
+                    assertThat(m.text()).isNull();
+                    assertThat(m.deleted()).isTrue();
+                    assertThat(m.sentAt()).isNotNull();
+                });
+    }
+
     private ErrorCode refused(CurrentUser sales, UUID orderId, UUID batchId, DeliveryBatchService.WindowChange change) {
         Throwable thrown = catchThrowable(() -> WithCurrentUser.call(sales, DataScope.ALL,
                 () -> batches.changeWindow(sales, orderId, batchId, change)));

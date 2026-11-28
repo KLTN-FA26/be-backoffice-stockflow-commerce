@@ -1,5 +1,7 @@
 package com.stockflow.chat.internal.repository;
 
+import com.stockflow.chat.internal.domain.MessageKind;
+import com.stockflow.chat.internal.domain.SenderType;
 import com.stockflow.chat.internal.domain.Visibility;
 import com.stockflow.chat.internal.entity.MessageJpaEntity;
 import com.stockflow.common.persistence.BaseJpaRepository;
@@ -39,4 +41,18 @@ interface MessageJpaRepository extends BaseJpaRepository<MessageJpaEntity> {
     List<MessageJpaEntity> after(@Param("conversation") UUID conversationId,
                                  @Param("visible") Collection<Visibility> visible, @Param("after") long afterSeq,
                                  Pageable page);
+
+    /**
+     * What the customer wrote or attached in their own conversations about {@code order} or about none (the same
+     * reach as {@code ordering.check_delivery_batch_of_order}), not taken back, newest first.
+     */
+    @Query("""
+            select m from MessageJpaEntity m, ConversationJpaEntity c
+             where c.id = m.conversationId and c.customerId = :customer
+               and (c.orderId is null or c.orderId = :order)
+               and m.senderType = :sender and m.kind in :kinds and m.deletedAt is null
+             order by m.sentAt desc, m.seq desc""")
+    List<MessageJpaEntity> sentByCustomer(@Param("customer") UUID customerId, @Param("order") UUID orderId,
+                                          @Param("sender") SenderType sender,
+                                          @Param("kinds") Collection<MessageKind> kinds, Pageable page);
 }
