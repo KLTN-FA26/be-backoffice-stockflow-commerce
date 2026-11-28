@@ -1,6 +1,6 @@
 -- =============================================================================
--- Adversarial checks + happy paths: the shortage card's code and "Giảm số thùng" (V20270128000530,
--- V20270128000540; UNH-CODE-1128; kltn-docs 17 §4.14 step 58, D45, D52) - the code's shape and uniqueness, and a card
+-- Adversarial checks + happy paths: the shortage card's code and "Giảm số thùng" (V20270129000530,
+-- V20270129000540; UNH-CODE-1128; kltn-docs 17 §4.14 step 58, D45, D52) - the code's shape and uniqueness, and a card
 -- carried out as REDUCE_CARTONS dropping, with every reduce card of the batch before it, at most the cartons the signed
 -- batch has of each line. Needs the demo seed (demo.editor). Rolled back at the end.
 -- =============================================================================
