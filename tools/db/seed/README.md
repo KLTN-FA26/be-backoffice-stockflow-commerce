@@ -11,8 +11,10 @@ the docks, single against the edges and back to back between, each faced by a fo
 bay), 5 printable products, 40 customers with about 100 SKUs of their own, 6 producers, 3 truck carriers, and 300
 quotes. 271 of those became orders, spread over every stage from draft to delivered (186 delivered). Since
 2026-11-24 it also fills every other table a screen reads: e-invoices, returns, delivery outcomes, cycle counts and
-adjustments, carrier bookings, design studio, product attributes, chat, notifications and the audit log (193 of 208
-tables; the header lists the 15 left empty and why). It holds no files and no events, so nothing is mailed when it
+adjustments, carrier bookings, design studio, product attributes, chat, notifications and the audit log; since
+2026-11-28 (section 100) every customer has a Sales owner with history, and there are owner transfers, change
+requests, covers and leads, and contracts carry their signers, signing deadline and revision (207 of 245 tables; the
+header says which are left empty and why). It holds no files and no events, so nothing is mailed when it
 loads. Stock is whole LPN cartons, and every size and weight is the carton's.
 
 Sections 10-90 (between the `-- >>> sections 10-90` markers) were written one area at a time over the rows of
