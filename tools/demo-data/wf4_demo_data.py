@@ -99,8 +99,12 @@ SPARE_OF = ("D23-A", "D23-B")
 SPARE_CANCEL_REASON = "DUPLICATE_ORDER"
 SPARE_CANCEL_NOTE = "WF4 demo data: spare carton order, cancelled to leave free stock for the top-up demo"
 
-ACTOR_DEFAULTS = {          # role -> username; None = the user of SF_DEMO_USER
-    "sales": None, "accountant": None, "coordinator": None, "warehouse": None, "admin": None,
+# role -> username; None = the user of SF_DEMO_USER. "sales" is special: left at None, each order is drawn up by the
+# Sales owner of ITS customer (so the chat conversation of its documents goes to them, 16 sec. 4.1 step 2, BR-12) and
+# only a customer with no active owner falls back to SF_DEMO_USER. "salesmanager" approves quote prices (14 BR-10); it
+# must not be the account that sent the quote for approval.
+ACTOR_DEFAULTS = {
+    "sales": None, "salesmanager": None, "accountant": None, "coordinator": None, "warehouse": None, "admin": None,
 }
 
 
@@ -264,6 +268,7 @@ class Run:
                 raise Fatal("--actor: unknown role %r (one of %s)" % (role, ", ".join(sorted(self.actor_names))))
             self.actor_names[role] = name
         self.customer_users = dict(c.split("=", 1) for c in args.customer_user)
+        self.owner_names = {}   # Sales owner id -> username (None: could not be looked up)
         self.today = dt.datetime.now(VN).date()
         self.todo = 0           # things a real run would do (dry run) / did
         self.warnings = []
@@ -285,6 +290,29 @@ class Run:
             name = self.main_user
         self.summary["users"].setdefault(name, set()).add(role)
         return self.api(name)
+
+    def sales_of(self, customer):
+        """The Sales account that acts for this customer: --actor sales=<name> if given, else the customer's Sales
+        owner (the owner's own login, looked up like the customers' accounts), else the SF_DEMO_USER account."""
+        if self.actor_names["sales"] is not None:
+            return self.actor("sales")
+        owner = customer.get("salesOwnerId")
+        if owner and customer.get("salesOwnerActive") is not False:
+            if owner not in self.owner_names:
+                try:
+                    self.owner_names[owner] = self.actor("admin").data("/identity/users/" + owner)["username"]
+                except (ApiError, KeyError):
+                    self.owner_names[owner] = None
+                    self.warn("cannot tell which account is Sales owner %s of %s: using %s (pass --actor sales=<name>)"
+                              % (owner, customer.get("fullName"), self.main_user))
+            name = self.owner_names[owner]
+            if name:
+                self.summary["users"].setdefault(name, set()).add("sales (owner of %s)" % customer.get("fullName"))
+                return self.api(name)
+        else:
+            self.warn("customer %s has no active Sales owner: %s acts as Sales, so its chat conversation waits in the "
+                      "queue or goes to that account" % (customer.get("fullName"), self.main_user))
+        return self.actor("sales")
 
     def warn(self, text):
         self.warnings.append(text)
@@ -455,7 +483,7 @@ class Run:
         return specs
 
     def find_customers(self):
-        api = self.actor("sales")
+        api = self.actor("admin")
         rows, page = [], 0
         while True:
             body = api.data("/customers", {"size": 100, "page": page})
@@ -548,7 +576,7 @@ class DemoOrder:
 
     # ---- lookups
     def sales(self):
-        return self.run.actor("sales")
+        return self.run.sales_of(self.customer)
 
     def find_quote(self):
         """The quote of this order: by the marker in its terms (a GET only, so a dry run can do it)."""
@@ -609,11 +637,13 @@ class DemoOrder:
             steps_done.append(name)
         raise Fatal("order %s: more than 60 steps without finishing - stopping" % spec["key"])
 
-    ORDER = ["create_quote", "send_quote", "accept_quote", "convert_quote", "create_contract", "send_contract",
+    ORDER = ["create_quote", "send_quote", "approve_prices", "accept_quote", "convert_quote", "create_contract", "send_contract",
              "sign_contract", "pay_signing", "choose_warehouse", "draw_production_order",
-             "send_production_order", "receive_goods", "put_away", "cancel_spare"]
+             "send_production_order", "receive_goods", "put_away", "assign_chat", "cancel_spare"]
     TEXT = {
-        "create_quote": "draw up the quote (Sales)", "send_quote": "send the quote to the customer (Sales)",
+        "create_quote": "draw up the quote (the customer's Sales owner)",
+        "send_quote": "send the quote to the customer (Sales)",
+        "approve_prices": "approve the quote's prices if they are held for review (Sales Manager, 14 BR-10)",
         "accept_quote": "accept the quote (the customer's own login)",
         "convert_quote": "convert the accepted quote into the order",
         "create_contract": "draw up the sales contract (one delivery batch, payment plan)",
@@ -624,6 +654,7 @@ class DemoOrder:
         "send_production_order": "send the production order to its producer (Production Coordinator, no approval)",
         "receive_goods": "receive the cartons against the production order (goods receipt)",
         "put_away": "put the received cartons away into bins (the order's hold completes)",
+        "assign_chat": "hand the customer's open chat conversation(s) to their Sales owner (Sales Manager / admin account)",
         "cancel_spare": "cancel the spare order (Sales): its cartons stay in the bins as free stock for the top-up demo",
     }
 
@@ -632,6 +663,8 @@ class DemoOrder:
         rest = self.ORDER[self.ORDER.index(name) + 1:]
         if not self.spec.get("spare"):
             rest = [s for s in rest if s != "cancel_spare"]
+        else:
+            rest = [s for s in rest if s != "assign_chat"]
         if self.free_stock_covers():
             rest = [s for s in rest if s not in ("draw_production_order", "send_production_order",
                                                  "receive_goods", "put_away")]
@@ -698,7 +731,7 @@ class DemoOrder:
         installments = self.run.actor("accountant").data("/installments/orders/%s" % self.order_id)
         entry["installments"] = [(i["seq"], i["name"], i["milestone"], i.get("deliveryBatchSeq"), i["amount"],
                                   i["status"], i["paidAmount"]) for i in installments["installments"]]
-        coverage = self.run.actor("sales").data("/orders/%s/stock-coverage" % self.order_id)
+        coverage = self.sales().data("/orders/%s/stock-coverage" % self.order_id)
         entry["held"] = coverage["fullyHeld"]
         entry["held_at"] = coverage.get("warehouseCode")
         line = self.order["lines"][0]
@@ -715,6 +748,8 @@ class DemoOrder:
             return "create_quote", ""
         status = quote["status"]
         if status == "DRAFT":
+            if quote.get("priceReviewPending"):
+                return "approve_prices", "priced below the rule's threshold of its reference price (or with none)"
             return "send_quote", ""
         if status == "SENT":
             return "accept_quote", ""
@@ -757,7 +792,13 @@ class DemoOrder:
             raise Blocked("the order ships from another warehouse than %s" % wh["prefix"])
         coverage = self.sales().data("/orders/%s/stock-coverage" % self.order_id)
         if coverage["fullyHeld"]:
-            return ("cancel_spare", "frees %d carton(s)" % self.spec["cartons"]) if self.spec.get("spare") else None
+            if self.spec.get("spare"):
+                return "cancel_spare", "frees %d carton(s)" % self.spec["cartons"]
+            misplaced = self.chats_to_hand_over()
+            if misplaced:
+                return "assign_chat", "%d conversation(s) now with %s" % (
+                    len(misplaced), misplaced[0].get("assignedAgentName") or "nobody (the queue)")
+            return None
         orders = self.run.actor("coordinator").data("/production-orders", {"salesOrderId": self.order_id, "size": 50})["items"]
         live = [p for p in orders if p["status"] not in ("CANCELLED", "CLOSED")]
         if not live:
@@ -788,6 +829,19 @@ class DemoOrder:
         except (StopIteration, KeyError):
             return False
 
+    def chats_to_hand_over(self):
+        """The customer's open chat conversations that are not with their Sales owner (16 sec. 4.1, BR-12: one customer,
+        one contact). A conversation opened before the customer had an owner, or by the account that ran this script,
+        stays with that account until somebody hands it over, and the customer would then see that account as "Sales
+        phụ trách" and the owner could not send the transfer card. Nothing to do when Sales is set with --actor sales=
+        (the account is then the choice of the presenter), or when the customer has no active owner."""
+        owner = self.customer.get("salesOwnerId")
+        if not owner or self.customer.get("salesOwnerActive") is False or self.run.actor_names["sales"] is not None:
+            return []
+        items = self.run.actor("admin").data("/chat/conversations", {"customerId": self.customer["customerId"],
+                                                                     "size": 50})["items"]
+        return [c for c in items if c.get("assignedAgentId") != owner]
+
     def check_customer_sku(self):
         skus = self.sales().data("/customer-skus", {"customerId": self.customer["customerId"]})
         if not any(s["sku"] == self.spec["sku"] and s.get("status", "ACTIVE") == "ACTIVE" for s in skus):
@@ -813,6 +867,24 @@ class DemoOrder:
 
     def do_send_quote(self):
         self.sales().call("POST", "/quotes/%s/sending" % self.quote["id"], {"version": self.quote["version"]})
+
+    def do_approve_prices(self):
+        """14 BR-10: a quote priced too far below its reference (or with none) is held for the Sales Manager, who
+        approves it - never the account that sent it (QUOTE_PRICE_REVIEW_SELF); it is then sent at once."""
+        manager = self.run.actor("salesmanager")
+        if manager.username == self.sales().username:
+            raise Fatal("the prices of quote %s must be approved by someone other than %s, who sent it: pass "
+                        "--actor salesmanager=<a Sales Manager account> (e.g. truongkd)"
+                        % (self.quote["quoteNumber"], manager.username))
+        manager.call("POST", "/quotes/%s/price-approval" % self.quote["id"],
+                     {"version": self.quote["version"], "note": "Giá theo thoả thuận với khách"})
+
+    def do_assign_chat(self):
+        owner = self.customer["salesOwnerId"]
+        admin = self.run.actor("admin")
+        for conversation in self.chats_to_hand_over():
+            admin.call("POST", "/chat/conversations/%s/assignment" % conversation["id"],
+                       {"agentId": owner, "note": "Chuyển cho Sales phụ trách của khách hàng"})
 
     def do_accept_quote(self):
         api = self.run.customer_api(self.spec["customer"], self.customer)
