@@ -33,6 +33,20 @@ public record DeliveryBatch(UUID id, int seq, LocalDate windowStart, LocalDate w
         return windowStart != null;
     }
 
+    /**
+     * This batch less {@code dropped} cartons per order line (kltn-docs 17 §4.14 step 58, D45): a line left with none is
+     * gone; a batch left with none carries no line (D52). Never below zero.
+     */
+    public DeliveryBatch less(java.util.Map<UUID, Integer> dropped) {
+        if (dropped == null || dropped.isEmpty()) {
+            return this;
+        }
+        List<Line> kept = lines.stream()
+                .map(l -> new Line(l.id(), l.orderLineId(), l.cartons() - dropped.getOrDefault(l.orderLineId(), 0)))
+                .filter(l -> l.cartons() > 0).toList();
+        return new DeliveryBatch(id, seq, windowStart, windowEnd, kept);
+    }
+
     /** The cartons of {@code orderLineId} in this batch; 0 when it delivers none of it. */
     public int cartonsOf(UUID orderLineId) {
         return lines.stream().filter(l -> l.orderLineId().equals(orderLineId)).mapToInt(Line::cartons).sum();

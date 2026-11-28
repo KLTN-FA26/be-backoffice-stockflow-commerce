@@ -35,17 +35,22 @@ BEGIN
     RAISE NOTICE 'ok    %', label;
 END $$;
 
+-- A card's code (UNH-CODE-1128) from its key: TT-, a far day, a number the key decides.
+CREATE FUNCTION pg_temp.code(card_key TEXT) RETURNS TEXT LANGUAGE sql AS $$
+    SELECT 'TT-20990101-' || lpad((('x' || substr(md5(card_key), 1, 7))::bit(28)::int)::text, 9, '0')
+$$;
+
 -- A card as a statement: key, batch key, status and the columns that vary; the rest is a valid SENT card.
 CREATE FUNCTION pg_temp.card(card_key TEXT, batch_key TEXT DEFAULT 'qa99:b1', status TEXT DEFAULT 'SENT',
                              extra_cols TEXT DEFAULT '', extra_vals TEXT DEFAULT '') RETURNS TEXT LANGUAGE sql AS $$
     SELECT format($f$
-        INSERT INTO ordering.shortage_card (id, order_id, delivery_batch_id, customer_id, status, options_offered,
-                                            missing_cartons, amounts, expected_delivery_date, expected_date_source,
-                                            sent_by, sent_at %s)
-        VALUES (md5(%L)::uuid, md5('qa99:o')::uuid, md5(%L)::uuid, 'c0000000-0000-4000-8000-000000000001', %L,
+        INSERT INTO ordering.shortage_card (id, code, order_id, delivery_batch_id, customer_id, status,
+                                            options_offered, missing_cartons, amounts, expected_delivery_date,
+                                            expected_date_source, sent_by, sent_at %s)
+        VALUES (md5(%L)::uuid, pg_temp.code(%L), md5('qa99:o')::uuid, md5(%L)::uuid, 'c0000000-0000-4000-8000-000000000001', %L,
                 ARRAY['WAIT_FOR_PRODUCTION', 'REDUCE_CARTONS', 'SHIP_PART_CLOSE_REST', 'CANCEL_ORDER'], 2,
                 '[{"option":"WAIT_FOR_PRODUCTION"}]'::jsonb, CURRENT_DATE + 14, 'STANDARD_LEAD_TIME',
-                md5('demo:user:editor')::uuid, NOW() %s)$f$, extra_cols, card_key, batch_key, status, extra_vals)
+                md5('demo:user:editor')::uuid, NOW() %s)$f$, extra_cols, card_key, card_key, batch_key, status, extra_vals)
 $$;
 
 -- Fixtures, written with triggers and foreign keys off: an order, a contract's two batches and a line of the order.
@@ -99,9 +104,9 @@ SELECT pg_temp.expect_fail('SC13 a date with no source', $q$
 SELECT pg_temp.expect_fail('SC14 an unknown date source', $q$
     UPDATE ordering.shortage_card SET expected_date_source = 'GUESS' WHERE id = md5('qa99:c3')::uuid $q$);
 SELECT pg_temp.expect_ok('SC15 a card without the wait option has no date', $q$
-    INSERT INTO ordering.shortage_card (id, order_id, delivery_batch_id, customer_id, status, options_offered,
+    INSERT INTO ordering.shortage_card (id, code, order_id, delivery_batch_id, customer_id, status, options_offered,
                                         missing_cartons, amounts, ended_reason, sent_by, sent_at)
-    VALUES (md5('qa99:c4')::uuid, md5('qa99:o')::uuid, md5('qa99:b2')::uuid, 'c0000000-0000-4000-8000-000000000001',
+    VALUES (md5('qa99:c4')::uuid, pg_temp.code('qa99:c4'), md5('qa99:o')::uuid, md5('qa99:b2')::uuid, 'c0000000-0000-4000-8000-000000000001',
             'EXPIRED', ARRAY['REDUCE_CARTONS'], 1, '[]'::jsonb, 'REALLOCATED', md5('demo:user:editor')::uuid, NOW()) $q$);
 
 -- The customer's choice: who, when, which of the offered options.
@@ -150,9 +155,9 @@ SELECT pg_temp.expect_fail('SC31 a card superseded by one that does not exist', 
 SELECT pg_temp.expect_ok('SC32 a live card replaced by a newer one in one transaction', $q$
     UPDATE ordering.shortage_card SET status = 'SUPERSEDED', ended_reason = 'REPLACED',
            superseded_by = md5('qa99:c5')::uuid WHERE id = md5('qa99:c3')::uuid;
-    INSERT INTO ordering.shortage_card (id, order_id, delivery_batch_id, customer_id, status, options_offered,
+    INSERT INTO ordering.shortage_card (id, code, order_id, delivery_batch_id, customer_id, status, options_offered,
                                         missing_cartons, amounts, sent_by, sent_at)
-    VALUES (md5('qa99:c5')::uuid, md5('qa99:o')::uuid, md5('qa99:b2')::uuid, 'c0000000-0000-4000-8000-000000000001',
+    VALUES (md5('qa99:c5')::uuid, pg_temp.code('qa99:c5'), md5('qa99:o')::uuid, md5('qa99:b2')::uuid, 'c0000000-0000-4000-8000-000000000001',
             'SENT', ARRAY['REDUCE_CARTONS'], 2, '[]'::jsonb, md5('demo:user:editor')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_fail('SC32b a choice of an option the card did not offer (it offers only REDUCE_CARTONS)', $q$
     UPDATE ordering.shortage_card SET status = 'ANSWERED', chosen_option = 'CANCEL_ORDER',

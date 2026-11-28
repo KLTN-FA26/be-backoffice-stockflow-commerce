@@ -22,6 +22,13 @@ public interface ShortageCardRepository {
 
     Optional<ShortageCard> find(UUID id);
 
+    /**
+     * The next card code of {@code day} (the Vietnam day it is sent), "TT-yyyyMMdd-NNNN" (UNH-CODE-1128): a per-day
+     * counter taken in its own transaction, as order and RMA numbers are - a card refused after taking one leaves a gap,
+     * never a duplicate.
+     */
+    String nextCode(java.time.LocalDate day);
+
     /** The card, locked {@code FOR UPDATE}. */
     Optional<ShortageCard> findForUpdate(UUID id);
 

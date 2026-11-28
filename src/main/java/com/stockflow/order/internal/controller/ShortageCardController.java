@@ -95,6 +95,11 @@ class ShortageCardController {
     record ShipPartRequest(Long version, @Size(max = NOTE_MAX, message = "note is at most 400 characters") String note) {
     }
 
+    /** Reduce the cartons ("Giảm số thùng", D45). */
+    @Schema(name = "ShortageReduceCartonsExecutionRequest")
+    record ReduceRequest(Long version, @Size(max = NOTE_MAX, message = "note is at most 400 characters") String note) {
+    }
+
     /** Close the rest (step 2): the remainder closure's own fields. */
     @Schema(name = "ShortageCloseRestExecutionRequest")
     record CloseRestRequest(Long version,
@@ -196,6 +201,25 @@ class ShortageCardController {
         ScopeGuards.requireBackOffice(user);
         user.require(OrderResources.HOLDS, Action.UPDATE);
         return ApiResponse.ok(ShortageCardResponse.of(operations.executeShortageShipPart(orderId, cardId,
+                request.version(), request.note(), user.userId())));
+    }
+
+    @PostMapping("/{orderId}/shortage-cards/{cardId}/execution/reduce-cartons")
+    @Operation(summary = "Carry out the customer's choice to reduce the cartons (\"Giảm số thùng\", 17 §4.14 step 58, "
+            + "D45, D52): the short pick lines are given up, exactly the missing cartons of the card's batch come off the "
+            + "order's lines and that batch (the signed contract is not changed), the installments owe less by their "
+            + "value with VAT and no fee (15 §4.6 step 19, surplus refundable), the INVENTORY hold is lifted and the "
+            + "warehouse manager told. A batch left empty is closed like a closure of the rest for it (D52). Needs "
+            + "sales-order-cancellations:UPDATE too (what the remainder closure's money change needs). 409 "
+            + "SHORTAGE_CARD_STATE_CONFLICT (also when the cartons short changed since the card - send a new one), 409 "
+            + "SHORTAGE_OPTION_NOT_AVAILABLE. Back office only")
+    @RequiresPermission(resource = OrderResources.HOLDS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ShortageCardResponse> executeReduce(@PathVariable UUID orderId, @PathVariable UUID cardId,
+                                                           @Valid @RequestBody ReduceRequest request,
+                                                           @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        user.require(OrderResources.ORDER_CANCELLATIONS, Action.UPDATE);
+        return ApiResponse.ok(ShortageCardResponse.of(operations.executeShortageReduce(orderId, cardId,
                 request.version(), request.note(), user.userId())));
     }
 

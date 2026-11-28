@@ -76,13 +76,15 @@ public interface ShortageCards {
      * The card. Nothing internal is in it (no LPN, bin, hold reason or internal note, 17 §4.14 step 55): the same view
      * serves the chat, the portal and the back office.
      *
+     * @param code             the card's short code "TT-yyyyMMdd-NNNN" (UNH-CODE-1128): what people read, and what the
+     *                         notes and the window history it writes name
      * @param version          the version the customer's choice must name; a stale one is refused
      * @param executionStarted SHIP_PART_CLOSE_REST: Sales started it
      * @param endedReason      for SUPERSEDED and EXPIRED, why
      * @param chatMessageId    the chat message the card was posted as; null until posted
      */
-    record Card(UUID cardId, UUID orderId, String orderNumber, UUID customerId, ShortageCardStatus status,
-                long version, Batch batch, int missingCartons, List<Line> lines, List<Option> options,
+    record Card(UUID cardId, String code, UUID orderId, String orderNumber, UUID customerId,
+                ShortageCardStatus status, long version, Batch batch, int missingCartons, List<Line> lines, List<Option> options,
                 String salesNote, Instant sentAt, Chosen chosen, Instant executedAt, boolean executionStarted,
                 ShortageCardEnd endedReason, UUID chatMessageId) {
 

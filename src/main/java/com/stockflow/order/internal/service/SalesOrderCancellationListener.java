@@ -104,6 +104,24 @@ class SalesOrderCancellationListener {
         stopAll(open, event.orderId(), event.orderNumber(), event.closedBy(), reasonOf(event), "had its rest closed");
     }
 
+    /**
+     * A delivery batch was emptied by "Giảm số thùng" (kltn-docs 17 §4.14 step 58, D52): closed like a closure of the rest
+     * for that batch, its open production orders are stopped by the closure's rule (17 §4.8 step 33) - not mass printing
+     * yet: cancelled; printing or partly received: closed - and only those of that batch (one per batch, §4.3). The same
+     * transactions and redelivery as {@link #on(OrderCancelled)}.
+     */
+    @Async
+    @TransactionalEventListener
+    public void on(ShortageBatchEmptied event) {
+        var open = productionOrders.ofSalesOrder(event.orderId()).stream()
+                .filter(production -> production.status().open()
+                        && event.deliveryBatchId().equals(production.deliveryBatchId())).toList();
+        if (open.isEmpty()) {
+            return;
+        }
+        stopAll(open, event.orderId(), event.orderNumber(), event.by(), reasonOf(event), "had a batch emptied");
+    }
+
     private void stopAll(java.util.List<ProductionOrder> open, UUID orderId, String orderNumber, UUID by, String reason,
                          String what) {
         RuntimeException failure = null;
@@ -150,6 +168,12 @@ class SalesOrderCancellationListener {
     /** "Sales order SO-… had its rest closed: CODE", within what a production order keeps of a reason. */
     static String reasonOf(com.stockflow.contracts.OrderRemainderClosed event) {
         return fitted("Sales order %s had its rest closed: %s".formatted(event.orderNumber(), event.reasonCode()));
+    }
+
+    /** "Sales order SO-…: delivery batch N emptied, shortage card TT-…", within what a production order keeps. */
+    static String reasonOf(ShortageBatchEmptied event) {
+        return fitted("Sales order %s: delivery batch %d emptied by shortage card %s (missing cartons dropped)"
+                .formatted(event.orderNumber(), event.batchSeq(), event.cardCode()));
     }
 
     private static String fitted(String reason) {

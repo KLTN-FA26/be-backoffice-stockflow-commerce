@@ -198,6 +198,14 @@ public class OrderOperations {
         return card;
     }
 
+    /** {@link ShortageCardExecutionService#reduceCartons}. */
+    public com.stockflow.order.api.ShortageCards.Card executeShortageReduce(UUID orderId, UUID cardId, Long version,
+                                                                           String note, UUID by) {
+        var card = shortageExecutions.reduceCartons(orderId, cardId, version, note, by);
+        onBehalf.record(orderId, by, OnBehalfAction.EXECUTE_SHORTAGE_CHOICE);
+        return card;
+    }
+
     /** {@link ShortageCardExecutionService#closeRest}. */
     public com.stockflow.order.api.ShortageCards.Card executeShortageCloseRest(UUID orderId, UUID cardId, Long version,
                                                                               CancellationReasonCode reasonCode,

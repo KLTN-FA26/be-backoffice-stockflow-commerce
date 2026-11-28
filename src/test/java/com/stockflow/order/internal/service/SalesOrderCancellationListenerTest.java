@@ -121,6 +121,33 @@ class SalesOrderCancellationListenerTest {
         verifyNoInteractions(service);
     }
 
+    @Test
+    @DisplayName("D52 (17 §4.14 step 58): a batch emptied by \"Giảm số thùng\" stops only that batch's open production "
+            + "orders, by the closure's rule, by who carried the card out")
+    void batchEmptied() {
+        UUID batch = UUID.randomUUID();
+        ProductionOrder sent = production(ProductionOrderStatus.SENT, 1, batch);
+        ProductionOrder printing = production(ProductionOrderStatus.IN_PRODUCTION, 2, batch);
+        ProductionOrder otherBatch = production(ProductionOrderStatus.SENT, 3, UUID.randomUUID());
+        stored(sent, printing, otherBatch);
+
+        listener.on(new ShortageBatchEmptied(ORDER, "SO-20261109-000046", batch, 1, "TT-20261128-0001", SALES));
+
+        String reason = "Sales order SO-20261109-000046: delivery batch 1 emptied by shortage card TT-20261128-0001 "
+                + "(missing cartons dropped)";
+        verify(service).cancel(sent.id(), 1, reason, SALES);
+        verify(service).close(printing.id(), 2, reason, SALES);
+        verify(service, never()).cancel(eq(otherBatch.id()), anyLong(), anyString(), any());
+        verify(service, never()).close(eq(otherBatch.id()), anyLong(), anyString(), any());
+    }
+
+    private static ProductionOrder production(ProductionOrderStatus status, long version, UUID batch) {
+        return new ProductionOrder(UUID.randomUUID(), "PRD-20261109-%04d".formatted(version), ORDER, batch,
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), LocalDate.of(2026, 12, 1), status, false,
+                false, null, null, UUID.randomUUID(), null, null, null, null, null, null, null, null, null,
+                null, null, null, null, List.of(), version);
+    }
+
     private static com.stockflow.contracts.OrderRemainderClosed closed(UUID by) {
         return new com.stockflow.contracts.OrderRemainderClosed(ORDER, "SO-20261109-000046", UUID.randomUUID(),
                 "OUT_OF_STOCK", List.of(), BigDecimal.ONE, BigDecimal.TEN, BigDecimal.ZERO, BigDecimal.ZERO, "VND", by,

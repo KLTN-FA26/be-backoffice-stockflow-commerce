@@ -992,7 +992,8 @@ class PermissionMatrixTest {
     /**
      * 17 §4.14 step 58: carrying out the customer's choice on a shortage card answers to the permission of the operation
      * each option runs - lifting the hold, allowing partial shipment, closing the rest and cancelling; the endpoints
-     * that need a second one (ship part: the hold; moving the window: the contract) ask it in the handler.
+     * that need a second one (ship part: the hold; reduce the cartons: the closure's money change; moving the window:
+     * the contract) ask it in the handler.
      */
     @Test
     void theShortageCardExecutionEndpointsNeedTheirOperationsPermissions() {
@@ -1001,6 +1002,7 @@ class PermissionMatrixTest {
         String base = "POST /api/v1/orders/{orderId}/shortage-cards/{cardId}/execution/";
         Map<String, String> expected = Map.of(
                 base + "wait-for-production", "sales-order-holds:UPDATE",
+                base + "reduce-cartons", "sales-order-holds:UPDATE",
                 base + "ship-part", "sales-order-partial-shipments:UPDATE",
                 base + "close-rest", "sales-order-cancellations:UPDATE",
                 base + "cancel", "sales-order-cancellations:UPDATE");
@@ -1011,7 +1013,7 @@ class PermissionMatrixTest {
             assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
         });
         assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
-                .as("Sales hold every permission the four steps ask")
+                .as("Sales hold every permission the five steps ask")
                 .contains(PermissionCode.parse("sales-order-holds:UPDATE"),
                         PermissionCode.parse("sales-order-partial-shipments:UPDATE"),
                         PermissionCode.parse("sales-order-cancellations:UPDATE"),

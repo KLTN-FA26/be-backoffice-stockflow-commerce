@@ -58,8 +58,8 @@ import java.util.UUID;
  * (17 §4.14 step 56): wait for production - always, with the expected delivery date (D48); reduce the cartons - always
  * (D45, D51); ship part and close the rest - while the order may still be decided to ship in parts (BR-15) and the batch
  * has a carton to ship; cancel - while no carton is labelled (BR-12). "Reduce" is offered whether or not the batch keeps a
- * carton and whether or not production covers the missing part (owner decision D51, 2026-11-28); what carrying it out
- * means when the batch is left empty is not decided yet (D52) and belongs to the pull request that executes it.</p>
+ * carton and whether or not production covers the missing part (owner decision D51, 2026-11-28); carrying it out when
+ * the batch is left empty closes that batch (D52, {@link ShortageCardExecutionService#reduceCartons}).</p>
  *
  * <p><b>Locks.</b> The order row first, then the cards ({@code customer_order → shortage_card}); no pick lock is taken here,
  * reading what is short is a plain read. Every end of a card - superseded, expired - is written under the order's lock by
@@ -231,7 +231,8 @@ public class ShortageCardService implements ShortageCards {
         if (live.isPresent() && !replaceLive) {
             throw NotSendable.LIVE_CARD.refusal(orderId);
         }
-        ShortageCard fresh = ShortageCard.send(Identifiers.newId(), orderId, draft.batchId(), order.customerId(),
+        ShortageCard fresh = ShortageCard.send(Identifiers.newId(),
+                cards.nextCode(BusinessCalendar.date(now)), orderId, draft.batchId(), order.customerId(),
                 draft.lines(), draft.options(), draft.expectedDate(), draft.dateSource(), note, sentBy, now);
         if (live.isPresent()) {
             // One live card per batch: the old one goes first (its link to the new one is checked at commit).
@@ -517,7 +518,7 @@ public class ShortageCardService implements ShortageCards {
 
     private Card view(ShortageCard c, Order order) {
         Batch batch = batchOf(order, c.deliveryBatchId()).orElse(new Batch(0, null, null, false));
-        return new Card(c.id(), c.orderId(), order.orderNumber().value(), c.customerId(), c.status(), c.version(), batch,
+        return new Card(c.id(), c.code(), c.orderId(), order.orderNumber().value(), c.customerId(), c.status(), c.version(), batch,
                 c.missingCartons(), c.lines().stream().map(ShortageCardService::toLine).toList(), c.options(),
                 c.salesNote(), c.sentAt(),
                 c.chosenOption() == null ? null : new Chosen(c.chosenOption(), c.chosenAt(), c.customerNote()),

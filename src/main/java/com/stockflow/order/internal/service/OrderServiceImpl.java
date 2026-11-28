@@ -1307,6 +1307,67 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return closeRest(lockOrder(orderId), reasonCode, note, fee, by, clock.instant());
     }
 
+    /**
+     * "Giảm số thùng" carried out (kltn-docs 17 §4.14 step 58, D45, D52; 15 §4.6 step 19), for
+     * {@link ShortageCardExecutionService#reduceCartons} under its locks (pick tasks, order, card): the missing cartons of
+     * the card's batch come off the order's lines ({@link Order#dropShortCartons}; their holds were released with the
+     * short pick lines), and the installments owe less by their value with VAT, no fee - payment's arithmetic of a
+     * closure of the rest ({@code OrderSettlement.closeRemainder}) with that batch as the one closed: its installments
+     * first, then the latest (step 19). The signed contract is not touched.
+     *
+     * <p>Settled as a closure of the rest (kind {@code REMAINDER_CLOSED}) named by the card - one settlement per card: the
+     * same arithmetic, the same refusal of a void of a receipt it settled, nothing copied. The batch still delivering is
+     * named as such, so its installment before delivery keeps gating its handover; a batch emptied by it (D52) is closed
+     * whole, and what that installment still owes above its goods - its share of the fee lines - is carried onto the fee
+     * item as for any batch a closure closes (audit r3 LM-3). The emptied batch is also an entry of the order's closures
+     * ({@code ordering.order_remainder_closure}, reason {@code OUT_OF_STOCK}), which keeps a shipping fee a Q-19 edge
+     * waives for invoicing.</p>
+     *
+     * @param units        per order line, the units of the cartons dropped
+     * @param batchEmptied whether the batch carries nothing after this (D52)
+     * @return the value dropped, with VAT
+     */
+    public BigDecimal dropShortCartons(UUID orderId, UUID cardId, UUID batchId, java.util.Map<UUID, Integer> units,
+                                       boolean batchEmptied, String note, UUID by) {
+        Order order = lockOrder(orderId);
+        java.time.Instant now = clock.instant();
+        BigDecimal value = order.dropShortCartons(units, by, now);
+        BigDecimal waived = BigDecimal.ZERO;
+        if (order.paidByContract() && value.signum() > 0) {
+            // Payment's trigger reads the order's shipments and lines: the order is written first, as closeRest does.
+            repository.save(order);
+            // Every batch but this one counts as not closed by it, so this batch's installments are lowered first.
+            java.util.Set<UUID> notClosed = contracts.findLiveByOrderId(orderId)
+                    .map(com.stockflow.order.internal.domain.SalesContract::signedSchedule).orElse(List.of()).stream()
+                    .map(com.stockflow.order.internal.domain.DeliveryBatch::id).filter(id -> !id.equals(batchId))
+                    .collect(Collectors.toSet());
+            waived = paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(
+                    orderId, cardId, value, null, null, null, by, now, notClosed, shippingFeeOf(order),
+                    batchEmptied ? java.util.Set.of() : java.util.Set.of(batchId)))
+                    .map(com.stockflow.payment.api.OrderSettlementResult::shippingFeeWaived)
+                    .orElse(BigDecimal.ZERO);
+        }
+        if (batchEmptied) {
+            remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId, cardId,
+                    CancellationReasonCode.OUT_OF_STOCK.name(), note, by, now, waived));
+        }
+        repository.save(order);
+        log.info("Order {}: {} {} worth of missing cartons dropped from batch {} (shortage card {}){}",
+                order.orderNumber(), value, order.total().currency(), batchId, cardId,
+                batchEmptied ? ", the batch emptied" : "");
+        return value;
+    }
+
+    /**
+     * D52 (17 §4.14 step 58): the batch emptied by "Giảm số thùng" while later batches still have goods - once the hold is
+     * resolved, the order waits between batches as after a batch handed over ({@link Order#batchEmptied}).
+     */
+    public void batchEmptied(UUID orderId, String note, UUID by) {
+        Order order = lockOrder(orderId);
+        order.batchEmptied(by, clock.instant(), note);
+        saved(order);
+    }
+
     /** The closure of the rest of a locked order: its units closed, their holds freed, the money settled, saved. */
     private OrderSummary closeRest(Order order, CancellationReasonCode reasonCode, String note,
                                    com.stockflow.order.api.CancellationFee fee, UUID by, java.time.Instant now) {

@@ -1943,6 +1943,75 @@ public final class Order extends AggregateRoot {
     }
 
     /**
+     * "Giảm số thùng" carried out (kltn-docs 17 §4.14 step 58, D45; 15 §4.6 step 19): the missing cartons of the batch
+     * being shipped come off the order - {@code units} per line, closed as a closure of the rest closes units
+     * ({@link OrderLine#closeUnits}, the last units of the line on its cumulative scale), so the value is the arithmetic
+     * {@link #valueOfClosing} showed on the card. The signed contract is not touched (no annex); the schedule in force
+     * drops those cartons from the batch ({@code SalesContract#schedule}). Only while the order is held INVENTORY for
+     * them: the caller lifts the hold afterwards, and the order goes on with what it still has.
+     *
+     * <p>D52: when nothing is left to deliver afterwards (the emptied batch was the last), the order ends by the rule of a
+     * closure of the rest (17 §4.8 step 33) - this counts as its rest closed for when it was delivered in full (D23), and
+     * resolving the hold follows its shipments ({@link #followShipments}), never straight to COMPLETED. An order with no
+     * shipment at all would be left with nothing delivered and nothing to deliver: no rule of the docs ends it so (17
+     * §4.8 step 33 closes the rest of goods that went), so it is refused.</p>
+     *
+     * @param units per order line, the units of the cartons dropped; each at most what the line still has to ship
+     * @return the value of the units dropped, with VAT (mould / print and shipping fee lines are never part of it)
+     * @throws BusinessException {@code SHORTAGE_CARD_STATE_CONFLICT} when the order is not held INVENTORY;
+     *         {@code SHORTAGE_OPTION_NOT_AVAILABLE} when nothing would be left and nothing was ever shipped
+     */
+    public BigDecimal dropShortCartons(Map<UUID, Integer> units, UUID by, Instant at) {
+        if (status != OrderStatus.ON_HOLD || holdReason != HoldReason.INVENTORY) {
+            throw new BusinessException(ErrorCode.SHORTAGE_CARD_STATE_CONFLICT, ("Order %s is %s: it is no longer held "
+                    + "for a missing carton").formatted(orderNumber, status)).localized("refusal.shortage.notOnHold");
+        }
+        int dropping = 0;
+        for (OrderLine line : lines) {
+            int drops = units.getOrDefault(line.id(), 0);
+            if (drops < 0 || drops > unshippedUnits(line.id())) {
+                throw new IllegalArgumentException("Line %s of %s has %d units to ship, not %d to drop"
+                        .formatted(line.id(), orderNumber, unshippedUnits(line.id()), drops));
+            }
+            dropping += drops;
+        }
+        if (dropping == 0) {
+            throw new IllegalArgumentException("Nothing to drop on " + orderNumber);
+        }
+        if (shipments.isEmpty() && outstandingUnits() == dropping) {
+            throw new BusinessException(ErrorCode.SHORTAGE_OPTION_NOT_AVAILABLE, ("Order %s: dropping the missing "
+                    + "cartons leaves nothing to deliver and nothing was ever handed over - no rule ends an order so")
+                    .formatted(orderNumber)).localized("refusal.shortage.reduceLeavesNothing");
+        }
+        Money closed = Money.zero(total().currency());
+        for (OrderLine line : lines) {
+            int drops = units.getOrDefault(line.id(), 0);
+            if (drops > 0) {
+                int open = line.quantity() - line.cancelledQuantity();
+                line.closeUnits(drops);
+                closed = closed.plus(line.grossBetween(open - drops, open));
+            }
+        }
+        if (outstandingUnits() == 0) {
+            // D52 + D23 (15 BR-09): the last batch emptied - the order's rest is closed, by the closure's rule.
+            this.remainderClosedAt = at;
+        }
+        return closed.amount();
+    }
+
+    /**
+     * D52 (17 §4.14 step 58): the batch being shipped was emptied by "Giảm số thùng" and later batches still have goods -
+     * the order waits between batches as after a batch handed over (17 §4.5: PARTIALLY_FULFILLED, no new status), so the
+     * next batch is released ({@link #releaseLaterBatch}). Called once the hold is resolved; nothing changes otherwise.
+     */
+    public void batchEmptied(UUID by, Instant at, String note) {
+        if (outstandingUnits() > 0 && (status == OrderStatus.READY_TO_FULFILL || status == OrderStatus.PICKING
+                || status == OrderStatus.PACKED)) {
+            transitionTo(OrderStatus.PARTIALLY_FULFILLED, by, withNote("DELIVERY_BATCH_EMPTIED", trimmed(note)), at);
+        }
+    }
+
+    /**
      * Per line, the units a closure of the rest closes: neither shipped nor in a labelled carton waiting at dispatch
      * ({@code kept}, WF4-CLOSE-REST). The rule of {@link #closeRemainder}, asked on its own for the figure a shortage
      * choice card shows (17 §4.14 step 56).

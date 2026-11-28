@@ -53,7 +53,11 @@ public final class ShortageCard {
     /** Where the wait option's expected date came from; shown to staff only. */
     public enum DateSource { PRODUCTION_ORDER, STANDARD_LEAD_TIME }
 
+    /** Matches {@code ck_shortage_card_code}: "TT-" + the Vietnam day it was sent + a per-day number (UNH-CODE-1128). */
+    private static final java.util.regex.Pattern CODE = java.util.regex.Pattern.compile("TT-\\d{8}-\\d{4,}");
+
     private final UUID id;
+    private final String code;
     private final UUID orderId;
     private final UUID deliveryBatchId;
     private final UUID customerId;
@@ -79,13 +83,18 @@ public final class ShortageCard {
     private final long version;
 
     /** Restores one as stored. */
-    public ShortageCard(UUID id, UUID orderId, UUID deliveryBatchId, UUID customerId, ShortageCardStatus status,
-                        List<Line> lines, List<ShortageCards.Option> options, LocalDate expectedDeliveryDate,
+    public ShortageCard(UUID id, String code, UUID orderId, UUID deliveryBatchId, UUID customerId,
+                        ShortageCardStatus status, List<Line> lines, List<ShortageCards.Option> options,
+                        LocalDate expectedDeliveryDate,
                         DateSource expectedDateSource, String salesNote, UUID sentBy, Instant sentAt,
                         ShortageOption chosenOption, UUID chosenBy, Instant chosenAt, String customerNote,
                         Instant executionStartedAt, UUID executedBy, Instant executedAt, ShortageCardEnd endedReason,
                         UUID supersededBy, UUID chatMessageId, long version) {
         this.id = Objects.requireNonNull(id, "id");
+        if (code == null || !CODE.matcher(code).matches()) {
+            throw new IllegalArgumentException("A shortage card's code is TT-yyyyMMdd-NNNN, not " + code);
+        }
+        this.code = code;
         this.orderId = Objects.requireNonNull(orderId, "orderId");
         this.deliveryBatchId = Objects.requireNonNull(deliveryBatchId, "deliveryBatchId");
         this.customerId = Objects.requireNonNull(customerId, "customerId");
@@ -121,16 +130,19 @@ public final class ShortageCard {
     /**
      * The card Sales send: SENT, the lines and the options frozen as the system drew them.
      *
+     * @param code    the card's short code, "TT-yyyyMMdd-NNNN" (UNH-CODE-1128): what people read and the notes it writes
+     *                name, never its id
      * @param options the options the card offers with the figures they show, in the order they are shown
      */
-    public static ShortageCard send(UUID id, UUID orderId, UUID deliveryBatchId, UUID customerId, List<Line> lines,
-                                    List<ShortageCards.Option> options, LocalDate expectedDeliveryDate,
+    public static ShortageCard send(UUID id, String code, UUID orderId, UUID deliveryBatchId, UUID customerId,
+                                    List<Line> lines, List<ShortageCards.Option> options,
+                                    LocalDate expectedDeliveryDate,
                                     DateSource expectedDateSource, String salesNote, UUID sentBy, Instant now) {
         String note = salesNote == null || salesNote.isBlank() ? null : salesNote.strip();
         if (note != null && note.length() > 500) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The note is at most 500 characters");
         }
-        return new ShortageCard(id, orderId, deliveryBatchId, customerId, ShortageCardStatus.SENT, lines, options,
+        return new ShortageCard(id, code, orderId, deliveryBatchId, customerId, ShortageCardStatus.SENT, lines, options,
                 expectedDeliveryDate, expectedDateSource, note, sentBy, now, null, null, null, null, null, null, null,
                 null, null, null, 0L);
     }
@@ -233,6 +245,7 @@ public final class ShortageCard {
     }
 
     public UUID id() { return id; }
+    public String code() { return code; }
     public UUID orderId() { return orderId; }
     public UUID deliveryBatchId() { return deliveryBatchId; }
     public UUID customerId() { return customerId; }

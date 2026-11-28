@@ -37,7 +37,8 @@ class ShortageCardTest {
 
     private ShortageCard card(List<ShortageCards.Option> options, String note) {
         boolean waits = options.stream().anyMatch(o -> o.option() == ShortageOption.WAIT_FOR_PRODUCTION);
-        return ShortageCard.send(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+        return ShortageCard.send(UUID.randomUUID(), "TT-20261128-0001", UUID.randomUUID(), UUID.randomUUID(),
+                UUID.randomUUID(),
                 List.of(new ShortageCard.Line(UUID.randomUUID(), UUID.randomUUID(), "LY-GIAY-12OZ", "Ly giấy 12oz", 10, 8,
                         2, 1000)), options, waits ? LocalDate.parse("2026-12-12") : null,
                 waits ? ShortageCard.DateSource.STANDARD_LEAD_TIME : null, note, sales, NOW);
@@ -59,7 +60,8 @@ class ShortageCardTest {
 
     @Test
     void theWaitOptionCarriesItsDateAndOnlyItDoes() {
-        assertThatThrownBy(() -> ShortageCard.send(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+        assertThatThrownBy(() -> ShortageCard.send(UUID.randomUUID(), "TT-20261128-0001", UUID.randomUUID(),
+                UUID.randomUUID(),
                 UUID.randomUUID(), card().lines(), allFour(), null, null, null, sales, NOW))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThat(card(List.of(ShortageCards.Option.reduce(BigDecimal.TEN)), null).expectedDeliveryDate()).isNull();
