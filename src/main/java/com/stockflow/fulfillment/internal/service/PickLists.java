@@ -90,27 +90,18 @@ public interface PickLists {
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
      *         {@code PICK_LINE_NOT_OPEN} unless SHORT or removed at the check station and not replaced yet;
      *         {@code PICK_TASK_STATE_CONFLICT} for a removed carton of a task whose check is complete or cancelled;
-     *         {@code INSUFFICIENT_STOCK} when whole cartons cannot cover it - and then nothing changes and the order
-     *         stays ON_HOLD (a removed carton's order is held then: {@link #holdForUnreplacedCarton});
+     *         {@code INSUFFICIENT_STOCK} when whole cartons cannot cover it - and then nothing changes, and the
+     *         order is not put on hold again (WF4-F3);
      *         {@code PICK_HOLD_NOT_IN_CARTON} should an allocation still land on no carton (a guard), likewise changing
      *         nothing
      */
     List<PickLineView> reallocateShort(UUID taskId, UUID lineId, CurrentUser actor);
 
     /**
-     * 07 §4.4 step 11 for a carton removed at the check station: no whole carton of the warehouse can replace it, so the
-     * order is held {@code INVENTORY} - Sales decides with the customer (wait for production, fewer cartons, deliver in
-     * part and close the rest, cancel), and a later reallocation resumes it. Called in a transaction of its own after a
-     * reallocation refused {@code INSUFFICIENT_STOCK} (which rolled its own back). An order on hold already, a line
-     * whose carton was not removed, or one replaced since, changes nothing. Locks the pick, then the order.
-     */
-    void holdForUnreplacedCarton(UUID taskId, UUID lineId, CurrentUser actor);
-
-    /**
      * A carton was removed at the check station (kltn-docs 08 §4.2 step 4): its line lacks it, handled as a short pick
      * (07 §4.4 step 9), so the order is held {@code INVENTORY} at once - as a picker's short report holds it - and the
      * warehouse manager reallocates the line ({@link #reallocateShort}), which resumes the order when stock replaces the
-     * carton; when none does, {@link #holdForUnreplacedCarton} keeps it held. In the caller's transaction (the
+     * carton; when none does, the order simply stays as it is. In the caller's transaction (the
      * removal's), which already holds the pick's lock; then the order's. An order on hold already, a line whose carton
      * was not removed, or one replaced since, changes nothing.
      */

@@ -1,7 +1,6 @@
 package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import org.springframework.stereotype.Component;
 
@@ -12,10 +11,9 @@ import java.util.UUID;
  * The warehouse manager's reallocation of a shortage (kltn-docs 07 §4.4 steps 10-11): a SHORT pick line, or a line whose
  * carton the check station removed as damaged (08 §4.2 step 4). See {@link PickLists#reallocateShort}.
  *
- * <p>Deliberately not transactional: when the warehouse has no whole carton to replace a removed one, the reallocation
- * rolls back ({@code INSUFFICIENT_STOCK}) and the order is then held {@code INVENTORY} in a transaction of its own
- * ({@link PickLists#holdForUnreplacedCarton}), so the refusal is answered and the hold is kept. A short pick's order is
- * held from the report already; nothing changes for it.</p>
+ * <p>WF4-F3: a reallocation the warehouse cannot cover ({@code INSUFFICIENT_STOCK}) only answers the error. It no longer
+ * puts the order back on hold: the order was held when the carton was removed or reported short, and if Sales has lifted
+ * that hold (partial shipment already agreed), a failed top-up must not stop a shipment that is ready to dispatch.</p>
  */
 @Component
 public class ShortageReallocation {
@@ -28,16 +26,9 @@ public class ShortageReallocation {
 
     /**
      * @return the new lines
-     * @throws BusinessException as {@link PickLists#reallocateShort}
+     * @throws BusinessException as {@link PickLists#reallocateShort}; nothing changes when it refuses
      */
     public List<PickLists.PickLineView> reallocate(UUID taskId, UUID lineId, CurrentUser actor) {
-        try {
-            return pickLists.reallocateShort(taskId, lineId, actor);
-        } catch (BusinessException refused) {
-            if (refused.errorCode() == ErrorCode.INSUFFICIENT_STOCK) {
-                pickLists.holdForUnreplacedCarton(taskId, lineId, actor);
-            }
-            throw refused;
-        }
+        return pickLists.reallocateShort(taskId, lineId, actor);
     }
 }
