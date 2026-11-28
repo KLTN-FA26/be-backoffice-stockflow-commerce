@@ -3193,6 +3193,7 @@ class FtlDispatchIntegrationTest {
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
                 "{\"note\":\"móp góc\"}").andExpect(status().isOk());
         assertHeldForTheRemovedCarton(order);
+        assertRemovalInHistory(order, lpns.get(1), false);
         // WF4-K2: a held order is still listed, with its reason, and its session says why labelling waits.
         packer(get(BASE + "/tasks/" + task + "/packing-session"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.holdReason").value("INVENTORY"));
@@ -3211,6 +3212,18 @@ class FtlDispatchIntegrationTest {
                 "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}");
         assertThat(done.path("shipmentId").asText()).isNotBlank();
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+    }
+
+    /** WF4-F2C: the order's history (staff) lists the removed carton, and says whether the order goes on in part. */
+    private void assertRemovalInHistory(OrderSummary order, String lpn, boolean continuesPartial) throws Exception {
+        JsonNode entries = data(sales(get(ORDERS + "/" + order.orderId() + "/history")).andExpect(status().isOk()));
+        assertThat(entries).filteredOn(e -> "CARTON_REMOVAL".equals(e.path("type").asText())).singleElement()
+                .satisfies(e -> {
+                    assertThat(e.path("cartonLpn").asText()).isEqualTo(lpn);
+                    assertThat(e.path("cartonRemovalReason").asText()).isEqualTo("DAMAGED");
+                    assertThat(e.path("continuesPartial").asBoolean()).isEqualTo(continuesPartial);
+                    assertThat(e.path("actorId").asText()).isNotBlank();
+                });
     }
 
     /** WF4-F2B: partial shipment was allowed before the removal, so the order is not held and the station goes on. */
@@ -3400,6 +3413,7 @@ class FtlDispatchIntegrationTest {
         UUID removed = (UUID) x[1];
         String damaged = (String) x[2];
 
+        assertRemovalInHistory(order, damaged, true);
         reallocate(task, removed).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INSUFFICIENT_STOCK"));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);

@@ -43,12 +43,16 @@ public class OrderOperations {
     private final OnBehalfLog onBehalf;
     private final com.stockflow.order.internal.repository.OrderOnBehalfActions entries;
 
+    private final com.stockflow.order.internal.repository.OrderHistoryNotes historyNotes;
+
     OrderOperations(ShippingWarehouseService shippingWarehouses, OrderService orders,
                     OrderCompletionHolds completionHolds, CancellationRequestService cancellationRequests,
                     PartialShipments partialShipments, DeliveryFailureService deliveryFailures,
                     ShippingAddressChanges addressChanges, OnBehalfLog onBehalf,
-                    com.stockflow.order.internal.repository.OrderOnBehalfActions entries) {
+                    com.stockflow.order.internal.repository.OrderOnBehalfActions entries,
+                    com.stockflow.order.internal.repository.OrderHistoryNotes historyNotes) {
         this.entries = entries;
+        this.historyNotes = historyNotes;
         this.shippingWarehouses = shippingWarehouses;
         this.orders = orders;
         this.completionHolds = completionHolds;
@@ -64,6 +68,18 @@ public class OrderOperations {
      * {@code actorId} for {@code actingForUserId}, who was told; null when the customer had no active owner.
      */
     public record OnBehalfEntry(String action, UUID actorId, UUID actingForUserId, java.time.Instant actedAt) {
+    }
+
+    /** The cartons the check station removed from the order, oldest first, for its history (staff only; WF4-F2C). */
+    @Transactional(readOnly = true)
+    public List<CartonRemovalEntry> cartonRemovals(UUID orderId) {
+        return historyNotes.cartonRemovals(orderId).stream().map(row -> new CartonRemovalEntry(row.lpn(), row.reason(),
+                row.note(), row.continuesPartial(), row.removedBy(), row.removedAt())).toList();
+    }
+
+    /** One carton removed at the check station, for the order's history (WF4-F2C). */
+    public record CartonRemovalEntry(String lpn, String reason, String note, boolean continuesPartial,
+                                     UUID removedBy, java.time.Instant removedAt) {
     }
 
     /** The order's "làm hộ" entries, oldest first, for its history (staff only). */

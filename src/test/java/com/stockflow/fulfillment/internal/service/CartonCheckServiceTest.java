@@ -46,6 +46,7 @@ import java.util.UUID;
 import static com.stockflow.fulfillment.internal.service.FulfillmentFixtures.refusal;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -99,10 +100,12 @@ class CartonCheckServiceTest {
     private final PickLists pickLists = mock(PickLists.class);
     private final ForeignCartonReports foreignCartons = mock(ForeignCartonReports.class);
     private final PaymentDueReports paymentDueReports = mock(PaymentDueReports.class);
+    private final com.stockflow.order.api.CartonRemovals cartonRemovals =
+            mock(com.stockflow.order.api.CartonRemovals.class);
     private final CartonCheckService service = new CartonCheckService(picks, packs, mock(PackageJpaRepository.class),
             shipments, store, orders, measures, payments, identities, mock(WarehouseService.class), timeline,
             Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons, pickLines, orderReservations,
-            pickLists, foreignCartons, paymentDueReports);
+            pickLists, foreignCartons, paymentDueReports, cartonRemovals);
 
     private final UUID worker = UUID.randomUUID();
     private final UUID otherWorker = UUID.randomUUID();
@@ -160,6 +163,15 @@ class CartonCheckServiceTest {
                 List.of(), true);
         return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), status, Money.vnd(200_000), List.of(line), NOW,
                 null, null, null, "Ms Lan", null, "0900000001", null, null, WAREHOUSE, NOW, null,
+                lifecycle);
+    }
+
+    private OrderSummary orderWithoutPartial() {
+        var line = new OrderSummary.LineSummary(lineId, "SKU-A", 20, Money.vnd(10_000), Money.vnd(200_000), List.of());
+        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
+                new BigDecimal("200000"), BigDecimal.ZERO, List.of(), List.of(), false);
+        return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), OrderStatus.PICKING, Money.vnd(200_000),
+                List.of(line), NOW, null, null, null, "Ms Lan", null, "0900000001", null, null, WAREHOUSE, NOW, null,
                 lifecycle);
     }
 
@@ -411,6 +423,40 @@ class CartonCheckServiceTest {
             service.remove(pick.getId(), "LPN-2", "wet", actor);
 
             verify(pickLists).holdForRemovedCarton(pick.getId(), secondPickLine, actor);
+        }
+
+        @Test
+        @DisplayName("WF4-F2C: the order's history is told of the removal - LPN, reason, note - as a partial shipment "
+                + "when Sales allowed one already (the fixture order does)")
+        void theOrderHistoryIsToldOfTheRemoval() {
+            started();
+
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+
+            verify(cartonRemovals).record(eq(orderId), any(), eq("LPN-2"), eq("DAMAGED"), eq("wet"), eq(true),
+                    eq(worker), eq(NOW));
+        }
+
+        @Test
+        @DisplayName("WF4-F2C: an order without partial shipment says so in the entry - it is held for Sales")
+        void theEntrySaysWhenTheOrderIsHeld() {
+            started();
+            orderIs(orderWithoutPartial());
+
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+
+            verify(cartonRemovals).record(eq(orderId), any(), eq("LPN-2"), eq("DAMAGED"), eq("wet"), eq(false),
+                    eq(worker), eq(NOW));
+        }
+
+        @Test
+        @DisplayName("a repeated removal writes no second entry")
+        void aRepeatedRemovalWritesOneEntry() {
+            started();
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+
+            verify(cartonRemovals, times(1)).record(any(), any(), any(), any(), any(), anyBoolean(), any(), any());
         }
 
         @Test
