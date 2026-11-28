@@ -400,6 +400,21 @@ overwritten and deleted files.
 0 4 1 * *  cd /opt/stockflow && bash scripts/refresh-cloudflare-ips.sh --reload
 ```
 
+**When the application hangs** (the container is up but the health check times out): the JVM keeps a Flight Recorder
+recording of the last 6 hours (at most 200 MB, `JAVA_OPTS` in `docker-compose.yml`) inside the container, under
+`/tmp`. Read it before the container is recreated - a deploy or `docker compose up -d` throws `/tmp` away; a stop or
+`docker compose restart` keeps it.
+
+```bash
+docker compose stop app                    # graceful stop: the JVM writes /tmp/stockflow.jfr on exit
+docker cp "$(docker compose ps -aq app)":/tmp/stockflow.jfr ./stockflow-$(date +%F-%H%M).jfr
+docker compose start app
+# on any machine with a JDK: jfr print --events jdk.VirtualThreadPinned,jdk.JavaMonitorWait stockflow-*.jfr
+```
+
+If the stop runs out of time and Docker kills the JVM, the file may be missing; the recording's chunks stay in the
+container's `/tmp/<date>_<pid>/` directory (copy the whole directory and open its `.jfr` files the same way).
+
 ## 6. Known limits
 
 - **Every deploy has downtime** (one application container, replaced). Users stay signed in across it: the signing

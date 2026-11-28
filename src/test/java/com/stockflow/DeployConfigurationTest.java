@@ -33,6 +33,20 @@ class DeployConfigurationTest {
     }
 
     @Test
+    @DisplayName("the server records with Flight Recorder into /tmp: a path the JVM cannot write stops it from starting")
+    void flightRecorderWritesWhereTheJvmCanAlwaysWrite() throws Exception {
+        // A JFR file or repository the JVM cannot write fails the VM at startup ("Failure when starting JFR"), and a
+        // rollback inherits the same JAVA_OPTS. /tmp is writable by the image's unprivileged user in every image.
+        String compose = read("deploy/docker-compose.yml");
+        Matcher flags = Pattern.compile("(?m)^\\s*-XX:StartFlightRecording=(\\S+)$").matcher(compose);
+        assertThat(flags.find()).as("deploy/docker-compose.yml starts a recording").isTrue();
+        assertThat(flags.group(1)).as("bounded, dumped on exit, under /tmp")
+                .contains("disk=true", "maxage=", "maxsize=", "dumponexit=true", "filename=/tmp/")
+                .doesNotContain("repository=");
+        assertThat(compose).as("no repository moved out of /tmp").doesNotContain("FlightRecorderOptions");
+    }
+
+    @Test
     @DisplayName("SCRUM-352: the server gets the Resend settings and sends through Resend; a local dev run stays on SMTP")
     void theResendSettingsReachTheServer() throws Exception {
         String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
