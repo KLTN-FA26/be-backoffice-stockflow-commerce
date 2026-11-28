@@ -12,7 +12,7 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CustomerService;
-import com.stockflow.fulfillment.api.LoadingLoadLookup;
+import com.stockflow.payment.api.LoadingLoadLookup;
 import com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse;
 import com.stockflow.payment.internal.controller.dto.PaymentReceiptSummaryResponse;
 import com.stockflow.payment.internal.controller.dto.RecordReceiptRequest;

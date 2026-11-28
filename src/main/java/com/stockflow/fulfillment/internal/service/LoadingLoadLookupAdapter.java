@@ -1,6 +1,6 @@
 package com.stockflow.fulfillment.internal.service;
 
-import com.stockflow.fulfillment.api.LoadingLoadLookup;
+import com.stockflow.payment.api.LoadingLoadLookup;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
