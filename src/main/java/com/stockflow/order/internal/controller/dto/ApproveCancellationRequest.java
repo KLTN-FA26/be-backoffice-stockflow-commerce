@@ -20,6 +20,11 @@ public record ApproveCancellationRequest(
 
         @Schema(description = "Instead of retainedPercent: an amount agreed with the customer (decision Q2)")
         @jakarta.validation.Valid
-        CancellationFeeRequest agreedFee
+        CancellationFeeRequest agreedFee,
+
+        @Schema(description = "Who bears the fee (D46, D50): the customer is charged it, or the company bears it - then the customer is "
+                + "charged nothing and the amount is the company's cost. Required whenever a fee is given "
+                + "(retainedPercent above 0, or agreedFee), no default; refused without a fee")
+        com.stockflow.order.api.CancellationFeeBearer feeBearer
 ) {
 }

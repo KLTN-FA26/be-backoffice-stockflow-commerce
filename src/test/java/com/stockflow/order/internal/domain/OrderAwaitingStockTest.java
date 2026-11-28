@@ -177,7 +177,8 @@ class OrderAwaitingStockTest {
     @DisplayName("BR-11: before printing a cancellation keeps nothing; once printing started, staff may keep a fee")
     void feeOnlyAfterPrinting() {
         Order before = waiting();
-        CancellationFee fee = new CancellationFee(new BigDecimal("500000"), "Mass printing ran", "Cups printed");
+        CancellationFee fee = new CancellationFee(new BigDecimal("500000"), "Mass printing ran", "Cups printed",
+                com.stockflow.order.api.CancellationFeeBearer.CUSTOMER);
         assertThatThrownBy(() -> before.cancel(CancellationReasonCode.CUSTOMER_REQUEST, null, null, fee, SALES, NOW))
                 .extracting(OrderAwaitingStockTest::code).isEqualTo(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING);
         before.cancel(CancellationReasonCode.CUSTOMER_REQUEST, null, null, SALES, NOW);

@@ -3,6 +3,7 @@ package com.stockflow.payment.internal.domain;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.payment.api.FeeBearer;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -49,12 +50,14 @@ public final class OrderSettlement {
 
     /**
      * The fee kept (17 §4.8 step 30): a share of the money collected, or an amount agreed with the customer with its
-     * reason (at most 500 characters) and detail (at most 2,000) - never both - or none.
+     * reason (at most 500 characters) and detail (at most 2,000) - never both - or none. A fee has its bearer (D46,
+     * D50), chosen by Sales and never defaulted: the customer is charged it, or the company bears it and the customer
+     * is charged nothing ({@link #chargedOn}); no fee has none.
      */
-    public record Fee(BigDecimal percent, BigDecimal amount, String reason, String detail) {
+    public record Fee(BigDecimal percent, BigDecimal amount, String reason, String detail, FeeBearer bearer) {
 
         public static Fee none() {
-            return new Fee(null, null, null, null);
+            return new Fee(null, null, null, null, null);
         }
 
         /**
@@ -84,10 +87,25 @@ public final class OrderSettlement {
                 throw invalid("A reason and a detail go with an agreed amount",
                         "refusal.settlement.feeReasonWithoutAmount");
             }
+            if ((percent != null || amount != null) && bearer == null) {
+                throw invalid("A fee needs its bearer, the customer or the company", "refusal.settlement.feeBearer");
+            }
+            if (percent == null && amount == null && bearer != null) {
+                throw invalid("No fee is kept, so no one bears one", "refusal.settlement.feeBearerWithoutFee");
+            }
         }
 
         boolean any() {
             return percent != null || amount != null;
+        }
+
+        boolean borneByCompany() {
+            return bearer == FeeBearer.COMPANY;
+        }
+
+        /** What the customer is charged on {@code collected}: the fee, or nothing when the company bears it (D50). */
+        BigDecimal chargedOn(BigDecimal collected) {
+            return borneByCompany() ? BigDecimal.ZERO : on(collected);
         }
 
         /** The fee on {@code collected}: the agreed amount, or the share rounded to the dong (half up). */
@@ -126,6 +144,8 @@ public final class OrderSettlement {
     private final BigDecimal surplus;
     private final BigDecimal fee;
     private final Fee feeTerms;
+    /** D50: the fee the company bears (the customer is charged {@link #fee} = 0 then); 0 when the customer does. */
+    private final BigDecimal companyFee;
     private final BigDecimal feeCovered;
     private final BigDecimal refundable;
     private final BigDecimal feeOwed;
@@ -197,6 +217,11 @@ public final class OrderSettlement {
         this.surplus = Objects.requireNonNull(surplus, "surplus");
         this.fee = Objects.requireNonNull(fee, "fee");
         this.feeTerms = feeTerms == null ? Fee.none() : feeTerms;
+        // ck_order_settlement_fee_bearer: whom the fee is charged to - the company's share is the customer's nothing.
+        this.companyFee = this.feeTerms.borneByCompany() ? this.feeTerms.on(collected) : BigDecimal.ZERO;
+        if (this.feeTerms.borneByCompany() && fee.signum() != 0) {
+            throw new IllegalArgumentException("A fee the company bears charges the customer nothing");
+        }
         this.feeCovered = Objects.requireNonNull(feeCovered, "feeCovered");
         this.refundable = Objects.requireNonNull(refundable, "refundable");
         this.feeOwed = Objects.requireNonNull(feeOwed, "feeOwed");
@@ -244,7 +269,7 @@ public final class OrderSettlement {
                 changed.add(installment);
             }
         }
-        BigDecimal amount = terms.on(collected);
+        BigDecimal amount = terms.chargedOn(collected);
         return settle(first, ofOrder, Kind.ORDER_CANCELLED, first.orderId(), collected, BigDecimal.ZERO, List.of(),
                 collected, amount, terms, by, at, day, "Cancellation fee", changed);
     }
@@ -361,7 +386,7 @@ public final class OrderSettlement {
                 carried = carried.add(owes);
             }
         }
-        BigDecimal agreed = terms.on(collected);
+        BigDecimal agreed = terms.chargedOn(collected);
         // What the fee item is for, as the installment lists show it beside its milestone.
         String name = carried.signum() == 0 ? "Fee for the rest closed"
                 : agreed.signum() == 0 ? "Fee lines of the batches closed"
@@ -734,6 +759,10 @@ public final class OrderSettlement {
     public BigDecimal surplus() { return surplus; }
     public BigDecimal fee() { return fee; }
     public Fee feeTerms() { return feeTerms; }
+    /** D46, D50: who bears the fee entered; null when none was. */
+    public FeeBearer feeBearer() { return feeTerms.bearer(); }
+    /** D50: the fee the company bears - its cost, never charged nor owed; 0 when the customer bears it or none was kept. */
+    public BigDecimal companyFee() { return companyFee; }
     public BigDecimal feeCovered() { return feeCovered; }
     public BigDecimal refundable() { return refundable; }
     public BigDecimal feeOwed() { return feeOwed; }

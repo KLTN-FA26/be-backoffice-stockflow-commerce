@@ -3,6 +3,8 @@ package com.stockflow.order.internal.entity;
 import com.stockflow.common.persistence.BaseEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
@@ -26,6 +28,12 @@ public class OrderRemainderClosureJpaEntity extends BaseEntity {
     /** WF-05 Q-19 edge: the shipping fee payment waived with this closure; 0 when none (V20261217000400). */
     @Column(name = "shipping_fee_waived", nullable = false, updatable = false, precision = 19, scale = 4)
     private java.math.BigDecimal shippingFeeWaived = java.math.BigDecimal.ZERO;
+    /** D50 (V20270129000550): the fee this closure kept, as entered, and who bears it; both null when it kept none. */
+    @Column(name = "fee_amount", updatable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal feeAmount;
+    @Column(name = "fee_bearer", updatable = false, length = 8)
+    @Enumerated(EnumType.STRING)
+    private com.stockflow.order.api.CancellationFeeBearer feeBearer;
 
     protected OrderRemainderClosureJpaEntity() {
     }
@@ -48,6 +56,16 @@ public class OrderRemainderClosureJpaEntity extends BaseEntity {
         this.shippingFeeWaived = shippingFeeWaived == null ? java.math.BigDecimal.ZERO : shippingFeeWaived;
     }
 
+    /** As above, with the fee the closure kept and who bears it (D50); both null for a closure that kept none. */
+    public OrderRemainderClosureJpaEntity(UUID id, UUID orderId, UUID closureId, String reasonCode, String note,
+                                          UUID closedBy, Instant closedAt, java.math.BigDecimal shippingFeeWaived,
+                                          java.math.BigDecimal feeAmount,
+                                          com.stockflow.order.api.CancellationFeeBearer feeBearer) {
+        this(id, orderId, closureId, reasonCode, note, closedBy, closedAt, shippingFeeWaived);
+        this.feeAmount = feeAmount;
+        this.feeBearer = feeBearer;
+    }
+
     public UUID getOrderId() { return orderId; }
     public UUID getClosureId() { return closureId; }
     public String getReasonCode() { return reasonCode; }
@@ -55,4 +73,6 @@ public class OrderRemainderClosureJpaEntity extends BaseEntity {
     public UUID getClosedBy() { return closedBy; }
     public Instant getClosedAt() { return closedAt; }
     public java.math.BigDecimal getShippingFeeWaived() { return shippingFeeWaived; }
+    public java.math.BigDecimal getFeeAmount() { return feeAmount; }
+    public com.stockflow.order.api.CancellationFeeBearer getFeeBearer() { return feeBearer; }
 }

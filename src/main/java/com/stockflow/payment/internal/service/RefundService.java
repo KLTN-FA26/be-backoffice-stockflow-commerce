@@ -153,6 +153,16 @@ public class RefundService {
     // ---- reading ----------------------------------------------------------------------------------------------------
 
     /**
+     * D50: what the company bears of the fees kept with the order's cancellation and closures - "Phí do công ty chịu",
+     * the accountant's view of the order's money. Zero when the customer bore every fee or none was kept.
+     */
+    @Transactional(readOnly = true)
+    public java.math.BigDecimal feeBorneByCompany(UUID orderId) {
+        return book.ofOrder(orderId).stream().map(OrderSettlement::companyFee)
+                .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+    }
+
+    /**
      * The order's refund; {@code ownCustomerId} not null: only that customer's (anyone else's is not found, as if it did
      * not exist).
      *

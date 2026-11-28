@@ -11,6 +11,7 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.order.api.CancellationFeeBearer;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.ShortageOption;
 import com.stockflow.order.internal.controller.dto.CancellationFeeRequest;
@@ -105,7 +106,9 @@ class ShortageCardController {
     record CloseRestRequest(Long version,
                             @NotNull(message = "reasonCode is required") CancellationReasonCode reasonCode,
                             @Size(max = NOTE_MAX, message = "note is at most 400 characters") String note,
-                            @Valid CancellationFeeRequest agreedFee) {
+                            @Valid CancellationFeeRequest agreedFee,
+                            @Schema(description = "Who bears the fee (D46, D50), required with agreedFee, no default", nullable = true)
+                            CancellationFeeBearer feeBearer) {
     }
 
     /** Cancel the order (reason OUT_OF_STOCK): the staff cancellation's fee fields. */
@@ -115,7 +118,10 @@ class ShortageCardController {
                          @DecimalMin(value = "0.0", message = "retainedPercent is at least 0")
                          @DecimalMax(value = "100.0", message = "retainedPercent is at most 100")
                          BigDecimal retainedPercent,
-                         @Valid CancellationFeeRequest agreedFee) {
+                         @Valid CancellationFeeRequest agreedFee,
+                         @Schema(description = "Who bears the fee, share or agreed amount (D46, D50): required "
+                                 + "whenever a fee is given, no default; refused without a fee", nullable = true)
+                         CancellationFeeBearer feeBearer) {
     }
 
     private final ShortageCardService cards;
@@ -234,8 +240,8 @@ class ShortageCardController {
                                                               @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(ShortageCardResponse.of(operations.executeShortageCloseRest(orderId, cardId,
-                request.version(), request.reasonCode(), request.note(), OrderWebMapper.toFee(request.agreedFee()),
-                user.userId())));
+                request.version(), request.reasonCode(), request.note(),
+                OrderWebMapper.toFee(request.agreedFee(), request.feeBearer(), false), user.userId())));
     }
 
     @PostMapping("/{orderId}/shortage-cards/{cardId}/execution/cancel")
@@ -248,8 +254,9 @@ class ShortageCardController {
                                                            @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(ShortageCardResponse.of(operations.executeShortageCancel(orderId, cardId,
-                request.version(), request.note(), request.retainedPercent(),
-                OrderWebMapper.toFee(request.agreedFee()), user.userId())));
+                request.version(), request.note(), request.retainedPercent(), request.feeBearer(),
+                OrderWebMapper.toFee(request.agreedFee(), request.feeBearer(),
+                        OrderWebMapper.keepsShare(request.retainedPercent())), user.userId())));
     }
 
     /** The signed-in customer's profile id; a back-office account is no customer. */

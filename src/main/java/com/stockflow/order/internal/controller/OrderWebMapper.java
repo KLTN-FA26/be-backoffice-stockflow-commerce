@@ -103,11 +103,7 @@ final class OrderWebMapper {
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),
                 toResponse(summary.shippingAddress()), toResponse(summary.billingAddress()),
                 summary.warehouseId(), summary.releasedAt(),
-                summary.cancellation() == null ? null : new OrderResponse.Cancellation(
-                        summary.cancellation().reasonCode() == null ? null : summary.cancellation().reasonCode().name(),
-                        summary.cancellation().reason(), summary.cancellation().retainedAmount(),
-                        summary.cancellation().feeReason(), internal ? summary.cancellation().feeDetail() : null,
-                        summary.cancellation().feeAmount()),
+                cancellationOf(summary.cancellation(), internal),
                 // A customer never reads why the shop holds the order (FRAUD...) nor where it goes back: only the
                 // public wording, as on GET /orders/me/{id} (review of G3-2).
                 lifecycle == null || !internal || lifecycle.holdReason() == null ? null : lifecycle.holdReason().name(),
@@ -164,6 +160,26 @@ final class OrderWebMapper {
      * The response with its order's payment figures from {@code amounts} (one batch read for the page, audit bo-17); an
      * order that is not a key - no installments yet, or a caller who does not read them - keeps nulls.
      */
+    /**
+     * The cancellation as the order answers it. A fee the company bears (D50) charged the customer nothing, so a
+     * customer's view carries no fee at all - no amount, no reason, no bearer - and staff read the amount with its
+     * bearer.
+     */
+    private static OrderResponse.Cancellation cancellationOf(OrderSummary.Cancellation c, boolean internal) {
+        if (c == null) {
+            return null;
+        }
+        boolean hidden = !internal && c.feeBearer() == com.stockflow.order.api.CancellationFeeBearer.COMPANY;
+        return new OrderResponse.Cancellation(c.reasonCode() == null ? null : c.reasonCode().name(), c.reason(),
+                c.retainedAmount(), hidden ? null : c.feeReason(), internal ? c.feeDetail() : null,
+                hidden ? null : c.feeAmount(), internal && c.feeBearer() != null ? c.feeBearer().name() : null);
+    }
+
+    /** The back-office list's badge: whether the company bears a fee of the order (D50). */
+    static OrderResponse withFeeBearerBadge(OrderResponse response, java.util.Set<java.util.UUID> bornByCompany) {
+        return response.withFeeBorneByCompany(bornByCompany.contains(response.orderId()));
+    }
+
     static OrderResponse withPayment(OrderResponse response,
                                      java.util.Map<java.util.UUID, com.stockflow.payment.api.OrderPaymentAmounts> amounts) {
         var money = amounts.get(response.orderId());
@@ -190,9 +206,35 @@ final class OrderWebMapper {
                 address.postalCode());
     }
 
+    /**
+     * The agreed fee of a request with its bearer (D46, D50): Sales choose it on every fee and nothing is preselected,
+     * so a fee without {@code feeBearer} is refused (400, a message in Vietnamese), and so is a bearer with no fee.
+     *
+     * @param percentKept whether the request also keeps a share of the money collected - a bearer may then stand
+     *                    without an agreed fee, for the share (the domain refuses both forms together)
+     */
     static com.stockflow.order.api.CancellationFee toFee(
-            com.stockflow.order.internal.controller.dto.CancellationFeeRequest request) {
-        return request == null ? null
-                : new com.stockflow.order.api.CancellationFee(request.amount(), request.reason(), request.detail());
+            com.stockflow.order.internal.controller.dto.CancellationFeeRequest request,
+            com.stockflow.order.api.CancellationFeeBearer feeBearer, boolean percentKept) {
+        if (request == null) {
+            if (feeBearer != null && !percentKept) {
+                throw new com.stockflow.common.error.BusinessException(
+                        com.stockflow.common.error.ErrorCode.VALIDATION_FAILED, "feeBearer goes with a fee")
+                        .localized("refusal.order.feeBearerWithoutFee");
+            }
+            return null;
+        }
+        if (feeBearer == null) {
+            throw new com.stockflow.common.error.BusinessException(
+                    com.stockflow.common.error.ErrorCode.VALIDATION_FAILED, "feeBearer is required with a fee")
+                    .localized("refusal.order.feeBearerRequired");
+        }
+        return new com.stockflow.order.api.CancellationFee(request.amount(), request.reason(), request.detail(),
+                feeBearer);
+    }
+
+    /** Whether a share of the money collected is kept: a percentage above zero. */
+    static boolean keepsShare(java.math.BigDecimal retainedPercent) {
+        return retainedPercent != null && retainedPercent.signum() > 0;
     }
 }

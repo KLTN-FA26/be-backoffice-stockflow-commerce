@@ -294,6 +294,13 @@ public interface OrderService {
     PageResponse<OrderSummary> list(ListOrdersQuery query);
 
     /**
+     * D50: which of these orders had a fee kept with their cancellation or a closure of the rest that the company
+     * bears ({@link CancellationFeeBearer#COMPANY}) - the accountant's "Phí do công ty chịu" badge on the list, read for
+     * a whole page in one query. Empty input gives an empty set.
+     */
+    java.util.Set<UUID> ordersWithFeeBorneByCompany(java.util.Collection<UUID> orderIds);
+
+    /**
      * Status history, oldest first. Orders placed before history was recorded start at the first
      * transition after that; an order with no recorded change returns an empty list.
      */

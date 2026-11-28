@@ -168,7 +168,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "released_by")
     private UUID releasedBy;
 
-    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+    @Enumerated(EnumType.STRING)
     @Column(name = "cancellation_reason_code", length = 32)
     private com.stockflow.order.api.CancellationReasonCode cancellationReasonCode;
 
@@ -210,6 +210,11 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     @Column(name = "cancellation_fee_detail", length = 2000)
     private String cancellationFeeDetail;
+
+    /** V20270129000550 (D46, D50): who bears the fee kept at cancellation, agreed amount or share; null for none. */
+    @Column(name = "cancellation_fee_bearer", length = 8)
+    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+    private com.stockflow.order.api.CancellationFeeBearer cancellationFeeBearer;
 
     /** V20261021000100 (G3-2): why it is on hold and where it goes back; the milestones. */
     @Enumerated(EnumType.STRING)
@@ -395,6 +400,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public String getCancellationFeeReason() { return cancellationFeeReason; }
     public java.math.BigDecimal getCancellationFeeAmount() { return cancellationFeeAmount; }
     public String getCancellationFeeDetail() { return cancellationFeeDetail; }
+    public com.stockflow.order.api.CancellationFeeBearer getCancellationFeeBearer() { return cancellationFeeBearer; }
 
     public void applyFulfilmentFacts(Instant printingStarted, Instant packed) {
         this.printingStartedAt = printingStarted;
@@ -429,10 +435,12 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public Instant getGoodsLeftAt() { return goodsLeftAt; }
     public Instant getContractSignedAt() { return contractSignedAt; }
 
-    public void applyCancellationFee(java.math.BigDecimal amount, String reason, String detail) {
+    public void applyCancellationFee(java.math.BigDecimal amount, String reason, String detail,
+                                     com.stockflow.order.api.CancellationFeeBearer bearer) {
         this.cancellationFeeAmount = amount;
         this.cancellationFeeReason = reason;
         this.cancellationFeeDetail = detail;
+        this.cancellationFeeBearer = bearer;
     }
     public void applyLifecycle(com.stockflow.order.api.HoldReason holdReason, OrderStatus statusBeforeHold,
                                String holdNote, Instant shippedAt, Instant deliveredAt,

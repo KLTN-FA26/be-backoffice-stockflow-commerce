@@ -189,11 +189,12 @@ INSERT INTO qa24_closure VALUES ($q$
     INSERT INTO payment.order_settlement (id, order_id, contract_id, customer_id, order_number, contract_number, kind,
         source_id, currency, collected_amount, closed_amount, reduced_amount, surplus_amount,
         fee_amount, fee_reason, fee_detail,
-        fee_covered_amount, refundable_amount, fee_owed_amount, fee_installment_id, settled_by, settled_at)
+        fee_covered_amount, refundable_amount, fee_owed_amount, fee_installment_id, settled_by, settled_at,
+        fee_bearer)
     SELECT md5('qa24:s1')::uuid, o.id, md5('qa24:contract')::uuid, o.customer_id, 'SO-QA-HUY', 'HD-QA-HUY-1',
            'REMAINDER_CLOSED', md5('qa24:closure1')::uuid, 'VND', 600000, 1500000, 1500000, 0,
            200000, 'Printed cartons', 'Kept as the customer''s stock',
-           0, 0, 200000, md5('qa24:fee1')::uuid, md5('demo:user:editor')::uuid, NOW()
+           0, 0, 200000, md5('qa24:fee1')::uuid, md5('demo:user:editor')::uuid, NOW(), 'CUSTOMER'
       FROM ordering.customer_order o WHERE o.id = md5('qa24:order')::uuid;
     INSERT INTO payment.installment_reduction (id, settlement_id, installment_id, amount)
     VALUES (gen_random_uuid(), md5('qa24:s1')::uuid, md5('qa24:n2')::uuid, 1100000),
@@ -266,10 +267,10 @@ INSERT INTO qa24_cancel VALUES ($q$
     UPDATE payment.installment SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = md5('qa24:n1')::uuid;
     INSERT INTO payment.order_settlement (id, order_id, contract_id, customer_id, order_number, contract_number, kind,
         source_id, currency, collected_amount, surplus_amount, fee_amount, fee_percent, fee_covered_amount,
-        refundable_amount, fee_owed_amount, settled_by, settled_at)
+        refundable_amount, fee_owed_amount, settled_by, settled_at, fee_bearer)
     SELECT md5('qa24:s2')::uuid, o.id, md5('qa24:contract')::uuid, o.customer_id, 'SO-QA-HUY', 'HD-QA-HUY-1',
            'ORDER_CANCELLED', o.id, 'VND', 600000, 600000, 60000, 10, 60000, 540000, 0,
-           md5('demo:user:editor')::uuid, NOW()
+           md5('demo:user:editor')::uuid, NOW(), 'CUSTOMER'
       FROM ordering.customer_order o WHERE o.id = md5('qa24:order')::uuid $q$);
 SELECT pg_temp.expect_fail('CR30 a cancellation settled while the order is not cancelled',
     (SELECT stmt FROM qa24_cancel));
@@ -288,9 +289,9 @@ SELECT pg_temp.expect_fail('CR33 an agreed fee above what the order is worth (17
     '600000, 600000, 60000, 10, 60000, 540000, 0', '600000, 600000, 2200001, ''r'', ''d'', 600000, 0, 1600001'));
 SELECT pg_temp.expect_fail('CR34 a cancellation keyed on something else than its order', replace(
     (SELECT stmt FROM qa24_cancel), '''ORDER_CANCELLED'', o.id', '''ORDER_CANCELLED'', gen_random_uuid()'));
-SELECT pg_temp.expect_fail('CR35 more to refund than was collected (15 BR-14)', replace(
+SELECT pg_temp.expect_fail('CR35 more to refund than was collected (15 BR-14)', replace(replace(
     (SELECT stmt FROM qa24_cancel), '600000, 600000, 60000, 10, 60000, 540000',
-    '600000, 600000, 0, NULL, 0, 600000') || $q$;
+    '600000, 600000, 0, NULL, 0, 600000'), 'NOW(), ''CUSTOMER''', 'NOW(), NULL') || $q$;
     INSERT INTO payment.order_settlement (id, order_id, contract_id, customer_id, order_number, contract_number, kind,
         source_id, currency, collected_amount, closed_amount, reduced_amount, surplus_amount, fee_covered_amount,
         refundable_amount, fee_owed_amount, settled_at)

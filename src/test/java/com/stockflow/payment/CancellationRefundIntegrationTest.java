@@ -12,6 +12,8 @@ import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationFee;
+import com.stockflow.order.api.CancellationFeeBearer;
+import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.CancellationOutcome;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
@@ -216,7 +218,9 @@ class CancellationRefundIntegrationTest {
 
     private void cancel(UUID orderId, BigDecimal percent, CancellationFee fee) {
         WithCurrentUser.run(sales, DataScope.ALL, () -> orders.cancel(orderId, new CancelOrderCommand(
-                CancellationReasonCode.CUSTOMER_REQUEST, "agreed with the customer", percent, sales.userId(), fee)));
+                CancellationReasonCode.CUSTOMER_REQUEST, "agreed with the customer", percent, sales.userId(), fee,
+                // D50: a share has its bearer chosen like an agreed fee (the fee names its own).
+                percent != null && percent.signum() > 0 ? CancellationFeeBearer.CUSTOMER : null)));
     }
 
     private Installment installment(UUID id) {
@@ -296,7 +300,8 @@ class CancellationRefundIntegrationTest {
         BigDecimal exposureBefore = payments.creditPosition(customerId).outstandingReceivables();
 
         cancel(signed.orderId(), null, new CancellationFee(dong(1_000_000), "Cups printed to the customer's design",
-                "1,000 cups printed before the cancellation; blanks and ink used"));
+                "1,000 cups printed before the cancellation; blanks and ink used",
+                com.stockflow.order.api.CancellationFeeBearer.CUSTOMER));
 
         RefundService.OrderRefundDetail refund = refundOf(signed.orderId());
         OrderSettlementResultView s = new OrderSettlementResultView(refund);
@@ -426,8 +431,12 @@ class CancellationRefundIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
                 signed.orderId())).as("a request settles nothing").isZero();
 
-        asSales(() -> cancellationRequests.approve(signed.orderId(), requested.requestId(), BigDecimal.TEN,
-                "fee agreed by phone", sales.userId()));
+        assertThatThrownBy(() -> asSales(() -> cancellationRequests.approve(signed.orderId(), requested.requestId(),
+                BigDecimal.TEN, null, null, "fee agreed by phone", sales.userId())))
+                .as("D50: a share needs its bearer, nothing is preselected")
+                .extracting(CancellationRefundIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        asSales(() -> cancellationRequests.approve(signed.orderId(), requested.requestId(), BigDecimal.TEN, null,
+                CancellationFeeBearer.CUSTOMER, "fee agreed by phone", sales.userId()));
         assertThat(orders.findById(signed.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.CANCELLED);
         OrderSettlementResultView s = new OrderSettlementResultView(refundOf(signed.orderId()));
         assertThat(s.fee).isEqualByComparingTo(dong(66_000));
@@ -452,7 +461,9 @@ class CancellationRefundIntegrationTest {
         // Half the goods closed: 1,000,000 + 10% VAT.
         SettleRemainderClosureCommand command = new SettleRemainderClosureCommand(signed.orderId(), closureId,
                 dong(1_100_000), dong(100_000), "Printed cartons never shipped", "500 cups printed, kept in stock",
-                sales.userId(), Instant.now());
+                sales.userId(), Instant.now(), null,
+                com.stockflow.payment.api.SettleShipmentReturnCommand.ShippingFee.NONE, null,
+                com.stockflow.payment.api.FeeBearer.CUSTOMER);
 
         OrderSettlementResult result = tx.execute(s -> payments.settleRemainderClosure(command)).orElseThrow();
         assertThat(result.reduced()).as("the installment after delivery, all of it").isEqualByComparingTo(
@@ -492,6 +503,182 @@ class CancellationRefundIntegrationTest {
         assertThat(again.refundable()).isEqualByComparingTo(dong(660_000));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
                 signed.orderId())).isEqualTo(1);
+    }
+
+    // ---- who bears the fee (D46, D50) --------------------------------------------------------------------------------
+
+    private void cancelBorneBy(UUID orderId, BigDecimal percent, CancellationFee fee, CancellationFeeBearer bearer) {
+        WithCurrentUser.run(sales, DataScope.ALL, () -> orders.cancel(orderId, new CancelOrderCommand(
+                CancellationReasonCode.OUT_OF_STOCK, "thiếu hàng, hai bên thống nhất huỷ", percent, sales.userId(), fee,
+                bearer)));
+    }
+
+    private static CancellationFee agreedFee(long amount, CancellationFeeBearer bearer) {
+        return new CancellationFee(dong(amount), "Cups printed to the customer's design", "1,000 cups printed", bearer);
+    }
+
+    private List<UUID> listedWithFeeBorneBy(CancellationFeeBearer bearer) {
+        return orders.list(new ListOrdersQuery(0, 50, null, null, customerId, null, null, null, null, bearer))
+                .items().stream().map(o -> o.orderId()).toList();
+    }
+
+    @Test
+    @DisplayName("D46, D50: the company bears an agreed fee above what was collected - the customer is charged "
+            + "nothing, is refunded all of it, owes no fee item; the cost is recorded and the order is found by the filter")
+    void companyBearsTheAgreedFee() {
+        Signed signed = signed();
+        pay(signed.seq(1), 660_000);
+        awaitConfirmed(signed.orderId());
+        massPrintingStarted(signed.orderId());
+        BigDecimal exposureBefore = payments.creditPosition(customerId).outstandingReceivables();
+
+        cancelBorneBy(signed.orderId(), null, agreedFee(1_000_000, CancellationFeeBearer.COMPANY), null);
+
+        RefundService.OrderRefundDetail refund = refundOf(signed.orderId());
+        assertThat(refund.settlements()).singleElement().satisfies(s -> {
+            assertThat(s.collected()).isEqualByComparingTo(dong(660_000));
+            assertThat(s.fee()).as("what the customer is charged").isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.feeCovered()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.refundable()).as("as if no fee was kept").isEqualByComparingTo(dong(660_000));
+            assertThat(s.feeOwed()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.feeItemId()).isNull();
+            assertThat(s.feeBearer()).isEqualTo(com.stockflow.payment.api.FeeBearer.COMPANY);
+            assertThat(s.companyFee()).as("the company's cost").isEqualByComparingTo(dong(1_000_000));
+            assertThat(s.feeTerms().reason()).isEqualTo("Cups printed to the customer's design");
+            assertThat(s.feeTerms().detail()).isEqualTo("1,000 cups printed");
+        });
+        assertThat(refund.standing().remaining()).isEqualByComparingTo(dong(660_000));
+        assertThat(feeItemOf(signed.orderId())).as("no receivable").isEmpty();
+        assertThat(payments.creditPosition(customerId).outstandingReceivables())
+                .as("BR-10: the cancelled after-delivery installment drops out, and no fee item takes its place")
+                .isEqualByComparingTo(exposureBefore.subtract(dong(660_000)));
+
+        // The accountant's view of the order's money, and the order's own record.
+        assertThat(refunds.feeBorneByCompany(signed.orderId())).isEqualByComparingTo(dong(1_000_000));
+        var cancellation = orders.findById(signed.orderId()).orElseThrow().cancellation();
+        assertThat(cancellation.feeBearer()).isEqualTo(CancellationFeeBearer.COMPANY);
+        assertThat(cancellation.feeAmount()).isEqualByComparingTo(dong(1_000_000));
+        assertThat(jdbc.queryForMap("SELECT cancellation_fee_bearer, cancellation_fee_amount FROM "
+                + "ordering.customer_order WHERE id = ?", signed.orderId()).get("cancellation_fee_bearer"))
+                .isEqualTo("COMPANY");
+
+        // The list filter and its badge.
+        assertThat(listedWithFeeBorneBy(CancellationFeeBearer.COMPANY)).containsExactly(signed.orderId());
+        assertThat(listedWithFeeBorneBy(CancellationFeeBearer.CUSTOMER)).isEmpty();
+        assertThat(listedWithFeeBorneBy(null)).contains(signed.orderId());
+        assertThat(orders.ordersWithFeeBorneByCompany(List.of(signed.orderId()))).containsExactly(signed.orderId());
+    }
+
+    @Test
+    @DisplayName("D50: the company bears a share - the share of what was collected is its cost, the customer is "
+            + "refunded all of it; the customer bearing the same share is charged as before")
+    void shareBorneByTheCompanyOrTheCustomer() {
+        Signed company = signed();
+        pay(company.seq(1), 660_000);
+        awaitConfirmed(company.orderId());
+        massPrintingStarted(company.orderId());
+        cancelBorneBy(company.orderId(), new BigDecimal("20"), null, CancellationFeeBearer.COMPANY);
+
+        assertThat(refundOf(company.orderId()).settlements()).singleElement().satisfies(s -> {
+            assertThat(s.fee()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.refundable()).isEqualByComparingTo(dong(660_000));
+            assertThat(s.companyFee()).as("20% of 660,000").isEqualByComparingTo(dong(132_000));
+            assertThat(s.feeTerms().percent()).isEqualByComparingTo("20");
+        });
+        assertThat(orders.findById(company.orderId()).orElseThrow().cancellation().feeBearer())
+                .as("the share is not on the order, its bearer is").isEqualTo(CancellationFeeBearer.COMPANY);
+
+        Signed customer = signed();
+        pay(customer.seq(1), 660_000);
+        awaitConfirmed(customer.orderId());
+        massPrintingStarted(customer.orderId());
+        cancelBorneBy(customer.orderId(), new BigDecimal("20"), null, CancellationFeeBearer.CUSTOMER);
+        assertThat(refundOf(customer.orderId()).settlements()).singleElement().satisfies(s -> {
+            assertThat(s.fee()).isEqualByComparingTo(dong(132_000));
+            assertThat(s.refundable()).isEqualByComparingTo(dong(528_000));
+            assertThat(s.companyFee()).isEqualByComparingTo(BigDecimal.ZERO);
+        });
+        assertThat(refunds.feeBorneByCompany(customer.orderId())).isEqualByComparingTo(BigDecimal.ZERO);
+
+        assertThat(listedWithFeeBorneBy(CancellationFeeBearer.COMPANY)).containsExactly(company.orderId());
+        assertThat(listedWithFeeBorneBy(CancellationFeeBearer.CUSTOMER)).containsExactly(customer.orderId());
+    }
+
+    @Test
+    @DisplayName("D50: a fee without its bearer - and a bearer without a fee - is refused before anything moves")
+    void feeBearerIsRequiredAndNeverDefaulted() {
+        Signed signed = signed();
+        pay(signed.seq(1), 660_000);
+        awaitConfirmed(signed.orderId());
+        massPrintingStarted(signed.orderId());
+
+        assertThatThrownBy(() -> cancelBorneBy(signed.orderId(), new BigDecimal("20"), null, null))
+                .as("a share without a bearer").extracting(CancellationRefundIntegrationTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> cancelBorneBy(signed.orderId(), null, null, CancellationFeeBearer.COMPANY))
+                .as("a bearer with no fee").extracting(CancellationRefundIntegrationTest::code)
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(orders.findById(signed.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
+                signed.orderId())).isZero();
+
+        // The database says it again: a bearer on the order, or on a settlement, that does not fit the fee.
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET cancellation_fee_bearer = 'COMPANY' WHERE id = ?",
+                signed.orderId()))).hasStackTraceContaining("ck_order_cancellation_fee_bearer");
+    }
+
+    @Test
+    @DisplayName("D50: approving a customer's cancellation request with the company bearing the fee settles it as no fee")
+    void companyBearsTheFeeOfAnApprovedRequest() {
+        Signed signed = signed();
+        pay(signed.seq(1), 660_000);
+        awaitConfirmed(signed.orderId());
+        massPrintingStarted(signed.orderId());
+        CancellationOutcome requested = orders.cancelOwn(signed.orderId(), customerId,
+                CancellationReasonCode.CUSTOMER_REQUEST, "changed our plans", customerUser);
+
+        asSales(() -> cancellationRequests.approve(signed.orderId(), requested.requestId(), null,
+                agreedFee(300_000, CancellationFeeBearer.COMPANY), null, "company absorbs it", sales.userId()));
+
+        assertThat(refundOf(signed.orderId()).settlements()).singleElement().satisfies(s -> {
+            assertThat(s.fee()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.refundable()).isEqualByComparingTo(dong(660_000));
+            assertThat(s.companyFee()).isEqualByComparingTo(dong(300_000));
+        });
+    }
+
+    @Test
+    @DisplayName("D50: the fee of a closure of the rest has its bearer: COMPANY leaves the refund as with no fee, "
+            + "once per closure")
+    void companyBearsTheClosureFee() {
+        Signed signed = signed();
+        pay(signed.seq(1), 660_000);
+        pay(signed.seq(2), 880_000);
+        awaitConfirmed(signed.orderId());
+        massPrintingStarted(signed.orderId());
+        SettleRemainderClosureCommand command = new SettleRemainderClosureCommand(signed.orderId(),
+                Identifiers.newId(), dong(1_100_000), dong(100_000), "Printed cartons never shipped",
+                "500 cups printed, kept in stock", sales.userId(), Instant.now(), null,
+                com.stockflow.payment.api.SettleShipmentReturnCommand.ShippingFee.NONE, null,
+                com.stockflow.payment.api.FeeBearer.COMPANY);
+
+        OrderSettlementResult result = tx.execute(s -> payments.settleRemainderClosure(command)).orElseThrow();
+        assertThat(result.fee()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(result.feeBearer()).isEqualTo(com.stockflow.payment.api.FeeBearer.COMPANY);
+        assertThat(result.feeBorneByCompany()).isEqualByComparingTo(dong(100_000));
+        assertThat(result.feeCovered()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(result.refundable()).as("all the surplus: as if no fee was kept").isEqualByComparingTo(dong(440_000));
+        assertThat(result.feeItemId()).isNull();
+        assertThat(refunds.feeBorneByCompany(signed.orderId())).isEqualByComparingTo(dong(100_000));
+        assertThat(tx.execute(s -> payments.settleRemainderClosure(command)).orElseThrow().settlementId())
+                .as("once per closure").isEqualTo(result.settlementId());
+
+        // A closure's fee without its bearer cannot be handed to payment at all.
+        assertThatThrownBy(() -> new SettleRemainderClosureCommand(signed.orderId(), Identifiers.newId(),
+                dong(1_100_000), dong(100_000), "r", "d", sales.userId(), Instant.now(), null,
+                com.stockflow.payment.api.SettleShipmentReturnCommand.ShippingFee.NONE, null, null))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     /** The single settlement of an order's refund, unpacked for the assertions. */

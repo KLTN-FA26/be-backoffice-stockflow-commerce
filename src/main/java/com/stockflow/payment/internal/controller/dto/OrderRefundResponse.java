@@ -29,7 +29,12 @@ public record OrderRefundResponse(UUID orderId, @Schema(example = "SO-20261108-0
                                           + "cancellation fee a closure left - shown beside the refund so it is "
                                           + "settled before the money goes out (docs 17 §4.10). Not taken off "
                                           + "remaining; 0 for none")
-                                  BigDecimal feeOwed) {
+                                  BigDecimal feeOwed,
+                                  @Schema(description = "D50: what the company bears of the fees kept with the order's "
+                                          + "cancellation or closures - the customer is charged none of it. The "
+                                          + "accountant's \"Phí do công ty chịu\"; 0 for none. Null in lists and on "
+                                          + "the customer's view", nullable = true)
+                                  BigDecimal feeBorneByCompany) {
 
     /**
      * One cancellation or closure: the money it found, the fee and how it was paid.
@@ -59,6 +64,12 @@ public record OrderRefundResponse(UUID orderId, @Schema(example = "SO-20261108-0
                                      + "share of the plate and shipping fees - moved onto the closure's fee item "
                                      + "(feeItemId), due from the closure's day (audit r3 LM-3). Part of reduced; owed "
                                      + "on the fee item beside feeOwed. 0 otherwise")
-                             BigDecimal carriedToFee) {
+                             BigDecimal carriedToFee,
+                             @Schema(description = "D46, D50: who bears the fee entered - the customer (fee is charged) or the "
+                                     + "company (fee is 0, feeBorneByCompany is the company's cost); null when no fee "
+                                     + "was entered. Null on the customer's view", nullable = true) String feeBearer,
+                             @Schema(description = "D50: the fee the company bears on this settlement, the fee terms "
+                                     + "(feePercent, feeReason, feeDetail) kept beside it; 0 otherwise. Null on the "
+                                     + "customer's view", nullable = true) BigDecimal feeBorneByCompany) {
     }
 }

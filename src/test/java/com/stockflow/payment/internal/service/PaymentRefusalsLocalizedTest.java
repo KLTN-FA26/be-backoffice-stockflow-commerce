@@ -108,11 +108,13 @@ class PaymentRefusalsLocalizedTest {
     @Test
     @DisplayName("the fee a cancellation keeps reads in Vietnamese, its limits grouped the reader's way")
     void settlementFee() {
-        assertThat(vietnamese(() -> new OrderSettlement.Fee(BigDecimal.TEN, BigDecimal.TEN, "r", "d")))
+        assertThat(vietnamese(() -> new OrderSettlement.Fee(BigDecimal.TEN, BigDecimal.TEN, "r", "d", com.stockflow.payment.api.FeeBearer.CUSTOMER)))
                 .isEqualTo("Chỉ giữ lại theo tỷ lệ phần trăm hoặc theo số tiền thoả thuận, không được cả hai.");
-        assertThat(vietnamese(() -> new OrderSettlement.Fee(new BigDecimal("101"), null, null, null)))
+        assertThat(vietnamese(() -> new OrderSettlement.Fee(new BigDecimal("101"), null, null, null,
+                com.stockflow.payment.api.FeeBearer.CUSTOMER)))
                 .isEqualTo("Tỷ lệ giữ lại phải lớn hơn 0 và tối đa 100%, tối đa hai chữ số thập phân.");
-        assertThat(vietnamese(() -> new OrderSettlement.Fee(null, BigDecimal.TEN, null, null)))
+        assertThat(vietnamese(() -> new OrderSettlement.Fee(null, BigDecimal.TEN, null, null,
+                com.stockflow.payment.api.FeeBearer.CUSTOMER)))
                 .isEqualTo("Số tiền thoả thuận cần có lý do (tối đa 500 ký tự) và diễn giải (tối đa 2.000 ký tự).");
     }
 

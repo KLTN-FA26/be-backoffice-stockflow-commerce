@@ -162,8 +162,39 @@ class OrderFlowFollowupsTest {
         }
 
         private com.stockflow.order.api.CancellationFee fee(long amount) {
+            return fee(amount, com.stockflow.order.api.CancellationFeeBearer.CUSTOMER);
+        }
+
+        private com.stockflow.order.api.CancellationFee fee(long amount,
+                                                            com.stockflow.order.api.CancellationFeeBearer bearer) {
             return new com.stockflow.order.api.CancellationFee(BigDecimal.valueOf(amount), "Phí in đã thực hiện",
-                    "4 ly đã in theo thiết kế, huỷ theo yêu cầu khách");
+                    "4 ly đã in theo thiết kế, huỷ theo yêu cầu khách", bearer);
+        }
+
+        @Test
+        @DisplayName("D50: the fee of a closure has its bearer - recorded with the closure, and when the company bears it "
+                + "the event charges the customer nothing")
+        void closureFeeHasItsBearer() {
+            Order order = tenMillion();
+            order.recordHandover(handover(S1, stock(order), 10));
+            printingStarted(order);
+            order.pullDomainEvents();
+
+            order.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null,
+                    fee(3_000_000, com.stockflow.order.api.CancellationFeeBearer.COMPANY), STAFF, NOW);
+
+            assertThat(order.lastClosureFeeBearer()).isEqualTo(com.stockflow.order.api.CancellationFeeBearer.COMPANY);
+            assertThat(order.lastClosureFeeAmount()).isEqualByComparingTo("3000000");
+            assertThat(order.pullDomainEvents()).filteredOn(e -> e instanceof OrderEvent.RemainderClosed)
+                    .singleElement().satisfies(e -> assertThat(((OrderEvent.RemainderClosed) e).payload().feeAmount())
+                            .as("what the customer is charged").isEqualByComparingTo("0"));
+
+            Order withoutFee = tenMillion();
+            withoutFee.recordHandover(handover(S1, stock(withoutFee), 10));
+            printingStarted(withoutFee);
+            withoutFee.closeRemainder(CancellationReasonCode.CUSTOMER_REQUEST, null, null, STAFF, NOW);
+            assertThat(withoutFee.lastClosureFeeBearer()).as("no fee, no bearer").isNull();
+            assertThat(withoutFee.lastClosureFeeAmount()).isNull();
         }
 
         @Test

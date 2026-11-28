@@ -4,6 +4,8 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.order.api.CancellationFee;
+import com.stockflow.order.api.CancellationFeeBearer;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderStatus;
 import org.junit.jupiter.api.DisplayName;
@@ -17,11 +19,26 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 class OrderTest {
 
     private static final Instant NOW = Instant.parse("2026-09-07T10:00:00Z");
     private static final OrderNumber NUMBER = OrderNumber.of(LocalDate.of(2026, 9, 7), 431);
+
+    /** A confirmed order whose printing started: the earliest point where a fee may be kept (17 BR-11). */
+    private static Order printingConfirmed() {
+        Order order = draftWithTwoLines();
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        confirmedByItsContract(order);
+        order.restoreFulfilmentFacts(NOW, null);
+        order.pullDomainEvents();
+        return order;
+    }
+
+    private static ErrorCode code(Throwable thrown) {
+        return ((BusinessException) thrown).errorCode();
+    }
 
     private static Order draftWithTwoLines() {
         return Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
@@ -180,7 +197,9 @@ class OrderTest {
                 e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING));
         order.restoreFulfilmentFacts(NOW, null);   // printing started (the Production Order records it, 17 BR-11)
 
-        order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, "changed supplier", new BigDecimal("25"), STAFF, NOW);
+        order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, "changed supplier", new BigDecimal("25"), null,
+                CancellationFeeBearer.CUSTOMER, STAFF, NOW);
+        assertThat(order.cancellationFeeBearer()).as("D50: a share has its bearer on the order").isEqualTo(CancellationFeeBearer.CUSTOMER);
 
         // 4B-9, 4B-10: the share is settled by payment against the installments in the caller's transaction; the
         // order keeps nothing and announces no money.
@@ -196,6 +215,38 @@ class OrderTest {
             assertThat(e.payload().currency()).isEqualTo("VND");
             assertThat(e.payload().cancelledBy()).isEqualTo(STAFF);
         });
+    }
+
+    @Test
+    @DisplayName("D50: every fee has its bearer - required with a share or an agreed amount, refused without a fee, "
+            + "and the company bearing it is recorded on the order")
+    void feeBearerIsRequiredWithAFeeAndRefusedWithout() {
+        CancellationFee agreed = new CancellationFee(new BigDecimal("500000"), "Cốc đã in", "Đã in 1.000 cốc",
+                CancellationFeeBearer.COMPANY);
+        // a share without a bearer
+        Order share = printingConfirmed();
+        assertThat(code(catchThrowable(() -> share.cancel(CancellationReasonCode.CUSTOMER_REQUEST, null,
+                new BigDecimal("25"), null, null, STAFF, NOW)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        // an agreed fee without a bearer cannot even be built: Sales choose, nothing is preselected
+        assertThatThrownBy(() -> new CancellationFee(new BigDecimal("1"), "r", "d", null))
+                .isInstanceOf(NullPointerException.class);
+        // a bearer with nothing to bear
+        assertThat(code(catchThrowable(() -> share.cancel(CancellationReasonCode.CUSTOMER_REQUEST, null, null, null,
+                CancellationFeeBearer.COMPANY, STAFF, NOW)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(catchThrowable(() -> share.cancel(CancellationReasonCode.CUSTOMER_REQUEST, null,
+                BigDecimal.ZERO, null, CancellationFeeBearer.CUSTOMER, STAFF, NOW)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(share.status()).as("a refusal leaves the order as it was").isNotEqualTo(OrderStatus.CANCELLED);
+
+        // the company bears an agreed amount: recorded with its terms and its bearer
+        share.cancel(CancellationReasonCode.OUT_OF_STOCK, null, null, agreed, STAFF, NOW);
+        assertThat(share.cancellationFeeBearer()).isEqualTo(CancellationFeeBearer.COMPANY);
+        assertThat(share.cancellationFeeAmount()).isEqualByComparingTo("500000");
+        assertThat(share.cancellationFeeReason()).isEqualTo("Cốc đã in");
+
+        // no fee, no bearer
+        Order none = printingConfirmed();
+        none.cancel(CancellationReasonCode.OUT_OF_STOCK, null, null, null, null, STAFF, NOW);
+        assertThat(none.cancellationFeeBearer()).isNull();
     }
 
     @Test

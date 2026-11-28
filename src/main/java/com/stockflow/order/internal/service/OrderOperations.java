@@ -121,7 +121,16 @@ public class OrderOperations {
     /** 17 §4.8: {@link CancellationRequestService#approve}. */
     public OrderSummary approveCancellationRequest(UUID orderId, UUID requestId, BigDecimal retainedPercent,
                                                    CancellationFee agreedFee, String note, UUID by) {
-        OrderSummary order = cancellationRequests.approve(orderId, requestId, retainedPercent, agreedFee, note, by);
+        return approveCancellationRequest(orderId, requestId, retainedPercent, agreedFee, null, note, by);
+    }
+
+    /** The same, with who bears a percentage fee (D46, D50); an agreed fee names its own bearer. */
+    public OrderSummary approveCancellationRequest(UUID orderId, UUID requestId, BigDecimal retainedPercent,
+                                                   CancellationFee agreedFee,
+                                                   com.stockflow.order.api.CancellationFeeBearer feeBearer,
+                                                   String note, UUID by) {
+        OrderSummary order = cancellationRequests.approve(orderId, requestId, retainedPercent, agreedFee, feeBearer,
+                note, by);
         onBehalf.record(orderId, by, OnBehalfAction.APPROVE_CANCELLATION_REQUEST);
         return order;
     }
@@ -219,8 +228,10 @@ public class OrderOperations {
     /** {@link ShortageCardExecutionService#cancel}. */
     public com.stockflow.order.api.ShortageCards.Card executeShortageCancel(UUID orderId, UUID cardId, Long version,
                                                                            String note, BigDecimal retainedPercent,
+                                                                           com.stockflow.order.api.CancellationFeeBearer
+                                                                                   feeBearer,
                                                                            CancellationFee fee, UUID by) {
-        var card = shortageExecutions.cancel(orderId, cardId, version, note, retainedPercent, fee, by);
+        var card = shortageExecutions.cancel(orderId, cardId, version, note, retainedPercent, feeBearer, fee, by);
         onBehalf.record(orderId, by, OnBehalfAction.EXECUTE_SHORTAGE_CHOICE);
         return card;
     }

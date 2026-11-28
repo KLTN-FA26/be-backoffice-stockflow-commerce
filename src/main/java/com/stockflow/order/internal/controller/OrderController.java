@@ -32,6 +32,7 @@ import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.internal.service.CustomerOrders;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -214,11 +215,13 @@ class OrderController {
         CancelOrderCommand command;
         if (request.reasonCode() != null) {
             command = new CancelOrderCommand(request.reasonCode(), request.note(), request.retainedPercent(),
-                    user.userId(), OrderWebMapper.toFee(request.agreedFee()));
+                    user.userId(), OrderWebMapper.toFee(request.agreedFee(), request.feeBearer(),
+                    OrderWebMapper.keepsShare(request.retainedPercent())), request.feeBearer());
         } else if (request.reason() != null && !request.reason().isBlank()) {
             CancelOrderCommand legacy = CancelOrderCommand.fromText(request.reason(), user.userId());
             command = new CancelOrderCommand(legacy.reasonCode(), legacy.note(), request.retainedPercent(),
-                    user.userId(), OrderWebMapper.toFee(request.agreedFee()));
+                    user.userId(), OrderWebMapper.toFee(request.agreedFee(), request.feeBearer(),
+                    OrderWebMapper.keepsShare(request.retainedPercent())), request.feeBearer());
         } else {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reasonCode is required");
         }
@@ -243,7 +246,8 @@ class OrderController {
                                                      @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(OrderWebMapper.toResponse(operations.closeRemainder(orderId, request.reasonCode(),
-                request.note(), OrderWebMapper.toFee(request.agreedFee()), user.userId())));
+                request.note(), OrderWebMapper.toFee(request.agreedFee(), request.feeBearer(), false),
+                user.userId())));
     }
 
     /**
@@ -270,14 +274,17 @@ class OrderController {
             @RequestParam(required = false) UUID customerId,
             @RequestParam(required = false) LocalDate placedFrom,
             @RequestParam(required = false) LocalDate placedTo,
-            @RequestParam(required = false) String sort) {
+            @RequestParam(required = false) String sort,
+            @Parameter(description = "D50: only orders whose cancellation or closure of the rest kept a fee borne by "
+                    + "this side; COMPANY is the accountant's \"Phí do công ty chịu\" filter")
+            @RequestParam(required = false) com.stockflow.order.api.CancellationFeeBearer feeBearer) {
         // Customers hold sales-orders:READ for their own orders; this list is every customer's.
         ScopeGuards.requireBackOffice(user);
         var found = orderService.list(new ListOrdersQuery(page,
                         size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, OrderStatusFilter.parse(statuses),
                         customerId,
                         placedFrom, placedTo, sort,
-                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)));
+                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user), feeBearer));
         // One query for the names of the whole page - not one per row.
         var labels = customerService.labels(found.items().stream().map(OrderSummary::customerId).toList());
         // And one for their warehouses.
@@ -287,8 +294,12 @@ class OrderController {
         var money = user.can(PAYMENT_INSTALLMENTS, Action.READ)
                 ? payments.paymentAmounts(found.items().stream().map(OrderSummary::orderId).toList())
                 : java.util.Map.<UUID, com.stockflow.payment.api.OrderPaymentAmounts>of();
-        return ApiResponse.ok(found.map(order -> OrderWebMapper.withPayment(OrderWebMapper.withWarehouse(
-                OrderWebMapper.toResponse(order, OrderWebMapper.labelOf(labels, order.customerId())), sites), money)));
+        // D50: and for which of them the company bears a fee, for the badge.
+        var companyFee = orderService.ordersWithFeeBorneByCompany(found.items().stream()
+                .map(OrderSummary::orderId).toList());
+        return ApiResponse.ok(found.map(order -> OrderWebMapper.withFeeBearerBadge(OrderWebMapper.withPayment(
+                OrderWebMapper.withWarehouse(OrderWebMapper.toResponse(order,
+                        OrderWebMapper.labelOf(labels, order.customerId())), sites), money), companyFee)));
     }
 
     @GetMapping("/{orderId}/history")

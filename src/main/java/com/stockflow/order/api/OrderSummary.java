@@ -232,12 +232,20 @@ public record OrderSummary(
      * @param retainedAmount what the order kept of money it received; 0 since 4B-10 - the fee is settled on the
      *                       installments (4B-9, {@code GET /api/v1/refunds/orders/{orderId}})
      * @param feeAmount      the amount agreed with the customer (Q2)
+     * @param feeBearer      who bears the fee kept, agreed amount or share (D46, D50); null when none was kept
      */
     public record Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount,
-                               String feeReason, String feeDetail, BigDecimal feeAmount) {
+                               String feeReason, String feeDetail, BigDecimal feeAmount,
+                               CancellationFeeBearer feeBearer) {
+
+        /** Without who bears the fee (D46, D50). */
+        public Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount,
+                            String feeReason, String feeDetail, BigDecimal feeAmount) {
+            this(reasonCode, reason, retainedAmount, feeReason, feeDetail, feeAmount, null);
+        }
 
         public Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount) {
-            this(reasonCode, reason, retainedAmount, null, null, null);
+            this(reasonCode, reason, retainedAmount, null, null, null, null);
         }
     }
 

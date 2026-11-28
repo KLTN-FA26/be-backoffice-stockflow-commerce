@@ -34,6 +34,14 @@ final class PaymentWebMapper {
     static com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse toResponse(
             com.stockflow.payment.internal.service.InstallmentService.OrderInstallments o,
             java.time.LocalDate today, java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels) {
+        return toResponse(o, today, labels, null);
+    }
+
+    /** @param feeBorneByCompany what the company bears of the order's fees (D50): staff only, null for the customer */
+    static com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse toResponse(
+            com.stockflow.payment.internal.service.InstallmentService.OrderInstallments o,
+            java.time.LocalDate today, java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels,
+            java.math.BigDecimal feeBorneByCompany) {
         var standing = o.standing();
         var first = o.installments().getFirst();
         return new com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse(standing.orderId(),
@@ -41,7 +49,7 @@ final class PaymentWebMapper {
                 standing.paymentStatus() == null ? null : standing.paymentStatus().name(), standing.total(),
                 standing.paid(), standing.outstanding(), standing.onSigningPaid(),
                 standing.beforeDeliveryUnpaid(), standing.dueBeforeHandover(), first.currency(),
-                o.installments().stream().map(i -> toResponse(i, null, today, labels)).toList());
+                o.installments().stream().map(i -> toResponse(i, null, today, labels)).toList(), feeBorneByCompany);
     }
 
     static com.stockflow.payment.internal.controller.dto.InstallmentTransferResponse toResponse(
@@ -113,13 +121,20 @@ final class PaymentWebMapper {
                     var terms = s.feeTerms();
                     return new com.stockflow.payment.internal.controller.dto.OrderRefundResponse.Settlement(s.id(),
                             s.kind().name(), s.collected(), s.closed(), s.reduced(), s.surplus(), s.fee(),
-                            terms.percent(), forCustomer ? null : terms.reason(), forCustomer ? null : terms.detail(),
+                            // The customer never sees a fee the company bears: it charged them nothing (D50).
+                            forCustomer && s.feeBearer() == com.stockflow.payment.api.FeeBearer.COMPANY ? null
+                                    : terms.percent(),
+                            forCustomer ? null : terms.reason(), forCustomer ? null : terms.detail(),
                             s.feeCovered(), s.refundable(), s.feeOwed(), s.feeItemId(), s.settledAt(), s.shipmentId(),
-                            s.shippingFeeWaived(), s.carriedToFee());
+                            s.shippingFeeWaived(), s.carriedToFee(),
+                            forCustomer || s.feeBearer() == null ? null : s.feeBearer().name(),
+                            forCustomer ? null : s.companyFee());
                 }).toList(), d.records().stream()
                 .filter(r -> !forCustomer
                         || r.status() == com.stockflow.payment.internal.domain.RefundRecord.Status.RECORDED)
-                .map(r -> forCustomer ? forCustomer(r) : toResponse(r, names, labels)).toList(), d.feeOwed());
+                .map(r -> forCustomer ? forCustomer(r) : toResponse(r, names, labels)).toList(), d.feeOwed(),
+                forCustomer ? null : d.settlements().stream().map(com.stockflow.payment.internal.domain.OrderSettlement::companyFee)
+                        .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add));
     }
 
     /** What the customer sees of a refund made: the money and the statement line, not the accountant's note or name. */
@@ -137,7 +152,7 @@ final class PaymentWebMapper {
                 o.refunded());
         return new com.stockflow.payment.internal.controller.dto.OrderRefundResponse(o.orderId(), o.orderNumber(),
                 o.currency(), standing.status().name(), o.refundable(), o.refunded(), o.remaining(), null, null,
-                o.feeOwed());
+                o.feeOwed(), null);
     }
 
     /**

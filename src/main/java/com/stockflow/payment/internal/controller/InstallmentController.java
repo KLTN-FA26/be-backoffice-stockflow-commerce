@@ -57,11 +57,14 @@ class InstallmentController {
     private final InstallmentService installments;
     private final CustomerService customers;
     private final CustomerSearch customerSearch;
+    private final com.stockflow.payment.internal.service.RefundService refunds;
 
-    InstallmentController(InstallmentService installments, CustomerService customers, CustomerSearch customerSearch) {
+    InstallmentController(InstallmentService installments, CustomerService customers, CustomerSearch customerSearch,
+                          com.stockflow.payment.internal.service.RefundService refunds) {
         this.installments = installments;
         this.customers = customers;
         this.customerSearch = customerSearch;
+        this.refunds = refunds;
     }
 
     @GetMapping
@@ -158,7 +161,8 @@ class InstallmentController {
         ScopeGuards.requireBackOffice(user);
         var order = installments.ofOrder(orderId, null);
         var labels = customers.labels(order.installments().stream().map(i -> i.customerId()).toList());
-        return ApiResponse.ok(PaymentWebMapper.toResponse(order, installments.today(), labels));
+        return ApiResponse.ok(PaymentWebMapper.toResponse(order, installments.today(), labels,
+                refunds.feeBorneByCompany(orderId)));
     }
 
     @GetMapping("/{installmentId}")

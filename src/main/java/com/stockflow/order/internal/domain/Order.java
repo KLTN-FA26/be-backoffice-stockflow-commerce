@@ -94,6 +94,14 @@ public final class Order extends AggregateRoot {
     private BigDecimal cancellationFeeAmount;
     private String cancellationFeeDetail;
     /**
+     * D46, D50: who bears the fee kept at cancellation - the agreed amount or the share alike (the share itself is
+     * payment's, so this is how the order knows who bears it); null when none was kept. Required with a fee.
+     */
+    private com.stockflow.order.api.CancellationFeeBearer cancellationFeeBearer;
+    /** The fee kept by the latest closure of the rest, as entered, and who bears it (D50); null when it kept none. */
+    private BigDecimal lastClosureFeeAmount;
+    private com.stockflow.order.api.CancellationFeeBearer lastClosureFeeBearer;
+    /**
      * When printing started for the order (audit of #109, decision 2026-10-17; 17 BR-11). Before it a cancellation is
      * refunded in full; from it Sales may keep an agreed fee. Printing is done by a producer outside the system
      * (kltn-docs 07/11): it is set once, when the first production order of the order enters In Production, whatever
@@ -1122,6 +1130,17 @@ public final class Order extends AggregateRoot {
      */
     public void cancel(CancellationReasonCode code, String note, BigDecimal retainedPercent,
                        com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant now) {
+        cancel(code, note, retainedPercent, agreedFee, agreedFee == null ? null : agreedFee.bearer(), by, now);
+    }
+
+    /**
+     * The same, with who bears the fee (D46, D50): required whenever the cancellation keeps something - a share above
+     * zero or an agreed amount - and absent when it keeps nothing; an agreed fee's bearer is the fee's own. The company
+     * bearing it changes nothing here: the order records the fee and its bearer, and payment settles it as no fee.
+     */
+    public void cancel(CancellationReasonCode code, String note, BigDecimal retainedPercent,
+                       com.stockflow.order.api.CancellationFee agreedFee,
+                       com.stockflow.order.api.CancellationFeeBearer feeBearer, UUID by, Instant now) {
         java.util.Objects.requireNonNull(code, "code");
         if (agreedFee != null) {
             requireAgreedFee(agreedFee, retainedPercent);
@@ -1162,12 +1181,14 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING,
                     "Order %s has not started printing: it is refunded in full and no fee is kept".formatted(orderNumber));
         }
+        requireFeeBearer(keepsSomething, feeBearer, agreedFee);
         OrderStatus previous = status;
         int scale = total().currency().getDefaultFractionDigits();
         BigDecimal agreed = agreedFee == null ? null : agreedFee.amount().setScale(scale);
         this.cancellationFeeAmount = agreed;
         this.cancellationFeeReason = agreedFee == null ? null : agreedFee.reason();
         this.cancellationFeeDetail = agreedFee == null ? null : agreedFee.detail();
+        this.cancellationFeeBearer = keepsSomething ? feeBearer : null;
         // The free-text column the timeline shows: the code, and the note when there is one.
         String reasonText = trimmed == null ? code.name() : code.name() + ": " + trimmed;
         transitionTo(OrderStatus.CANCELLED, by, reasonText, now);
@@ -1180,6 +1201,30 @@ public final class Order extends AggregateRoot {
         registerEvent(new OrderEvent.Cancelled(new OrderCancelled(id.value(), orderNumber.value(), customerId,
                 previous.name(), code.name(), trimmed, BigDecimal.ZERO, BigDecimal.ZERO,
                 total().currency().getCurrencyCode(), by, now, BigDecimal.ZERO)));
+    }
+
+    /**
+     * D46, D50: Sales choose who bears every fee and nothing is preselected, so a fee without a bearer is refused (the
+     * database says it again: {@code ck_order_cancellation_fee_bearer}, {@code ck_order_remainder_closure_fee}); and a
+     * bearer with no fee has nothing to bear.
+     */
+    private void requireFeeBearer(boolean keepsFee, com.stockflow.order.api.CancellationFeeBearer bearer,
+                                  com.stockflow.order.api.CancellationFee agreedFee) {
+        if (keepsFee && bearer == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Order %s: a fee needs its bearer, the customer or the company".formatted(orderNumber))
+                    .localized("refusal.order.feeBearerRequired");
+        }
+        if (!keepsFee && bearer != null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Order %s: no fee is kept, so no one bears one".formatted(orderNumber))
+                    .localized("refusal.order.feeBearerWithoutFee");
+        }
+        if (agreedFee != null && bearer != agreedFee.bearer()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Order %s: the agreed fee names its own bearer".formatted(orderNumber))
+                    .localized("refusal.order.feeBearerRequired");
+        }
     }
 
     private void requireAgreedFee(com.stockflow.order.api.CancellationFee fee, BigDecimal retainedPercent) {
@@ -1909,6 +1954,8 @@ public final class Order extends AggregateRoot {
         boolean goodsMade = printingStartedAt != null || shipments.stream().anyMatch(OrderShipment::isReturned);
         BigDecimal fee = agreedFee == null ? BigDecimal.ZERO
                 : requireRemainderFee(agreedFee, closedPrints.amount(), goodsMade);
+        // D50: the closure's fee has its bearer too, chosen by Sales, required with the fee (a fee's bearer is its own).
+        requireFeeBearer(agreedFee != null, agreedFee == null ? null : agreedFee.bearer(), agreedFee);
         Money closed = Money.zero(total().currency());
         List<com.stockflow.contracts.OrderRemainderClosed.Line> closedLines = new ArrayList<>();
         for (OrderLine line : lines) {
@@ -1924,7 +1971,9 @@ public final class Order extends AggregateRoot {
         String reason = withNote("REMAINDER_CLOSED_" + code.name(), trimmed);
         if (fee.signum() > 0) {
             // The fee and why, in the order's history (the event carries amounts only); the column holds 500.
-            reason = reason + " (fee " + fee.stripTrailingZeros().toPlainString() + ": " + agreedFee.reason() + ")";
+            reason = reason + " (fee " + fee.stripTrailingZeros().toPlainString()
+                    + (agreedFee.bearer().borneByCompany() ? ", borne by the company" : "") + ": " + agreedFee.reason()
+                    + ")";
             reason = reason.length() > 500 ? reason.substring(0, 500) : reason;
         }
         // D23 (15 BR-09): the rest closed counts towards when the order was delivered in full (deliveredInFullAt).
@@ -1933,11 +1982,15 @@ public final class Order extends AggregateRoot {
         // or has no shipment to look at yet); their last handover makes it SHIPPED.
         followShipments(ShipmentChange.CLOSED, at, by, reason);
         this.lastClosureId = UUID.randomUUID();
+        this.lastClosureFeeAmount = agreedFee == null ? null : fee;
+        this.lastClosureFeeBearer = agreedFee == null ? null : agreedFee.bearer();
         // The money is the installments', settled by payment in this transaction (OrderServiceImpl.closeRemainder): the
         // event carries no money of the order's own since 4B-10 (paid, refundable, retained and owed are 0).
         registerEvent(new OrderEvent.RemainderClosed(new com.stockflow.contracts.OrderRemainderClosed(id.value(),
                 orderNumber.value(), customerId, code.name(), closedLines, closed.amount(), billable(), BigDecimal.ZERO,
-                BigDecimal.ZERO, total().currency().getCurrencyCode(), by, at, lastClosureId, fee, BigDecimal.ZERO,
+                BigDecimal.ZERO, total().currency().getCurrencyCode(), by, at, lastClosureId,
+                // What the customer is charged: nothing when the company bears the fee (D50).
+                agreedFee != null && agreedFee.bearer().borneByCompany() ? BigDecimal.ZERO : fee, BigDecimal.ZERO,
                 BigDecimal.ZERO)));
         return closed.amount();
     }
@@ -2714,6 +2767,12 @@ public final class Order extends AggregateRoot {
     public String cancellationFeeReason() { return cancellationFeeReason; }
     public BigDecimal cancellationFeeAmount() { return cancellationFeeAmount; }
     public String cancellationFeeDetail() { return cancellationFeeDetail; }
+    /** D46, D50: who bears the fee kept at cancellation; null when none was kept. */
+    public com.stockflow.order.api.CancellationFeeBearer cancellationFeeBearer() { return cancellationFeeBearer; }
+    /** D50: the fee the latest closure of the rest kept, as entered; null when it kept none. */
+    public BigDecimal lastClosureFeeAmount() { return lastClosureFeeAmount; }
+    /** D50: who bears that fee; null when the closure kept none. */
+    public com.stockflow.order.api.CancellationFeeBearer lastClosureFeeBearer() { return lastClosureFeeBearer; }
 
     /** Rehydration of the printing and fulfilment facts the cancellation rules read. */
     public void restoreFulfilmentFacts(Instant printingStarted, Instant packed) {
@@ -2930,10 +2989,12 @@ public final class Order extends AggregateRoot {
     }
 
     /** Rehydration of the agreed amount's terms. */
-    public void restoreCancellationFee(BigDecimal amount, String reason, String detail) {
+    public void restoreCancellationFee(BigDecimal amount, String reason, String detail,
+                                       com.stockflow.order.api.CancellationFeeBearer bearer) {
         this.cancellationFeeAmount = amount;
         this.cancellationFeeReason = reason;
         this.cancellationFeeDetail = detail;
+        this.cancellationFeeBearer = bearer;
     }
     public UUID warehouseId() { return warehouseId; }
     public Instant releasedAt() { return releasedAt; }

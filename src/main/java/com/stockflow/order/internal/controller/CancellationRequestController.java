@@ -83,7 +83,9 @@ class CancellationRequestController {
                                               @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(OrderWebMapper.toResponse(operations.approveCancellationRequest(orderId, requestId,
                 request == null ? null : request.retainedPercent(),
-                request == null ? null : OrderWebMapper.toFee(request.agreedFee()),
+                request == null ? null : OrderWebMapper.toFee(request.agreedFee(), request.feeBearer(),
+                        OrderWebMapper.keepsShare(request.retainedPercent())),
+                request == null ? null : request.feeBearer(),
                 request == null ? null : request.note(), user.userId())));
     }
 

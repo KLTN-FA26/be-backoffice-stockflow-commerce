@@ -2,6 +2,7 @@ package com.stockflow.payment.internal.domain;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.payment.api.FeeBearer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * 4B-9 (kltn-docs 15 §4.5, §4.6, BR-14..BR-16; 17 §4.8 steps 30 and 33; D30, D32): the money a cancellation, a
@@ -60,11 +62,11 @@ class OrderSettlementTest {
 
     private static OrderSettlement.Fee agreed(long amount) {
         return new OrderSettlement.Fee(null, dong(amount), "Goods printed to the customer's design",
-                "1,000 cups printed before the order was cancelled");
+                "1,000 cups printed before the order was cancelled", FeeBearer.CUSTOMER);
     }
 
     private static OrderSettlement.Fee share(String percent) {
-        return new OrderSettlement.Fee(new BigDecimal(percent), null, null, null);
+        return new OrderSettlement.Fee(new BigDecimal(percent), null, null, null, FeeBearer.CUSTOMER);
     }
 
     private static ErrorCode code(Throwable thrown) {
@@ -168,20 +170,116 @@ class OrderSettlementTest {
         @Test
         @DisplayName("17 §4.8 step 30: a share or an agreed amount with its reason and detail - never both, never bare")
         void feeTerms() {
-            assertThatThrownBy(() -> new OrderSettlement.Fee(BigDecimal.TEN, dong(100), "r", "d"))
+            assertThatThrownBy(() -> new OrderSettlement.Fee(BigDecimal.TEN, dong(100), "r", "d", FeeBearer.CUSTOMER))
                     .extracting(OrderSettlementTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThatThrownBy(() -> new OrderSettlement.Fee(null, dong(100), null, null))
+            assertThatThrownBy(() -> new OrderSettlement.Fee(null, dong(100), null, null, FeeBearer.CUSTOMER))
                     .as("an agreed amount needs its reason and detail")
                     .extracting(OrderSettlementTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThatThrownBy(() -> new OrderSettlement.Fee(null, dong(100), "r", "x".repeat(2001)))
+            assertThatThrownBy(() -> new OrderSettlement.Fee(null, dong(100), "r", "x".repeat(2001), FeeBearer.CUSTOMER))
                     .extracting(OrderSettlementTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThatThrownBy(() -> new OrderSettlement.Fee(null, new BigDecimal("100.5"), "r", "d"))
+            assertThatThrownBy(() -> new OrderSettlement.Fee(null, new BigDecimal("100.5"), "r", "d", FeeBearer.CUSTOMER))
                     .as("whole dong").extracting(OrderSettlementTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThatThrownBy(() -> share("0")).extracting(OrderSettlementTest::code)
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThatThrownBy(() -> share("100.01")).extracting(OrderSettlementTest::code)
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThat(share("100").percent()).isEqualByComparingTo("100");
+        }
+    }
+
+    @Nested
+    @DisplayName("who bears the fee (D46, D50): the company bearing it charges the customer nothing")
+    class FeeBearerRules {
+
+        private OrderSettlement.Fee companyAgreed(long amount) {
+            return new OrderSettlement.Fee(null, dong(amount), "Goods printed to the customer's design",
+                    "1,000 cups printed before the order was cancelled", FeeBearer.COMPANY);
+        }
+
+        @Test
+        @DisplayName("a fee needs its bearer, and no fee has none")
+        void bearerIsRequiredWithAFee() {
+            assertThat(code(catchThrowable(() -> new OrderSettlement.Fee(null, dong(100), "r", "d", null))))
+                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(code(catchThrowable(() -> new OrderSettlement.Fee(new BigDecimal("10"), null, null, null,
+                    null)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(code(catchThrowable(() -> new OrderSettlement.Fee(null, null, null, null, FeeBearer.COMPANY))))
+                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        }
+
+        @Test
+        @DisplayName("CUSTOMER bears an agreed amount: charged as always - the money pays it first, the rest is refunded")
+        void customerBearsTheAgreedAmount() {
+            OrderSettlement s = OrderSettlement.cancel(plan(924_000, 616_000), agreed(400_000), STAFF, AT, DAY)
+                    .settlement();
+            assertThat(s.feeBearer()).isEqualTo(FeeBearer.CUSTOMER);
+            assertThat(s.fee()).isEqualByComparingTo(dong(400_000));
+            assertThat(s.refundable()).isEqualByComparingTo(dong(1_140_000));
+            assertThat(s.companyFee()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+
+        @Test
+        @DisplayName("COMPANY bears an agreed amount: nothing charged, everything collected refundable, no fee item - "
+                + "the amount and its terms are kept as the company's cost")
+        void companyBearsTheAgreedAmount() {
+            List<Installment> plan = plan(924_000, 616_000);
+            OrderSettlement.Outcome outcome = OrderSettlement.cancel(plan, companyAgreed(400_000), STAFF, AT, DAY);
+            OrderSettlement s = outcome.settlement();
+
+            assertThat(s.feeBearer()).isEqualTo(FeeBearer.COMPANY);
+            assertThat(s.fee()).as("what the customer is charged").isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.feeCovered()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.refundable()).as("as if no fee was kept").isEqualByComparingTo(dong(1_540_000));
+            assertThat(s.feeOwed()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(outcome.feeItem()).as("no receivable").isNull();
+            assertThat(s.companyFee()).as("the company's cost").isEqualByComparingTo(dong(400_000));
+            assertThat(s.feeTerms().reason()).isEqualTo("Goods printed to the customer's design");
+            assertThat(s.feeTerms().detail()).isEqualTo("1,000 cups printed before the order was cancelled");
+        }
+
+        @Test
+        @DisplayName("COMPANY bearing an agreed amount above what was collected owes nothing either: no shortfall, no item")
+        void companyBearingMoreThanWasCollectedOwesNothing() {
+            OrderSettlement.Outcome outcome = OrderSettlement.cancel(plan(924_000, 0), companyAgreed(2_000_000), STAFF,
+                    AT, DAY);
+            assertThat(outcome.feeItem()).isNull();
+            assertThat(outcome.settlement().feeOwed()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(outcome.settlement().refundable()).isEqualByComparingTo(dong(924_000));
+            assertThat(outcome.settlement().companyFee()).isEqualByComparingTo(dong(2_000_000));
+            // the same fee on the customer is a shortfall owed on a fee item
+            assertThat(OrderSettlement.cancel(plan(924_000, 0), agreed(2_000_000), STAFF, AT, DAY).feeItem()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("COMPANY bears a share: the share of what was collected is the company's cost, the customer is "
+                + "refunded all of it")
+        void companyBearsAShare() {
+            OrderSettlement.Fee fee = new OrderSettlement.Fee(new BigDecimal("10"), null, null, null, FeeBearer.COMPANY);
+            OrderSettlement s = OrderSettlement.cancel(plan(924_000, 616_000), fee, STAFF, AT, DAY).settlement();
+            assertThat(s.fee()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(s.refundable()).isEqualByComparingTo(dong(1_540_000));
+            assertThat(s.companyFee()).as("10% of 1,540,000").isEqualByComparingTo(dong(154_000));
+            assertThat(s.feeTerms().percent()).isEqualByComparingTo("10");
+            assertThat(s.feeBearer()).isEqualTo(FeeBearer.COMPANY);
+        }
+
+        @Test
+        @DisplayName("a closure: COMPANY bearing the fee leaves the refund as with no fee and writes no fee item")
+        void companyBearsTheClosureFee() {
+            OrderSettlement.Outcome noFee = OrderSettlement.closeRemainder(plan(924_000, 1_232_000), UUID.randomUUID(),
+                    dong(1_100_000), OrderSettlement.Fee.none(), STAFF, AT, DAY);
+            OrderSettlement.Outcome company = OrderSettlement.closeRemainder(plan(924_000, 1_232_000),
+                    UUID.randomUUID(), dong(1_100_000), companyAgreed(100_000), STAFF, AT, DAY);
+            OrderSettlement.Outcome customer = OrderSettlement.closeRemainder(plan(924_000, 1_232_000),
+                    UUID.randomUUID(), dong(1_100_000), agreed(100_000), STAFF, AT, DAY);
+
+            assertThat(company.settlement().refundable()).isEqualByComparingTo(noFee.settlement().refundable());
+            assertThat(company.settlement().fee()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(company.settlement().companyFee()).isEqualByComparingTo(dong(100_000));
+            assertThat(company.feeItem()).isEqualTo(noFee.feeItem());
+            assertThat(customer.settlement().fee()).isEqualByComparingTo(dong(100_000));
+            assertThat(customer.settlement().refundable())
+                    .isEqualByComparingTo(noFee.settlement().refundable().subtract(dong(100_000)));
         }
     }
 

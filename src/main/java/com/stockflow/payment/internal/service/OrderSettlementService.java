@@ -61,13 +61,14 @@ public class OrderSettlementService {
             return Optional.empty();
         }
         OrderSettlement.Fee fee = new OrderSettlement.Fee(command.feePercent(), command.feeAmount(),
-                command.feeReason(), command.feeDetail());
+                command.feeReason(), command.feeDetail(), command.feeBearer());
         OrderSettlement.Outcome outcome = OrderSettlement.cancel(ofOrder, fee, command.cancelledBy(),
                 command.cancelledAt(), day(command.cancelledAt()));
         OrderSettlement settlement = save(outcome);
-        log.info("Order {} cancelled: {} installment(s) cancelled; {} {} collected, fee {} ({} of it owed), {} to refund",
-                settlement.orderNumber(), outcome.changed().size(), settlement.collected(), settlement.currency(),
-                settlement.fee(), settlement.feeOwed(), settlement.refundable());
+        log.info("Order {} cancelled: {} installment(s) cancelled; {} {} collected, fee {} ({} of it owed, {} borne by the "
+                        + "company), {} to refund", settlement.orderNumber(), outcome.changed().size(),
+                settlement.collected(), settlement.currency(), settlement.fee(), settlement.feeOwed(),
+                settlement.companyFee(), settlement.refundable());
         return Optional.of(toResult(settlement));
     }
 
@@ -88,7 +89,8 @@ public class OrderSettlementService {
             return Optional.empty();
         }
         OrderSettlement.Fee fee = command.feeAmount() == null ? OrderSettlement.Fee.none()
-                : new OrderSettlement.Fee(null, command.feeAmount(), command.feeReason(), command.feeDetail());
+                : new OrderSettlement.Fee(null, command.feeAmount(), command.feeReason(), command.feeDetail(),
+                        command.feeBearer());
         // Read under the installments' lock, as for a shipment brought back: the earlier waivers cannot move under it.
         java.math.BigDecimal waived = OrderSettlement.shippingFeeShare(command.shippingFee().fee(),
                 command.shippingFee().orderGoodsValue(), command.shippingFee().endsWithNothingDelivered(),
@@ -213,6 +215,7 @@ public class OrderSettlementService {
 
     static OrderSettlementResult toResult(OrderSettlement s) {
         return new OrderSettlementResult(s.id(), s.kind().name(), s.collected(), s.reduced(), s.surplus(), s.fee(),
-                s.feeCovered(), s.refundable(), s.feeOwed(), s.feeItemId(), s.currency(), s.shippingFeeWaived());
+                s.feeCovered(), s.refundable(), s.feeOwed(), s.feeItemId(), s.currency(), s.shippingFeeWaived(),
+                s.feeBearer(), s.companyFee());
     }
 }

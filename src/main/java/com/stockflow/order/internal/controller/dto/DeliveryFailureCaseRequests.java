@@ -26,7 +26,11 @@ public final class DeliveryFailureCaseRequests {
                     + "pays it first, the rest above the goods delivered is refundable, what it does not cover is "
                     + "owed on a fee item", nullable = true)
             @Valid
-            CancellationFeeRequest agreedFee
+            CancellationFeeRequest agreedFee,
+
+            @Schema(description = "Who bears the agreed fee (D46, D50): the customer is charged it, or the company bears it - the "
+                    + "customer is charged nothing. Required with agreedFee, no default; refused without one", nullable = true)
+            com.stockflow.order.api.CancellationFeeBearer feeBearer
     ) {
     }
 }
