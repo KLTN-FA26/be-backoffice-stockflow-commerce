@@ -3350,33 +3350,33 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
-    @DisplayName("BE-3 (07 §4.4 step 11): no whole carton to replace a removed one - 409 INSUFFICIENT_STOCK, the order "
-            + "held INVENTORY for Sales to decide, the batch short of it; stock arrives, the reallocation succeeds, the "
-            + "order resumes PARTIALLY_FULFILLED and the replacement ships: SHIPPED")
-    void removedCartonWithoutStockHoldsTheOrder() throws Exception {
+    @DisplayName("BE-3 (07 §4.4 step 11, WF4-F3): no whole carton to replace a removed one - 409 INSUFFICIENT_STOCK, "
+            + "the order is NOT held again, the batch short of it; stock arrives, the reallocation succeeds, the order "
+            + "stays PARTIALLY_FULFILLED and the replacement ships: SHIPPED")
+    void refusedTopUpDoesNotHoldTheOrder() throws Exception {
         OrderSummary order = ftlOrder(2);
         Object[] x = removedAndPartShipped(order);
         UUID task = (UUID) x[0];
         UUID removed = (UUID) x[1];
         String damaged = (String) x[2];
+        OrderStatus before = orders.findById(order.orderId()).orElseThrow().status();
 
+        // WF4-F3 (owner 28/11): a refused top-up only answers 409; the order is not held again and the shipment that is
+        // already ready keeps moving.
         reallocate(task, removed).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INSUFFICIENT_STOCK"));
-        OrderSummary held = orders.findById(order.orderId()).orElseThrow();
-        assertThat(held.status()).isEqualTo(OrderStatus.ON_HOLD);
-        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("not held by a refused top-up")
+                .isEqualTo(before).isNotEqualTo(OrderStatus.ON_HOLD);
         assertThat(batchHolds(order)).as("nothing allocated; the batch still lacks the carton").isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick_line WHERE pick_id = ?", Integer.class,
                 task)).isEqualTo(2);
-        // Refused again: still held, once.
         reallocate(task, removed).andExpect(status().isConflict());
-        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(before);
 
-        // The goods arrive (a production order's receipt, say): the reallocation now replaces it, and the hold resolves.
+        // The goods arrive (a production order's receipt, say): the reallocation now replaces it.
         CustomerSkuRows.stock(jdbc, tx, cupOf(DemoData.CUSTOMER_ID).sku(), 2);
         assertThat(data(reallocate(task, removed).andExpect(status().isOk()))).hasSize(1);
-        assertThat(orders.findById(order.orderId()).orElseThrow().status())
-                .as("back where it was before the hold").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
 
         replacementShipped(order, task, damaged);
     }

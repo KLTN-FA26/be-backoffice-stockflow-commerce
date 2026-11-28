@@ -702,28 +702,6 @@ class PickListServiceTest {
         }
 
         @Test
-        @DisplayName("no stock to replace it (07 §4.4 step 11): the order is held INVENTORY; held already, it is left")
-        void holdsWithoutStock() {
-            service.holdForUnreplacedCarton(task.getId(), removed.getId(), actor);
-
-            verify(orders).putOnHold(eq(task.getOrderId()), eq(HoldReason.INVENTORY), any(), eq(picker));
-
-            orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY);
-            service.holdForUnreplacedCarton(task.getId(), removed.getId(), actor);
-            verify(orders, org.mockito.Mockito.times(1)).putOnHold(any(), any(), any(), any());
-        }
-
-        @Test
-        @DisplayName("a line whose carton was not removed does not hold the order")
-        void onlyARemovedCarton() {
-            UUID kept = stored.get(1).getId();
-
-            service.holdForUnreplacedCarton(task.getId(), kept, actor);
-
-            verify(orders, never()).putOnHold(any(), any(), any(), any());
-        }
-
-        @Test
         @DisplayName("WF4-BE3-HOLD: at the removal itself the order is held INVENTORY, as a short pick report holds it; "
                 + "held already, it is left")
         void holdsAtTheRemoval() {

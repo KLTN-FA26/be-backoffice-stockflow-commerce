@@ -668,13 +668,6 @@ class PickListService implements PickLists {
     }
 
     @Override
-    public void holdForUnreplacedCarton(UUID taskId, UUID lineId, CurrentUser actor) {
-        holdForLackingCarton(taskId, lineId, actor, "Carton %s (%d x %s) removed at the check station: no whole carton "
-                + "in the warehouse to replace it", "Order {} held INVENTORY: removed carton {} has no replacement in "
-                + "stock");
-    }
-
-    @Override
     public void holdForRemovedCarton(UUID taskId, UUID lineId, CurrentUser actor) {
         holdForLackingCarton(taskId, lineId, actor, "Carton %s (%d x %s) removed at the check station: the warehouse "
                 + "manager replaces it", "Order {} held INVENTORY: carton {} was removed at the check station");
