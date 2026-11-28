@@ -54,11 +54,26 @@ public final class ChatRequests {
 
     /**
      * An action on a card: {@code ACCEPT} (version, cartons per quote line id), {@code REQUEST_CHANGES} (note),
-     * {@code APPROVE}, {@code REQUEST_REPRINT} (note, required), {@code RATE} (score 1-5, comment) for the customer;
+     * {@code APPROVE}, {@code REQUEST_REPRINT} (note, required), {@code RATE} (score 1-5, comment), {@code CHOOSE}
+     * (option, note) for the customer;
      * {@code CREATE_QUOTE} for Sales.
      */
     public record CardAction(String action, Long version, java.util.Map<UUID, Integer> cartons, String note,
-                             Integer score, String comment) {
+                             Integer score, String comment, String option) {
+
+        /** A card action that names no option. */
+        public CardAction(String action, Long version, java.util.Map<UUID, Integer> cartons, String note,
+                          Integer score, String comment) {
+            this(action, version, cartons, note, score, comment, null);
+        }
+    }
+
+    /**
+     * Sales send the shortage choice card of one of the customer's orders into this conversation (17 §4.14 step 55):
+     * the system draws it from the order, Sales type only an optional note (at most 500); {@code replaceLive} replaces
+     * the card still waiting for the same batch.
+     */
+    public record ShortageCard(UUID orderId, String note, Boolean replaceLive) {
     }
 
     /** Sales send the transfer details of one installment of the customer's; {@code reminder} for an overdue one. */

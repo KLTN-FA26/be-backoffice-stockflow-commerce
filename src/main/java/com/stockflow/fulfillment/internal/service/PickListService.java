@@ -75,7 +75,7 @@ import java.util.stream.Collectors;
  */
 @Service
 @Transactional
-class PickListService implements PickLists {
+class PickListService implements PickLists, com.stockflow.order.spi.ShortPickLines {
 
     private static final Logger log = LoggerFactory.getLogger(PickListService.class);
 
@@ -741,6 +741,52 @@ class PickListService implements PickLists {
         Map<UUID, Integer> lacking = new HashMap<>();
         wanted.forEach((line, units) -> lacking.put(line, Math.max(0, units)));
         return lacking;
+    }
+
+    /**
+     * The cartons an order's tasks are short of, per order line, for the shortage choice card (17 §4.14 step 55): the
+     * lines reported SHORT (one carton each), and the cartons removed at the check station that no replacement covers -
+     * by the very rule that holds the order for them ({@link #holdForLackingCarton}) and that the reallocation replaces
+     * them by ({@link #replaceRemoved}): the order line still lacks the carton and no line replaced it yet.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public List<com.stockflow.order.spi.ShortPickLines.ShortLine> shortLinesOf(UUID orderId) {
+        OrderSummary order = orders.findById(orderId).orElse(null);
+        if (order == null) {
+            return List.of();
+        }
+        Map<UUID, Integer> missing = new java.util.LinkedHashMap<>();
+        Map<UUID, String> skus = new HashMap<>();
+        for (PickJpaEntity pick : picks.findAllByOrderId(orderId)) {
+            if (pick.getStatus() == PickStatus.CANCELLED) {
+                continue;
+            }
+            PickList list = toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()));
+            for (PickLine line : list.lines()) {
+                if (line.status() == PickLineStatus.SHORT) {
+                    missing.merge(line.orderLineId(), 1, Integer::sum);
+                    skus.put(line.orderLineId(), line.sku());
+                }
+            }
+            Set<UUID> removed = removedReplaceable(list.lines().stream().map(PickLine::id).toList());
+            if (removed.isEmpty()) {
+                continue;
+            }
+            Set<UUID> replaced = pickLines.findByReplacesLineIdIn(removed).stream()
+                    .map(PickLineJpaEntity::getReplacesLineId).collect(Collectors.toSet());
+            Map<UUID, Integer> lacking = new HashMap<>(lacking(pick, order, list));
+            for (PickLine line : list.lines()) {
+                int lacks = lacking.getOrDefault(line.orderLineId(), 0);
+                if (removed.contains(line.id()) && !replaced.contains(line.id()) && lacks >= line.allocatedQty()) {
+                    lacking.put(line.orderLineId(), lacks - line.allocatedQty());
+                    missing.merge(line.orderLineId(), 1, Integer::sum);
+                    skus.put(line.orderLineId(), line.sku());
+                }
+            }
+        }
+        return missing.entrySet().stream().map(e -> new com.stockflow.order.spi.ShortPickLines.ShortLine(e.getKey(),
+                skus.get(e.getKey()), e.getValue())).toList();
     }
 
     /** Whether a line of the order whose carton left it to be replaced still lacks a replacement in the task. */

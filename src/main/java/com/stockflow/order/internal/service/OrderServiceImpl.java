@@ -437,6 +437,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         settleContractMoney(order, command, now);
         closeUndecidableCancellationRequest(order);
         events.publishEventsOf(order);
+        endShortageCards(order.id().value(), com.stockflow.order.api.ShortageCardEnd.ORDER_CANCELLED);
         // The code, not the reason text: the text carries the customer's note, and a line break in it
         // would forge log lines (CodeQL java/log-injection).
         log.info("Cancelled order {} ({})", order.orderNumber(), order.cancellationReasonCode());
@@ -1145,6 +1146,26 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     /**
+     * The shortage choice cards of an order end when the order moves on without them (17 §4.14 step 60). Looked up,
+     * not injected: the cards read this module's other services, and a constructor cycle would not start. Null in a
+     * unit test built by hand: there are no cards then.
+     */
+    private org.springframework.beans.factory.ObjectProvider<ShortageCardService> shortageCards;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void shortageCards(org.springframework.beans.factory.ObjectProvider<ShortageCardService> shortageCards) {
+        this.shortageCards = shortageCards;
+    }
+
+    /** Ends the order's live shortage cards for {@code ending}; nothing when {@code ending} is null (the card's own steps). */
+    private void endShortageCards(UUID orderId, com.stockflow.order.api.ShortageCardEnd ending) {
+        ShortageCardService service = ending == null || shortageCards == null ? null : shortageCards.getIfAvailable();
+        if (service != null) {
+            service.expireLive(orderId, ending);
+        }
+    }
+
+    /**
      * WF-05 fix plan, section 2: Sales decided the delivery failure the order was held for - the goods are delivered
      * again. The hold is lifted and its row resolved; the order is PARTIALLY_FULFILLED, owing that delivery. Called by
      * {@link DeliveryFailureService} in its transaction; an order held for something else is refused by the aggregate.
@@ -1217,10 +1238,29 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return saved(order);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Called by fulfillment when the warehouse manager's reallocation replaced the missing carton, so a live shortage
+     * card ends as {@code REALLOCATED}: nothing is short any more (17 §4.14 step 60). Sales lifting the hold by hand
+     * go through {@link #resolveHold(UUID, String, UUID, com.stockflow.order.api.ShortageCardEnd)}.</p>
+     */
     @Override
     @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
             resourceType = "order", resourceId = "#orderId")
     public OrderSummary resolveHold(UUID orderId, String note, UUID by) {
+        return resolveHold(orderId, note, by, com.stockflow.order.api.ShortageCardEnd.REALLOCATED);
+    }
+
+    /**
+     * Resolves the hold, and ends the order's live shortage cards for {@code ending}: {@code DECIDED_WITHOUT_CARD} for
+     * Sales lifting it by hand (D47), {@code REALLOCATED} for the warehouse's reallocation. {@code null} leaves the cards
+     * as they are - for the operation that carries a card's own choice out.
+     */
+    @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
+            resourceType = "order", resourceId = "#orderId")
+    public OrderSummary resolveHold(UUID orderId, String note, UUID by,
+                                    com.stockflow.order.api.ShortageCardEnd ending) {
         Order order = lockOrder(orderId);
         // A credit hold is accounting's to decide (ORDER_CREDIT_HOLD_USE_APPROVAL from the order itself).
         if (order.paidByContract() && order.status() == OrderStatus.ON_HOLD
@@ -1237,6 +1277,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             holds.save(hold);
         });
         log.info("Order {}: hold resolved, now {}", order.orderNumber(), order.status());
+        endShortageCards(orderId, ending);
         return saved(order);
     }
 
@@ -1304,6 +1345,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // invoicing reads (ShippingFeeWaivers).
         remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId, order.lastClosureId(),
                 reasonCode.name(), note, by, now, waived));
+        endShortageCards(orderId, com.stockflow.order.api.ShortageCardEnd.REMAINDER_CLOSED);
         log.info("Order {}: rest closed ({}), {} {} worth; now {}", order.orderNumber(), reasonCode, closed,
                 order.total().currency(), order.status());
         OrderSummary summary = saved(order);

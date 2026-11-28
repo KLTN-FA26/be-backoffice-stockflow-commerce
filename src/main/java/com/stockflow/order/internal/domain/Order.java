@@ -835,13 +835,7 @@ public final class Order extends AggregateRoot {
      * @return whether this changed the order
      */
     public boolean decidePartialShipment(boolean allowed) {
-        boolean open = switch (status) {
-            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
-                 PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD -> true;
-            case SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED,
-                 COMPLETED, CANCELLED, CLOSED -> false;
-        };
-        if (!open) {
+        if (!mayDecidePartialShipment()) {
             throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_LOCKED,
                     "Order %s is %s: whether it ships in parts can no longer change".formatted(orderNumber, status));
         }
@@ -856,6 +850,20 @@ public final class Order extends AggregateRoot {
         }
         this.allowPartialShipment = allowed;
         return true;
+    }
+
+    /**
+     * Whether the order may still be decided to ship in parts: it has not left yet. The status rule of
+     * {@link #decidePartialShipment}, asked on its own so that a shortage choice card offers "ship part" only when Sales
+     * could carry it out (17 §4.14 step 56, BR-15).
+     */
+    public boolean mayDecidePartialShipment() {
+        return switch (status) {
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
+                 PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD -> true;
+            case SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED,
+                 COMPLETED, CANCELLED, CLOSED -> false;
+        };
     }
 
     public boolean allowPartialShipment() { return allowPartialShipment; }
@@ -1852,15 +1860,7 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "REPLACEMENT_WITHDRAWN is historical: no order replaces a return's goods any more");
         }
-        // Per line, the units closed: neither shipped nor in a labelled carton waiting at dispatch (WF4-CLOSE-REST).
-        Map<UUID, Integer> closing = new LinkedHashMap<>();
-        for (OrderLine line : lines) {
-            int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id());
-            int closes = left - Math.min(left, Math.max(0, kept.getOrDefault(line.id(), 0)));
-            if (closes > 0) {
-                closing.put(line.id(), closes);
-            }
-        }
+        Map<UUID, Integer> closing = closingUnits(kept);
         if (closing.isEmpty()) {
             throw new InvalidOrderTransitionException(orderNumber, status,
                     "everything it still wants is labelled and waits at dispatch: nothing is left to close");
@@ -1913,6 +1913,44 @@ public final class Order extends AggregateRoot {
                 orderNumber.value(), customerId, code.name(), closedLines, closed.amount(), billable(), BigDecimal.ZERO,
                 BigDecimal.ZERO, total().currency().getCurrencyCode(), by, at, lastClosureId, fee, BigDecimal.ZERO,
                 BigDecimal.ZERO)));
+        return closed.amount();
+    }
+
+    /**
+     * Per line, the units a closure of the rest closes: neither shipped nor in a labelled carton waiting at dispatch
+     * ({@code kept}, WF4-CLOSE-REST). The rule of {@link #closeRemainder}, asked on its own for the figure a shortage
+     * choice card shows (17 §4.14 step 56).
+     *
+     * @param kept per line, the units that stay on the order and are delivered
+     */
+    public Map<UUID, Integer> closingUnits(Map<UUID, Integer> kept) {
+        Map<UUID, Integer> closing = new LinkedHashMap<>();
+        for (OrderLine line : lines) {
+            int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id());
+            int closes = left - Math.min(left, Math.max(0, kept.getOrDefault(line.id(), 0)));
+            if (closes > 0) {
+                closing.put(line.id(), closes);
+            }
+        }
+        return closing;
+    }
+
+    /**
+     * What closing {@code units} of the lines is worth with VAT: the arithmetic of {@link #closeRemainder} - the last
+     * units of each line's open quantity, on the line's cumulative scale - without closing anything (15 §4.6 step 19). The
+     * mould / print and shipping fee lines are not part of it (D30, D32).
+     *
+     * @param units per line id, the units to close; at most what the line still has open
+     */
+    public BigDecimal valueOfClosing(Map<UUID, Integer> units) {
+        Money closed = Money.zero(total().currency());
+        for (OrderLine line : lines) {
+            int closes = units.getOrDefault(line.id(), 0);
+            if (closes > 0) {
+                int open = line.quantity() - line.cancelledQuantity();
+                closed = closed.plus(line.grossBetween(open - Math.min(closes, open), open));
+            }
+        }
         return closed.amount();
     }
 

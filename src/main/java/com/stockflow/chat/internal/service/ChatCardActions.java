@@ -18,6 +18,8 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.order.api.QuoteCards;
 import com.stockflow.order.api.QuotesFromRequests;
 import com.stockflow.order.api.SampleRoundCards;
+import com.stockflow.order.api.ShortageCards;
+import com.stockflow.order.api.ShortageOption;
 import com.stockflow.payment.api.CustomerInstallments;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,7 +48,7 @@ import java.util.UUID;
 public class ChatCardActions {
 
     private static final Set<String> CUSTOMER_ACTIONS = Set.of(CardActions.ACCEPT, CardActions.REQUEST_CHANGES,
-            CardActions.APPROVE, CardActions.REQUEST_REPRINT, CardActions.RATE);
+            CardActions.APPROVE, CardActions.REQUEST_REPRINT, CardActions.RATE, CardActions.CHOOSE);
 
     /**
      * What a card's action carries.
@@ -56,9 +58,17 @@ public class ChatCardActions {
      * @param note     REQUEST_CHANGES (feedback) and REQUEST_REPRINT (required) - what to change
      * @param score    RATE: 1 to 5
      * @param comment  RATE: optional
+     * @param option   CHOOSE: the way on the customer picks ({@link ShortageOption} name); {@code note} is their
+     *                 optional message, {@code version} the card's version they saw
      */
     public record Action(String action, Long version, Map<UUID, Integer> cartons, String note, Integer score,
-                         String comment) {
+                         String comment, String option) {
+
+        /** An action that names no option (every card but the shortage card's). */
+        public Action(String action, Long version, Map<UUID, Integer> cartons, String note, Integer score,
+                      String comment) {
+            this(action, version, cartons, note, score, comment, null);
+        }
     }
 
     private final ChatCallers callers;
@@ -72,12 +82,16 @@ public class ChatCardActions {
     private final QuoteRequestAnswers answers;
     private final SampleRoundCards samples;
     private final CustomerInstallments installments;
+    private final ShortageCards shortage;
+    private final ShortageCardMessages shortageMessages;
+    private final ContextResolver contexts;
     private final Clock clock;
 
     public ChatCardActions(ChatCallers callers, ConversationWriter writer, ChatMessageRepository messages,
                            ChatCards cards, DocumentCards documents, ChatViews views, QuoteCards quotes,
                            QuotesFromRequests fromRequests, QuoteRequestAnswers answers, SampleRoundCards samples,
-                           CustomerInstallments installments, Clock clock) {
+                           CustomerInstallments installments, ShortageCards shortage,
+                           ShortageCardMessages shortageMessages, ContextResolver contexts, Clock clock) {
         this.callers = callers;
         this.writer = writer;
         this.messages = messages;
@@ -89,6 +103,9 @@ public class ChatCardActions {
         this.answers = answers;
         this.samples = samples;
         this.installments = installments;
+        this.shortage = shortage;
+        this.shortageMessages = shortageMessages;
+        this.contexts = contexts;
         this.clock = clock;
     }
 
@@ -134,6 +151,16 @@ public class ChatCardActions {
                 rate(c, actor, score, request.comment());
                 ObjectNode rated = ((ObjectNode) payload.deepCopy()).put("score", score);
                 cards.update(card.id(), CardState.ACTED, rated, actor, action, "{\"score\":" + score + "}");
+            }
+            case CardActions.CHOOSE -> {
+                // 17 §4.14 step 57: the customer's press is the evidence of consent - the order module records it, once,
+                // and refuses a stale card (SHORTAGE_CARD_STATE_CONFLICT) or an option the card did not offer.
+                long version = request.version() != null ? request.version() : payload.path("version").asLong();
+                ShortageCards.Card chosen = shortage.choose(caller.customerId(), user.userId(),
+                        uuid(payload, "cardId"), option(request.option()), request.note(), version);
+                cards.update(card.id(), ShortageCardMessages.stateOf(chosen.status()), shortageMessages.payload(chosen),
+                        actor, action, "{\"cardId\":\"" + chosen.cardId() + "\",\"option\":\""
+                                + chosen.chosen().option().name() + "\"}");
             }
             default -> throw new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED);
         }
@@ -223,6 +250,31 @@ public class ChatCardActions {
         return views.message(messages.findById(posted, Audience.STAFF).orElseThrow());
     }
 
+    /**
+     * Sales send the shortage choice card of one of the customer's orders into the conversation they are in charge of
+     * (17 §4.14 step 55, 16 BR-15): the system draws it from the order - the batch, the cartons short from the
+     * warehouse, the options with their figures - so Sales type only a note. The card is the order module's document
+     * ({@link ShortageCards#send}); this posts it here, attaches the order to the conversation, and keeps its message
+     * for later updates. {@code replaceLive} replaces the card still waiting for the same batch.
+     *
+     * @throws BusinessException {@code CHAT_CONTEXT_NOT_FOUND} for an order that is not the conversation's customer's
+     *         (BR-02); {@code CHAT_NOT_ASSIGNEE}; the order's own refusals ({@code SHORTAGE_CARD_NOT_SENDABLE})
+     */
+    public ChatMessageView sendShortageCard(CurrentUser user, UUID conversationId, UUID orderId, String note,
+                                            boolean replaceLive) {
+        Actor staff = callers.staff(user);
+        Conversation c = writer.lock(conversationId);
+        c.requireInCharge(staff, false);
+        ContextResolver.Resolved about = contexts.requireOwnedBy(new ContextRef(ContextKind.ORDER, orderId),
+                c.customerId(), false);
+        ShortageCards.Card card = shortage.send(c.customerId(), orderId, note, replaceLive, user.userId());
+        UUID contextId = cards.attach(c, about.ref(), staff);
+        UUID posted = cards.postInto(c, contextId, CardKind.SHORTAGE_CHOICE, shortageMessages.payload(card),
+                ShortageCardMessages.fallbackText(card), staff).messageId();
+        shortage.linkMessage(card.cardId(), posted);
+        return views.message(messages.findById(posted, Audience.STAFF).orElseThrow());
+    }
+
     /** The customer's rating (CSAT), on the survey card or straight on the conversation; once. */
     void rate(Conversation c, Actor customer, int score, String comment) {
         UUID agent = c.assignedAgentId();
@@ -263,6 +315,14 @@ public class ChatCardActions {
         next.put("productionOrderStatus", round.productionOrderStatus());
         next.put("answeredAt", round.answeredAt() == null ? null : round.answeredAt().toString());
         return next;
+    }
+
+    private static ShortageOption option(String name) {
+        try {
+            return ShortageOption.valueOf(name == null ? "" : name.strip().toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException unknown) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name one of the options on the card");
+        }
     }
 
     private static String required(String text, String why, String key) {

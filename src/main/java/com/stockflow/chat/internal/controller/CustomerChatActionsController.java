@@ -50,7 +50,8 @@ class CustomerChatActionsController {
 
     @PostMapping("/{conversationId}/cards/{messageId}/actions")
     @Operation(summary = "Act on a card: ACCEPT (version, cartons per quote line id) or REQUEST_CHANGES (note) a quote; "
-            + "APPROVE or REQUEST_REPRINT (note, required) a print sample; RATE (score 1-5, comment) the survey. Calls "
+            + "APPROVE or REQUEST_REPRINT (note, required) a print sample; RATE (score 1-5, comment) the survey; CHOOSE "
+            + "(option, note, version) one of the ways on a shortage card, once. Calls "
             + "the document's own operation (16 BR-03): its refusals come back as they are (QUOTE_EXPIRED, "
             + "SAMPLE_ROUND_ANSWERED...). 409 CHAT_CARD_ACTION_NOT_ALLOWED for an action the card does not offer now")
     @RequiresPermission(resource = ChatResources.CONVERSATIONS, action = Action.UPDATE, scope = DataScope.OWN)
@@ -98,8 +99,8 @@ class CustomerChatActionsController {
     }
 
     static ChatCardActions.Action action(ChatRequests.CardAction request) {
-        return request == null ? new ChatCardActions.Action(null, null, null, null, null, null)
+        return request == null ? new ChatCardActions.Action(null, null, null, null, null, null, null)
                 : new ChatCardActions.Action(request.action(), request.version(), request.cartons(), request.note(),
-                request.score(), request.comment());
+                request.score(), request.comment(), request.option());
     }
 }

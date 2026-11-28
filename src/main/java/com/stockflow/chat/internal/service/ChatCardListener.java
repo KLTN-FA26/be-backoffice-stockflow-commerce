@@ -16,6 +16,7 @@ import com.stockflow.contracts.ProductionOrderStopped;
 import com.stockflow.contracts.QuoteStatusChanged;
 import com.stockflow.contracts.SalesContractStatusChanged;
 import com.stockflow.contracts.SampleRoundChanged;
+import com.stockflow.contracts.ShortageCardChanged;
 import com.stockflow.contracts.ShipmentStatusChanged;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
@@ -30,9 +31,11 @@ import org.springframework.stereotype.Component;
 class ChatCardListener {
 
     private final DocumentCards cards;
+    private final ShortageCardMessages shortage;
 
-    ChatCardListener(DocumentCards cards) {
+    ChatCardListener(DocumentCards cards, ShortageCardMessages shortage) {
         this.cards = cards;
+        this.shortage = shortage;
     }
 
     @ApplicationModuleListener
@@ -149,5 +152,14 @@ class ChatCardListener {
     @ApplicationModuleListener
     public void on(ShipmentStatusChanged event) {
         cards.shipmentChanged(event);
+    }
+
+    /**
+     * A shortage choice card was sent, chosen on, replaced or ended (kltn-docs 17 §4.14): its message shows the document's
+     * state - the customer's choice, "a newer card replaced this one", "nothing left to choose".
+     */
+    @ApplicationModuleListener
+    public void on(ShortageCardChanged event) {
+        shortage.changed(event);
     }
 }
