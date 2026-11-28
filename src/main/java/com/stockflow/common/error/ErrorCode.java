@@ -1421,8 +1421,21 @@ public enum ErrorCode {
     RETURN_SHIPMENT_NOT_RETURNABLE("This delivery was already settled by a return; ask Sales to open a further claim",
             409),
 
+    /**
+     * Contract e-signing: the one-time code a customer typed is wrong. {@code details.attemptsLeft} says how many tries
+     * the code has left (0: it is spent and a new one has to be asked for).
+     */
+    CONTRACT_OTP_INVALID("The confirmation code is not correct", 422),
+    /** There is no live code to check: none was asked for, it timed out, or its five tries are used up. */
+    CONTRACT_OTP_EXPIRED("The confirmation code has expired or can no longer be used", 422),
+
     // ---- 429
     RATE_LIMITED("Too many requests", 429),
+    /**
+     * Contract e-signing: a new code was asked for too soon after the last, or too often in the last hour.
+     * {@code details.retryAfterSeconds} says when it will be answered.
+     */
+    CONTRACT_OTP_TOO_MANY("Too many confirmation codes were asked for this contract", 429),
     /** ADR-0014: the per-user daily cap on assistant questions ({@code stockflow.assistant.daily-message-limit}). */
     ASSISTANT_DAILY_LIMIT("You have asked the assistant as many questions as allowed today", 429),
     /**

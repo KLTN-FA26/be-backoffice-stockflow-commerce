@@ -1,6 +1,7 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.contracts.CustomerActedOnQuote;
+import com.stockflow.notification.api.ContractSignOtpMail;
 import com.stockflow.notification.api.PortalInvitationMail;
 import com.stockflow.notification.internal.domain.Email;
 import com.stockflow.notification.internal.domain.EmailTransport;
@@ -57,6 +58,19 @@ class NotificationSender {
                         invitation.activationUrl(),
                         INVITATION_EXPIRY.format(invitation.expiresAt())),
                 null, null, "portal_invitation"));
+    }
+
+    /**
+     * The contract signing code, in Vietnamese. Like the portal invitation it carries a secret, so it is never logged
+     * and sends no idempotency key: a resend is a new code, never a replay of the old one.
+     */
+    void sendContractSignOtp(ContractSignOtpMail otp) {
+        var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        transport.send(new Email(mailFrom, List.of(otp.recipient()), null,
+                messages.getString("contract.sign.otp.mail.subject").formatted(otp.contractNumber()),
+                messages.getString("contract.sign.otp.mail.body").formatted(otp.contractNumber(), otp.code(),
+                        INVITATION_EXPIRY.format(otp.expiresAt())),
+                null, null, "contract_sign_otp"));
     }
 
     /**

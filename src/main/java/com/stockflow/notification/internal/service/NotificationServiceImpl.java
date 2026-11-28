@@ -2,6 +2,7 @@ package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.persistence.Pages;
+import com.stockflow.notification.api.ContractSignOtpMail;
 import com.stockflow.notification.api.DeliveryAttemptSummary;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.api.PortalInvitationMail;
@@ -32,6 +33,12 @@ class NotificationServiceImpl implements NotificationService {
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void sendPortalInvitation(PortalInvitationMail mail) {
         sender.sendPortalInvitation(mail);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public void sendContractSignOtp(ContractSignOtpMail mail) {
+        sender.sendContractSignOtp(mail);
     }
 
     @Override
