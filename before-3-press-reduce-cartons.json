@@ -1,0 +1,10 @@
+{
+  "httpStatus" : 404,
+  "body" : {
+    "success" : false,
+    "errorCode" : "NOT_FOUND",
+    "message" : "Không tìm thấy",
+    "correlationId" : "772f35b5-988c-4524-b772-9e9ddaae37be",
+    "timestamp" : "2026-11-28T08:56:03.830772Z"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "httpStatus" : 409,
+  "body" : {
+    "success" : false,
+    "errorCode" : "SHORTAGE_CARD_STATE_CONFLICT",
+    "message" : "Thẻ đã có lựa chọn hoặc không còn hiệu lực — tải lại để xem trạng thái mới.",
+    "correlationId" : "54b84b79-eeca-473d-b695-c49f1d1f4dc8",
+    "timestamp" : "2026-11-28T08:54:31.503656Z"
+  }
+}

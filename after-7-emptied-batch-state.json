@@ -1,0 +1,36 @@
+{
+  "order" : {
+    "order_number" : "SO-20261128-8821121",
+    "status" : "PARTIALLY_FULFILLED"
+  },
+  "orderLine" : {
+    "quantity" : 20,
+    "cancelled_quantity" : 10,
+    "units_per_carton" : 10
+  },
+  "signedBatchLines" : [ {
+    "seq" : 1,
+    "cartons" : 1
+  }, {
+    "seq" : 2,
+    "cartons" : 1
+  } ],
+  "card" : {
+    "code" : "TT-20261128-0001",
+    "status" : "EXECUTED",
+    "chosen_option" : "REDUCE_CARTONS"
+  },
+  "settlement" : [ {
+    "kind" : "REMAINDER_CLOSED",
+    "closed_amount" : 60000000.0000,
+    "reduced_amount" : 0.0000,
+    "refundable_amount" : 60000000.0000,
+    "fee_amount" : 0.0000
+  } ],
+  "holdResolutionNotes" : [ "Theo lựa chọn của khách trên thẻ thiếu thùng TT-20261128-0001" ],
+  "closures" : [ {
+    "closure_id" : "01a2215c-e09d-70d2-aef0-fa78b7a48980",
+    "reason_code" : "OUT_OF_STOCK"
+  } ],
+  "batchReleases" : [ 1, 2 ]
+}

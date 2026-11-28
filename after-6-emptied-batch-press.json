@@ -1,0 +1,49 @@
+{
+  "httpStatus" : 200,
+  "body" : {
+    "success" : true,
+    "data" : {
+      "cardId" : "01a2215c-e09d-70d2-aef0-fa78b7a48980",
+      "code" : "TT-20261128-0001",
+      "orderId" : "7235b392-35a9-4a37-a912-4874e5089619",
+      "orderNumber" : "SO-20261128-8821121",
+      "status" : "EXECUTED",
+      "version" : 2,
+      "batch" : {
+        "seq" : 1,
+        "windowFrom" : "2026-11-28",
+        "windowTo" : "2026-11-30",
+        "moved" : false
+      },
+      "missingCartons" : 1,
+      "lines" : [ {
+        "sku" : "T5C78CE60AEE8-C4817",
+        "skuName" : "Ly in logo khach",
+        "batchCartons" : 1,
+        "availableCartons" : 0,
+        "missingCartons" : 1,
+        "unitsPerCarton" : 10
+      } ],
+      "options" : [ {
+        "option" : "WAIT_FOR_PRODUCTION",
+        "expectedDeliveryDate" : "2026-12-12",
+        "afterWindow" : true
+      }, {
+        "option" : "REDUCE_CARTONS",
+        "amountReduced" : 60000000
+      }, {
+        "option" : "CANCEL_ORDER",
+        "refundUpTo" : 1.2E8,
+        "feePossible" : false
+      } ],
+      "sentAt" : "2026-11-28T08:54:24.656947Z",
+      "chosen" : {
+        "option" : "REDUCE_CARTONS",
+        "at" : "2026-11-28T08:54:25.096939Z"
+      },
+      "executedAt" : "2026-11-28T08:54:25.673295Z",
+      "executionStarted" : false
+    },
+    "timestamp" : "2026-11-28T08:54:25.867139Z"
+  }
+}

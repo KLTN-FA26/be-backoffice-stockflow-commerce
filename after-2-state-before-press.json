@@ -1,0 +1,27 @@
+{
+  "order" : {
+    "order_number" : "SO-20261128-8821122",
+    "status" : "ON_HOLD"
+  },
+  "orderLine" : {
+    "quantity" : 40,
+    "cancelled_quantity" : 0,
+    "units_per_carton" : 10
+  },
+  "signedBatchLines" : [ {
+    "seq" : 1,
+    "cartons" : 2
+  }, {
+    "seq" : 2,
+    "cartons" : 2
+  } ],
+  "card" : {
+    "code" : "TT-20261128-0002",
+    "status" : "ANSWERED",
+    "chosen_option" : "REDUCE_CARTONS"
+  },
+  "settlement" : [ ],
+  "holdResolutionNotes" : [ ],
+  "closures" : [ ],
+  "batchReleases" : [ 1 ]
+}
