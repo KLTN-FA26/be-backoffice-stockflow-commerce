@@ -8,7 +8,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: build
 # -----------------------------------------------------------------------------
-FROM maven:3.9-eclipse-temurin-21 AS build
+FROM maven:3.9-eclipse-temurin-25 AS build
 
 WORKDIR /build
 
@@ -36,7 +36,7 @@ RUN java -Djarmode=tools -jar application.jar extract --layers --destination ext
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
 # -----------------------------------------------------------------------------
-FROM eclipse-temurin:21-jre-alpine AS runtime
+FROM eclipse-temurin:25-jre-alpine AS runtime
 
 # SCRUM-495: pull the Alpine security fixes published since the base image was built (Trivy flagged
 # brotli-libs 1.2.0-r1, CVE-2026-111497, fixed in 1.2.1-r0). Re-run on every image build, so the
@@ -72,7 +72,7 @@ EXPOSE 8080
 #   the health check still passes, so the orchestrator never replaces it. Exiting turns a silent
 #   degradation into a restart.
 #
-#   UseContainerSupport is on by default in 21 and stated for the next reader.
+#   UseContainerSupport is on by default since 10 and stated for the next reader.
 #
 #   /dev/urandom - SecureRandom blocks on /dev/random in some kernels, and a container with little
 #   entropy can hang for minutes at startup. Identifiers.newId() calls SecureRandom on every id.
