@@ -44,12 +44,16 @@ public class OrderOperations {
     private final com.stockflow.order.internal.repository.OrderOnBehalfActions entries;
     /** The concrete service, for the one operation the {@link OrderService} interface does not carry (shortage cards). */
     private final OrderServiceImpl orderService;
+    /** 17 §4.14 step 58: carrying out the customer's choice on a shortage card. */
+    private final ShortageCardExecutionService shortageExecutions;
 
     OrderOperations(ShippingWarehouseService shippingWarehouses, OrderService orders, OrderServiceImpl orderService,
                     OrderCompletionHolds completionHolds, CancellationRequestService cancellationRequests,
                     PartialShipments partialShipments, DeliveryFailureService deliveryFailures,
                     ShippingAddressChanges addressChanges, OnBehalfLog onBehalf,
-                    com.stockflow.order.internal.repository.OrderOnBehalfActions entries) {
+                    com.stockflow.order.internal.repository.OrderOnBehalfActions entries,
+                    ShortageCardExecutionService shortageExecutions) {
+        this.shortageExecutions = shortageExecutions;
         this.entries = entries;
         this.orderService = orderService;
         this.shippingWarehouses = shippingWarehouses;
@@ -173,5 +177,43 @@ public class OrderOperations {
         OrderSummary order = addressChanges.change(orderId, shippingAddressId, by);
         onBehalf.record(orderId, by, OnBehalfAction.CHANGE_SHIPPING_ADDRESS);
         return order;
+    }
+
+    // ---- the shortage choice card (17 §4.14 step 58, BR-32, BR-33): one "làm hộ" line per press of "Thực hiện" --------
+
+    /** {@link ShortageCardExecutionService#waitForProduction}. */
+    public com.stockflow.order.api.ShortageCards.Card executeShortageWait(
+            com.stockflow.common.security.CurrentUser user, UUID orderId, UUID cardId, Long version,
+            ShortageCardExecutionService.WindowMove move, String note) {
+        var card = shortageExecutions.waitForProduction(user, orderId, cardId, version, move, note);
+        onBehalf.record(orderId, user.userId(), OnBehalfAction.EXECUTE_SHORTAGE_CHOICE);
+        return card;
+    }
+
+    /** {@link ShortageCardExecutionService#shipPart}. */
+    public com.stockflow.order.api.ShortageCards.Card executeShortageShipPart(UUID orderId, UUID cardId, Long version,
+                                                                             String note, UUID by) {
+        var card = shortageExecutions.shipPart(orderId, cardId, version, note, by);
+        onBehalf.record(orderId, by, OnBehalfAction.EXECUTE_SHORTAGE_CHOICE);
+        return card;
+    }
+
+    /** {@link ShortageCardExecutionService#closeRest}. */
+    public com.stockflow.order.api.ShortageCards.Card executeShortageCloseRest(UUID orderId, UUID cardId, Long version,
+                                                                              CancellationReasonCode reasonCode,
+                                                                              String note, CancellationFee fee,
+                                                                              UUID by) {
+        var card = shortageExecutions.closeRest(orderId, cardId, version, reasonCode, note, fee, by);
+        onBehalf.record(orderId, by, OnBehalfAction.EXECUTE_SHORTAGE_CHOICE);
+        return card;
+    }
+
+    /** {@link ShortageCardExecutionService#cancel}. */
+    public com.stockflow.order.api.ShortageCards.Card executeShortageCancel(UUID orderId, UUID cardId, Long version,
+                                                                           String note, BigDecimal retainedPercent,
+                                                                           CancellationFee fee, UUID by) {
+        var card = shortageExecutions.cancel(orderId, cardId, version, note, retainedPercent, fee, by);
+        onBehalf.record(orderId, by, OnBehalfAction.EXECUTE_SHORTAGE_CHOICE);
+        return card;
     }
 }

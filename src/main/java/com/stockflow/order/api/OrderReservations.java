@@ -38,4 +38,16 @@ public interface OrderReservations {
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} for an unknown order
      */
     void holdReplacement(UUID orderId, UUID orderLineId, UUID deliveryBatchId, Collection<UUID> reservationIds);
+
+    /**
+     * A hold of the order was released with nothing in its place (kltn-docs 17 §4.14 step 58, D49): Sales carried out the
+     * customer's choice on a shortage card, and the short pick's carton was given up. The line holding
+     * {@code reservationId} no longer lists it - so a cancellation does not release it again - and it no longer stands
+     * for its delivery batch, which lacks that carton again: the batch's coverage, the production schedule and a
+     * production order drawn up for the batch see the shortage (17 §4.3 step 6). In the caller's transaction, under the
+     * order's lock. Idempotent: a hold no longer on the order changes nothing.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} for an unknown order
+     */
+    void releasedWithoutReplacement(UUID orderId, UUID reservationId);
 }

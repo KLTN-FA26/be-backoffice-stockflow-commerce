@@ -790,6 +790,45 @@ class PickListService implements PickLists, com.stockflow.order.spi.ShortPickLin
                 skus.get(e.getKey()), e.getValue())).toList();
     }
 
+    @Override
+    public void lockTasksOf(UUID orderId) {
+        picks.lockAllByOrderId(orderId);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The tasks are locked (again - a no-op after {@link #lockTasksOf}) before anything is read, then each SHORT line
+     * is CANCELLED and its hold released as a reallocation releases it ({@code SHORT_PICKED}) - but nothing is allocated
+     * in its place. A hold an approved count already gave up with its carton (20 §4.2 step 8) is released already: the
+     * release changes nothing. Locks: the picks, the order (the caller's), then each carton's row on release.</p>
+     */
+    @Override
+    public int cancelShortLines(UUID orderId, UUID by) {
+        int given = 0;
+        for (PickJpaEntity pick : picks.lockAllByOrderId(orderId)) {
+            if (pick.getStatus() == PickStatus.CANCELLED) {
+                continue;
+            }
+            List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+            PickList list = toList(pick, stored);
+            List<PickLine> cancelled = list.cancelShortLines();
+            if (cancelled.isEmpty()) {
+                continue;
+            }
+            writeBack(list, stored, cancelled.stream().map(PickLine::id).collect(Collectors.toSet()));
+            for (PickLine line : cancelled) {
+                UUID hold = requireHold(line, "given up");
+                inventory.release(hold, "SHORT_PICKED");
+                orderReservations.releasedWithoutReplacement(orderId, hold);
+                log.info("Short line {} of task {} given up by {}: carton {} ({} x {}) is not replaced", line.id(),
+                        pick.getId(), by, line.lpn(), line.allocatedQty(), line.sku());
+            }
+            given += cancelled.size();
+        }
+        return given;
+    }
+
     /** Whether a line of the order whose carton left it to be replaced still lacks a replacement in the task. */
     private boolean lacksRemovedCartons(PickJpaEntity pick) {
         PickList list = toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()));

@@ -406,6 +406,26 @@ public final class PickList {
         return added;
     }
 
+    /**
+     * Sales carried out the customer's choice on a shortage card (17 §4.14 step 58, D49): every SHORT line is given up -
+     * CANCELLED, its shortfall kept on record as a reallocated one keeps it - with nothing in its place. Its carton's hold
+     * is the caller's to release. A task whose lines are otherwise picked may then close ({@link #requireAllPicked}
+     * counts a CANCELLED line as done); the batch's missing cartons come back as a top-up when stock arrives (07 §4.3
+     * step 7).
+     *
+     * @return the lines given up; empty when none was SHORT
+     */
+    public List<PickLine> cancelShortLines() {
+        List<PickLine> cancelled = new ArrayList<>();
+        for (PickLine line : lines) {
+            if (line.status() == PickLineStatus.SHORT) {
+                line.supersede();
+                cancelled.add(line);
+            }
+        }
+        return cancelled;
+    }
+
     /** Whether a line is still SHORT, waiting for the warehouse manager. */
     public boolean hasShortLines() {
         return lines.stream().anyMatch(line -> line.status() == PickLineStatus.SHORT);

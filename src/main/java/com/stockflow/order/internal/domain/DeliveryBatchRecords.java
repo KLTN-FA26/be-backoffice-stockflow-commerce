@@ -25,11 +25,13 @@ public interface DeliveryBatchRecords {
     }
 
     /**
-     * A window moved by Sales (BR-28): exactly one of the evidence file and the chat message is set.
+     * A window moved by Sales (BR-28): exactly one of the evidence file, the chat message and the shortage card whose
+     * wait option the customer chose (17 §4.14 step 58, D48) is set.
      */
     record WindowChange(UUID id, UUID batchId, LocalDate oldStart, LocalDate oldEnd, LocalDate newStart,
                         LocalDate newEnd, WindowChangeReason reason, String note, String evidenceFileKey,
-                        String evidenceFileName, UUID evidenceMessageId, UUID changedBy, Instant changedAt) {
+                        String evidenceFileName, UUID evidenceMessageId, UUID evidenceShortageCardId, UUID changedBy,
+                        Instant changedAt) {
     }
 
     List<Hold> holdsOf(UUID orderId);

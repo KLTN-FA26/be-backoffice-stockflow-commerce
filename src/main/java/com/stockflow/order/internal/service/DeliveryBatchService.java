@@ -72,11 +72,14 @@ public class DeliveryBatchService {
 
     /**
      * One window move (BR-28), as the history shows it. {@code changedByName} is who moved it, by name (17 §5.2: the
-     * history names the person - the staff's view; the customer's carries none).
+     * history names the person - the staff's view; the customer's carries none). The evidence is one of a file
+     * ({@code evidenceFileName}), a chat message ({@code evidenceMessageId}) and the shortage card whose wait option the
+     * customer chose ({@code evidenceShortageCardId}, 17 §4.14 step 58, D48 - shown as "Thẻ thiếu thùng").
      */
     public record WindowChangeView(UUID id, LocalDate oldStart, LocalDate oldEnd, LocalDate newStart, LocalDate newEnd,
                                    WindowChangeReason reason, String note, String evidenceFileName,
-                                   UUID evidenceMessageId, UUID changedBy, String changedByName, Instant changedAt) {
+                                   UUID evidenceMessageId, UUID evidenceShortageCardId, UUID changedBy,
+                                   String changedByName, Instant changedAt) {
     }
 
     /**
@@ -389,13 +392,13 @@ public class DeliveryBatchService {
         requireWellFormed(change);
         tx.executeWithoutResult(status -> check(lockedInScope(orderId), batchId, change));
         if (change.evidenceMessageId() != null) {
-            return tx.execute(status -> record(user, orderId, batchId, change, null));
+            return tx.execute(status -> record(user, orderId, batchId, change, null, null));
         }
         try (PreparedFiles prepared = IncomingFiles.uploaded(user.userId(), List.of(change.evidenceUploadId()))
                 .prepare(FileCategory.DOCUMENT, files, staged)) {
             StoredFile stored = prepared.single().file();
             return tx.execute(status -> {
-                Schedule schedule = record(user, orderId, batchId, change, stored);
+                Schedule schedule = record(user, orderId, batchId, change, stored, null);
                 prepared.adopt();
                 files.retainAfterCommit(stored.key(), RecordRetention.SALES_CONTRACT);
                 return schedule;
@@ -403,7 +406,39 @@ public class DeliveryBatchService {
         }
     }
 
-    private Schedule record(CurrentUser user, UUID orderId, UUID batchId, WindowChange change, StoredFile evidence) {
+    /**
+     * The window moved to the expected delivery date of a shortage card whose wait option the customer chose (17 §4.14
+     * step 58, BR-28, D48): the card is the consent - no file, no message - and the reason is the seller's delay. In the
+     * caller's transaction, which carries the customer's choice out and rolls back with this move: every BR-28 rule of
+     * {@link #changeWindow} applies unchanged (no carton of the batch handed over, not into the past, the schedule's
+     * order), and the database checks the card again ({@code tg_delivery_batch_window_change_card}). Whether the card
+     * allows this move - the customer chose to wait, the start is the card's date - is the caller's to check first.
+     *
+     * @param windowStart the card's expected delivery date
+     * @throws BusinessException {@code DELIVERY_BATCH_NOT_FOUND}, {@code DELIVERY_BATCH_WINDOW_LOCKED},
+     *         {@code VALIDATION_FAILED}
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "delivery-batch", resourceId = "#batchId",
+            details = "{orderId: #orderId}")
+    public Schedule changeWindowOnShortageCard(CurrentUser user, UUID orderId, UUID batchId, LocalDate windowStart,
+                                               LocalDate windowEnd, String note, UUID shortageCardId) {
+        java.util.Objects.requireNonNull(shortageCardId, "shortageCardId");
+        WindowChange change = new WindowChange(windowStart, windowEnd, WindowChangeReason.SELLER_DELAY, note, null,
+                null);
+        if (windowStart == null || windowEnd == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The new window is required");
+        }
+        if (windowStart.isAfter(windowEnd)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The window starts no later than it ends");
+        }
+        if (note == null || note.isBlank() || note.strip().length() > 1000) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A note of at most 1000 characters is required");
+        }
+        return record(user, orderId, batchId, change, null, shortageCardId);
+    }
+
+    private Schedule record(CurrentUser user, UUID orderId, UUID batchId, WindowChange change, StoredFile evidence,
+                            UUID shortageCardId) {
         Order order = lockedInScope(orderId);
         DeliveryBatch batch = check(order, batchId, change);
         List<DeliveryBatchRecords.WindowChange> moved = changesByBatch(order).getOrDefault(batch.id(), List.of());
@@ -412,7 +447,8 @@ public class DeliveryBatchService {
         records.recordWindowChange(order.id().value(), new DeliveryBatchRecords.WindowChange(Identifiers.newId(),
                 batch.id(), oldStart, oldEnd, change.windowStart(), change.windowEnd(), change.reason(),
                 change.note().strip(), evidence == null ? null : evidence.key(),
-                evidence == null ? null : evidence.originalName(), change.evidenceMessageId(), user.userId(),
+                evidence == null ? null : evidence.originalName(), change.evidenceMessageId(), shortageCardId,
+                user.userId(),
                 clock.instant()));
         log.info("Order {}: delivery batch {} moved from {}..{} to {}..{} ({})", order.orderNumber(), batch.seq(),
                 oldStart, oldEnd, change.windowStart(), change.windowEnd(), change.reason());
@@ -560,7 +596,7 @@ public class DeliveryBatchService {
 
     private static WindowChangeView view(DeliveryBatchRecords.WindowChange c, Map<UUID, String> movers) {
         return new WindowChangeView(c.id(), c.oldStart(), c.oldEnd(), c.newStart(), c.newEnd(), c.reason(), c.note(),
-                c.evidenceFileName(), c.evidenceMessageId(), c.changedBy(),
+                c.evidenceFileName(), c.evidenceMessageId(), c.evidenceShortageCardId(), c.changedBy(),
                 c.changedBy() == null ? null : movers.get(c.changedBy()), c.changedAt());
     }
 }

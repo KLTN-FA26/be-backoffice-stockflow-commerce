@@ -9,8 +9,9 @@ import java.util.UUID;
  * replaced. The shortage choice card is drawn from this answer - Sales never type it (16 BR-15). Implemented by
  * {@code fulfillment}; see the package documentation for why the interface lives here.
  *
- * <p>Read-only. The operations that carry a customer's choice out - locking the tasks, cancelling the short lines - are
- * added to this interface by the pull request that executes the choice.</p>
+ * <p>Reading is a plain read. Carrying a customer's choice out (17 §4.14 step 58) takes the order's pick tasks first -
+ * {@link #lockTasksOf}, before the order row, as every writer of a pick does (pick, then order, then cartons; BE
+ * {@code CLAUDE.md} §4 Picking) - and then gives the short lines up ({@link #cancelShortLines}).</p>
  */
 public interface ShortPickLines {
 
@@ -32,4 +33,27 @@ public interface ShortPickLines {
      * @return empty when nothing is short; lines with nothing missing are left out
      */
     List<ShortLine> shortLinesOf(UUID orderId);
+
+    /**
+     * Locks every pick task of the order {@code FOR UPDATE}, in id order. Called first by the operation that carries a
+     * shortage choice out, <em>before</em> the order row is locked: a picker's confirmation or short report and the
+     * warehouse manager's reallocation lock the pick and then the order, and taking them the other way round would
+     * deadlock against them. Runs in the caller's transaction; nothing changes.
+     */
+    void lockTasksOf(UUID orderId);
+
+    /**
+     * Gives the order's SHORT pick lines up (17 §4.14 step 58, D49; 07 §4.4 step 10, BR-09): each line is CANCELLED - its
+     * shortfall stays on record - and the hold on its missing carton is released ({@code SHORT_PICKED}, what a
+     * reallocation does to it), so the order line no longer lists it and its delivery batch lacks the carton again, for a
+     * production order to make or for the rest to be closed. The carton itself stays blocked by its open blind count until
+     * the variance is decided (20 BR-11). A carton removed at the check station is not a SHORT line: its hold was
+     * consumed and the carton goes to quarantine through it, and its batch already lacks it - nothing to give up. Runs in
+     * the caller's transaction, after {@link #lockTasksOf} and the order's lock. Idempotent: nothing is SHORT the second
+     * time.
+     *
+     * @param by who carries the choice out
+     * @return how many lines were given up
+     */
+    int cancelShortLines(UUID orderId, UUID by);
 }

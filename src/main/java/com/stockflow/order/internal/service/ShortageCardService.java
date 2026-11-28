@@ -238,10 +238,10 @@ public class ShortageCardService implements ShortageCards {
             ShortageCard old = live.get();
             old.supersede(fresh.id());
             cards.save(old);
-            announce(old, order.orderNumber().value(), "SUPERSEDED", now);
+            announce(old, order, "SUPERSEDED", now);
         }
         ShortageCard saved = cards.save(fresh);
-        announce(saved, order.orderNumber().value(), "SENT", now);
+        announce(saved, order, "SENT", now);
         log.info("Order {}: shortage card {} sent for batch {} ({} cartons short)", order.orderNumber(), saved.id(),
                 draft.batchId(), saved.missingCartons());
         return view(saved, order);
@@ -272,7 +272,7 @@ public class ShortageCardService implements ShortageCards {
         Instant now = clock.instant();
         card.choose(option, userId, note, now);
         ShortageCard saved = cards.save(card);
-        announce(saved, order.orderNumber().value(), "CHOSEN", now);
+        announce(saved, order, "CHOSEN", now);
         log.info("Order {}: customer chose {} on shortage card {}", order.orderNumber(), option, cardId);
         return view(saved, order);
     }
@@ -292,15 +292,58 @@ public class ShortageCardService implements ShortageCards {
             return 0;
         }
         Instant now = clock.instant();
-        String number = orders.findById(new OrderId(orderId)).map(o -> o.orderNumber().value()).orElse(null);
+        Order order = orders.findById(new OrderId(orderId)).orElse(null);
         int ended = 0;
         for (ShortageCard card : live) {
             if (card.expire(reason)) {
-                announce(cards.save(card), number, "EXPIRED", now);
+                announce(cards.save(card), order, "EXPIRED", now);
                 ended++;
             }
         }
         return ended;
+    }
+
+    /**
+     * The rest of the order was closed (17 §4.8 step 33), by whichever route: a live card whose "ship part, close the
+     * rest" Sales started is carried out by it - {@code EXECUTED} by {@code by}, not expired (17 §4.14 step 58: the card
+     * is executed when the last step of its option is done, also when Sales closed the rest with the order's own button);
+     * every other live card ends as {@code REMAINDER_CLOSED} (step 60). Under the order's lock, in the closure's
+     * transaction.
+     */
+    public void remainderClosed(UUID orderId, UUID by) {
+        List<ShortageCard> live = cards.liveForUpdate(orderId);
+        if (live.isEmpty()) {
+            return;
+        }
+        Instant now = clock.instant();
+        Order order = orders.findById(new OrderId(orderId)).orElse(null);
+        for (ShortageCard card : live) {
+            if (card.chosenOption() == ShortageOption.SHIP_PART_CLOSE_REST && card.executionStartedAt() != null
+                    && by != null) {
+                card.executed(by, now);
+                announce(cards.save(card), order, "EXECUTED", now);
+                log.info("Shortage card {} executed: the rest of order {} was closed", card.id(), orderId);
+            } else if (card.expire(ShortageCardEnd.REMAINDER_CLOSED)) {
+                announce(cards.save(card), order, "EXPIRED", now);
+            }
+        }
+    }
+
+    /**
+     * The warehouse completed the partial check of an order whose live card's "ship part, close the rest" Sales started
+     * (17 §4.14 step 58): whoever looks after the customer is told to close the rest now ({@code CLOSE_REST_DUE}). Called
+     * by the order's own step that records the partial check, under its lock; nothing for an order without such a card.
+     */
+    public void partialCheckCompleted(UUID orderId) {
+        List<ShortageCard> started = cards.liveOf(orderId).stream()
+                .filter(c -> c.chosenOption() == ShortageOption.SHIP_PART_CLOSE_REST && c.executionStartedAt() != null)
+                .toList();
+        if (started.isEmpty()) {
+            return;
+        }
+        Instant now = clock.instant();
+        Order order = orders.findById(new OrderId(orderId)).orElse(null);
+        started.forEach(card -> announce(card, order, "CLOSE_REST_DUE", now));
     }
 
     // ---- drawing the card ---------------------------------------------------------------------------------------------
@@ -490,10 +533,11 @@ public class ShortageCardService implements ShortageCards {
                 l.unitsPerCarton());
     }
 
-    /** Tells the chat and the notices (after commit): the card changed. */
-    private void announce(ShortageCard c, String orderNumber, String change, Instant now) {
-        events.publish(new ShortageCardChanged(c.id(), c.orderId(), orderNumber, c.customerId(), c.status().name(),
-                c.chosenOption() == null ? null : c.chosenOption().name(), c.missingCartons(),
-                c.executionStartedAt() != null, change, now));
+    /** Tells the chat and the notices (after commit): the card changed. {@code order} may be null (not found). */
+    void announce(ShortageCard c, Order order, String change, Instant now) {
+        events.publish(new ShortageCardChanged(c.id(), c.orderId(), order == null ? null : order.orderNumber().value(),
+                c.customerId(), c.status().name(), c.chosenOption() == null ? null : c.chosenOption().name(),
+                c.missingCartons(), c.executionStartedAt() != null, change, now,
+                order == null ? null : order.shippingWarehouseId()));
     }
 }

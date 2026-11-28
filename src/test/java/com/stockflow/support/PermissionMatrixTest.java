@@ -990,6 +990,35 @@ class PermissionMatrixTest {
     }
 
     /**
+     * 17 §4.14 step 58: carrying out the customer's choice on a shortage card answers to the permission of the operation
+     * each option runs - lifting the hold, allowing partial shipment, closing the rest and cancelling; the endpoints
+     * that need a second one (ship part: the hold; moving the window: the contract) ask it in the handler.
+     */
+    @Test
+    void theShortageCardExecutionEndpointsNeedTheirOperationsPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        String base = "POST /api/v1/orders/{orderId}/shortage-cards/{cardId}/execution/";
+        Map<String, String> expected = Map.of(
+                base + "wait-for-production", "sales-order-holds:UPDATE",
+                base + "ship-part", "sales-order-partial-shipments:UPDATE",
+                base + "close-rest", "sales-order-cancellations:UPDATE",
+                base + "cancel", "sales-order-cancellations:UPDATE");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+        });
+        assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
+                .as("Sales hold every permission the four steps ask")
+                .contains(PermissionCode.parse("sales-order-holds:UPDATE"),
+                        PermissionCode.parse("sales-order-partial-shipments:UPDATE"),
+                        PermissionCode.parse("sales-order-cancellations:UPDATE"),
+                        PermissionCode.parse("sales-contracts:UPDATE"));
+    }
+
+    /**
      * 4B-8 (kltn-docs 17 BR-03, BR-28, BR-29): releasing a delivery batch is the warehouse manager's
      * ({@code sales-order-releases:UPDATE}, narrowed to the warehouse released to); moving a window, and the upload of
      * its evidence, are Sales' contract work ({@code sales-contracts:UPDATE}); the staff read the schedule as they read

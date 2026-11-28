@@ -132,6 +132,11 @@ public final class OrderLine {
         reservationIds.addAll(at, fresh);
     }
 
+    /** The hold was released with nothing in its place (a short pick's carton given up, 17 §4.14 step 58). */
+    void dropHold(UUID released) {
+        reservationIds.remove(released);
+    }
+
     public boolean isReserved() {
         return !reservationIds.isEmpty();
     }
