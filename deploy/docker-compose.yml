@@ -150,6 +150,12 @@ services:
       # Seals carriers' API keys and webhook secrets in the database (openssl rand -base64 32). Blank: they cannot be
       # saved until it is set. Keep it with the database backups: without it the sealed secrets cannot be read.
       STOCKFLOW_SECRETS_KEY: ${STOCKFLOW_SECRETS_KEY:-}
+      # Contract e-signing. All optional: with none set, a test certificate is generated into the database and sealed
+      # with a development default (a warning in the log). Set the secret on any server people reach.
+      CONTRACT_SIGNING_KEYSTORE: ${CONTRACT_SIGNING_KEYSTORE:-}
+      CONTRACT_SIGNING_KEYSTORE_PASSWORD: ${CONTRACT_SIGNING_KEYSTORE_PASSWORD:-}
+      CONTRACT_SIGNING_SECRET: ${CONTRACT_SIGNING_SECRET:-}
+      CONTRACT_VERIFICATION_BASE_URL: ${CONTRACT_VERIFICATION_BASE_URL:-}
       # Links a producer opens without signing in (4A-3: its production order slip and print files). Every link
       # starts with the public base URL; blank makes none and the mail says the coordinator sends the files. With a
       # base URL the APPLICATION refuses to start without the HMAC key (openssl rand -base64 32) - not compose: a

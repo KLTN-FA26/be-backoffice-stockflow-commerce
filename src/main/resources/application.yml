@@ -835,6 +835,23 @@ stockflow:
       quantity-tolerance-percent: ${CONTRACT_QUANTITY_TOLERANCE_PERCENT:5}
       warranty-months: ${CONTRACT_WARRANTY_MONTHS:6}
       penalty-percent: ${CONTRACT_PENALTY_PERCENT:8}
+    contract-signing:
+      # How the company signs a contract (ContractSigner). The certificate is a TEST one nobody vouches for: either a
+      # PKCS#12 you supply (base64, one line) with its password, or - with none - an RSA 3072 key generated at the first
+      # signing and kept in the database, sealed with the secret below. Never commit any of these.
+      keystore: ${CONTRACT_SIGNING_KEYSTORE:}
+      keystore-password: ${CONTRACT_SIGNING_KEYSTORE_PASSWORD:}
+      # Seals the generated key and hashes customers' one-time codes. Required in the prod profile (the application
+      # refuses to start without it); elsewhere a development default is used with a warning. Changing it makes the
+      # stored key unreadable (the signer then fails) and ends the codes in flight. Any long random string.
+      secret: ${CONTRACT_SIGNING_SECRET:}
+      # The storefront's origin: the QR code on a contract's certificate page points at
+      # <this>/xac-minh-hop-dong/<code>. Blank prints the code and no QR code.
+      verification-base-url: ${CONTRACT_VERIFICATION_BASE_URL:}
+      # A customer's one-time code: how long it works, how soon another may be asked for, and how many an hour.
+      otp-lifetime: ${CONTRACT_OTP_LIFETIME:PT10M}
+      otp-resend-after: ${CONTRACT_OTP_RESEND_AFTER:PT1M}
+      otp-per-hour: ${CONTRACT_OTP_PER_HOUR:5}
     production-order:
       # How long the links e-mailed to a producer - its production order slip and print files - work (4A-3). Every use
       # is checked again (the production order still open, the file still the approved one) and gets a presigned URL

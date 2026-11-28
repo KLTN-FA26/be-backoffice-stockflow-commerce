@@ -106,6 +106,22 @@ class DeployConfigurationTest {
     }
 
     @Test
+    @DisplayName("Contract e-signing: its optional variables reach the server blank by default and are listed for the operator")
+    void contractSigningVariablesReachTheServer() throws Exception {
+        String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
+        String example = Files.readString(Path.of("deploy/.env.example"), StandardCharsets.UTF_8);
+        String application = Files.readString(Path.of("src/main/resources/application.yml"), StandardCharsets.UTF_8);
+
+        for (String variable : java.util.List.of("CONTRACT_SIGNING_KEYSTORE", "CONTRACT_SIGNING_KEYSTORE_PASSWORD",
+                "CONTRACT_SIGNING_SECRET", "CONTRACT_VERIFICATION_BASE_URL")) {
+            assertThat(application).as("the application reads %s, blank by default", variable)
+                    .contains("${" + variable + ":}");
+            assertThat(compose).as("compose passes %s", variable).contains(variable + ": ${" + variable + ":-}");
+            assertThat(example).as(".env.example lists %s", variable).contains("\n" + variable + "=");
+        }
+    }
+
+    @Test
     @DisplayName("BE-3: approved print files get the FOGRA39 intent out of the box, on a laptop and on the server alike")
     void theBundledPrintProfileIsTheDefaultEverywhere() throws Exception {
         String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
