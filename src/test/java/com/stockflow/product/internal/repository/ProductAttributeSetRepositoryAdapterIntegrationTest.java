@@ -85,8 +85,8 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
         when(users.current()).thenReturn(Optional.of(new CurrentUser(user, "test-" + user, Set.of(), Set.of(),
                 DataScope.ALL, Set.of())));
         suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        productId = products.create(new CreateProductCommand("SET-" + suffix, "Ten " + suffix, "Name " + suffix, null,
-                null, null, null, null, TaxClass.STANDARD, List.of())).productId();
+        productId = products.create(new CreateProductCommand("SET-" + suffix, "Ten " + suffix, null,
+                null, null, null, TaxClass.STANDARD, List.of())).productId();
     }
 
     private AttributeView attribute(String code, AttributeDataType type, String... valueCodes) {

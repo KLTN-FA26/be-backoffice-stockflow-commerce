@@ -1,7 +1,6 @@
 package com.stockflow.payment.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
-import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
@@ -24,6 +23,7 @@ import com.stockflow.payment.internal.domain.InstallmentStatus;
 import com.stockflow.payment.internal.domain.PaymentReceiptStatus;
 import com.stockflow.payment.internal.service.InstallmentService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -32,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -53,12 +54,6 @@ import java.util.UUID;
         actions = {Action.VIEW_PAGE, Action.READ})
 class InstallmentController {
 
-    /**
-     * At most this many customers a {@code search} may match: their ids go into one {@code IN} list. A search broader
-     * than that is refused rather than cut short, which would drop some customers' installments without a word.
-     */
-    static final int SEARCH_MAX_CUSTOMERS = 1_000;
-
     private final InstallmentService installments;
     private final CustomerService customers;
     private final CustomerSearch customerSearch;
@@ -71,7 +66,8 @@ class InstallmentController {
 
     @GetMapping
     @Operation(summary = "Installments, earliest due first; filter by customer (its id, or search: a part of its name "
-            + "or tax code, case and accents aside), order, status, milestone, due day, whether their milestone came, "
+            + "or tax code, case and accents aside - or of the contract number or the order number), the amount still "
+            + "owed (outstanding), order, status, milestone, due day, whether their milestone came, "
             + "whether they are overdue (the aged-receivables reading: overdue is a flag worked out from the due day, "
             + "not a status: status=OVERDUE is refused with 400 INSTALLMENT_OVERDUE_IS_A_FLAG) and whether they are "
             + "owing: owing=true keeps what is due and still owed - the milestone came and it is DUE or PARTIALLY_PAID, "
@@ -79,6 +75,9 @@ class InstallmentController {
     @RequiresPermission(resource = PaymentResources.INSTALLMENTS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<PageResponse<InstallmentResponse>> list(
             @RequestParam(required = false) UUID customerId,
+            @Parameter(description = "A part of the customer's name or tax code (case and accents aside), or of the "
+                    + "contract number or the order number (case aside); 400 VALIDATION_FAILED when it matches more "
+                    + "than 1,000 customers")
             @RequestParam(required = false) String search,
             @RequestParam(required = false) UUID orderId,
             @RequestParam(required = false) InstallmentStatus status,
@@ -87,6 +86,10 @@ class InstallmentController {
             @RequestParam(required = false) Boolean reached,
             @RequestParam(required = false) Boolean overdue,
             @RequestParam(required = false) Boolean owing,
+            @Parameter(description = "Keeps the installments still owing exactly this amount - the outstanding the "
+                    + "rows show: amount less paid and reduced, 0 once cancelled. For the bank transfer page's "
+                    + "installments that could match a transfer; combine with owing=true for those due")
+            @RequestParam(required = false) BigDecimal outstanding,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort,
@@ -94,8 +97,9 @@ class InstallmentController {
         // Customers hold payment-installments:READ for /me; this list is every customer's.
         ScopeGuards.requireBackOffice(user);
         LocalDate today = installments.today();
-        var found = installments.installments(customerId, customersMatching(search), orderId, status, milestone,
-                dueBefore, reached, overdue, owing, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
+        var found = installments.installments(customerId, CustomerSearchTerms.idsMatching(customerSearch, search),
+                search, orderId, status, milestone, dueBefore, reached, overdue, owing, outstanding, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
         // One query for the names of the whole page - not one per row.
         var labels = customers.labels(found.items().stream().map(i -> i.customerId()).toList());
         return ApiResponse.ok(found.map(i -> PaymentWebMapper.toResponse(i, null, today, labels)));
@@ -177,27 +181,6 @@ class InstallmentController {
                                                                          @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(PaymentWebMapper.toResponse(installments.transferInstructions(installmentId, null)));
-    }
-
-    /**
-     * The customers {@code search} means, read through {@code customer :: api} - the accountant holds no customer
-     * permission, so the back office cannot pick one from the customer list (FE BE-16), and this schema is not JOINed
-     * (ADR-0007). Null for no search; empty when it matched nobody, which then finds no installment.
-     *
-     * @throws BusinessException {@code VALIDATION_FAILED} when it matches more than {@link #SEARCH_MAX_CUSTOMERS}
-     */
-    private List<UUID> customersMatching(String search) {
-        if (search == null || search.isBlank()) {
-            return null;
-        }
-        List<UUID> matching = customerSearch.idsMatching(search, SEARCH_MAX_CUSTOMERS + 1);
-        if (matching.size() > SEARCH_MAX_CUSTOMERS) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The search matches more than %d customers"
-                    .formatted(SEARCH_MAX_CUSTOMERS), List.of(FieldError.localized("search",
-                    "matches too many customers", "TooBroad", "refusal.payment.searchTooBroad",
-                    SEARCH_MAX_CUSTOMERS))).localized("refusal.payment.searchTooBroad", SEARCH_MAX_CUSTOMERS);
-        }
-        return matching;
     }
 
     private UUID customerOf(CurrentUser user) {

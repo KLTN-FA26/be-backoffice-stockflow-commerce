@@ -22,6 +22,7 @@ import com.stockflow.order.internal.controller.dto.SalesContractRequests;
 import com.stockflow.order.internal.service.CreditHoldService;
 import com.stockflow.order.internal.service.SalesContracts;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -32,6 +33,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -84,6 +86,38 @@ class CreditHoldController {
     @RequiresPermission(resource = "customer-credit-profiles", action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<CreditPositionResponse> position(@PathVariable UUID customerId) {
         return ApiResponse.ok(toResponse(credit.position(customerId)));
+    }
+
+    /**
+     * Audit bo-29: the credit of a page of customers, for the back office customer list's optional credit columns. The
+     * customer module cannot read what a customer owes (payment depends on customer: the other way would be a cycle),
+     * so the list calls this once per page beside {@code GET /customers}, with the page's ids. Each item is what
+     * {@code /credit-position/{customerId}} answers for that customer, under the same grant: the credit limit is
+     * accounting's figure and what a customer owes is not every customer reader's business, so a role that reads the
+     * list but not credit gets 403 here and the list shows no credit columns.
+     *
+     * <p>At most a page of the list ({@value com.stockflow.common.persistence.Pages#MAX_PAGE_SIZE}), so the read stays
+     * two statements of bounded size.</p>
+     */
+    @GetMapping("/credit-positions")
+    @Operation(summary = "The credit of many customers at once: limit, exposure, what is left and what is overdue, "
+            + "for each customer asked",
+            description = "Needs customer-credit-profiles:READ, as /credit-position/{customerId}. One item per distinct "
+                    + "customer that exists, in the order asked; an unknown id is left out. Two reads whatever the "
+                    + "number of customers. 400 UNSUPPORTED_PARAMETER past 200 ids.")
+    @RequiresPermission(resource = "customer-credit-profiles", action = Action.READ, scope = DataScope.ALL)
+    public ApiResponse<List<CreditPositionResponse>> positions(
+            @AuthenticatedUser CurrentUser user,
+            @Parameter(description = "The customers, comma separated (customerIds=a,b,c) or the parameter "
+                    + "repeated (customerIds=a&customerIds=b), not both: typically the ids of one page of GET /customers; "
+                    + "at most 200")
+            @RequestParam List<UUID> customerIds) {
+        ScopeGuards.requireBackOffice(user);
+        if (customerIds.size() > com.stockflow.common.persistence.Pages.MAX_PAGE_SIZE) {
+            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "At most %d customers, got %d".formatted(
+                    com.stockflow.common.persistence.Pages.MAX_PAGE_SIZE, customerIds.size()));
+        }
+        return ApiResponse.ok(credit.positions(customerIds).stream().map(CreditHoldController::toResponse).toList());
     }
 
     @GetMapping("/credit-holds")

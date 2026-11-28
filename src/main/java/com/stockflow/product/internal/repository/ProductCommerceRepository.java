@@ -40,7 +40,7 @@ public class ProductCommerceRepository {
                                 new PublicationProduct(
                                         id,
                                         r.getString("name"),
-                                        r.getString("description"),
+                                        textOf(r.getString("description")),
                                         null,
                                         status(r.getString("status")),
                                         List.of(),
@@ -87,9 +87,15 @@ order by pc.is_primary desc, pc.id limit 1
     /**
      * Whether each SKU may go on a new quote or order line, in one query (kltn-docs 01 BR-04).
      * Every SKU asked for is a key; one neither a variant nor a customer's SKU carries is
-     * {@code VARIANT_NOT_ACTIVE}. The product's status decides first, then the SKU's own. A quote or order line
-     * names a customer's SKU ({@code product.customer_skus} since V20270105000100), so both tables are read: a code
-     * is in one of them only ({@code tg_customer_skus_code_free}, {@code tg_variants_code_free}).
+     * {@code VARIANT_NOT_ACTIVE}. The product's status decides first, then the SKU's own, then - for a customer's
+     * own SKU - the status of the catalogue variant it is drawn on ({@code SOURCE_VARIANT_NOT_ACTIVE}): blocking a
+     * blank stops its customers' SKUs from being quoted or ordered without touching their own status, so they sell
+     * again the moment it is activated. A quote or order line names a customer's SKU ({@code product.customer_skus}
+     * since V20270105000100), so both tables are read: a code is in one of them only
+     * ({@code tg_customer_skus_code_free}, {@code tg_variants_code_free}).
+     *
+     * <p>The variant a customer's SKU is drawn on is a variant of the SKU's own product ({@code tg_customer_skus_drawn}),
+     * so the product row locked below covers it too.</p>
      *
      * <p>{@code hold}: the products asked about are read {@code FOR SHARE}, in id order, and stay so until the
      * caller's transaction ends. Every status move of a product or of one of its variants locks the product row
@@ -101,25 +107,29 @@ order by pc.is_primary desc, pc.id limit 1
         if (skus.isEmpty()) return result;
         String placeholders = String.join(",", Collections.nCopies(skus.size(), "?"));
         jdbc.query(
-                "select s.sku, s.status, p.status from (select sku, status, product_id from product.variants"
-                        + " where sku in (" + placeholders + ") union all select sku, status, product_id"
-                        + " from product.customer_skus where sku in (" + placeholders + ")) s"
+                "select s.sku, s.status, p.status, s.source_status from (select sku, status, product_id,"
+                        + " null as source_status from product.variants where sku in (" + placeholders + ")"
+                        + " union all select c.sku, c.status, c.product_id, sv.status from product.customer_skus c"
+                        + " join product.variants sv on sv.id = c.variant_id where c.sku in (" + placeholders + ")) s"
                         + " join product.products p on p.id = s.product_id"
                         + (hold ? " order by p.id for share of p" : ""),
                 r -> {
-                    result.put(r.getString(1), purchasabilityOf(status(r.getString(3)), r.getString(2)));
+                    result.put(r.getString(1), purchasabilityOf(status(r.getString(3)), r.getString(2),
+                            r.getString(4)));
                 },
                 java.util.stream.Stream.concat(skus.stream(), skus.stream()).toArray());
         return result;
     }
 
-    private static Purchasability purchasabilityOf(ProductStatus product, String variant) {
+    /** {@code source}: the status of the catalogue variant a customer's SKU is drawn on; null for a variant's own. */
+    private static Purchasability purchasabilityOf(ProductStatus product, String sku, String source) {
         return switch (product) {
             case INACTIVE -> Purchasability.PRODUCT_INACTIVE;
             case DISCONTINUED -> Purchasability.PRODUCT_DISCONTINUED;
             case DRAFT, PENDING_APPROVAL -> Purchasability.PRODUCT_NOT_APPROVED;
-            case APPROVED, PUBLISHED -> "ACTIVE".equals(variant)
-                    ? Purchasability.PURCHASABLE : Purchasability.VARIANT_NOT_ACTIVE;
+            case APPROVED, PUBLISHED -> !"ACTIVE".equals(sku) ? Purchasability.VARIANT_NOT_ACTIVE
+                    : source != null && !"ACTIVE".equals(source) ? Purchasability.SOURCE_VARIANT_NOT_ACTIVE
+                    : Purchasability.PURCHASABLE;
         };
     }
 
@@ -179,8 +189,44 @@ order by pc.is_primary desc, pc.id limit 1
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
 
+    /** A product's description HTML, brand and primary category, as its storefront page shows them. */
+    public record StorefrontFacts(String descriptionHtml, com.stockflow.product.api.StorefrontProduct.Brand brand,
+                                  com.stockflow.product.api.StorefrontProduct.Category category) {}
+
+    /** {@link StorefrontFacts} in one query; empty for an unknown product. */
+    public java.util.Optional<StorefrontFacts> storefrontFacts(UUID id) {
+        return jdbc.query(
+                        """
+select p.description, b.id, b.name, b.slug, b.logo_url, c.id, c.name, c.slug
+from product.products p
+left join product.brands b on b.id = p.brand_id
+left join product.product_categories pc on pc.product_id = p.id and pc.is_primary
+left join product.categories c on c.id = pc.category_id
+where p.id = ?
+""",
+                        (r, n) -> new StorefrontFacts(
+                                r.getString(1),
+                                r.getObject(2) == null ? null : new com.stockflow.product.api.StorefrontProduct.Brand(
+                                        r.getObject(2, UUID.class), r.getString(3), r.getString(4), r.getString(5)),
+                                r.getObject(6) == null ? null : new com.stockflow.product.api.StorefrontProduct.Category(
+                                        r.getObject(6, UUID.class), r.getString(7), r.getString(8))),
+                        id)
+                .stream()
+                .findFirst();
+    }
+
     /** A catalogue variant's id and SKU, and whether it is OBSOLETE. */
     public record VariantSku(UUID variantId, String sku, boolean obsolete) {}
+
+    /**
+     * The text of a description, tags gone: a description is the editor's HTML (ADR-0013), and what reads it through
+     * {@code PublicationProduct} - the catalog's search - wants words, not markup.
+     */
+    private static String textOf(String html) {
+        if (html == null || html.isBlank()) return null;
+        String text = org.jsoup.Jsoup.parseBodyFragment(html).body().text().strip();
+        return text.isEmpty() ? null : text;
+    }
 
     public ProductEcommerce ecommerce(UUID id) {
         return jdbc

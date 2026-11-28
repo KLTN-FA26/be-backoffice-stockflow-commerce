@@ -425,9 +425,16 @@ class CarrierBookingService implements Bookings {
             return new BusinessException(ErrorCode.EXTERNAL_SERVICE_ERROR,
                     "Carrier %s did not answer; try again".formatted(carrier.getCode()));
         }
-        return new BusinessException(ErrorCode.CARRIER_BOOKING_FAILED, "Carrier %s refused to %s it: %s"
-                .formatted(carrier.getCode(), what, failed.getMessage()),
-                List.of(FieldError.of("carrier", Objects.requireNonNullElse(failed.getMessage(), "refused"))));
+        // The carrier's own words are the fallback; a code the bundles know is answered, in the message and in the
+        // carrier field, as what to do and who does it (CarrierRefusals), so the screen never shows
+        // "400 INVALID_LOCATION: Failed". The English text with the code stays what the log and a code with no entry say.
+        String reason = Objects.requireNonNullElse(failed.getMessage(), "refused");
+        String key = CarrierRefusals.keyOf(failed.code());
+        BusinessException refused = new BusinessException(ErrorCode.CARRIER_BOOKING_FAILED,
+                "Carrier %s refused to %s it: %s".formatted(carrier.getCode(), what, failed.getMessage()),
+                List.of(key == null ? FieldError.of("carrier", reason)
+                        : FieldError.localized("carrier", reason, failed.code(), key)));
+        return key == null ? refused : refused.localized(key);
     }
 
     private static boolean present(String value) {

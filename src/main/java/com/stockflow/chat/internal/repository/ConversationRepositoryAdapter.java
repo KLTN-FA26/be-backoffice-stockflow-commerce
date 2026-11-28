@@ -103,7 +103,7 @@ class ConversationRepositoryAdapter implements ConversationRepository {
                 s.firstRespondedAt(), s.firstResponseAlertedAt(), s.resolutionDueAt(), s.resolutionAlertedAt(),
                 s.escalationReason(), s.escalatedToId(), s.resolvedAt(), s.resolvedBy(), s.autoClosedAt(),
                 s.closedAt(), s.reopenUntil(), s.lastCustomerMessageAt(), s.lastMessageAt(), s.lastMessageSeq(),
-                s.csatScore(), s.csatComment(), s.csatSubmittedAt(), s.mergedIntoId());
+                s.csatScore(), s.csatComment(), s.csatSubmittedAt(), s.mergedIntoId(), s.requeuedAt());
         return toDomain(conversations.saveAndFlush(entity));
     }
 
@@ -155,8 +155,8 @@ class ConversationRepositoryAdapter implements ConversationRepository {
             params.put("customer", filter.customerId());
         }
         about(where, params, filter.about());
-        return slice(where.toString(), " order by " + OVERDUE + " desc, coalesce(c.last_message_at, c.created_at)"
-                + " desc, c.id desc", params, page, size);
+        return slice(where.toString(), " order by (c.requeued_at is not null) desc, " + OVERDUE
+                + " desc, coalesce(c.last_message_at, c.created_at) desc, c.id desc", params, page, size);
     }
 
     @Override
@@ -235,21 +235,42 @@ class ConversationRepositoryAdapter implements ConversationRepository {
         return found.stream().findFirst().flatMap(this::findById);
     }
 
-    /** One row per agent, at their latest conversation with the customer. */
     @Override
-    public List<UUID> recentAgentsOf(UUID customerId, UUID except, int limit) {
+    public List<UUID> openOf(UUID customerId) {
         @SuppressWarnings("unchecked")
-        List<UUID> agents = entityManager.createNativeQuery("""
-                        select a.agent from (select c.assigned_agent_id as agent,
-                                                    max(coalesce(c.last_message_at, c.created_at)) as last_at
-                                               from chat.conversation c
-                                              where c.customer_id = :customer and c.assigned_agent_id is not null
-                                                and c.id <> :except
-                                              group by c.assigned_agent_id) a
-                         order by a.last_at desc limit :limit""")
-                .setParameter("customer", customerId).setParameter("except", except == null ? new UUID(0L, 0L) : except)
-                .setParameter("limit", limit).getResultList();
-        return agents;
+        List<UUID> found = entityManager.createNativeQuery("select c.id from chat.conversation c where c.customer_id ="
+                        + " :customer and c.status not in " + ENDED + " order by c.id")
+                .setParameter("customer", customerId).getResultList();
+        return found;
+    }
+
+    @Override
+    public List<UUID> openAssignedTo(UUID agentId) {
+        @SuppressWarnings("unchecked")
+        List<UUID> found = entityManager.createNativeQuery("select c.id from chat.conversation c where"
+                        + " c.assigned_agent_id = :agent and c.status not in " + ENDED + " order by c.id")
+                .setParameter("agent", agentId).getResultList();
+        return found;
+    }
+
+    /** The overdue count uses {@link #OVERDUE}, the queue's own predicate, so the board and the queue agree. */
+    @Override
+    public List<AgentLoad> openLoad(Instant now) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("select c.assigned_agent_id, count(*), count(*) filter"
+                        + " (where " + OVERDUE + ") from chat.conversation c where c.assigned_agent_id is not null and"
+                        + " c.status not in " + ENDED + " group by c.assigned_agent_id")
+                .setParameter("now", now).getResultList();
+        return rows.stream().map(r -> new AgentLoad((UUID) r[0], ((Number) r[1]).longValue(),
+                ((Number) r[2]).longValue())).toList();
+    }
+
+    @Override
+    public boolean recordOwnerChangeApplied(UUID customerId, Instant changedAt, UUID toUserId, Instant now) {
+        return entityManager.createNativeQuery("insert into chat.sales_owner_change_applied (customer_id, changed_at,"
+                        + " to_user_id, applied_at) values (:customer, :changedAt, :to, :now) on conflict do nothing")
+                .setParameter("customer", customerId).setParameter("changedAt", changedAt)
+                .setParameter("to", toUserId).setParameter("now", now).executeUpdate() == 1;
     }
 
     @Override
@@ -388,7 +409,7 @@ class ConversationRepositoryAdapter implements ConversationRepository {
                 e.getAutoClosedAt(), e.getClosedAt(), e.getReopenUntil(), e.getLastCustomerMessageAt(),
                 e.getLastMessageAt(), e.getLastMessageSeq(),
                 e.getCsatScore() == null ? null : e.getCsatScore().intValue(), e.getCsatComment(),
-                e.getCsatSubmittedAt(), e.getContinuedFromId(), e.getMergedIntoId(), e.getCreatedAt(),
-                e.getVersion()));
+                e.getCsatSubmittedAt(), e.getContinuedFromId(), e.getMergedIntoId(), e.getRequeuedAt(),
+                e.getCreatedAt(), e.getVersion()));
     }
 }

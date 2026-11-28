@@ -47,13 +47,18 @@ class CustomerSkuController {
         this.lifecycle = lifecycle;
     }
 
+    /**
+     * A customer's own SKUs, narrowed to a product and a catalogue variant when those are given: what the quote editor
+     * reads. Every customer's SKUs of one product are {@code ProductCustomerSkuController}'s question, paged.
+     */
     @GetMapping
-    @Operation(summary = "A customer's own SKUs, of one product when productId is given, each with the pieces per carton "
-            + "and the VAT rate a quote line of it copies today")
+    @Operation(summary = "A customer's own SKUs, of one product (and one catalogue variant) when given, each with the "
+            + "pieces per carton, the VAT rate a quote line of it copies today and its owner's name and code")
     @RequiresPermission(resource = ProductResources.VARIANTS, action = Action.READ)
     public ApiResponse<List<CustomerSkuResponse>> list(@RequestParam UUID customerId,
-                                                       @RequestParam(required = false) UUID productId) {
-        return ApiResponse.ok(listing.ownedBy(customerId, productId).stream()
+                                                       @RequestParam(required = false) UUID productId,
+                                                       @RequestParam(required = false) UUID variantId) {
+        return ApiResponse.ok(listing.ownedBy(customerId, productId, variantId).stream()
                 .map(CustomerSkuController::response).toList());
     }
 
@@ -82,10 +87,11 @@ class CustomerSkuController {
         return ApiResponse.ok(response(listing.one(lifecycle.obsolete(id))));
     }
 
-    private static CustomerSkuResponse response(CustomerSkuListing.Listed listed) {
+    static CustomerSkuResponse response(CustomerSkuListing.Listed listed) {
         return new CustomerSkuResponse(listed.sku().id(), listed.sku().productId(), listed.sku().sku(),
                 listed.sku().name(), listed.sku().ownerCustomerId(), listed.sku().designSnapshotId(),
                 listed.sku().sourceVariantId(), listed.sku().sourceSku(), listed.sku().status(),
-                listed.unitsPerCarton(), listed.taxClass(), listed.taxRate());
+                listed.unitsPerCarton(), listed.taxClass(), listed.taxRate(), listed.ownerName(),
+                listed.ownerCode());
     }
 }

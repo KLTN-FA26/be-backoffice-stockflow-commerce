@@ -11,6 +11,7 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.order.internal.controller.dto.QuoteRequests;
 import com.stockflow.order.internal.controller.dto.QuoteResponse;
 import com.stockflow.order.internal.controller.dto.QuoteRowResponse;
+import com.stockflow.order.internal.controller.dto.QuoteStatusCountsResponse;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.service.QuoteDocumentService;
 import com.stockflow.order.internal.service.Quotes;
@@ -96,6 +97,29 @@ class QuoteController {
         return ApiResponse.ok(quotes.list(user, new Quotes.Criteria(customerId, statuses, search, page,
                 size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort, "PENDING".equalsIgnoreCase(priceReview)))
                 .map(QuoteWebMapper::toResponse));
+    }
+
+    @GetMapping("/status-counts")
+    @Operation(summary = "How many quotes the list holds under each status, for its status tabs, and how many drafts "
+            + "wait for their prices to be approved",
+            description = "The same filters, permission and visibility as GET /api/v1/quotes - a portal customer counts "
+                    + "only their own quotes, once sent - in one grouped statement. Statuses are counted as the list "
+                    + "shows them (a SENT quote past its validity is EXPIRED).")
+    @RequiresPermission(resource = OrderResources.QUOTES, action = Action.READ)
+    public ApiResponse<QuoteStatusCountsResponse> statusCounts(
+            @Parameter(description = "Count only these statuses, as the list's status filter; omitted counts every one")
+            @RequestParam(name = "status", required = false) List<QuoteStatus> statuses,
+            @Parameter(description = "Only this customer's quotes, as the list; ignored for a portal customer, held to "
+                    + "their own")
+            @RequestParam(required = false) UUID customerId,
+            @Parameter(description = "Part of the quote number, as the list's search")
+            @RequestParam(required = false) String search,
+            @Parameter(description = "PENDING: count only drafts waiting for the Sales Manager to approve their prices, "
+                    + "as the list; ignored for a portal customer")
+            @RequestParam(name = "priceReview", required = false) String priceReview,
+            @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.statusCounts(user, new Quotes.Criteria(customerId,
+                statuses, search, 0, Pages.DEFAULT_PAGE_SIZE, null, "PENDING".equalsIgnoreCase(priceReview)))));
     }
 
     @GetMapping("/{quoteId}")

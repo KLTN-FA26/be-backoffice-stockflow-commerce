@@ -31,6 +31,10 @@ deploy/.nginx-config-hash
 # LocalFileStorage's directory when the local storage provider is selected.
 .local-storage/
 
+# AssistantGoldenSetEval's results against a real model, kept between runs and out of target/ so `mvn clean` keeps
+# them: a run on a free model quota takes several days (docs/assistant-design.md §10.3).
+/assistant-eval-runs/
+
 # Generated from the code by ModularityTest on every build; never committed, or it goes stale.
 target/spring-modulith-docs/
 

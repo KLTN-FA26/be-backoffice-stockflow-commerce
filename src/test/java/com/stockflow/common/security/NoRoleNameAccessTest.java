@@ -47,7 +47,41 @@ class NoRoleNameAccessTest {
     }
 
     private static final List<Allowed> ALLOWED = List.of(
+            // D42 (owner decision 2026-11-28, kltn-docs 18 BR-13): a customer's Sales owner and a cover are, by
+            // definition, accounts holding the Sales Staff role - a business role, not an access check; the database
+            // triggers on customer.customer and identity.staff_cover state the same rule. Who may ACT is still read
+            // from permissions (customer-sales-owners:UPDATE, requireMayActFor).
+            new Allowed("identity/api/SalesStaff.java", "Set<String> SALES_ROLES = Set.of(",
+                    "D42: an owner or a cover is a Sales Staff account (who is eligible, not who may act)"),
+            new Allowed("identity/internal/service/SalesStaffDirectory.java",
+                    "held.values().forEach(list -> list.sort(Comparator.comparing(StaffMember.Role::code)));",
+                    "sorts the roles shown beside a name in the Sales pickers; no access decision"),
+            new Allowed("identity/internal/service/SalesStaffDirectory.java", "return ids(Set.of(Roles.SALES_MANAGER));",
+                    "D6: who is told when a customer has no active owner (recipients, not access)"),
+            new Allowed("identity/internal/service/SalesStaffDirectory.java", "return ids(Set.of(Roles.SYSTEM_ADMIN));",
+                    "plan case 25: the last fallback recipients when no Sales Manager is active (recipients, not access)"),
             // ---- the security layer: converting a token, and the one data-scope test that has to name CUSTOMER
+            new Allowed("assistant/internal/controller/dto/NextStepsResponse.java",
+                    "allowableValues = {\"CUSTOMER\", \"SALES\", \"ACCOUNTANT\", \"WAREHOUSE\",",
+                    "who must act next on a stalled order, shown to the user as a label (contract 1.1): it addresses "
+                            + "nobody and grants nothing; the endpoint is guarded by sales-orders:READ"),
+            new Allowed("assistant/internal/controller/dto/NextStepsResponse.java",
+                    "\"PRODUCTION\", \"CARRIER\", \"SALES_MANAGER\"})",
+                    "the rest of the same who-acts-next label list as the line above"),
+            new Allowed("assistant/internal/service/OrderNextSteps.java", "case \"CUSTOMER\" -> WaitingOn.CUSTOMER;",
+                    "HoldReason.CUSTOMER (the customer asked to hold) mapped to who must act; no role is read"),
+            new Allowed("assistant/internal/service/OrderNextSteps.java",
+                    "case \"CREDIT\", \"FRAUD\", \"INVENTORY\", \"CUSTOMER\", \"PAYMENT\", \"ADDRESS\", \"DELIVERY_FAILED\" -> holdReason;",
+                    "hold reasons (HoldReason names), one of which is spelt like the CUSTOMER role; no role is read"),
+            new Allowed("assistant/internal/controller/dto/FeatureUsageResponse.java",
+                    "+ \"run time\", example = \"SALES_STAFF\") String role,",
+                    "an example value of the usage report's role column (contract 5.2): documentation, no access"),
+            new Allowed("assistant/internal/service/FeatureUse.java",
+                    "if (user == null || user.roles() == null || user.roles().isEmpty()) {",
+                    "the usage counter's role tag (contract 5.2): which roles use a feature, a statistic that decides nothing"),
+            new Allowed("assistant/internal/service/FeatureUse.java",
+                    "return user.roles().stream().sorted(Comparator.comparingInt(Role::ordinal)).map(Role::name)",
+                    "the same usage counter's role tag"),
             new Allowed("common/security/CurrentUserProvider.java", ".map(Role::fromAuthority)",
                     "turns the token's role codes into Role constants for CurrentUser.roles(); decides nothing"),
             new Allowed("common/security/CurrentUser.java", "allMatch(role -> role == Role.CUSTOMER)",
@@ -70,17 +104,17 @@ class NoRoleNameAccessTest {
             new Allowed("identity/internal/controller/dto/RoleResponse.java", "example = \"ACCOUNTANT\"",
                     "OpenAPI example of a role code"),
             // ---- who is told: the audience of a notification, not access
-            new Allowed("notification/internal/service/QuoteNotificationListener.java", "staff.activeStaff(Role.SALES_STAFF)",
-                    "who is told of a quote with no handler"),
-            new Allowed("order/internal/service/SalesRecipients.java",
-                    "identity.notificationRecipients(Set.of(Roles.SALES_STAFF), null)",
-                    "who is told of a contract or an order whose salesperson is gone (WF-02 FLOW-4): the same rule as "
-                            + "a quote with no handler, kltn-docs 00 §6 - it addresses a message, it grants no access"),
+            new Allowed("application.yml", "heldOrders: ${ASSISTANT_WATCH_HELD_ORDERS_ROLES",
+                    "assistant watch audience (whose list it is), not access: the tool's guard still decides"),
             new Allowed("notification/internal/service/WarehouseCapacityNotificationListener.java",
                     "staff.activeStaff(Role.WAREHOUSE_MANAGER, event.warehouseId())",
                     "who is told the projected free room turned negative: kltn-docs 00 §6 picks recipients by role "
                             + "and warehouse at send time, and C42 names only the receiving warehouse's Warehouse "
                             + "Manager - it addresses a message, it grants no access"),
+            new Allowed("notification/internal/service/SalesNotices.java",
+                    ".filter(member -> member.roles().stream().allMatch(role -> SalesStaff.SALES_ROLES.contains(",
+                    "17 BR-30 (2026-11-28): a delay alert drops only the plain salespeople who do not look after the "
+                            + "customer; one who also holds another role is told as that role - recipients, not access"),
             // ---- checks on the user an action is about, not on the caller
             new Allowed("fulfillment/internal/service/FulfillmentServiceImpl.java",
                     "Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority()",
@@ -107,7 +141,12 @@ class NoRoleNameAccessTest {
             new Allowed("identity/internal/service/PortalAccountServiceImpl.java", "\"The CUSTOMER role is seeded by migration",
                     "error message: a portal account is created with the CUSTOMER role"),
             // ---- not a role at all: the same word used for something else
-            new Allowed("order/", "CUSTOMER, FRAUD", "the hold reason CUSTOMER (HoldReason), not a role"));
+            new Allowed("order/", "CUSTOMER, FRAUD", "the hold reason CUSTOMER (HoldReason), not a role"),
+            new Allowed("assistant/internal/service/ClaudeLanguageModel.java", "MessageParam.Role.",
+                    "the model provider's message role (user or assistant), not a StockFlow role"),
+            // ---- told, not checked: the assistant's model is given the asker's roles as context (ADR-0014)
+            new Allowed("assistant/internal/service/AssistantService.java", "user.roles().stream().map(Enum::name)",
+                    "the asker's roles told to the model as context; every tool decides access by permission"));
 
     private static final String CODES = Arrays.stream(Role.values()).map(Role::name).collect(Collectors.joining("|"));
 

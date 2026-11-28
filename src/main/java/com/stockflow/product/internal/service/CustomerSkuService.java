@@ -226,6 +226,21 @@ public class CustomerSkuService implements CustomerSkus {
 
     @Override
     @Transactional(readOnly = true)
+    public Optional<DrawnSkus> drawnOn(String sourceSku, int limit) {
+        if (limit < 1 || limit > 100) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "limit must be between 1 and 100, not " + limit);
+        }
+        if (sourceSku == null || sourceSku.isBlank()) {
+            return Optional.empty();
+        }
+        return variants.findBySku(sourceSku.strip().toUpperCase(Locale.ROOT)).map(variant -> new DrawnSkus(
+                views(customerSkus.findByVariantIdOrderBySkuAscIdAsc(variant.getId(),
+                        org.springframework.data.domain.PageRequest.of(0, limit))),
+                customerSkus.countByVariantId(variant.getId())));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Optional<CustomerSku> ofSnapshot(UUID designSnapshotId) {
         return customerSkus.findByDesignSnapshotId(designSnapshotId).map(this::view);
     }
@@ -276,6 +291,11 @@ public class CustomerSkuService implements CustomerSkus {
 
     /** Many SKUs with their source variants' codes, in one more read for them all. */
     private List<CustomerSku> views(List<CustomerSkuJpaEntity> found) {
+        return views(found, variants);
+    }
+
+    /** {@link #views(List)} for a reader of this package that holds its own variant repository. */
+    static List<CustomerSku> views(List<CustomerSkuJpaEntity> found, VariantJpaRepository variants) {
         if (found.isEmpty()) {
             return List.of();
         }

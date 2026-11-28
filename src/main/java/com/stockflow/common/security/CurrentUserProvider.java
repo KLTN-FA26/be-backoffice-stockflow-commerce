@@ -43,8 +43,50 @@ public class CurrentUserProvider {
 
     private static final Logger log = LoggerFactory.getLogger(CurrentUserProvider.class);
 
+    /** The longest name an audit column holds ({@code created_by}, {@code audit_log.actor_name}). */
+    static final int AUDIT_NAME_MAX = 100;
+
+    /**
+     * RFC 8693's actor claim: who acts for the token's subject. A request's token never carries it; {@link RunAs}'s
+     * does.
+     */
+    public static final String ACTOR_CLAIM = "act";
+
+    /** Who acts for the token's subject, from its {@code act} claim; null for the subject themselves. */
+    public static String actorOf(Jwt jwt) {
+        Object act = jwt.getClaims().get(ACTOR_CLAIM);
+        return act instanceof java.util.Map<?, ?> claim && claim.get("sub") instanceof String sub ? sub : null;
+    }
+
+    /**
+     * Who acts for the current user when it is not them: the job {@link RunAs} names in the token's {@code act} claim
+     * ({@code assistant-watch}); empty for the user themselves. Static, read from this thread's security context: the
+     * trail must name the actor whether or not this bean is a test's stub.
+     */
+    public static Optional<String> actor() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication instanceof JwtAuthenticationToken token
+                ? Optional.ofNullable(actorOf(token.getToken())) : Optional.empty();
+    }
+
+    /**
+     * How the trail names {@code user}: their username (their id when they have none), and when a job acts for them,
+     * "... via" that job, so a row the assistant's watch wrote in someone's name never reads as theirs alone. Cut to the
+     * audit columns' length, the username giving way.
+     */
+    public static String auditName(CurrentUser user) {
+        String name = user.username() != null ? user.username() : user.userId().toString();
+        Optional<String> actor = actor();
+        if (actor.isEmpty()) {
+            return name;
+        }
+        String via = " via " + actor.get();
+        return (name.length() + via.length() > AUDIT_NAME_MAX
+                ? name.substring(0, Math.max(0, AUDIT_NAME_MAX - via.length())) : name) + via;
+    }
+
     public Optional<CurrentUser> current() {
-        return of(SecurityContextHolder.getContext().getAuthentication());
+        return userOf(SecurityContextHolder.getContext().getAuthentication());
     }
 
     /**
@@ -53,6 +95,14 @@ public class CurrentUserProvider {
      * ({@code common.websocket.StompAuthenticationInterceptor}). Never throws, as {@link #current()}.
      */
     public Optional<CurrentUser> of(Authentication authentication) {
+        return userOf(authentication);
+    }
+
+    /**
+     * The user an authentication stands for, read as {@link #current} reads the one in the security context: for an
+     * authentication not put there yet ({@link RunAs#authenticationFor} checks the one it built). Never throws.
+     */
+    static Optional<CurrentUser> userOf(Authentication authentication) {
         if (!(authentication instanceof JwtAuthenticationToken token)) {
             return Optional.empty();     // anonymous, a scheduled job, or an async event listener
         }

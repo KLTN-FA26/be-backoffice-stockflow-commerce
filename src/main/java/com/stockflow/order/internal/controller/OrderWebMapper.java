@@ -160,6 +160,16 @@ final class OrderWebMapper {
         return site == null ? response : response.withWarehouse(site.prefix(), site.name());
     }
 
+    /**
+     * The response with its order's payment figures from {@code amounts} (one batch read for the page, audit bo-17); an
+     * order that is not a key - no installments yet, or a caller who does not read them - keeps nulls.
+     */
+    static OrderResponse withPayment(OrderResponse response,
+                                     java.util.Map<java.util.UUID, com.stockflow.payment.api.OrderPaymentAmounts> amounts) {
+        var money = amounts.get(response.orderId());
+        return money == null ? response : response.withPayment(money.paid(), money.outstanding(), money.overdue());
+    }
+
     /** An address as the order answers it; null for none. */
     static OrderResponse.Address toAddress(OrderSummary.AddressSummary address) {
         return toResponse(address);

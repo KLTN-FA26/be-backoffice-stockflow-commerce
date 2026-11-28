@@ -124,7 +124,7 @@ class ProductCreationWithAxesRollbackIntegrationTest {
     }
 
     private static CreateProductCommand command(String code, List<CreateProductCommand.Axis> axes) {
-        return new CreateProductCommand(code, "Ten " + code, "Name " + code, null, null, null, null, null,
+        return new CreateProductCommand(code, "Ten " + code, null, null, null, null,
                 TaxClass.STANDARD, axes);
     }
 }

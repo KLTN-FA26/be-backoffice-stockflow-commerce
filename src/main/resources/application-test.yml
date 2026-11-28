@@ -93,6 +93,22 @@ stockflow:
     secrets:
       # A fixed key for tests only (32 zero-to-31 bytes), so sealed carrier secrets open across a test's requests.
       key: AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=
+  assistant:
+    embeddings:
+      # Nothing embeds behind the tests' back, whatever the environment holds: an exported ASSISTANT_ENABLED with a
+      # Gemini key would otherwise send the corpus to Google from every test context. KnowledgeEmbeddingIntegrationTest
+      # uses a fake model; AssistantGoldenSetEval switches embeddings back on.
+      enabled: false
+    # Each chapter's step-by-step flow (§4 of kltn-docs) is indexed in tests, so the parser, the index and the golden
+    # set's flow cases stay tested. RetrievalEval switches them off to compare (design §6.1, §6.4).
+    knowledge:
+      flows: ${ASSISTANT_KNOWLEDGE_FLOWS:true}
+    mcp:
+      # The MCP endpoint's tests need it; it is off by default only for the deployments (application.yml, AQ-17).
+      enabled: true
+    # The transcription endpoint's tests need it; the speech model itself is a test double there.
+    voice:
+      enabled: true
 
 logging:
   level:

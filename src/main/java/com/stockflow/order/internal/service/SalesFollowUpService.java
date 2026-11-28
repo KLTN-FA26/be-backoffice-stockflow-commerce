@@ -50,10 +50,12 @@ import java.util.UUID;
  * or moved here: whether to chase the customer or cancel stays Sales' call.
  *
  * <p>One inbox notice per step ({@code dedupeKey}, a hold's by when it was raised): the inbox posts a key to a recipient
- * once, so the hourly run tells nobody twice, and a run that died half way is simply run again. The salesperson is who
- * sent the contract, or for none recorded who recorded it signed; when that account is no longer active, every active
- * Sales account is told instead, marked as a hand-over (FLOW-4, {@link SalesRecipients}). System text only: numbers,
- * codes and days - never what anybody typed.</p>
+ * once, so the hourly run tells nobody twice, and a run that died half way is simply run again. "Its salesperson" is
+ * whoever looks after the order's customer today (sales-owner plan, 2026-11-28; 00 §6, 15 BR-22): the owner, the
+ * owner's cover, or - with no active owner - the Sales Managers, the notice marked "cần phân công"
+ * ({@link SalesRecipients}). Never every salesperson. A customer moved to another salesperson is followed up with the
+ * new one from the next run (14 §4.4 step 20). System text only: numbers, codes and days - never what anybody
+ * typed.</p>
  */
 @Service
 @Transactional
@@ -117,17 +119,23 @@ public class SalesFollowUpService {
     public Reminded remind() {
         Instant now = clock.instant();
         ResourceBundle texts = texts();
-        SalesRecipients.Chooser sales = recipients.chooser();
         List<SalesFollowUps.UnsignedContract> unsigned = followUps.unsignedSince(now.minus(unsignedAfter), BATCH_SIZE);
         List<SalesFollowUps.UnpaidOrder> unpaid = followUps.unpaidSince(now.minus(unpaidAfter), BATCH_SIZE);
         List<SalesFollowUps.WaitingOrder> creditHeld = followUps.heldFor(OrderServiceImpl.CREDIT_HOLD, BATCH_SIZE);
         List<SalesFollowUps.WaitingOrder> unplaced = followUps.confirmedWithoutWarehouse(BATCH_SIZE);
         List<SalesFollowUps.WaitingOrder> paymentHeld = followUps.heldAfterVoidedReceipt(BATCH_SIZE);
+        // Who looks after each customer, asked once for the whole run (a handful of statements, not one per order).
+        SalesRecipients.Chooser sales = recipients.chooser().load(java.util.stream.Stream.of(
+                        unsigned.stream().map(SalesFollowUps.UnsignedContract::customerId),
+                        unpaid.stream().map(SalesFollowUps.UnpaidOrder::customerId),
+                        unplaced.stream().map(SalesFollowUps.WaitingOrder::customerId),
+                        paymentHeld.stream().map(SalesFollowUps.WaitingOrder::customerId))
+                .flatMap(ids -> ids).toList());
         List<ContractCreditReviews.Waiting> reviewsWaiting = creditReviews.waitingSince(now.minus(creditReviewAfter),
                 BATCH_SIZE);
         int told = 0;
         for (SalesFollowUps.UnsignedContract contract : unsigned) {
-            told += post(sales.of(contract.salesUserId()), texts, InboxSeverity.WARN,
+            told += post(sales.of(contract.customerId()), texts, InboxSeverity.WARN,
                     texts.getString("inbox.sales.follow-up.contract-unsigned.title")
                             .formatted(contract.contractNumber(), unsignedAfter.toDays()),
                     texts.getString("inbox.sales.follow-up.contract-unsigned.body").formatted(contract.contractNumber(),
@@ -136,7 +144,7 @@ public class SalesFollowUpService {
                     "contract-unsigned:" + contract.contractId());
         }
         for (SalesFollowUps.UnpaidOrder order : unpaid) {
-            told += post(sales.of(order.salesUserId()), texts, InboxSeverity.WARN,
+            told += post(sales.of(order.customerId()), texts, InboxSeverity.WARN,
                     texts.getString("inbox.sales.follow-up.order-unpaid.title")
                             .formatted(order.orderNumber(), unpaidAfter.toDays()),
                     texts.getString("inbox.sales.follow-up.order-unpaid.body").formatted(order.orderNumber(),
@@ -146,7 +154,7 @@ public class SalesFollowUpService {
         told += creditHolds(creditHeld, texts);
         told += creditReviewsWaiting(reviewsWaiting, texts);
         for (SalesFollowUps.WaitingOrder order : unplaced) {
-            told += post(sales.of(order.salesUserId()), texts, InboxSeverity.INFO,
+            told += post(sales.of(order.customerId()), texts, InboxSeverity.INFO,
                     texts.getString("inbox.sales.follow-up.confirmed.title").formatted(order.orderNumber()),
                     texts.getString("inbox.sales.follow-up.confirmed.body").formatted(order.orderNumber()),
                     "/admin/orders/" + order.orderId(), "ORDER", order.orderId(), "confirmed:" + order.orderId());
@@ -155,7 +163,7 @@ public class SalesFollowUpService {
                 : payments.installmentStandings(paymentHeld.stream().map(SalesFollowUps.WaitingOrder::orderId).toList());
         int paidAgain = 0;
         for (SalesFollowUps.WaitingOrder order : paymentHeld) {
-            SalesRecipients.Recipients to = sales.of(order.salesUserId());
+            SalesRecipients.Recipients to = sales.of(order.customerId());
             String day = DAY.format(BusinessCalendar.date(order.since()));
             told += post(to, texts, InboxSeverity.WARN,
                     texts.getString("inbox.sales.follow-up.payment-hold.title").formatted(order.orderNumber()),
@@ -210,15 +218,18 @@ public class SalesFollowUpService {
     }
 
     /**
-     * 15 BR-11: accounting decided a contract waiting before it is sent - the Sales account that asked (or, no longer
-     * active, the Sales team) is told now, in the same transaction as the decision. Only the outcome: the note or the
-     * reason is on the contract.
+     * 15 BR-11: accounting decided a contract waiting before it is sent - the Sales account that asked is told now, in
+     * the same transaction as the decision, and whoever looks after the customer when that is someone else (a customer
+     * moved meanwhile; 14 §4.4 step 20, as for a quote's prices). Only the outcome: the note or the reason is on the
+     * contract.
+     *
+     * @param salesUserId who sent the contract for accounting's decision
      */
     void contractCreditDecided(UUID reviewId, UUID orderId, String orderNumber, String contractNumber,
-                               UUID salesUserId, boolean approved) {
+                               UUID customerId, UUID salesUserId, boolean approved) {
         ResourceBundle texts = texts();
         String outcome = approved ? "contract-credit-approved" : "contract-credit-refused";
-        SalesRecipients.Recipients to = recipients.chooser().of(salesUserId);
+        SalesRecipients.Recipients to = recipients.chooser().of(customerId).withFirst(salesUserId);
         post(to, texts, approved ? InboxSeverity.INFO : InboxSeverity.WARN,
                 texts.getString("inbox.sales.follow-up." + outcome + ".title").formatted(contractNumber),
                 texts.getString("inbox.sales.follow-up." + outcome + ".body").formatted(contractNumber, orderNumber),
@@ -254,22 +265,20 @@ public class SalesFollowUpService {
     }
 
     /**
-     * FLOW-1b: accounting decided an order held for credit - its salesperson (or, the account no longer active, the
-     * Sales team) is told now, in the same transaction as the decision. Only the outcome: the note stays on the order.
-     *
-     * @param salesUserId who sent the order's contract, or who recorded it signed; null when unknown
+     * FLOW-1b: accounting decided an order held for credit - whoever looks after the order's customer is told now, in
+     * the same transaction as the decision (00 §6, 15 BR-22). Only the outcome: the note stays on the order.
      */
-    void creditDecided(UUID orderId, String orderNumber, UUID salesUserId, boolean approved) {
+    void creditDecided(UUID orderId, String orderNumber, UUID customerId, boolean approved) {
         ResourceBundle texts = texts();
         String outcome = approved ? "credit-approved" : "credit-refused";
-        SalesRecipients.Recipients to = recipients.chooser().of(salesUserId);
+        SalesRecipients.Recipients to = recipients.chooser().of(customerId);
         int told = post(to, texts, approved ? InboxSeverity.INFO : InboxSeverity.WARN,
                 texts.getString("inbox.sales.follow-up." + outcome + ".title").formatted(orderNumber),
                 texts.getString("inbox.sales.follow-up." + outcome + ".body").formatted(orderNumber),
                 "/admin/orders/" + orderId, "ORDER", orderId, "credit-decided:" + orderId);
         if (!to.nobody()) {
             log.info("Order {}: {}, {} Sales account(s) newly told{}", orderNumber, outcome, told,
-                    to.handover() ? " to take over from " + salesUserId : "");
+                    to.needsAssignment() ? " (the customer needs an owner)" : "");
         }
     }
 
@@ -299,11 +308,11 @@ public class SalesFollowUpService {
     private int post(SalesRecipients.Recipients to, ResourceBundle texts, InboxSeverity severity, String title,
                      String body, String link, String sourceType, UUID sourceId, String dedupeKey) {
         if (to.nobody()) {
-            log.warn("{}: the responsible Sales account is not active and there is no active Sales account - nobody "
-                    + "was told", dedupeKey);
+            log.warn("{}: the customer has no active owner and no Sales Manager or admin is active - nobody was told",
+                    dedupeKey);
             return 0;
         }
-        String text = to.handover() ? body + "\n" + texts.getString("inbox.sales.follow-up.takeover") : body;
+        String text = to.needsAssignment() ? body + "\n" + texts.getString("inbox.sales.needs-assignment") : body;
         return inbox.post(new ArrayList<>(to.userIds()), new InboxMessage(CATEGORY, severity, title, text, link,
                 sourceType, sourceId.toString(), dedupeKey));
     }

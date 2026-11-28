@@ -8,6 +8,7 @@ import com.stockflow.contracts.ReturnedGoodsReceived;
 import com.stockflow.identity.api.StaffContact;
 import com.stockflow.notification.api.InboxMessage;
 import com.stockflow.notification.api.InboxSeverity;
+import com.stockflow.notification.api.SalesAudiences.SalesAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
@@ -24,7 +25,9 @@ import java.util.ResourceBundle;
  *
  * <ul>
  *   <li>A return waits for its refund to be proposed - or refused with a reason ({@link ReturnAwaitingRefund}, whatever
- *       moved it to RECEIVED): whoever proposes refunds ({@value #PROPOSES}).</li>
+ *       moved it to RECEIVED): whoever looks after the customer (17 §4.10, 00 §6 as changed on 2026-11-28;
+ *       {@link SalesNotices}) - the owner or the cover, else the Sales Managers marked "cần phân công"; every holder of
+ *       {@value #PROPOSES} may still propose it.</li>
  *   <li>A parcel came back different from what was approved - more, fewer, or another SKU ({@link ReturnReceived} with
  *       a discrepancy): the same people, to contact the customer (03 edge cases: "báo Sale").</li>
  *   <li>A shipment the carrier brought back was received with cartons still missing ({@link ReturnedGoodsReceived}
@@ -57,24 +60,38 @@ class ReturnStaffNotificationListener {
 
     private final NotificationSender sender;
     private final StaffDirectory staff;
+    private final SalesNotices sales;
     private final StaffNotices notices;
 
-    ReturnStaffNotificationListener(NotificationSender sender, StaffDirectory staff, StaffNotices notices) {
+    ReturnStaffNotificationListener(NotificationSender sender, StaffDirectory staff, SalesNotices sales,
+                                    StaffNotices notices) {
         this.sender = sender;
         this.staff = staff;
+        this.sales = sales;
         this.notices = notices;
     }
 
     @ApplicationModuleListener
     public void on(ReturnAwaitingRefund event) {
-        tell(staff.activeHolders(PROPOSES, null), awaitingProposal(event), "staff_return_awaiting_proposal");
+        tellSales(audience(event.customerId(), event.orderId()), awaitingProposal(event),
+                "staff_return_awaiting_proposal");
     }
 
     @ApplicationModuleListener
     public void on(ReturnReceived event) {
         if (event.discrepancy()) {
-            tell(staff.activeHolders(PROPOSES, null), discrepancy(event), "staff_return_discrepancy");
+            tellSales(audience(event.customerId(), event.orderId()), discrepancy(event), "staff_return_discrepancy");
         }
+    }
+
+    private SalesAudience audience(java.util.UUID customerId, java.util.UUID orderId) {
+        return (customerId != null ? sales.audiences().ofCustomer(customerId) : sales.audiences().ofOrder(orderId))
+                .orElse(null);
+    }
+
+    private void tellSales(SalesAudience audience, InboxMessage message, String mailCategory) {
+        tell(audience == null ? List.of() : sales.contacts(audience),
+                SalesNotices.marked(message, audience != null && audience.needsAssignment()), mailCategory);
     }
 
     @ApplicationModuleListener

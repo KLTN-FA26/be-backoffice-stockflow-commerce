@@ -39,10 +39,8 @@ public class ContextResolver {
      * @param customerId        whose it is; null for a catalogue product, which is anyone's to ask about
      * @param label             its number or name, for the conversation page
      * @param status            its own status, as its module names it
-     * @param responsibleUserId the Sales account that answers for it (16 §4.1 step 2: routed to them first); null when
-     *                          none is known
      */
-    public record Resolved(ContextRef ref, UUID customerId, String label, String status, UUID responsibleUserId) {
+    public record Resolved(ContextRef ref, UUID customerId, String label, String status) {
     }
 
     private final ProductService products;
@@ -90,18 +88,18 @@ public class ContextResolver {
         UUID id = ref.id();
         return switch (ref.kind()) {
             case PRODUCT -> products.findById(id).map(p -> new Resolved(ref, null, p.name(),
-                    p.status() == null ? null : p.status().name(), null));
+                    p.status() == null ? null : p.status().name()));
             case CUSTOMER_SKU -> customerSkus.findById(id).map(s -> new Resolved(ref, s.ownerCustomerId(),
-                    s.sku(), s.status(), null));
-            case DESIGN -> designs.design(id).map(d -> new Resolved(ref, d.customerId(), d.name(), d.status(), null));
-            case DESIGN_PROJECT -> designs.project(id).map(d -> new Resolved(ref, d.customerId(), d.name(), d.status(),
-                    null));
+                    s.sku(), s.status()));
+            case DESIGN -> designs.design(id).map(d -> new Resolved(ref, d.customerId(), d.name(), d.status()));
+            case DESIGN_PROJECT -> designs.project(id).map(d -> new Resolved(ref, d.customerId(), d.name(),
+                    d.status()));
             case QUOTE -> (forCustomer ? documents.quoteAsCustomerSees(id) : documents.quote(id))
                     .map(d -> resolved(ref, d));
             case ORDER -> documents.order(id).map(d -> resolved(ref, d));
             case CONTRACT -> documents.contract(id).map(d -> resolved(ref, d));
             case PRODUCTION_ORDER -> documents.productionOrder(id).map(d -> resolved(ref, d));
-            case EINVOICE -> einvoices.find(id).map(e -> new Resolved(ref, e.customerId(), e.code(), e.status(), null));
+            case EINVOICE -> einvoices.find(id).map(e -> new Resolved(ref, e.customerId(), e.code(), e.status()));
         };
     }
 
@@ -115,7 +113,6 @@ public class ContextResolver {
     }
 
     private static Resolved resolved(ContextRef ref, CustomerDocument document) {
-        return new Resolved(ref, document.customerId(), document.number(), document.status(),
-                document.responsibleUserId());
+        return new Resolved(ref, document.customerId(), document.number(), document.status());
     }
 }

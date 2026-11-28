@@ -18,7 +18,8 @@ import java.util.UUID;
  * 4A-5 ({@link GoodsReceiptType#PURCHASE}) were deleted by {@code V20261214000100}; every receipt is against a
  * production order.</p>
  *
- * <p>Not on {@code procurement :: api}: nothing outside this module drives a receipt. Other modules
+ * <p>Not on {@code procurement :: api}: nothing outside this module drives a receipt; other modules read receipts
+ * through {@code GoodsReceiptQueries}. Other modules
  * learn about receipts from the {@code GoodsReceiptConfirmed} and {@code ReceiptStockReadyForPutaway}
  * events.</p>
  */

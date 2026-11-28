@@ -21,6 +21,7 @@ import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.domain.PriceTier;
 import com.stockflow.order.internal.domain.Quote;
 import com.stockflow.order.internal.domain.QuoteLine;
+import com.stockflow.order.internal.domain.QuotePriceReviews;
 import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.repository.QuoteSearch;
@@ -79,10 +80,12 @@ class QuoteServiceTest {
             mock(com.stockflow.identity.api.IdentityService.class);
     private final com.stockflow.order.internal.domain.QuotePriceReviews priceReviews =
             mock(com.stockflow.order.internal.domain.QuotePriceReviews.class);
+    /** 14 BR-25, BR-26: who may work on the customer's quotes, and its owner when one is drawn up. */
+    private final CustomerOwnership ownership = mock(CustomerOwnership.class);
     private final QuoteService service = new QuoteService(quotes, search, customers, units, quotedOrders,
             orders, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), catalog, events, products, customerSkus,
             taxRates, production, mock(com.stockflow.design.api.SkuDesigns.class), identities,
-            new LineNames(products, customerSkus), priceReviews, BigDecimal.TEN);
+            new LineNames(products, customerSkus), priceReviews, BigDecimal.TEN, ownership);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
@@ -255,6 +258,98 @@ class QuoteServiceTest {
         Quotes.QuoteView view = service.create(sales, create(SKU, 30, null));
         assertThat(view.lines().getFirst().tiers()).extracting(Quotes.Tier::minQuantity).containsExactly(10, 30);
         assertThat(view.lines().getFirst().proposedUnitPrice()).isEqualByComparingTo("1900");
+    }
+
+    // ------------------------------------------------------------------ strict mode (14 BR-25, §4.4 step 18; BR-S12)
+
+    /** {@code ownership} refuses {@link #sales}: the customer is someone else's. */
+    private void ownedByAnotherSalesperson() {
+        org.mockito.Mockito.doThrow(new BusinessException(ErrorCode.CUSTOMER_OWNED_BY_OTHER_SALES, "owned"))
+                .when(ownership).requireMayActFor(sales, customer);
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("BR-25 / case 17: a salesperson who does not look after the customer drafts no "
+            + "quote for it; nothing is saved")
+    void strictModeRefusesTheDraft() {
+        ownedByAnotherSalesperson();
+
+        assertThatThrownBy(() -> service.create(sales, create(SKU, 20, null)))
+                .extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.CUSTOMER_OWNED_BY_OTHER_SALES);
+        verify(quotes, never()).save(any());
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("BR-25: editing, sending, opening a revision, cancelling and withdrawing a price "
+            + "review are refused too, before anything changes")
+    void strictModeRefusesEveryStepOfTheQuote() {
+        ownedByAnotherSalesperson();
+        Quote draft = stored(QuoteStatus.DRAFT);
+        Quote asked = stored(QuoteStatus.CHANGES_REQUESTED);
+        Quote sent = stored(QuoteStatus.SENT);
+        Quote waiting = Quote.restore(UUID.randomUUID(), "QT-2", UUID.randomUUID(), customer, QuoteStatus.DRAFT, 1,
+                draft.offer(), null, null, null, null, null, null, null, null, true);
+        when(quotes.findByIdForUpdate(waiting.id())).thenReturn(Optional.of(waiting));
+
+        List<org.assertj.core.api.ThrowableAssert.ThrowingCallable> steps = List.of(
+                () -> service.edit(sales, draft.id(), 7, new Quotes.Draft(NOW.plusSeconds(3600), null,
+                        List.of(new Quotes.Line(SKU, 20, null)))),
+                () -> service.send(sales, draft.id(), 7),
+                () -> service.reopen(sales, asked.id(), 7),
+                () -> service.cancel(sales, sent.id(), 7, "not wanted"),
+                () -> service.withdrawPriceReview(sales, waiting.id(), 7));
+        for (var step : steps) {
+            assertThatThrownBy(step).extracting(QuoteServiceTest::code)
+                    .isEqualTo(ErrorCode.CUSTOMER_OWNED_BY_OTHER_SALES);
+        }
+        verify(quotes, never()).save(any());
+        assertThat(draft.status()).isEqualTo(QuoteStatus.DRAFT);
+        assertThat(sent.status()).isEqualTo(QuoteStatus.SENT);
+        assertThat(waiting.priceReviewPending()).isTrue();
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("BR-25 not checked: the customer's acceptance and the conversion of an accepted "
+            + "quote by any salesperson go on")
+    void strictModeLeavesAcceptanceAndConversionAlone() {
+        ownedByAnotherSalesperson();
+        Quote sent = stored(QuoteStatus.SENT);
+        service.accept(portal, sent.id(), new Quotes.Acceptance(7, Map.of()));
+
+        Quote accepted = stored(QuoteStatus.ACCEPTED);
+        when(quotedOrders.placeQuotedOrder(any())).thenReturn(new OrderSummary(UUID.randomUUID(), "SO-1", customer,
+                OrderStatus.DRAFT, Money.vnd(5_400_000), List.of(), NOW));
+        service.convert(sales, accepted.id(), new Quotes.Conversion(7, null, null));
+
+        assertThat(accepted.status()).isEqualTo(QuoteStatus.CONVERTED);
+        verify(ownership, never()).requireMayActFor(any(), any());
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("BR-25 not checked: the Sales Manager's price decision; BR-26: a draft records the "
+            + "customer's owner of the moment, and D43: asking claims nobody")
+    void priceDecisionsAreNotCheckedAndADraftRecordsTheOwner() {
+        ownedByAnotherSalesperson();
+        Quote waiting = Quote.restore(UUID.randomUUID(), "QT-3", UUID.randomUUID(), customer, QuoteStatus.DRAFT, 1,
+                stored(QuoteStatus.DRAFT).offer(), null, null, null, null, null, null, null, null, true);
+        when(quotes.findByIdForUpdate(waiting.id())).thenReturn(Optional.of(waiting));
+        UUID asker = UUID.randomUUID();
+        when(priceReviews.pending(waiting.id())).thenReturn(Optional.of(new QuotePriceReviews.Review(UUID.randomUUID(),
+                waiting.id(), 1, null, BigDecimal.TEN, "[]", NOW, asker, null, null, null)));
+
+        service.rejectPrice(sales, waiting.id(), 7, "too low");
+
+        assertThat(waiting.priceReviewPending()).isFalse();
+        verify(ownership, never()).requireMayActFor(any(), any());
+
+        UUID owner = UUID.randomUUID();
+        when(ownership.ownerAtDrawingUp(customer)).thenReturn(owner);
+        org.mockito.Mockito.doNothing().when(ownership).requireMayActFor(sales, customer);
+        when(quotes.nextNumber(any())).thenReturn("QT-9");
+        service.create(sales, create(SKU, 20, null));
+        ArgumentCaptor<Quote> saved = ArgumentCaptor.forClass(Quote.class);
+        verify(quotes, org.mockito.Mockito.times(2)).save(saved.capture());
+        assertThat(saved.getAllValues().get(1).salesOwnerId()).isEqualTo(owner);
     }
 
     @Test

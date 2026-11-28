@@ -57,13 +57,16 @@ public class CreditHoldService {
     private final Clock clock;
     private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
     private final SalesFollowUpService followUps;
+    /** The credit of a page of customers in one read (audit bo-29: the customer list's credit columns). */
+    private final com.stockflow.customer.api.CustomerCredits credits;
 
     CreditHoldService(OrderRepository repository, OrderServiceImpl orders, OrderService orderService,
                       OrderEventPublisher events, CreditChecks creditChecks, OrderHoldJpaRepository holds,
                       CustomerService customers, com.stockflow.order.internal.repository.CreditHoldSearch search,
                       com.stockflow.payment.api.PaymentService paymentService, Clock clock,
                       com.stockflow.order.internal.domain.SalesContractRepository contracts,
-                      SalesFollowUpService followUps) {
+                      SalesFollowUpService followUps, com.stockflow.customer.api.CustomerCredits credits) {
+        this.credits = credits;
         this.contracts = contracts;
         this.followUps = followUps;
         this.repository = repository;
@@ -85,8 +88,34 @@ public class CreditHoldService {
      */
     @Transactional(readOnly = true)
     public CreditPosition position(UUID customerId) {
-        CreditTerms terms = customers.creditTerms(customerId);
-        var owed = paymentService.creditPosition(customerId);
+        return position(customers.creditTerms(customerId), paymentService.creditPosition(customerId));
+    }
+
+    /**
+     * {@link #position} of many customers, for a list that shows each row's credit (audit bo-29: the back office
+     * customer list): two reads whatever the number - the customers' credit terms, then what they owe - not two per
+     * customer. The customer module cannot ask payment itself (payment depends on customer), so the two meet here, where
+     * the single position already joins them.
+     *
+     * @return one position per distinct customer that exists, in the order given; an unknown id is left out rather than
+     *         refused, as a page of the list may race a customer's removal
+     */
+    @Transactional(readOnly = true)
+    public java.util.List<CreditPosition> positions(java.util.Collection<UUID> customerIds) {
+        java.util.List<UUID> ids = customerIds == null ? java.util.List.of()
+                : customerIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return java.util.List.of();
+        }
+        var terms = credits.creditTermsOf(ids);
+        var owed = paymentService.creditPositions(terms.keySet());
+        return ids.stream().filter(terms::containsKey)
+                .map(id -> position(terms.get(id), owed.get(id)))
+                .toList();
+    }
+
+    /** The one rule both reads share: what is left is the limit less the exposure, never below zero. */
+    private static CreditPosition position(CreditTerms terms, com.stockflow.payment.api.CreditPosition owed) {
         BigDecimal exposure = owed.outstandingReceivables();
         BigDecimal available = terms.creditLimit() == null ? null
                 : terms.creditLimit().subtract(exposure).max(BigDecimal.ZERO);
@@ -112,7 +141,7 @@ public class CreditHoldService {
         decide(order, CreditChecks.Outcome.APPROVED, note, by);
         repository.save(order);
         events.publishEventsOf(order);
-        followUps.creditDecided(orderId, order.orderNumber().value(), salesOf(contract), true);
+        followUps.creditDecided(orderId, order.orderNumber().value(), order.customerId(), true);
         log.info("Credit approved for order {} by {}", order.orderNumber(), by);
         return orderService.findById(orderId).orElseThrow();
     }
@@ -125,10 +154,10 @@ public class CreditHoldService {
     public OrderSummary refuse(UUID orderId, String note, UUID by) {
         requireNote(note);
         Order order = lockHeld(orderId);
-        UUID sales = salesOf(signedContract(order));
         decide(order, CreditChecks.Outcome.REJECTED, note, by);
         orders.cancelLoaded(order, new CancelOrderCommand(CancellationReasonCode.CREDIT_REJECTED, note, null, by));
-        followUps.creditDecided(orderId, order.orderNumber().value(), sales, false);
+        // 15 BR-22: whoever looks after the order's customer hears of it, not who sent the contract.
+        followUps.creditDecided(orderId, order.orderNumber().value(), order.customerId(), false);
         log.info("Credit refused for order {} by {}", order.orderNumber(), by);
         return orderService.findById(orderId).orElseThrow();
     }
@@ -137,11 +166,6 @@ public class CreditHoldService {
     private java.util.Optional<com.stockflow.order.internal.domain.SalesContract> signedContract(Order order) {
         return contracts.findLiveByOrderId(order.id().value())
                 .filter(c -> c.status() == com.stockflow.order.internal.domain.SalesContractStatus.SIGNED);
-    }
-
-    /** WF-02 FLOW-1b, Q-11: the salesperson of an order is who sent its contract, or who recorded it signed. */
-    private static UUID salesOf(java.util.Optional<com.stockflow.order.internal.domain.SalesContract> contract) {
-        return contract.map(c -> c.sentBy() != null ? c.sentBy() : c.signedBy()).orElse(null);
     }
 
     private Order lockHeld(UUID orderId) {

@@ -64,6 +64,12 @@ public final class SalesContract {
     private Instant liquidatedAt;
     /** 15 BR-11: whether the draft waits for accounting to approve the customer's credit before it is sent. */
     private boolean creditReviewPending;
+    /**
+     * 14 BR-26: the customer's Sales owner when the contract was drawn up - sales per salesperson are counted by it.
+     * Set once, at drafting (tg_sales_contract_sales_owner_fixed): a customer moved later leaves it as it was. Null
+     * when the customer had no owner. Not who is told anything: notices follow the customer's owner of today.
+     */
+    private UUID salesOwnerId;
     private final long version;
 
     private SalesContract(UUID id, String contractNumber, UUID orderId, SalesContractStatus status,
@@ -91,10 +97,19 @@ public final class SalesContract {
     public static SalesContract draft(UUID id, String contractNumber, Order order, ContractParty seller,
                                       ContractParty buyer, int freeSampleRounds, List<DeliveryBatch> schedule,
                                       List<PlannedInstallment> plan) {
+        return draft(id, contractNumber, order, seller, buyer, freeSampleRounds, schedule, plan, null);
+    }
+
+    /** {@link #draft}, with the customer's Sales owner of this moment (14 BR-26); null when it has none. */
+    public static SalesContract draft(UUID id, String contractNumber, Order order, ContractParty seller,
+                                      ContractParty buyer, int freeSampleRounds, List<DeliveryBatch> schedule,
+                                      List<PlannedInstallment> plan, UUID salesOwnerId) {
         requireContractable(order);
         requireRounds(freeSampleRounds);
-        return new SalesContract(id, contractNumber, order.id().value(), SalesContractStatus.DRAFT, seller, buyer,
-                freeSampleRounds, schedule, plan, 0L);
+        SalesContract contract = new SalesContract(id, contractNumber, order.id().value(), SalesContractStatus.DRAFT,
+                seller, buyer, freeSampleRounds, schedule, plan, 0L);
+        contract.salesOwnerId = salesOwnerId;
+        return contract;
     }
 
     /**
@@ -416,6 +431,8 @@ public final class SalesContract {
     public List<PlannedInstallment> plan() { return plan; }
     public Instant sentAt() { return sentAt; }
     public UUID sentBy() { return sentBy; }
+    /** 14 BR-26: the customer's Sales owner when the contract was drawn up; null when it had none. */
+    public UUID salesOwnerId() { return salesOwnerId; }
     public String sentDocumentKey() { return sentDocumentKey; }
     public LocalDate signedOn() { return signedOn; }
     public String signedFileKey() { return signedFileKey; }
@@ -440,6 +457,12 @@ public final class SalesContract {
     /** Rehydration of when it was liquidated (WF-05 Q-6). */
     public SalesContract restoreLiquidated(Instant at) {
         this.liquidatedAt = at;
+        return this;
+    }
+
+    /** Rehydration: the Sales owner recorded when it was drawn up (14 BR-26). */
+    public SalesContract restoreSalesOwner(UUID ownerId) {
+        this.salesOwnerId = ownerId;
         return this;
     }
 

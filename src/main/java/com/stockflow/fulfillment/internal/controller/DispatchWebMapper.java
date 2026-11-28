@@ -9,6 +9,8 @@ import com.stockflow.fulfillment.internal.controller.dto.LoadRowResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ManifestResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentRowResponse;
+import com.stockflow.common.i18n.Messages;
+import com.stockflow.fulfillment.internal.service.CarrierRefusals;
 import com.stockflow.fulfillment.internal.service.CarrierServiceCodes;
 import com.stockflow.fulfillment.internal.service.Carriers;
 import com.stockflow.fulfillment.internal.service.Dispatching;
@@ -18,6 +20,15 @@ import org.springframework.stereotype.Component;
 /** Carriers, loads, manifests and shipments to their wire format (G4-2a). */
 @Component
 class DispatchWebMapper {
+
+    /** The status of a booking the carrier refused ({@code CarrierBookingJpaEntity.FAILED}, as the view carries it). */
+    private static final String BOOKING_FAILED = "FAILED";
+
+    private final Messages messages;
+
+    DispatchWebMapper(Messages messages) {
+        this.messages = messages;
+    }
 
     CarrierResponse toResponse(Carriers.CarrierView c) {
         Carriers.ConnectionView k = c.connection();
@@ -65,7 +76,8 @@ class DispatchWebMapper {
                 d.waybillNo(), d.carrierConnectionType(), d.carrierBooking() == null ? null
                         : new LoadResponse.CarrierBooking(d.carrierBooking().status(), d.carrierBooking().carrierOrderId(),
                         d.carrierBooking().trackingLink(), d.carrierBooking().requestedAt(),
-                        d.carrierBooking().bookedAt(), d.carrierBooking().lastError()),
+                        d.carrierBooking().bookedAt(), refusalAsAdvice(d.carrierBooking().status(),
+                        d.carrierBooking().lastError())),
                 d.handoverWarnings().stream().map(w -> new LoadResponse.HandoverWarning(w.orderId(), w.orderNumber(),
                         w.reasonCode(), w.reasonCodes(), w.amountDue(), w.currency(), w.deliveryBatchSeq(),
                         w.windowStart())).toList(), d.loadingStartedByName(), d.bookedByName(), d.warehouseCode(),
@@ -108,5 +120,18 @@ class DispatchWebMapper {
                 d.reasonCorrections().stream().map(c -> new ShipmentResponse.ReasonCorrection(c.fromReason(),
                         c.fromNote(), c.toReason(), c.toNote(), c.reason(), c.correctedBy(), c.correctedByName(),
                         c.correctedAt())).toList(), d.undoneDeliveredAt());
+    }
+
+    /**
+     * The booking's last error as a dispatcher reads it: the refusal of a FAILED booking whose code the bundles know is
+     * answered as what to do and who does it; anything else - another status's error, an unknown code - as it was
+     * stored (the carrier's words, or the server's own English).
+     */
+    String refusalAsAdvice(String status, String lastError) {
+        if (!BOOKING_FAILED.equals(status)) {
+            return lastError;
+        }
+        String key = CarrierRefusals.keyOf(CarrierRefusals.codeOf(lastError));
+        return key == null ? lastError : messages.get(key, lastError);
     }
 }

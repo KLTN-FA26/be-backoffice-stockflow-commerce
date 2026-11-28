@@ -138,6 +138,7 @@ WITH reviewed(col, why) AS (
     ('ordering.customer_order.request_id', 'idempotency key'),
     ('ordering.delay_alert.subject_id', 'redundant copy of production_order_id / delivery_batch_id, kept consistent by ck_delay_alert_subject'),
     ('ordering.quote.request_id', 'idempotency key'),
+    ('customer.sales_owner_transfer_batch.request_id', 'idempotency key of a bulk transfer (V20270128000100)'),
     ('ordering.return_request.request_id', 'idempotency key'),
     ('payment.order_settlement.source_id', 'polymorphic: kind names the table'),
     ('product.product_change_log.subject_id', 'polymorphic: subject_type names the table'),
@@ -192,6 +193,8 @@ WITH reviewed(col, why) AS (
     ('ordering.quote.quote_number', 'the row''s own business number'),
     ('ordering.return_request.rma_number', 'the row''s own business number'),
     ('ordering.sales_contract.contract_number', 'the row''s own business number'),
+    ('warehouse.move_task.task_number', 'the row''s own business number'),
+    ('assistant.tool_call.call_id', 'the language model''s own id for one call in its turn, pairing the call with its result'),
     ('payment.bank_transaction.provider_transaction_id', 'an external system''s id: SePay''s, for one transfer'),
     ('payment.bank_transaction.account_number', 'the bank account SePay reported, kept verbatim'),
     ('payment.bank_transaction.payment_code', 'what SePay read out of the transfer''s content, kept verbatim')

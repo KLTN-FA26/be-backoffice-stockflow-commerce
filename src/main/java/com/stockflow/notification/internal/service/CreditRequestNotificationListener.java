@@ -7,6 +7,7 @@ import com.stockflow.notification.api.CustomerDirectory;
 import com.stockflow.notification.api.Inbox;
 import com.stockflow.notification.api.InboxMessage;
 import com.stockflow.notification.api.InboxSeverity;
+import com.stockflow.notification.api.SalesAudiences.SalesAudience;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
@@ -23,16 +24,17 @@ import java.util.UUID;
 /**
  * Tells whoever acts next on a credit request (QĐ-A, 2026-11-26; kltn-docs 15 §4.3), in the in-app inbox:
  * <ul>
- *   <li>the customer filed one from the portal: Sales, to give their opinion - the active holders of
- *       {@value #SALES_AUDIENCE};</li>
+ *   <li>the customer filed one from the portal: Sales, to give their opinion - whoever looks after the customer (15
+ *       §4.3 step 11a and BR-22 as changed on 2026-11-28; {@link SalesNotices}): the owner or the cover, else the Sales
+ *       Managers marked "cần phân công". Every holder of {@value #SALES_AUDIENCE} may still give it;</li>
  *   <li>it waits for the accountant: the active holders of {@value #ACCOUNTANT_AUDIENCE};</li>
  *   <li>it was decided: the customer, in their portal account's inbox, and the Sales who gave their opinion on it (for
  *       a request Sales filed, whoever filed it).</li>
  * </ul>
  *
  * <p>Who is told is decided by permission, not by role name, as an overdue installment's readers are
- * ({@link InstallmentOverdueNotificationListener}): it follows the role matrix as it is edited. There is no "Sales in
- * charge" of a customer in this system, so a customer's request goes to every Sales who may give the opinion. No
+ * ({@link InstallmentOverdueNotificationListener}): it follows the role matrix as it is edited - except the Sales step,
+ * which follows the customer's owner since the owner exists (sales-owner plan, 2026-11-28). No
  * e-mail: as for the customer's other in-app notices (E23), e-mail to customers is a later phase. One message per
  * person per step ({@code credit-request:<id>:<step>}): a redelivered event tells nobody twice. System text only -
  * amounts and days; never the reason, the opinion or the accountant's note.</p>
@@ -52,11 +54,14 @@ class CreditRequestNotificationListener {
     private static final Locale VI = Locale.forLanguageTag("vi");
 
     private final StaffDirectory staff;
+    private final SalesNotices salesNotices;
     private final CustomerDirectory customers;
     private final Inbox inbox;
 
-    CreditRequestNotificationListener(StaffDirectory staff, CustomerDirectory customers, Inbox inbox) {
+    CreditRequestNotificationListener(StaffDirectory staff, SalesNotices salesNotices, CustomerDirectory customers,
+                                      Inbox inbox) {
         this.staff = staff;
+        this.salesNotices = salesNotices;
         this.customers = customers;
         this.inbox = inbox;
     }
@@ -65,14 +70,17 @@ class CreditRequestNotificationListener {
     public void on(CreditRequestSubmitted event) {
         boolean sales = event.stage() == CreditRequestSubmitted.Stage.AWAITING_SALES;
         String audience = sales ? SALES_AUDIENCE : ACCOUNTANT_AUDIENCE;
-        List<UUID> recipients = staff.activeHolders(audience, null).stream().map(StaffContact::userId)
-                .filter(Objects::nonNull).filter(id -> !id.equals(event.submittedBy())).distinct().toList();
+        SalesAudience owner = sales ? salesNotices.audiences().ofCustomer(event.customerId()).orElse(null) : null;
+        List<UUID> candidates = sales ? (owner == null ? List.of() : owner.userIds())
+                : staff.activeHolders(audience, null).stream().map(StaffContact::userId).toList();
+        List<UUID> recipients = candidates.stream().filter(Objects::nonNull)
+                .filter(id -> !id.equals(event.submittedBy())).distinct().toList();
         if (recipients.isEmpty()) {
-            log.warn("Credit request {} waits ({}) and nobody holds {} to be told", event.creditRequestId(),
-                    event.stage(), audience);
+            log.warn("Credit request {} waits ({}) and nobody is to be told", event.creditRequestId(), event.stage());
             return;
         }
-        int told = inbox.post(recipients, submitted(event));
+        int told = inbox.post(recipients, SalesNotices.marked(submitted(event), owner != null
+                && owner.needsAssignment()));
         log.info("Credit request {} waits ({}): {} recipient(s), {} newly told", event.creditRequestId(),
                 event.stage(), recipients.size(), told);
     }

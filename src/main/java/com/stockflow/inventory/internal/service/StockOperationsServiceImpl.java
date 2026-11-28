@@ -1133,11 +1133,11 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<StockAdjustmentSummary> adjustments(StockAdjustmentStatus status, String sku, String location,
-                                                           int page, int size, String sort,
+                                                           String warehousePrefix, int page, int size, String sort,
                                                            BookVisibility visibility) {
         var criteria = new StockAdjustmentSearch.Criteria(
                 status == null ? null : AdjustmentStatus.valueOf(status.name()), sku, location,
-                visibility.hidesCountedSlots());
+                visibility.hidesCountedSlots(), warehousePrefix);
         return Pages.toResponse(adjustmentSearch.search(criteria, Pages.of(page, size, ADJUSTMENT_SORT.parse(sort)))
                 .map(StockOperationsServiceImpl::toSummary));
     }

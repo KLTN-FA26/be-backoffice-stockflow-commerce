@@ -2,6 +2,7 @@ package com.stockflow.common.id;
 
 import java.security.SecureRandom;
 import java.time.Clock;
+import java.util.Comparator;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -146,6 +147,17 @@ public final class Identifiers {
         }
         return java.time.Instant.ofEpochMilli(id.getMostSignificantBits() >>> 16);
     }
+
+    /**
+     * The order PostgreSQL gives {@code uuid} values: the 16 bytes compared unsigned, left to right. Sort ids with it
+     * before locking rows one by one when other code locks the same rows from {@code ORDER BY id}: two transactions
+     * taking the same rows in different orders deadlock. {@link UUID#compareTo} is not this order - it compares the two
+     * halves as signed longs, so an id whose first hex digit is 8 or more sorts before one starting with 0.
+     */
+    public static final Comparator<UUID> DATABASE_ORDER = (left, right) -> {
+        int high = Long.compareUnsigned(left.getMostSignificantBits(), right.getMostSignificantBits());
+        return high != 0 ? high : Long.compareUnsigned(left.getLeastSignificantBits(), right.getLeastSignificantBits());
+    };
 
     /** True when the id was produced by {@link #newId()} rather than, say, a client. */
     public static boolean isTimeOrdered(UUID id) {

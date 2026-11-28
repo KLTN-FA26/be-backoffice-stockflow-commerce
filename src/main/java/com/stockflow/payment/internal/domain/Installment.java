@@ -419,6 +419,11 @@ public final class Installment {
      * the plan, and must not read as one of its installments.
      */
     public String transferReference() {
-        return isFeeItem() ? contractNumber + " FEE" + (seq - FIRST_FEE_SEQ + 1) : contractNumber + " DOT" + seq;
+        return transferReference(contractNumber, seq, isFeeItem());
+    }
+
+    /** {@link #transferReference()} of an installment read as a row, without restoring it. */
+    public static String transferReference(String contractNumber, int seq, boolean feeItem) {
+        return feeItem ? contractNumber + " FEE" + (seq - FIRST_FEE_SEQ + 1) : contractNumber + " DOT" + seq;
     }
 }

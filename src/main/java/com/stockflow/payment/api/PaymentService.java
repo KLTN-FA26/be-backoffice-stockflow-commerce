@@ -18,6 +18,16 @@ public interface PaymentService {
     CreditPosition creditPosition(UUID customerId);
 
     /**
+     * {@link #creditPosition} of many customers in one statement, for a list that shows each row's credit beside it
+     * (the back office customer list, audit bo-29): a list page asking one customer at a time would be one query per
+     * row. The same figures as {@link #creditPosition}, read the same way.
+     *
+     * @return a position for every distinct id given - a customer that owes nothing, or that payment never heard of,
+     *         has a zero position, since payment does not know which customers exist; null or empty in, empty out
+     */
+    java.util.Map<UUID, CreditPosition> creditPositions(java.util.Collection<UUID> customerIds);
+
+    /**
      * 4B-6 (15 §4.1 step 1): the installments a contract's signature makes, written in the caller's transaction so that
      * they and the signature commit together - the credit check of a contract signed a moment later counts them, and
      * the order waiting for its installment on signing has it to pay at once. The one due on signing is due from the
@@ -33,6 +43,14 @@ public interface PaymentService {
      * page of orders - the cancellation request queue (R5-6) - that would otherwise read the installments order by order.
      */
     java.util.Map<UUID, InstallmentStanding> installmentStandings(java.util.Collection<UUID> orderIds);
+
+    /**
+     * Audit bo-17: what each of {@code orderIds} has paid, still owes and owes past its due day, from one read of all
+     * their installments, by order id - for a page of the back-office order list. Overdue is read on the business day
+     * of today. An order without installments (no contract signed yet) is not a key: it has no figures, which is not
+     * the same as owing nothing.
+     */
+    java.util.Map<UUID, OrderPaymentAmounts> paymentAmounts(java.util.Collection<UUID> orderIds);
 
     /**
      * 4B-8 (15 BR-08, 09 BR-18, 17 §4.5): what must be paid before the goods of one delivery batch leave - the

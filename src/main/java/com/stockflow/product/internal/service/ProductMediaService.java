@@ -14,7 +14,6 @@ import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.StorageKeys;
 import com.stockflow.common.storage.StoredFile;
 import com.stockflow.common.storage.UploadInspection;
-import com.stockflow.identity.api.IdentityService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.domain.ImageRendition;
 import com.stockflow.product.internal.domain.Product;
@@ -25,6 +24,7 @@ import com.stockflow.product.internal.entity.ProductJpaEntity;
 import com.stockflow.product.internal.entity.VariantJpaEntity;
 import com.stockflow.product.internal.repository.MediaJpaRepository;
 import com.stockflow.product.internal.repository.ProductChangeLogRepository;
+import com.stockflow.product.internal.repository.ProductImageRepository;
 import com.stockflow.product.internal.repository.ProductJpaRepository;
 import com.stockflow.product.internal.repository.VariantJpaRepository;
 import org.slf4j.Logger;
@@ -51,10 +51,10 @@ import java.util.UUID;
  * The images of a variant (decision D5, table {@code product.media}): upload, describe, order,
  * publish to the storefront, withdraw, delete.
  *
- * <p><b>Four-eyes.</b> An image reaches the storefront only when someone other than its uploader
- * publishes it — the rule the old gallery approval enforced, now per image. Publishing copies the
- * image's renditions to the CDN-served prefix inside the publishing transaction
- * ({@link FileTransfers#publish}), so an image is public exactly when its row says so.</p>
+ * <p><b>Publishing.</b> An image reaches the storefront when it is published, by anyone holding
+ * {@code product-products:APPROVE} - its own uploader included: the four-eyes rule is gone (owner decision
+ * 2026-11-27, ADR-0012). Publishing copies the image's renditions to the CDN-served prefix inside the
+ * publishing transaction ({@link FileTransfers#publish}), so an image is public exactly when its row says so.</p>
  *
  * <p>An image is a module-local use case: uploads do not enlarge the cross-module product
  * contract. Catalog reads the published images through {@code ProductPublication}.</p>
@@ -80,16 +80,17 @@ public class ProductMediaService {
     private final ProductImageProcessor processor;
     private final UploadInspection inspection;
     private final TransactionOperations tx;
-    private final IdentityService identity;
     private final ProductMediaProperties delivery;
     private final ProductChangeLogRepository history;
+    private final ProductImageRepository productImages;
     private final Clock clock;
 
     public ProductMediaService(ProductVariantService variants, VariantJpaRepository variantRows,
                                ProductJpaRepository productRows, MediaJpaRepository media, FileTransfers files,
                                FileStorage storage, ProductImageProcessor processor, UploadInspection inspection,
-                               TransactionOperations tx, IdentityService identity, ProductMediaProperties delivery,
-                               ProductChangeLogRepository history, Clock clock) {
+                               TransactionOperations tx, ProductMediaProperties delivery,
+                               ProductChangeLogRepository history, ProductImageRepository productImages,
+                               Clock clock) {
         this.variants = variants;
         this.variantRows = variantRows;
         this.productRows = productRows;
@@ -99,9 +100,9 @@ public class ProductMediaService {
         this.processor = processor;
         this.inspection = inspection;
         this.tx = tx;
-        this.identity = identity;
         this.delivery = delivery;
         this.history = history;
+        this.productImages = productImages;
         this.clock = clock;
     }
 
@@ -352,9 +353,9 @@ public class ProductMediaService {
     // ------------------------------------------------------------------ publication
 
     /**
-     * Puts images on the storefront. Four-eyes: the publisher must not be who uploaded any of them;
-     * the product must be approved; each image must be a stored file with display renditions. The
-     * renditions are copied to the CDN prefix in this transaction.
+     * Puts images on the storefront. The product must be approved; each image must be a stored file with
+     * display renditions. Whoever uploaded it may publish it (ADR-0012). The renditions are copied to the CDN
+     * prefix in this transaction.
      */
     @Auditable(action = AuditAction.APPROVE, resourceType = "product-media", resourceId = "#variantId")
     public List<MediaView> publish(UUID productId, UUID variantId, List<UUID> mediaIds, UUID actor) {
@@ -368,16 +369,10 @@ public class ProductMediaService {
         if (mediaIds == null || mediaIds.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name at least one image to publish");
         }
-        String actorName = identity.profile(actor).username();
         Instant now = clock.instant();
         var result = new ArrayList<MediaView>();
         for (UUID mediaId : new LinkedHashSet<>(mediaIds)) {
             var image = requireMedia(productId, variantId, mediaId);
-            String uploader = image.getCreatedBy();
-            if (actor.toString().equals(uploader) || actorName.equals(uploader)) {
-                throw new BusinessException(ErrorCode.SELF_APPROVAL_NOT_ALLOWED,
-                        "An image is published by someone other than who uploaded it");
-            }
             if (image.storedFile() == null || image.getRenditions().isEmpty()) {
                 throw new BusinessException(ErrorCode.CONFLICT,
                         "Only an uploaded image with display renditions can be published; re-upload " + mediaId);
@@ -454,13 +449,17 @@ public class ProductMediaService {
     // ------------------------------------------------------------------ deleting a product
 
     /**
-     * Every object-store key under the product's images: each original and each rendition. Read before
-     * the rows are deleted (the rows go with their variants), so the objects can be removed once the
-     * deletion has committed.
+     * Every object-store key under the product's images - its variants' and its own (ADR-0012) - each original and
+     * each rendition. Read before the rows are deleted (the rows go with their variants and the product), so the
+     * objects can be removed once the deletion has committed.
      */
     @Transactional(readOnly = true)
     public List<String> storedKeysOf(UUID productId) {
         var keys = new LinkedHashSet<String>();
+        productImages.find(productId).ifPresent(own -> {
+            keys.add(own.original().key());
+            own.renditions().forEach(rendition -> keys.add(rendition.file().key()));
+        });
         for (var variant : variantRows.findByProductIdOrderByPositionAscIdAsc(productId)) {
             for (var image : media.findByVariantIdOrderBySortOrderAscIdAsc(variant.getId())) {
                 if (image.getStorageKey() != null) {

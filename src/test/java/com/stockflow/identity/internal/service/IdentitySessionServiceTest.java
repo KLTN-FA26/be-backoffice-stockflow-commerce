@@ -62,6 +62,8 @@ class IdentitySessionServiceTest {
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     private final LoginAttempts loginAttempts = mock(LoginAttempts.class);
     private final UserJpaRepository userRows = mock(UserJpaRepository.class);
+    private final org.springframework.context.ApplicationEventPublisher events =
+            mock(org.springframework.context.ApplicationEventPublisher.class);
     private IdentityServiceImpl service;
 
     private final UUID userId = UUID.randomUUID();
@@ -75,7 +77,7 @@ class IdentitySessionServiceTest {
                 () -> java.util.Optional.of("test"), userRows, mock(PrivilegeGuard.class),
                 loginAttempts, mock(UserWarehouseJpaRepository.class),
                 mock(com.stockflow.warehouse.api.WarehouseService.class),
-                mock(com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository.class), TTL);
+                mock(com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository.class), events, TTL);
     }
 
     private User user(UserStatus status) {
@@ -255,6 +257,23 @@ class IdentitySessionServiceTest {
         assertThat(saved.getValue().temporaryPasswordSetAt()).isNull();
         // the current session is the one passed as "keep": it is never revoked
         verify(sessions).revokeLive(userId, current, NOW, SessionEndReason.PASSWORD_CHANGED);
+        // and the personal MCP tokens go with the other sessions (ADR-0017)
+        verify(events).publishEvent(new com.stockflow.contracts.CredentialsReset(userId,
+                com.stockflow.contracts.CredentialsReset.Cause.CHANGED_SIGNING_OUT_ELSEWHERE, NOW));
+    }
+
+    @Test
+    void aPlainChangeKeepsTheOtherSessionsAndThePersonalTokens() {
+        UUID current = UUID.randomUUID();
+        when(users.findById(new UserId(userId))).thenReturn(Optional.of(user(UserStatus.ACTIVE)));
+        when(encoder.matches("Current-pw1", "{bcrypt}hash")).thenReturn(true);
+
+        int ended = service.changePassword(
+                new ChangePasswordCommand(userId, current, "Current-pw1", "Abcdefgh12", false));
+
+        assertThat(ended).isZero();
+        verify(sessions, never()).revokeLive(any(), any(), any(), any());
+        verify(events, never()).publishEvent(any(Object.class));
     }
 
     @Test
@@ -331,7 +350,7 @@ class IdentitySessionServiceTest {
                     () -> java.util.Optional.of("test"), mock(UserJpaRepository.class), mock(PrivilegeGuard.class),
                     loginAttempts, mock(UserWarehouseJpaRepository.class),
                     mock(com.stockflow.warehouse.api.WarehouseService.class),
-                    mock(com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository.class), bad)).isInstanceOf(IllegalArgumentException.class);
+                    mock(com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository.class), events, bad)).isInstanceOf(IllegalArgumentException.class);
         }
     }
 
