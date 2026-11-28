@@ -218,6 +218,14 @@ public interface OrderService {
     OrderSummary resolveHold(UUID orderId, String note, UUID by);
 
     /**
+     * As {@link #resolveHold(UUID, String, UUID)}, and ends the order's live shortage cards for {@code ending}
+     * (17 §4.14 step 60). The three-argument form ends them as {@code HOLD_RESOLVED_ELSEWHERE}: only the warehouse's
+     * reallocation, which really replaced the missing carton, passes {@code REALLOCATED}. {@code null} leaves the
+     * cards as they are.
+     */
+    OrderSummary resolveHold(UUID orderId, String note, UUID by, ShortageCardEnd ending);
+
+    /**
      * Close what is left of a partly fulfilled order (17 edge "short pick"): its units not shipped will not be
      * delivered; their stock holds are released, payment refunds money received above what the order is now worth
      * ({@code OrderRemainderClosed}). Only from PARTIALLY_FULFILLED. Cartons checked and labelled for it and not handed

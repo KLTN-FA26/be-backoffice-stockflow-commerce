@@ -73,6 +73,19 @@ public final class OrderResources {
     public static final String SALES_CONTRACTS = "sales-contracts";
 
     /**
+     * Approving or rejecting the non-standard terms of a draft contract before it is sent (QĐ-4 of the contract e-signing
+     * plan, 2026-11-28): the Sales Manager's. Its own resource: Sales draw the contract up ({@code sales-contracts:UPDATE})
+     * and may not approve their own deviations. Seeded by V20270129000110.
+     */
+    public static final String SALES_CONTRACT_TERMS = "sales-contract-terms";
+
+    /**
+     * Signing a contract for the company once the customer has signed (QĐ-2): the Sales Manager's and the System Admin's,
+     * never the account that drew the contract up or sent it. Seeded by V20270129000110, with the signing machinery.
+     */
+    public static final String SALES_CONTRACT_SIGNATURES = "sales-contract-signatures";
+
+    /**
      * PACK-PARTIAL (lead's decision 2026-10-21): Sales decides whether an order may ship in parts. Its own resource,
      * not {@code sales-orders:UPDATE}, which the portal customer holds for their own orders. Seeded by V20261022000400
      * for SALES_STAFF (and SYSTEM_ADMIN, who holds everything).

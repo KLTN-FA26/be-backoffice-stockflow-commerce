@@ -3,6 +3,7 @@ package com.stockflow.order.internal.repository;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.order.internal.domain.ContractAgreement;
 import com.stockflow.order.internal.domain.ContractParty;
 import com.stockflow.order.internal.domain.DeliveryBatch;
 import com.stockflow.order.internal.domain.PaymentMilestone;
@@ -74,6 +75,7 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                     seller.name(), seller.taxCode(), seller.address(), seller.representative(),
                     seller.representativeTitle(), buyer.name(), buyer.taxCode(), buyer.address(),
                     buyer.representative(), buyer.representativeTitle(), contract.salesOwnerId());
+            entity.drawnUpBy(contract.drawnUpBy());
         } else if (entity.getVersion() != contract.version()) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, "Contract %s changed since it was read"
                     .formatted(contract.contractNumber()));
@@ -84,6 +86,10 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 contract.cancellationReason(), contract.completedAt());
         boolean wasWaiting = !created && entity.isCreditReviewPending();
         entity.applyLiquidated(contract.liquidatedAt());
+        entity.applyAgreement(contract.agreement(), contract.nonStandard());
+        entity.applySigning(contract.revision(), contract.signBy(), contract.customerSignedAt());
+        entity.applyTermsReview(contract.termsReview(), contract.termsReviewNote(), contract.termsReviewRequestedBy(),
+                contract.termsReviewRequestedAt(), contract.termsReviewedBy(), contract.termsReviewedAt());
         entity.agreeReturnWindow(contract.returnWindowDays());
         entity.creditReview(contract.creditReviewPending());
         SalesContractJpaEntity saved = jpa.saveAndFlush(entity);
@@ -121,6 +127,22 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
         }
         Set<String> kept = new HashSet<>(jpa.sentDocumentKeysIn(keys));
         kept.addAll(jpa.signedFileKeysIn(keys));
+        // Every column that names a stored file, kept while a row names it: the PDF handed to the company's signer to
+        // sign outside and its certificate page, the files of the evidence (a customer's uploaded signed file, the
+        // company's signed file, the certificate page), and the PDF of every revision sent.
+        MapSqlParameterSource in = new MapSqlParameterSource("keys", keys);
+        kept.addAll(named.queryForList("SELECT outside_document_key FROM ordering.sales_contract "
+                + "WHERE outside_document_key IN (:keys)", in, String.class));
+        kept.addAll(named.queryForList("SELECT outside_page_key FROM ordering.sales_contract "
+                + "WHERE outside_page_key IN (:keys)", in, String.class));
+        kept.addAll(named.queryForList("SELECT file_key FROM ordering.sales_contract_signature "
+                + "WHERE file_key IN (:keys)", in, String.class));
+        kept.addAll(named.queryForList("SELECT certificate_page_key FROM ordering.sales_contract_signature "
+                + "WHERE certificate_page_key IN (:keys)", in, String.class));
+        // What each earlier revision was sent as: the contract row names only its current revision's PDF, and an
+        // earlier one stays the record of what the customer was sent before asking for changes.
+        kept.addAll(named.queryForList("SELECT sent_document_key FROM ordering.sales_contract_revision "
+                + "WHERE sent_document_key IN (:keys)", in, String.class));
         return kept;
     }
 
@@ -254,6 +276,15 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 e.getCancelledAt(), e.getCancelledBy(), e.getCancellationReason(), e.getCompletedAt(),
                 e.getVersion()).restoreReturnWindow(e.getReturnWindowDays()).restoreLiquidated(e.getLiquidatedAt())
                 .restoreSalesOwner(e.getSalesOwnerId())
-                .restoreCreditReview(e.isCreditReviewPending());
+                .restoreCreditReview(e.isCreditReviewPending())
+                .restoreAgreement(new ContractAgreement(e.getSpecialTerms(), e.getPenaltyPercent(),
+                        e.getQuantityTolerancePercent(), e.getWarrantyMonths(),
+                        new ContractAgreement.SellerSigner(e.getSellerSignerName(), e.getSellerSignerTitle(),
+                                e.getSellerSignerAuthorizationRef()),
+                        new ContractAgreement.BuyerSigner(e.getBuyerSignerName(), e.getBuyerSignerTitle())),
+                        e.isNonStandardTerms())
+                .restoreSigning(e.getRevision(), e.getSignBy(), e.getCustomerSignedAt(), e.getDrawnUpBy())
+                .restoreTermsReview(e.getTermsReview(), e.getTermsReviewNote(), e.getTermsReviewRequestedBy(),
+                        e.getTermsReviewRequestedAt(), e.getTermsReviewedBy(), e.getTermsReviewedAt());
     }
 }

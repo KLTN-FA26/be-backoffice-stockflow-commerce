@@ -265,7 +265,8 @@ public class DocumentCards {
      * to the order only while they can - the quote itself did not move, so {@link #quoteChanged} is not called.
      */
     public void contractChanged(SalesContractStatusChanged event) {
-        if ("SENT".equals(event.status()) || "CANCELLED".equals(event.status())) {
+        // DRAFT: the customer asked for changes and the order went back to a draft they may not open.
+        if ("SENT".equals(event.status()) || "CANCELLED".equals(event.status()) || "DRAFT".equals(event.status())) {
             quoteOfOrderChanged(event.orderId());
         }
         Optional<ContractCards.Card> found = contracts.contract(event.orderId(), event.contractId());

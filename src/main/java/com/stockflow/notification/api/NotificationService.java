@@ -29,4 +29,13 @@ public interface NotificationService {
      *                          reached; the caller records the invitation as not delivered
      */
     void sendPortalInvitation(PortalInvitationMail mail);
+
+    /**
+     * Mails the code a customer signs a contract with, now, outside any transaction (the code is a secret: an event
+     * would keep it in {@code event_publication}). A failure is thrown to the caller, which discards the code it just
+     * made and tells the customer to ask again.
+     *
+     * @throws RuntimeException when the mail provider refuses the message or cannot be reached
+     */
+    void sendContractSignOtp(ContractSignOtpMail mail);
 }

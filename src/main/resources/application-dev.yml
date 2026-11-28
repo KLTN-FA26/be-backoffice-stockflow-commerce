@@ -124,6 +124,10 @@ stockflow:
     # ON. A server never runs with security off — that is what the `local` profile is for, and it
     # must never leave a laptop.
     enabled: true
+    # A week, on this shared staging server only (owner decision TTL-VPS-1126): the team and the supervisor demo
+    # and test across several days without signing in again. The prod profile and application.yml keep PT8H
+    # (kltn-docs 00: 8 hours). Sessions can still be ended at once (logout, password change, role change).
+    token-ttl: P7D
 
   notification:
     email:

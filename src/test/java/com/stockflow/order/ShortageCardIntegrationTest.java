@@ -423,4 +423,21 @@ class ShortageCardIntegrationTest {
         assertThat(ShortageCardEnd.valueOf((String) cardRow(cardId).get("ended_reason")))
                 .isEqualTo(ShortageCardEnd.DECIDED_WITHOUT_CARD);
     }
+
+    @Test
+    @DisplayName("a hold lifted by another path than the reallocation (the plain resolveHold, e.g. partial shipment "
+            + "after a carton was removed) ends the card as HOLD_RESOLVED_ELSEWHERE, not REALLOCATED")
+    void aHoldLiftedElsewhereIsNotAReallocation() throws Exception {
+        UUID orderId = orderHeldForOneMissingCarton();
+        ChatMessageView sent = sendAsSales(orderId, null, false);
+        UUID cardId = cardIdOf(sent);
+
+        WithCurrentUser.run(sales(), DataScope.ALL,
+                () -> orders.resolveHold(orderId, "Sale cho giao một phần", sales().userId()));
+
+        assertThat(cardRow(cardId)).containsEntry("status", "EXPIRED")
+                .containsEntry("ended_reason", "HOLD_RESOLVED_ELSEWHERE");
+        Await.until("the chat card expired", ASYNC, () -> "EXPIRED".equals(chatState(sent.id())));
+        assertThat(chatPayload(sent.id()).path("endedReason").asText()).isEqualTo("HOLD_RESOLVED_ELSEWHERE");
+    }
 }
