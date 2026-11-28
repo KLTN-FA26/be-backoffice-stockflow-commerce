@@ -16,6 +16,7 @@ import com.stockflow.common.document.BusinessDocument.Summary;
 import com.stockflow.common.document.BusinessDocument.Table;
 import com.stockflow.common.document.BusinessDocument.Title;
 import com.stockflow.common.document.DocumentFonts;
+import com.stockflow.common.document.DocumentParts;
 import com.stockflow.common.document.DocumentFormats;
 import com.stockflow.common.document.Letterhead;
 import com.stockflow.order.internal.domain.Order;
@@ -44,7 +45,14 @@ import java.util.StringJoiner;
  * dispute resolution - plus what a contract for goods printed to the buyer's design needs and a general one lacks:
  * the approved print sample as the standard of quality, the tolerance of a printed run's quantity, who answers for
  * the design's content, and the warranty of the print. The penalty clause prints the configured rate, which
- * {@link ContractProperties} keeps within the 8% of Luật Thương mại 2005 Điều 301.</p>
+ * {@link ContractProperties} keeps within the 8% of Luật Thương mại 2005 Điều 301 - or this contract's own when it
+ * agrees another (never above 8, {@code ck_sales_contract_penalty_percent}), as the tolerance and the warranty.</p>
+ *
+ * <p>What the parties agreed beyond the standard terms is printed as a clause of its own, "Thỏa thuận khác", before the
+ * validity clause (which stays last, as a Vietnamese contract's does), and only when there is some; a signature block
+ * names the signer the contract records - and the authorization they sign under - instead of the legal representative
+ * when it records one. The validity clause carries the parties' agreement to contract and sign electronically on the
+ * customer portal (Luật Giao dịch điện tử 2023 Điều 35, 36).</p>
  *
  * <p>Deliveries and payments by instalment are tables inside their clauses, read from the contract's schedule and
  * plan. A clause whose fact is absent is left out and the ones after it are renumbered, so the paper never prints a
@@ -131,8 +139,9 @@ class SalesContractDocument {
         clauses.point("duties.seller");
         clauses.point("duties.buyer");
         clauses.title("breach");
-        if (terms.penaltyPercent() > 0) {
-            clauses.point("breach.penalty", terms.penaltyPercent());
+        int penalty = c.penaltyPercent() != null ? c.penaltyPercent() : terms.penaltyPercent();
+        if (penalty > 0) {
+            clauses.point("breach.penalty", penalty);
         }
         clauses.point("breach.damages");
         clauses.point("breach.interest");
@@ -142,23 +151,57 @@ class SalesContractDocument {
         clauses.title("disputes");
         clauses.point("disputes.talks");
         clauses.point("disputes.court");
+        if (SalesDocumentLines.filled(c.specialTerms())) {
+            clauses.title("other");
+            // One numbered point for each paragraph Sales wrote: the text is theirs, the numbering the paper's.
+            for (String paragraph : c.specialTerms().strip().split("\\R+")) {
+                if (!paragraph.isBlank()) {
+                    clauses.point("other.text", paragraph.strip());
+                }
+            }
+        }
         clauses.title("validity");
         clauses.point("validity.from");
         clauses.point("validity.changes");
         clauses.point("validity.liquidation");
         clauses.point("validity.copies");
+        clauses.point("validity.electronic");
 
-        String caption = t.getString("document.sign.sealed");
-        blocks.add(new Signatures(null, List.of(
-                new Signer(t.getString("contract.pdf.sign.seller"), SalesDocumentLines.position(c.seller()),
-                        caption, c.seller().representative()),
-                new Signer(t.getString("contract.pdf.sign.buyer"), SalesDocumentLines.position(c.buyer()), caption,
-                        c.buyer().representative()))));
+        blocks.add(new Signatures(null, List.of(sellerBlock(t, c), buyerBlock(t, c))));
 
         Layout layout = Layout.official(t.getString("document.number") + " " + c.contractNumber(), null,
                 t.getString("document.page"), watermark(t, facts));
         return BusinessDocument.draw(fonts, layout, t.getString("contract.pdf.title") + " " + c.contractNumber(),
                 blocks);
+    }
+
+    /**
+     * The seller's block: the signer the contract names - their title, and the authorization they sign under when they
+     * are not the legal representative - else the legal representative.
+     */
+    private static Signer sellerBlock(ResourceBundle t, SalesContracts.ContractView c) {
+        SalesContracts.SellerSigner signer = c.sellerSigner();
+        String title = t.getString("contract.pdf.sign.seller");
+        if (signer == null || signer.name() == null) {
+            return new Signer(title, SalesDocumentLines.position(c.seller()), t.getString("document.sign.sealed"),
+                    c.seller().representative());
+        }
+        String caption = SalesDocumentLines.filled(signer.authorizationRef())
+                ? t.getString("contract.pdf.sign.authorized").formatted(signer.authorizationRef())
+                : t.getString("document.sign.sealed");
+        return new Signer(title, DocumentParts.position(signer.title()), caption, signer.name());
+    }
+
+    /** The buyer's block: the signer the contract names, else the legal representative. */
+    private static Signer buyerBlock(ResourceBundle t, SalesContracts.ContractView c) {
+        SalesContracts.BuyerSigner signer = c.buyerSigner();
+        String title = t.getString("contract.pdf.sign.buyer");
+        if (signer == null || signer.name() == null) {
+            return new Signer(title, SalesDocumentLines.position(c.buyer()), t.getString("document.sign.sealed"),
+                    c.buyer().representative());
+        }
+        return new Signer(title, DocumentParts.position(signer.title()), t.getString("document.sign.sealed"),
+                signer.name());
     }
 
     /** A draft being previewed and a cancelled contract say so across every page; the copy sent does not. */
@@ -211,8 +254,10 @@ class SalesContractDocument {
         clauses.title("quality");
         clauses.point("quality.sample");
         clauses.point("quality.rounds", c.freeSampleRounds());
-        if (terms.quantityTolerancePercent() > 0) {
-            clauses.point("quality.tolerance", terms.quantityTolerancePercent());
+        int tolerance = c.quantityTolerancePercent() != null ? c.quantityTolerancePercent()
+                : terms.quantityTolerancePercent();
+        if (tolerance > 0) {
+            clauses.point("quality.tolerance", tolerance);
         }
         clauses.point("quality.colour");
         clauses.point("quality.design");
@@ -316,8 +361,9 @@ class SalesContractDocument {
         // prints the number of days the system will hold it to.
         clauses.point("claims.window", c.returnWindowDays() != null ? c.returnWindowDays() : defaultReturnWindowDays);
         clauses.point("claims.faulty");
-        if (terms.warrantyMonths() > 0) {
-            clauses.point("claims.warranty", terms.warrantyMonths());
+        int warranty = c.warrantyMonths() != null ? c.warrantyMonths() : terms.warrantyMonths();
+        if (warranty > 0) {
+            clauses.point("claims.warranty", warranty);
         }
     }
 

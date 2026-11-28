@@ -9,7 +9,8 @@ import java.util.Collection;
 import java.util.Set;
 
 /**
- * The documents sales contracts keep (4B-4) - the PDF each was sent as and its signed file - for the orphaned-file sweep.
+ * The documents sales contracts keep (4B-4) - the PDF each revision was sent as, the signed file, the PDF to sign
+ * outside, and the files of the signature evidence and certificate pages - for the orphaned-file sweep.
  * The {@code documents} category is shared with what other modules keep; the sweep asks every owner of a category, so a
  * file is kept while any of them names it.
  */

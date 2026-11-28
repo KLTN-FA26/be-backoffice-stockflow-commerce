@@ -103,7 +103,11 @@ class SalesContractTest {
     void onlyTheDocumentedEdgesExist() {
         java.util.Map<SalesContractStatus, java.util.Set<SalesContractStatus>> allowed = java.util.Map.of(
                 SalesContractStatus.DRAFT, java.util.Set.of(SalesContractStatus.SENT, SalesContractStatus.CANCELLED),
-                SalesContractStatus.SENT, java.util.Set.of(SalesContractStatus.SIGNED, SalesContractStatus.CANCELLED),
+                // DRAFT again is the customer's change request; SIGNED a paper signed by both recorded from SENT.
+                SalesContractStatus.SENT, java.util.Set.of(SalesContractStatus.CUSTOMER_SIGNED,
+                        SalesContractStatus.SIGNED, SalesContractStatus.CANCELLED, SalesContractStatus.DRAFT),
+                SalesContractStatus.CUSTOMER_SIGNED, java.util.Set.of(SalesContractStatus.SIGNED,
+                        SalesContractStatus.CANCELLED),
                 SalesContractStatus.SIGNED, java.util.Set.of(SalesContractStatus.COMPLETED,
                         SalesContractStatus.LIQUIDATED),
                 SalesContractStatus.COMPLETED, java.util.Set.of(),

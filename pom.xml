@@ -67,6 +67,8 @@
     <!-- Location labels (SCRUM-97): ZXing encodes Code 128 / QR, PDFBox draws the PDF. -->
     <zxing.version>3.5.3</zxing.version>
     <pdfbox.version>3.0.6</pdfbox.version>
+    <!-- Contract e-signing (CMS / PAdES): the JDK has no CMS writer. Not in Spring Boot's BOM, so pinned here. -->
+    <bouncycastle.version>1.81</bouncycastle.version>
     <!-- The back-office assistant's model provider (ADR-0011): Anthropic's official Java SDK. -->
     <anthropic-java.version>2.34.0</anthropic-java.version>
     <!--
@@ -153,6 +155,16 @@
       <groupId>org.apache.pdfbox</groupId>
       <artifactId>pdfbox</artifactId>
       <version>${pdfbox.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+      <version>${bouncycastle.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <version>${bouncycastle.version}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.poi</groupId>
