@@ -9,6 +9,7 @@ import com.stockflow.product.api.PrintConfig;
 import com.stockflow.product.api.ProductModel;
 import com.stockflow.product.api.TemplateModel3d;
 import com.stockflow.product.internal.entity.CustomizationTemplateJpaEntity;
+import com.stockflow.product.internal.domain.CupGeometry;
 import com.stockflow.product.internal.entity.PrintAreaJpaEntity;
 
 import java.math.BigDecimal;
@@ -18,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * Customization template rows to {@link PrintConfig} and back. The model and the shapes are stored as the JSON objects
@@ -32,12 +34,13 @@ public final class PrintConfigPersistenceMapper {
     /** The template as other modules see it. */
     public static PrintConfig toConfig(CustomizationTemplateJpaEntity template, UUID productId, String sku,
                                        List<PrintAreaJpaEntity> areas) {
+        ProductModel model = model(template.getModelParams());
         return new PrintConfig(template.getId(), productId, template.getVariantId(), sku, template.getCode(),
                 template.getName(), template.getMinDpi(), template.getColorMode(),
                 Arrays.asList(template.getAllowedFileFormats()), template.getMaxFileSizeMb(), template.getMaxColors(),
                 template.getAllowedFontCodes() == null ? null : Arrays.asList(template.getAllowedFontCodes()),
-                template.isActive(), model(template.getModelParams()),
-                areas.stream().map(PrintConfigPersistenceMapper::toArea).toList(), template.getReferenceFileKey(),
+                template.isActive(), model,
+                areas.stream().map(row -> toArea(row, model)).toList(), template.getReferenceFileKey(),
                 template.getReferenceFileName(), template.getVersion(), model3d(template), template.getPrintVersion());
     }
 
@@ -122,10 +125,11 @@ public final class PrintConfigPersistenceMapper {
         };
     }
 
-    private static PrintArea toArea(PrintAreaJpaEntity row) {
+    private static PrintArea toArea(PrintAreaJpaEntity row, ProductModel model) {
         return new PrintArea(row.getCode(), row.getName(), row.getXMm().doubleValue(), row.getYMm().doubleValue(),
                 row.getWidthMm().doubleValue(), row.getHeightMm().doubleValue(), row.getSafeMarginMm().doubleValue(),
-                row.getBleedMm().doubleValue(), shape(row.getShape()), (String) row.getUvMapping().get("meshPart"));
+                row.getBleedMm().doubleValue(), shape(row.getShape(), model),
+                (String) row.getUvMapping().get("meshPart"));
     }
 
     private static Map<String, Object> shape(PrintAreaShape shape) {
@@ -140,13 +144,30 @@ public final class PrintConfigPersistenceMapper {
         return json;
     }
 
-    private static PrintAreaShape shape(Map<String, Object> json) {
+    private static PrintAreaShape shape(Map<String, Object> json, ProductModel model) {
         return switch (String.valueOf(json.get("type"))) {
             case PrintAreaShape.Rect.TYPE -> new PrintAreaShape.Rect();
-            case PrintAreaShape.AnnularSector.TYPE -> new PrintAreaShape.AnnularSector(num(json, "innerRadiusMm"),
-                    num(json, "outerRadiusMm"), num(json, "sweepRad"), num(json, "seamMm"));
+            case PrintAreaShape.AnnularSector.TYPE -> annularSector(json, model);
             default -> throw new IllegalStateException("Unknown print area shape " + json.get("type"));
         };
+    }
+
+    /**
+     * A conical cup's band as stored. Its four numbers are derived from the cup model, never typed in
+     * ({@code PrintConfigRules.areas} computes them), so a row that carries none - the demo seeds write
+     * {@code {"type": "annular-sector"}} alone - is read as the model says rather than refused: refusing it made
+     * {@code GET /catalog/products/{slug}/customization} answer 400 for every such cup (WF4 UX audit S08-2). Numbers
+     * that are stored win; a row with some of them, or a model that is not a conical cup, is still corrupt.
+     */
+    private static PrintAreaShape annularSector(Map<String, Object> json, ProductModel model) {
+        boolean stored = Stream.of("innerRadiusMm", "outerRadiusMm", "sweepRad", "seamMm").anyMatch(json::containsKey);
+        if (!stored && model instanceof CupModel cup && !CupGeometry.isCylindrical(cup)) {
+            CupGeometry.Sector sector = CupGeometry.sector(cup);
+            return new PrintAreaShape.AnnularSector(sector.trimInnerMm(), sector.trimOuterMm(), sector.sweepRad(),
+                    cup.seamMm());
+        }
+        return new PrintAreaShape.AnnularSector(num(json, "innerRadiusMm"), num(json, "outerRadiusMm"),
+                num(json, "sweepRad"), num(json, "seamMm"));
     }
 
     private static double num(Map<String, Object> json, String member) {
