@@ -1,7 +1,9 @@
 package com.stockflow.order.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.order.internal.domain.ContractAgreement;
 import com.stockflow.order.internal.domain.SalesContractStatus;
+import com.stockflow.order.internal.domain.TermsReview;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -100,6 +102,51 @@ public class SalesContractJpaEntity extends BaseEntity {
     @Column(name = "credit_review", nullable = false, length = 16)
     private String creditReview = "NONE";
 
+    /** V20270129000100: the article "Thoả thuận khác"; null when there is none. */
+    @Column(name = "special_terms")
+    private String specialTerms;
+    /** The three standing terms when this contract's differ from the configured ones; null = the configured one. */
+    @Column(name = "penalty_percent")
+    private Integer penaltyPercent;
+    @Column(name = "quantity_tolerance_percent")
+    private Integer quantityTolerancePercent;
+    @Column(name = "warranty_months")
+    private Integer warrantyMonths;
+    @Column(name = "seller_signer_name", length = 200)
+    private String sellerSignerName;
+    @Column(name = "seller_signer_title", length = 200)
+    private String sellerSignerTitle;
+    @Column(name = "seller_signer_authorization_ref", length = 100)
+    private String sellerSignerAuthorizationRef;
+    @Column(name = "buyer_signer_name", length = 200)
+    private String buyerSignerName;
+    @Column(name = "buyer_signer_title", length = 200)
+    private String buyerSignerTitle;
+    @Column(name = "non_standard_terms", nullable = false)
+    private boolean nonStandardTerms;
+    @Column(name = "revision", nullable = false)
+    private int revision = 1;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "terms_review", nullable = false, length = 16)
+    private TermsReview termsReview = TermsReview.NONE;
+    @Column(name = "terms_review_note", length = 500)
+    private String termsReviewNote;
+    @Column(name = "terms_review_requested_by")
+    private UUID termsReviewRequestedBy;
+    @Column(name = "terms_review_requested_at")
+    private Instant termsReviewRequestedAt;
+    @Column(name = "terms_reviewed_by")
+    private UUID termsReviewedBy;
+    @Column(name = "terms_reviewed_at")
+    private Instant termsReviewedAt;
+    @Column(name = "sign_by")
+    private LocalDate signBy;
+    @Column(name = "customer_signed_at")
+    private Instant customerSignedAt;
+    /** Written once, with the row. */
+    @Column(name = "drawn_up_by", updatable = false)
+    private UUID drawnUpBy;
+
     protected SalesContractJpaEntity() {
     }
 
@@ -141,6 +188,39 @@ public class SalesContractJpaEntity extends BaseEntity {
         this.cancelledBy = cancelledBy;
         this.cancellationReason = cancellationReason;
         this.completedAt = completedAt;
+    }
+
+    public void applyAgreement(ContractAgreement agreement, boolean nonStandard) {
+        this.specialTerms = agreement.specialTerms();
+        this.penaltyPercent = agreement.penaltyPercent();
+        this.quantityTolerancePercent = agreement.quantityTolerancePercent();
+        this.warrantyMonths = agreement.warrantyMonths();
+        this.sellerSignerName = agreement.seller().name();
+        this.sellerSignerTitle = agreement.seller().title();
+        this.sellerSignerAuthorizationRef = agreement.seller().authorizationRef();
+        this.buyerSignerName = agreement.buyer().name();
+        this.buyerSignerTitle = agreement.buyer().title();
+        this.nonStandardTerms = nonStandard;
+    }
+
+    public void applySigning(int revision, LocalDate signBy, Instant customerSignedAt) {
+        this.revision = revision;
+        this.signBy = signBy;
+        this.customerSignedAt = customerSignedAt;
+    }
+
+    public void applyTermsReview(TermsReview state, String note, UUID requestedBy, Instant requestedAt, UUID reviewedBy,
+                                 Instant reviewedAt) {
+        this.termsReview = state;
+        this.termsReviewNote = note;
+        this.termsReviewRequestedBy = requestedBy;
+        this.termsReviewRequestedAt = requestedAt;
+        this.termsReviewedBy = reviewedBy;
+        this.termsReviewedAt = reviewedAt;
+    }
+
+    public void drawnUpBy(UUID user) {
+        this.drawnUpBy = user;
     }
 
     public void applyLiquidated(Instant at) {
@@ -187,4 +267,24 @@ public class SalesContractJpaEntity extends BaseEntity {
     public UUID getCancelledBy() { return cancelledBy; }
     public String getCancellationReason() { return cancellationReason; }
     public Instant getCompletedAt() { return completedAt; }
+    public String getSpecialTerms() { return specialTerms; }
+    public Integer getPenaltyPercent() { return penaltyPercent; }
+    public Integer getQuantityTolerancePercent() { return quantityTolerancePercent; }
+    public Integer getWarrantyMonths() { return warrantyMonths; }
+    public String getSellerSignerName() { return sellerSignerName; }
+    public String getSellerSignerTitle() { return sellerSignerTitle; }
+    public String getSellerSignerAuthorizationRef() { return sellerSignerAuthorizationRef; }
+    public String getBuyerSignerName() { return buyerSignerName; }
+    public String getBuyerSignerTitle() { return buyerSignerTitle; }
+    public boolean isNonStandardTerms() { return nonStandardTerms; }
+    public int getRevision() { return revision; }
+    public TermsReview getTermsReview() { return termsReview; }
+    public String getTermsReviewNote() { return termsReviewNote; }
+    public UUID getTermsReviewRequestedBy() { return termsReviewRequestedBy; }
+    public Instant getTermsReviewRequestedAt() { return termsReviewRequestedAt; }
+    public UUID getTermsReviewedBy() { return termsReviewedBy; }
+    public Instant getTermsReviewedAt() { return termsReviewedAt; }
+    public LocalDate getSignBy() { return signBy; }
+    public Instant getCustomerSignedAt() { return customerSignedAt; }
+    public UUID getDrawnUpBy() { return drawnUpBy; }
 }

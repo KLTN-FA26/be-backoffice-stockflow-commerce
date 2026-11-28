@@ -10,6 +10,8 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -31,13 +33,71 @@ public interface SalesContracts {
      * On an edit, the schedule and the plan are replaced whole.
      */
     record Draft(Integer freeSampleRounds, List<Batch> deliverySchedule, List<Installment> paymentPlan,
-                 Integer returnWindowDays) {
+                 Integer returnWindowDays, AgreementInput agreement) {
 
         /** The complaint period left as it is: the configured default on drawing up, kept on an edit. */
         public Draft(Integer freeSampleRounds, List<Batch> deliverySchedule, List<Installment> paymentPlan) {
-            this(freeSampleRounds, deliverySchedule, paymentPlan, null);
+            this(freeSampleRounds, deliverySchedule, paymentPlan, null, null);
+        }
+
+        /** Nothing agreed beyond the standard terms. */
+        public Draft(Integer freeSampleRounds, List<Batch> deliverySchedule, List<Installment> paymentPlan,
+                     Integer returnWindowDays) {
+            this(freeSampleRounds, deliverySchedule, paymentPlan, returnWindowDays, null);
         }
     }
+
+    /**
+     * What Sales enters beyond the schedule and the plan. Left out (null), a part is kept as it is on an edit; on drawing
+     * up it starts empty. A blank text clears the special terms or a signer's name; a penalty, tolerance or warranty equal
+     * to the configured one is the same as none. The signers are replaced whole when given.
+     */
+    record AgreementInput(String specialTerms, Integer penaltyPercent, Integer quantityTolerancePercent,
+                          Integer warrantyMonths, SellerSigner sellerSigner, BuyerSigner buyerSigner) { }
+
+    /** The seller's signer; {@code authorizationRef} is the number of the authorization when they are not the legal representative. */
+    record SellerSigner(String name, String title, String authorizationRef) { }
+
+    record BuyerSigner(String name, String title) { }
+
+    /** The terms every contract starts from, for the editor to show beside an override. */
+    record StandardTermsView(int penaltyPercent, int quantityTolerancePercent, int warrantyMonths) { }
+
+    /**
+     * Where the terms review (QĐ-4) stands, beyond the state itself.
+     *
+     * @param note the manager's note, or the reason it was rejected; null when none
+     */
+    record TermsReviewView(String note, UUID requestedBy, Instant requestedAt, UUID decidedBy, Instant decidedAt) { }
+
+    /**
+     * One revision of the contract as it was sent. {@code sentBy} and {@code sentByName} are not shown to the customer.
+     *
+     * @param changeRequestReason what the customer asked for after reading it; null while it stands
+     */
+    record RevisionView(int revision, Instant sentAt, UUID sentBy, String sentByName, String changeRequestReason,
+                        Instant changeRequestedAt, boolean documentAvailable) { }
+
+    /**
+     * A filter of the back office's contract list.
+     *
+     * @param statuses     none = every status
+     * @param salesOwnerId the Sales owner recorded on the contract; the caller's own when {@code mine}
+     * @param signByBefore SENT contracts whose signing deadline is before this day
+     * @param search       a part of the contract's or the order's number, or of the buyer's name
+     */
+    record ContractQuery(Set<String> statuses, UUID salesOwnerId, LocalDate signByBefore, String termsReview,
+                         String search, int page, int size) { }
+
+    /** A row of the contract list. */
+    record ContractRow(UUID orderId, UUID contractId, String contractNumber, String orderNumber, UUID customerId,
+                       String customerName, String status, int revision, BigDecimal totalAmount, Instant sentAt,
+                       LocalDate signBy, boolean overdueToSign, Instant customerSignedAt, Instant signedAt,
+                       String termsReview, String creditReview, UUID salesOwnerId, String salesOwnerName) { }
+
+    /** The tiles over the list: how many contracts in each status and what is waiting. */
+    record ContractSummary(Map<String, Long> byStatus, long awaitingCompanySignature, long overdueToSign,
+                           long termsReviewPending) { }
 
     /** A delivery batch as entered, in delivery order. */
     record Batch(LocalDate windowStart, LocalDate windowEnd, List<BatchLine> lines) { }
@@ -139,6 +199,34 @@ public interface SalesContracts {
     record PlanSuggestion(UUID contractId, long version, BigDecimal totalAmount, List<InstallmentView> paymentPlan) { }
 
     /**
+     * What inspecting a signed file found (the plan's "Signature view"). {@code kind} is DIGITAL or SCAN; a file this
+     * could not read is never stored, so UNREADABLE does not appear here.
+     *
+     * @param reason the first thing wrong, a {@code SignedPdfInspector.Reasons} code; null when nothing is
+     */
+    record InspectionView(String kind, boolean valid, boolean coversWholeDocument, boolean matchesSentDocument,
+                          boolean chainChecked, List<InspectedSigner> signers, String reason) { }
+
+    record InspectedSigner(String subject, String issuer, String serial, Instant notBefore, Instant notAfter,
+                           Instant signedAt) { }
+
+    /**
+     * How the customer signed. {@code ip} is the back office's only: the portal shows the customer their own signature
+     * without it.
+     */
+    record CustomerSignatureView(String method, String signerName, String signerTitle, String email, Instant signedAt,
+                                 String ip, boolean otpVerified, InspectionView inspection) { }
+
+    /** How the company signed; {@code byName} is the account that did it. */
+    record CompanySignatureView(String method, String signerName, String signerTitle, Instant signedAt, String byName,
+                                String certificateSubject, String certificateIssuer, boolean testCertificate,
+                                InspectionView inspection) { }
+
+    /** Both signatures of the contract's current revision, with the SHA-256 of what each side signed and the code. */
+    record SignatureView(CustomerSignatureView customer, CompanySignatureView company, String documentSha256,
+                         String verificationCode) { }
+
+    /**
      * @param creditWarning    what the plan's part paid after delivery would ask of the customer's credit, when it does
      *                         not fit (15 BR-10, BR-11): shown on a DRAFT contract - read, drawn up or edited - so Sales
      *                         decide before sending, as 14 §4.3 step 13 has it (change the plan, or send it to wait for
@@ -155,6 +243,24 @@ public interface SalesContracts {
      *                         customer's copy
      * @param latestCreditReview the latest submission to accounting, whatever became of it - a refusal's reason is read
      *                         here; null when there was none, and on the customer's copy
+     * @param revision         starts at 1; each change request of the customer reopens the contract as the next one
+     * @param signBy           the day the customer should have signed by; null for a draft and for a contract sent
+     *                         before deadlines existed
+     * @param overdueToSign    SENT and past {@code signBy}: nothing is cancelled for it, Sales extends or cancels
+     * @param penaltyPercent   this contract's penalty when it differs from the standard one; null = the standard
+     *                         ({@code standardTerms}); likewise the tolerance and the warranty
+     * @param standardTerms    the configured terms a null override reads; null on the customer's copy
+     * @param nonStandardTerms whether it deviates from them: a Sales Manager approves it before it is sent; false on the
+     *                         customer's copy
+     * @param termsReview      NONE, PENDING, APPROVED or REJECTED (QĐ-4); NONE on the customer's copy
+     * @param termsReviewDetail who asked, who decided, and the note; null on the customer's copy
+     * @param customerSignedAt when the customer signed; null until they do
+     * @param canSign          the customer may sign now: SENT and not past {@code signBy}
+     * @param canRequestChanges the customer may send it back for changes: SENT
+     * @param customerSignature the evidence of the customer's signature - filled by the signing machinery, null until it
+     *                         exists
+     * @param companySignature the evidence of the company's signature - likewise
+     * @param verificationCode the code a third party checks the signed contract with - likewise
      */
     record ContractView(UUID id, String contractNumber, UUID orderId, String orderNumber, String status, Party seller,
                         Party buyer, int freeSampleRounds, Totals totals, List<BatchView> deliverySchedule,
@@ -162,7 +268,40 @@ public interface SalesContracts {
                         String signedFileName, Instant signedAt, UUID signedBy, Instant cancelledAt,
                         UUID cancelledBy, String cancellationReason, Instant completedAt, long version,
                         CreditWarning creditWarning, Integer returnWindowDays, boolean appendixAvailable,
-                        String creditReview, CreditReviewView latestCreditReview) {
+                        String creditReview, CreditReviewView latestCreditReview, int revision, LocalDate signBy,
+                        boolean overdueToSign, String specialTerms, Integer penaltyPercent,
+                        Integer quantityTolerancePercent, Integer warrantyMonths, SellerSigner sellerSigner,
+                        BuyerSigner buyerSigner, StandardTermsView standardTerms, boolean nonStandardTerms,
+                        String termsReview, TermsReviewView termsReviewDetail, Instant customerSignedAt,
+                        boolean canSign, boolean canRequestChanges, CustomerSignatureView customerSignature,
+                        CompanySignatureView companySignature, String verificationCode) {
+
+        /** The same contract with the evidence of its signatures filled in: the signing steps know it only after the state changed. */
+        public ContractView withSignatures(CustomerSignatureView customer, CompanySignatureView company, String code) {
+            return new ContractView(
+                    id, contractNumber, orderId, orderNumber, status, seller, buyer, freeSampleRounds, totals,
+                    deliverySchedule, paymentPlan, sentAt, sentBy, signedOn, signedFileName, signedAt, signedBy,
+                    cancelledAt, cancelledBy, cancellationReason, completedAt, version, creditWarning,
+                    returnWindowDays, appendixAvailable, creditReview, latestCreditReview, revision, signBy,
+                    overdueToSign, specialTerms, penaltyPercent, quantityTolerancePercent, warrantyMonths,
+                    sellerSigner, buyerSigner, standardTerms, nonStandardTerms, termsReview, termsReviewDetail,
+                    customerSignedAt, canSign, canRequestChanges, customer, company, code);
+        }
+
+        /** Before the contract's content and signing were looked at: a view drawn for a paper, or a test. */
+        public ContractView(UUID id, String contractNumber, UUID orderId, String orderNumber, String status,
+                            Party seller, Party buyer, int freeSampleRounds, Totals totals,
+                            List<BatchView> deliverySchedule, List<InstallmentView> paymentPlan, Instant sentAt,
+                            UUID sentBy, LocalDate signedOn, String signedFileName, Instant signedAt, UUID signedBy,
+                            Instant cancelledAt, UUID cancelledBy, String cancellationReason, Instant completedAt,
+                            long version, CreditWarning creditWarning, Integer returnWindowDays,
+                            boolean appendixAvailable, String creditReview, CreditReviewView latestCreditReview) {
+            this(id, contractNumber, orderId, orderNumber, status, seller, buyer, freeSampleRounds, totals,
+                    deliverySchedule, paymentPlan, sentAt, sentBy, signedOn, signedFileName, signedAt, signedBy,
+                    cancelledAt, cancelledBy, cancellationReason, completedAt, version, creditWarning,
+                    returnWindowDays, appendixAvailable, creditReview, latestCreditReview, 1, null, false, null, null,
+                    null, null, null, null, null, false, "NONE", null, null, false, false, null, null, null);
+        }
 
         /** Before the credit review is looked at: a view drawn for a paper, or a test. */
         public ContractView(UUID id, String contractNumber, UUID orderId, String orderNumber, String status,
@@ -279,12 +418,153 @@ public interface SalesContracts {
     /** 15 BR-11: the contracts waiting for accounting, the oldest first. */
     com.stockflow.common.api.PageResponse<CreditReviewWaiting> creditReviewsWaiting(int page, int size);
 
-    /** Where the browser uploads the signed file (FileCategory.DOCUMENT); the contract is sent. */
+    /**
+     * QĐ-4: Sales puts a draft that deviates from the standard terms in front of a Sales Manager. It stays a DRAFT, locked
+     * against edits, until it is approved, rejected or withdrawn; a manager and the Sales Manager role are told.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CONTRACT_TERMS_REVIEW_NOT_NEEDED} (standard terms);
+     *         {@code CONTRACT_TERMS_REVIEW_PENDING}; {@code CONTRACT_CREDIT_REVIEW_PENDING};
+     *         {@code CUSTOMER_OWNED_BY_OTHER_SALES} (strict mode)
+     */
+    ContractView submitForTermsReview(CurrentUser user, UUID orderId, long version);
+
+    /**
+     * QĐ-4: a Sales Manager approves the terms as written; the contract may now be sent. The note is optional. Not a
+     * Sales-owner step: any manager decides, whoever owns the customer - but not the one who drew the contract up or
+     * asked for the review (four eyes).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CONTRACT_TERMS_REVIEW_NOT_PENDING};
+     *         {@code CONTRACT_TERMS_REVIEW_SELF}
+     */
+    ContractView approveTerms(CurrentUser user, UUID orderId, long version, String note);
+
+    /**
+     * QĐ-4: a Sales Manager rejects the terms, with the reason; the draft goes back to Sales.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code CONTRACT_TERMS_REVIEW_NOT_PENDING};
+     *         {@code CONTRACT_TERMS_REVIEW_SELF}; {@code VALIDATION_FAILED} without a reason
+     */
+    ContractView rejectTerms(CurrentUser user, UUID orderId, long version, String reason);
+
+    /** QĐ-4: Sales takes the draft back from the Sales Manager to change it (the Sales owner's step). */
+    ContractView withdrawTermsReview(CurrentUser user, UUID orderId, long version);
+
+    /**
+     * Moves the day the customer should have signed by, while the contract is SENT: today or later, at most 60 days ahead.
+     * The Sales owner's step. It also forgives the wrong one-time codes counted against the revision, lifting
+     * {@code CONTRACT_OTP_LOCKED}.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code SALES_CONTRACT_STATUS_INVALID}; {@code VALIDATION_FAILED}
+     */
+    ContractView extendSignBy(CurrentUser user, UUID orderId, long version, LocalDate signBy);
+
+    /** The revisions of the live contract that were sent, oldest first, with what the customer asked for after each. */
+    List<RevisionView> revisions(UUID orderId);
+
+    /** A link to the PDF the live contract's revision was sent as. */
+    DownloadLink revisionDocument(UUID orderId, int revision);
+
+    /**
+     * The customer sends a contract they read back for changes, with a reason of 10 to 2000 characters: SENT → DRAFT as
+     * the next revision, the order back to DRAFT, the PDF sent kept as that revision's; the responsible Sales is told.
+     * Someone else's order, or a contract not sent, is 404.
+     *
+     * @param customerId who is asking, resolved from the sign-in; {@code userId} is their account
+     * @throws com.stockflow.common.error.BusinessException {@code SALES_CONTRACT_STATUS_INVALID} unless SENT (also when
+     *         the customer has signed already); {@code OPTIMISTIC_LOCK}; {@code VALIDATION_FAILED} for the reason
+     */
+    ContractView requestChanges(UUID customerId, UUID userId, UUID orderId, long version, String reason);
+
+    /** The customer's own order's contract revisions that were sent, with their change requests; no sender is named. */
+    List<RevisionView> customerRevisions(UUID customerId, UUID orderId);
+
+    /** A link to the PDF an earlier or the current revision was sent as, for the customer. */
+    DownloadLink customerRevisionDocument(UUID customerId, UUID orderId, int revision);
+
+    /**
+     * The contracts of every order the caller's data scope reaches, newest first (the back office's contract page): the
+     * same scope a single contract is read under.
+     */
+    com.stockflow.common.api.PageResponse<ContractRow> list(ContractQuery query);
+
+    /** How many contracts are in each status and what is waiting, for the tiles over the list; in scope as the list. */
+    ContractSummary summary();
+
+    /**
+     * The seam of the signing machinery, customer side: the customer signed - they proved who they are and agreed to the
+     * contract in the steps the caller took - so SENT → CUSTOMER_SIGNED. Joins the caller's transaction, so the proof
+     * (the code consumed, the evidence written) and the state change stand or fall together. The order is not touched: it
+     * still waits for the company (QĐ-1). The same order-then-contract lock as every change to a contract. Someone else's
+     * order, or a contract not sent, is 404.
+     *
+     * @param version the version the customer read
+     * @param signedAt when they signed - the time the evidence carries - or null for now; never after now
+     * @return the contract as the portal shows it
+     * @throws com.stockflow.common.error.BusinessException {@code CONTRACT_NOT_SIGNABLE};
+     *         {@code CONTRACT_SIGN_DEADLINE_PASSED}; {@code OPTIMISTIC_LOCK}
+     */
+    ContractView customerSigned(UUID customerId, UUID userId, UUID orderId, long version, Instant signedAt);
+
+    /**
+     * What the signing machinery reads of a contract, read-only: the contract's identity and revision, the PDF that was
+     * sent, who drew it up and sent it, and the signers it names (the seller's and buyer's own, else the legal
+     * representatives).
+     */
+    record SigningFacts(UUID contractId, String contractNumber, UUID orderId, String orderNumber, UUID customerId,
+                        int revision, long version, String status, String sentDocumentKey, LocalDate signBy,
+                        String sellerName, String buyerName, String sellerSignerName, String sellerSignerTitle,
+                        String buyerSignerName, String buyerSignerTitle) { }
+
+    /**
+     * The facts of the signed-in customer's own contract for one of their signing steps. Someone else's order, or a
+     * contract not sent, is 404.
+     *
+     * @param version         the version the customer read; null to skip the check
+     * @param requireSignable refuse a contract the customer may not sign now: not sent, or past its signing deadline
+     * @throws com.stockflow.common.error.BusinessException {@code CONTRACT_NOT_SIGNABLE},
+     *         {@code CONTRACT_SIGN_DEADLINE_PASSED}, {@code OPTIMISTIC_LOCK}
+     */
+    SigningFacts customerSigningFacts(UUID customerId, UUID orderId, Long version, boolean requireSignable);
+
+    /**
+     * The facts of any customer's contract for the company's signing steps, whatever the caller's data scope (the signer
+     * is a manager, as {@link #companySigned}): the customer has signed, and the caller is not the account that drew it
+     * up or sent it.
+     *
+     * @param version the version the signer read; null to skip the check
+     * @throws com.stockflow.common.error.BusinessException {@code SALES_CONTRACT_STATUS_INVALID},
+     *         {@code CONTRACT_SIGNER_IS_AUTHOR}, {@code OPTIMISTIC_LOCK}
+     */
+    SigningFacts companySigningFacts(CurrentUser user, UUID orderId, Long version);
+
+    /**
+     * The seam of the signing machinery, company side: the authorised signer signed after the customer, so
+     * CUSTOMER_SIGNED → SIGNED with the file that was signed ({@code signedFileKey} is already stored; the signed file's
+     * retention starts when this commits) and today as the day: the contract is in force and its order is placed exactly
+     * as when staff record a signed file ({@link #sign}) - installments opened, the credit check run, the order confirmed,
+     * waiting for the installment on signing, or held. Joins the caller's transaction. Any customer's contract: the
+     * company's signer is a manager, not the customer's salesperson.
+     *
+     * @param signedAt when the signature was made - the time the certificate page and the PDF signature carry - or null
+     *                 for now; never after now
+     * @throws com.stockflow.common.error.BusinessException {@code SALES_CONTRACT_STATUS_INVALID} unless the customer signed;
+     *         {@code CONTRACT_SIGNER_IS_AUTHOR} for the account that drew the contract up or sent it;
+     *         {@code OPTIMISTIC_LOCK}
+     */
+    ContractView companySigned(CurrentUser user, UUID orderId, long version, String signedFileKey,
+                               String signedFileName, Instant signedAt);
+
+    /** Where the browser uploads the signed file (FileCategory.DOCUMENT); the contract is SENT (as {@link #sign}). */
     UploadSlot beginSignedFileUpload(CurrentUser user, UUID orderId, UploadSlotRequest request);
 
     /**
      * Recorded signed with the signed file - sent with the request, or uploaded through
-     * {@link #beginSignedFileUpload} - and the day it was signed (14 §4.3 step 14, BR-14).
+     * {@link #beginSignedFileUpload} - and the day it was signed (14 §4.3 step 14, BR-14): a paper signed by both,
+     * SENT → SIGNED. Refused once the customer signed on the portal: the company then signs through
+     * {@link #companySigned}, under its own permission and four eyes.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code SALES_CONTRACT_STATUS_INVALID}, with
+     *         {@code details.reason} {@code USE_COMPANY_SIGNATURE} for a CUSTOMER_SIGNED contract
      */
     ContractView sign(CurrentUser user, UUID orderId, long version, IncomingFiles signedFile, LocalDate signedOn);
 

@@ -14,6 +14,7 @@ import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.ChangeCustomerStatusCommand;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerStatusEntry;
+import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.customer.api.ListCustomersQuery;
 import com.stockflow.customer.api.UpdateCustomerCommand;
 import com.stockflow.customer.internal.controller.dto.ChangeCustomerStatusRequest;
@@ -30,6 +31,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -132,8 +134,14 @@ class CustomerController {
         var found = customers.list(query);
         var columns = owners.columns(found.items().stream()
                 .map(com.stockflow.customer.api.CustomerSummary::customerId).toList());
-        return ApiResponse.ok(found.map(summary -> CustomerWebMapper.toMaskedResponse(summary,
-                columns.get(summary.customerId()))));
+        // The province is an address fact: only a caller who may read addresses is told it, so this list shows no more
+        // than GET /customers/{id}/addresses would (customer-addresses:READ).
+        Map<UUID, String> provinces = user.can(CustomerResources.ADDRESSES, Action.READ) && !found.items().isEmpty()
+                ? customers.defaultShippingProvinceNames(found.items().stream()
+                        .map(CustomerSummary::customerId).toList())
+                : Map.of();
+        return ApiResponse.ok(found.map(summary -> CustomerWebMapper.toListRow(summary,
+                columns.get(summary.customerId()), provinces.get(summary.customerId()))));
     }
 
     private static com.stockflow.customer.api.SalesOwnerState ownerState(String value) {

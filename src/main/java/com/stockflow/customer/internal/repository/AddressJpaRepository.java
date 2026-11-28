@@ -17,6 +17,11 @@ import java.util.UUID;
 interface AddressJpaRepository extends BaseJpaRepository<AddressJpaEntity> {
     List<AddressJpaEntity> findByCustomerIdOrderByCreatedAtAsc(UUID customerId);
 
+    /** {@code [customerId, provinceName]} of the default address of this type of each of these customers. */
+    @Query("select a.customerId, a.provinceName from AddressJpaEntity a "
+            + "where a.customerId in :ids and a.type = :type and a.defaultAddress = true")
+    List<Object[]> findDefaultProvinces(@Param("ids") java.util.Collection<UUID> ids, @Param("type") AddressType type);
+
     /**
      * A bulk update bypasses Hibernate, so any address already loaded keeps believing it is the
      * default and, being "unchanged", is never written back: the flag would be cleared in the

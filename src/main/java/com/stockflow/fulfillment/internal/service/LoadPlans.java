@@ -23,21 +23,28 @@ public interface LoadPlans {
      * A parcel as planning shows it: sizes in whole mm (measured cm rounded up), its place ({@code vehicleSeq}) or why
      * it has none ({@code unplacedReason}). {@code partName} is its SKU, {@code orderLineId} the order line it holds
      * (null when it holds none or several): the line the dispatcher ticks as filler cargo (RTM-LPGROUP). {@code fill}:
-     * filler cargo of a PRIORITY_FILL plan. {@code lpn}: the carton's LPN (kltn-docs 08 BR-02), the code the
-     * screens and the loading sheet show first; {@code labelCode} stays as the small secondary code (null if none).
+     * filler cargo of a PRIORITY_FILL plan. {@code productName}: what the SKU(s) of {@code partName} are called (the
+     * variant name, joined by " + " as the SKUs are); null when the parcel holds no order line or a name is unknown.
+     * {@code lpn}: the carton's LPN (kltn-docs 08 BR-02), the code the screens and the loading sheet show first;
+     * {@code labelCode} stays as the small secondary code (null if none).
      */
     record ParcelView(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String partName,
                       int lengthMm, int widthMm, int heightMm, BigDecimal weightKg, boolean rotatable,
-                      Integer vehicleSeq, String unplacedReason, UUID orderLineId, boolean fill, String lpn) { }
+                      Integer vehicleSeq, String unplacedReason, UUID orderLineId, boolean fill,
+                      String productName, String lpn) { }
 
     /**
      * A full-truckload shipment waiting for dispatch with the parcels no live plan holds (LP-5: chosen whole).
      * {@code packagesInOtherPlans} counts its parcels another plan holds (only after a plan left some behind).
-     * {@code sourceType} is always ORDER: transfers between warehouses were removed.
+     * {@code sourceType} is always ORDER: transfers between warehouses were removed. {@code customerName} is the
+     * customer's registered name and {@code deliveryProvinceName} the province of the order's delivery address, so a
+     * dispatcher tells the shipments apart without opening each order; both are what the delivery note of the same
+     * shipment already shows, and null when the order or its address is not known.
      */
     record CandidateShipment(UUID shipmentId, String code, UUID orderId, String orderNumber,
                              boolean allowPartialShipment, Instant readyAt, int packageCount, int packagesInOtherPlans,
-                             BigDecimal weightKg, long volumeMm3, List<ParcelView> packages, String sourceType) { }
+                             BigDecimal weightKg, long volumeMm3, List<ParcelView> packages, String sourceType,
+                             String customerName, String deliveryProvinceName) { }
 
     /**
      * {@code shipmentCount}: the shipments of the plan; {@code sourceType} is always ORDER. {@code warehouseCode} and

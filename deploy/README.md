@@ -65,10 +65,13 @@ logs a warning saying so) and **Elasticsearch** (unused by the code).
 points the application at it. One without the other fails: scanning on with no scanner refuses
 every upload. The first start downloads the signatures (a few minutes) before ClamAV is healthy.
 
-Requests run on **virtual threads** (`spring.threads.virtual.enabled` in `application.yml`, so the
-dev profile inherits it): there is no 200-thread Tomcat pool to size, and a request blocked on
-Postgres or S3 costs a few KB rather than a platform thread's stack. The database pool
-(`DB_POOL_MAX`) is therefore what bounds concurrent database work.
+Requests run on **platform threads** (Tomcat's pool of 200), not virtual threads:
+`spring.threads.virtual.enabled` is `false` in `application.yml` since 2026-11-28, when virtual threads pinned
+inside Jackson's synchronized serializer cache deadlocked the application on this 2-core machine (the comment there
+has the details). The database pool (`DB_POOL_MAX`) is still what bounds concurrent database work. To see where a
+hung application is stuck: `docker run --rm --pid=container:stockflow-app-1 --user 10001:10001
+eclipse-temurin:21-jdk jcmd 1 Thread.dump_to_file -format=text /tmp/threads.txt`, then `docker cp` the file out (the
+runtime image has no `jcmd`; this dump also lists virtual threads, which `kill -3` does not).
 
 E-mail (SCRUM-352): every e-mail - production order messages to producers, staff notices, the portal invitation, the
 customer order mail (placed, handed to the carrier, delivered, delivery failed, cancelled, part closed, returns) and
@@ -103,6 +106,14 @@ appended. Compose refuses a missing or empty value. Without it the application w
 `PORTAL_INVITATION_UNAVAILABLE` to every customer creation, and since self-registration is closed no customer could
 be created at all. Check after the deploy: Sales creates a test customer with an address you own and gets 201, and the
 invitation that arrives carries the portal link.
+Contract e-signing needs `CONTRACT_SIGNING_SECRET` in `/opt/stockflow/.env`: at least 32 characters, generated once with
+`openssl rand -base64 48` (64 characters). It seals the company's generated signing key in the database and hashes the
+customers' one-time signing codes. Compose refuses a missing or empty value, and the application itself refuses to start
+without it (or with a shorter one) in every profile but `local` and `test`: the server runs `dev`, and a default from the
+source code would let anyone who read the code unseal the key and check codes offline. Keep it with the database
+backups - changing it makes the stored key unreadable (the signer then fails rather than make a new key silently) and ends
+the codes in flight. `CONTRACT_SIGNING_KEYSTORE`, `CONTRACT_SIGNING_KEYSTORE_PASSWORD` and
+`CONTRACT_VERIFICATION_BASE_URL` stay optional.
 Bank transfer instructions (SCRUM-193): set `COMPANY_BANK_NAME`, `COMPANY_BANK_ACCOUNT_NUMBER` and
 `COMPANY_BANK_ACCOUNT_NAME` in `/opt/stockflow/.env` - the company account `GET /api/v1/orders/me/{orderId}/transfer-instructions`
 tells a customer to transfer to (the transfer content is the order number). They are not required by Compose: while any

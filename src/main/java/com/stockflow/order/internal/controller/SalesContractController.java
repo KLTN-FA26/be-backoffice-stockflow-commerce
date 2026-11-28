@@ -16,9 +16,12 @@ import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.storage.UploadSlot;
 import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.order.internal.controller.dto.SalesContractRequests;
+import com.stockflow.common.ratelimit.RateLimit;
+import com.stockflow.order.internal.service.ContractSigning;
 import com.stockflow.order.internal.service.SalesContracts;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -55,9 +58,11 @@ import java.util.UUID;
 class SalesContractController {
 
     private final SalesContracts contracts;
+    private final ContractSigning signing;
 
-    SalesContractController(SalesContracts contracts) {
+    SalesContractController(SalesContracts contracts, ContractSigning signing) {
         this.contracts = contracts;
+        this.signing = signing;
     }
 
     @GetMapping
@@ -96,7 +101,9 @@ class SalesContractController {
 
     @PutMapping
     @Operation(summary = "Edit a draft contract as read: free sample rounds; a delivery schedule or payment plan sent "
-            + "replaces the old one whole, one left out is kept")
+            + "replaces the old one whole, one left out is kept; likewise the special terms (blank clears), the "
+            + "penalty / tolerance / warranty overrides and the two signers. Any edit takes an approval of the terms "
+            + "back (it is asked for again when the terms still deviate)")
     @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
     public ApiResponse<SalesContracts.ContractView> edit(@PathVariable UUID orderId,
                                                          @Valid @RequestBody SalesContractRequests.Draft request,
@@ -136,6 +143,86 @@ class SalesContractController {
         return ApiResponse.ok(contracts.send(user, orderId, request.version()));
     }
 
+    @PostMapping("/terms-review")
+    @Operation(summary = "Put a draft whose terms deviate from the standard ones (special terms, or a penalty, tolerance "
+            + "or warranty other than the configured) in front of a Sales Manager (QĐ-4). It stays a DRAFT, locked "
+            + "against edits, and is not sent until approved. 409 CONTRACT_TERMS_REVIEW_NOT_NEEDED for a standard "
+            + "contract; 409 CONTRACT_TERMS_REVIEW_PENDING when it waits already")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
+    public ApiResponse<SalesContracts.ContractView> submitForTermsReview(@PathVariable UUID orderId,
+                                                                         @Valid @RequestBody
+                                                                         SalesContractRequests.Version request,
+                                                                         @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.submitForTermsReview(user, orderId, request.version()));
+    }
+
+    @PostMapping("/terms-review/approval")
+    @Operation(summary = "A Sales Manager approves the terms as written (QĐ-4); the contract may now be sent. The note is "
+            + "optional. Editing the draft afterwards takes the approval back. 409 CONTRACT_TERMS_REVIEW_NOT_PENDING")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_TERMS, action = Action.APPROVE)
+    public ApiResponse<SalesContracts.ContractView> approveTerms(@PathVariable UUID orderId,
+                                                                 @Valid @RequestBody
+                                                                 SalesContractRequests.TermsDecision request,
+                                                                 @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.approveTerms(user, orderId, request.version(), request.note()));
+    }
+
+    @PostMapping("/terms-review/rejection")
+    @Operation(summary = "A Sales Manager rejects the terms, with the reason (required, at most 500 characters): the draft "
+            + "goes back to Sales to change and send for review again. 409 CONTRACT_TERMS_REVIEW_NOT_PENDING")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_TERMS, action = Action.APPROVE)
+    public ApiResponse<SalesContracts.ContractView> rejectTerms(@PathVariable UUID orderId,
+                                                                @Valid @RequestBody
+                                                                SalesContractRequests.TermsDecision request,
+                                                                @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.rejectTerms(user, orderId, request.version(), request.note()));
+    }
+
+    @PostMapping("/terms-review/withdrawal")
+    @Operation(summary = "Take a draft waiting for a Sales Manager back, to change it (QĐ-4): terms review NONE. 409 "
+            + "CONTRACT_TERMS_REVIEW_NOT_PENDING when it waits for nothing")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
+    public ApiResponse<SalesContracts.ContractView> withdrawTermsReview(@PathVariable UUID orderId,
+                                                                        @Valid @RequestBody
+                                                                        SalesContractRequests.Version request,
+                                                                        @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.withdrawTermsReview(user, orderId, request.version()));
+    }
+
+    @PutMapping("/sign-by")
+    @Operation(summary = "Move the day the customer should have signed by while the contract is SENT: today or later, at "
+            + "most 60 days ahead. 409 SALES_CONTRACT_STATUS_INVALID otherwise")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
+    public ApiResponse<SalesContracts.ContractView> extendSignBy(@PathVariable UUID orderId,
+                                                                 @Valid @RequestBody SalesContractRequests.SignBy request,
+                                                                 @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.extendSignBy(user, orderId, request.version(), request.signBy()));
+    }
+
+    @GetMapping("/revisions")
+    @Operation(summary = "The revisions of the contract that were sent, oldest first: when, by whom, what the customer "
+            + "asked for after reading it, and whether the PDF is there")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.READ)
+    public ApiResponse<List<SalesContracts.RevisionView>> revisions(@PathVariable UUID orderId,
+                                                                    @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.revisions(orderId));
+    }
+
+    @GetMapping("/revisions/{revision}/document")
+    @Operation(summary = "A short-lived link to the PDF the revision was sent as")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.READ)
+    public ApiResponse<DownloadLink> revisionDocument(@PathVariable UUID orderId, @PathVariable int revision,
+                                                      @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.revisionDocument(orderId, revision));
+    }
+
     @PostMapping("/credit-review/withdrawal")
     @Operation(summary = "Take a contract waiting for accounting back, to change it (15 BR-11): creditReview NONE, "
             + "the review WITHDRAWN. 409 CONTRACT_CREDIT_REVIEW_NOT_PENDING when it waits for nothing")
@@ -160,8 +247,11 @@ class SalesContractController {
 
     @PostMapping(path = "/signature", consumes = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Record the contract signed (14 §4.3 step 14, BR-14): the signed file uploaded through "
-            + "/signed-file/uploads and the day it was signed, not before it was sent nor after today. Immutable from "
-            + "then on; the same uploadId again answers the same contract")
+            + "/signed-file/uploads and the day it was signed, not before it was sent nor after today: a paper signed by "
+            + "both, SENT only. A contract the customer signed electronically (CUSTOMER_SIGNED) is refused with 409 "
+            + "SALES_CONTRACT_STATUS_INVALID, details.reason USE_COMPANY_SIGNATURE: the company signs it with "
+            + "/company-signature or /company-signature/upload. Immutable from then on; the same uploadId again answers "
+            + "the same contract")
     @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.APPROVE)
     public ApiResponse<SalesContracts.ContractView> sign(@PathVariable UUID orderId,
                                                          @Valid @RequestBody SalesContractRequests.Signature request,
@@ -173,7 +263,7 @@ class SalesContractController {
 
     @PostMapping(path = "/signature", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Record the contract signed with the signed file sent here (multipart: file, version, "
-            + "signedOn)")
+            + "signedOn); SENT only, as the JSON form")
     @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.APPROVE)
     public ApiResponse<SalesContracts.ContractView> signWithFile(@PathVariable UUID orderId,
                                                                  @RequestPart("file") MultipartFile file,
@@ -189,6 +279,74 @@ class SalesContractController {
         } catch (IOException ex) {
             throw new StorageException("Could not read the multipart upload", ex);
         }
+    }
+
+    @GetMapping("/signatures")
+    @Operation(summary = "Who signed the contract's current revision and how: the customer (code, uploaded file or "
+            + "recorded by staff; the address it came from) and the company (the system's certificate, an uploaded file "
+            + "or recorded by staff), with what inspecting each file found, the SHA-256 and the verification code")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.READ)
+    public ApiResponse<SalesContracts.SignatureView> signatures(@PathVariable UUID orderId,
+                                                                @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(signing.signatures(orderId));
+    }
+
+    @GetMapping("/company-signature/identity")
+    @Operation(summary = "The certificate the company signs with, for the dialog that asks the signer to confirm: "
+            + "subject, issuer, serial, validity, and testCertificate while it is the system's own self-issued one")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_SIGNATURES, action = Action.APPROVE)
+    public ApiResponse<ContractSigning.CompanyCertificate> companyCertificate(@AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(signing.companyCertificate());
+    }
+
+    @PostMapping("/company-signature")
+    @Operation(summary = "Sign for the company with the system's certificate: CUSTOMER_SIGNED -> SIGNED today, the "
+            + "contract in force and its order placed as when staff record a signed file. The signer is the contract's own "
+            + "seller signer unless signerName / signerTitle say otherwise. 409 CONTRACT_SIGNER_IS_AUTHOR for the account "
+            + "that drew the contract up or sent it (four eyes); 409 SALES_CONTRACT_STATUS_INVALID unless the customer "
+            + "has signed")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_SIGNATURES, action = Action.APPROVE)
+    @RateLimit(limit = 10, perSeconds = 60, key = RateLimit.Key.USER, bucket = "contract-company-sign")
+    public ApiResponse<SalesContracts.ContractView> companySign(@PathVariable UUID orderId,
+                                                                @Valid @RequestBody
+                                                                SalesContractRequests.CompanySign request,
+                                                                @AuthenticatedUser CurrentUser user,
+                                                                HttpServletRequest http) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(signing.companySign(user, orderId, request.version(), request.signerName(),
+                request.signerTitle(), origin(http)));
+    }
+
+    @GetMapping("/company-signature/document")
+    @Operation(summary = "A short-lived link to the PDF to sign outside the system: the sent contract followed by its "
+            + "certificate page, made once and kept so the signed file that comes back is held against exactly it")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_SIGNATURES, action = Action.APPROVE)
+    public ApiResponse<DownloadLink> companyDocument(@PathVariable UUID orderId, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(signing.companyDocumentToSign(user, orderId));
+    }
+
+    @PostMapping(path = "/company-signature/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Sign for the company with the file that came back from signing the document outside "
+            + "(multipart: file, version, optional signerName / signerTitle): a digital signature that holds, over the "
+            + "whole of exactly that PDF. 422 CONTRACT_SIGNED_FILE_REJECTED (details.reason) for anything else, a scan "
+            + "included")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_SIGNATURES, action = Action.APPROVE)
+    @RateLimit(limit = 5, perSeconds = 60, key = RateLimit.Key.USER, bucket = "contract-company-sign-upload")
+    public ApiResponse<SalesContracts.ContractView> companySignWithFile(@PathVariable UUID orderId,
+                                                                        @RequestPart("file") MultipartFile file,
+                                                                        @RequestParam long version,
+                                                                        @RequestParam(required = false)
+                                                                        String signerName,
+                                                                        @RequestParam(required = false)
+                                                                        String signerTitle,
+                                                                        @AuthenticatedUser CurrentUser user,
+                                                                        HttpServletRequest http) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(signing.companySignWithFile(user, orderId, version, signerName, signerTitle,
+                SignedFileUploads.name(file), SignedFileUploads.read(file), origin(http)));
     }
 
     @PostMapping("/cancellation")
@@ -229,6 +387,10 @@ class SalesContractController {
         return ApiResponse.ok(contracts.signedFile(orderId));
     }
 
+    private static ContractSigning.Origin origin(HttpServletRequest request) {
+        return new ContractSigning.Origin(request.getRemoteAddr(), request.getHeader("User-Agent"));
+    }
+
     private static SalesContracts.Draft draft(SalesContractRequests.Draft request) {
         // A null element is passed on as null: the service names it with the rule it breaks, by field.
         return new SalesContracts.Draft(request.freeSampleRounds(),
@@ -243,6 +405,21 @@ class SalesContractController {
                         .map(i -> i == null ? null : new SalesContracts.Installment(i.name(), i.milestone(),
                                 i.amount(), i.percent(), i.dueDays(), i.deliveryBatchSeq()))
                         .toList(),
-                request.returnWindowDays());
+                request.returnWindowDays(), agreement(request));
+    }
+
+    /** Null when the request says nothing of it, so an edit keeps what the contract has. */
+    private static SalesContracts.AgreementInput agreement(SalesContractRequests.Draft request) {
+        if (request.specialTerms() == null && request.penaltyPercent() == null
+                && request.quantityTolerancePercent() == null && request.warrantyMonths() == null
+                && request.sellerSigner() == null && request.buyerSigner() == null) {
+            return null;
+        }
+        return new SalesContracts.AgreementInput(request.specialTerms(), request.penaltyPercent(),
+                request.quantityTolerancePercent(), request.warrantyMonths(),
+                request.sellerSigner() == null ? null : new SalesContracts.SellerSigner(request.sellerSigner().name(),
+                        request.sellerSigner().title(), request.sellerSigner().authorizationRef()),
+                request.buyerSigner() == null ? null : new SalesContracts.BuyerSigner(request.buyerSigner().name(),
+                        request.buyerSigner().title()));
     }
 }

@@ -207,6 +207,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         Set<UUID> heldElsewhere = heldElsewhereOrAwaitingUnload(sealed, loadPlanId);
         Map<UUID, LoadPlanParcels.Parcel> described = parcels.describe(sealed);
         Map<UUID, OrderSummary> orders = parcels.ordersOf(waiting);
+        Map<UUID, String> customerNames = parcels.customerNamesOf(orders.values());
         List<CandidateShipment> out = new ArrayList<>();
         for (ShipmentJpaEntity s : waiting) {
             List<LoadPlanParcels.Parcel> mine = described.values().stream()
@@ -228,7 +229,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             out.add(new CandidateShipment(s.getId(), s.getCode(), s.getOrderId(),
                     order == null ? null : order.orderNumber(), allowsPartial(order), s.getReadyAt(), free.size(),
                     mine.size() - free.size(), weight, volume,
-                    free.stream().map(p -> parcelView(p, null, null)).toList(), LoadPlan.SOURCE_ORDER));
+                    free.stream().map(p -> parcelView(p, null, null)).toList(), LoadPlan.SOURCE_ORDER,
+                    order == null ? null : customerNames.get(order.customerId()),
+                    order == null || order.shippingAddress() == null ? null : order.shippingAddress().provinceName()));
         }
         return out;
     }
@@ -1202,7 +1205,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         return new ParcelView(p.packageId(), p.row().getLabelCode(), p.row().getShipmentId(),
                 p.shipment() == null ? null : p.shipment().getCode(), p.partName(), c == null ? 0 : c.lengthMm(),
                 c == null ? 0 : c.widthMm(), c == null ? 0 : c.heightMm(), p.row().getWeightKg(), p.row().isRotatable(),
-                seq, unplacedReason, p.orderLineId(), fill, p.row().getLpn());
+                seq, unplacedReason, p.orderLineId(), fill, p.productName(), p.row().getLpn());
     }
 
     private PlanDetail detail(LoadPlanJpaEntity header, LoadPlan plan) {
