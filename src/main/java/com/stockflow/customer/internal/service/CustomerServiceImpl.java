@@ -158,6 +158,12 @@ class CustomerServiceImpl implements CustomerService {
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Map<UUID, String> defaultShippingProvinceNames(java.util.Collection<UUID> customerIds) {
+        return search.defaultShippingProvinceNames(customerIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public java.util.Map<UUID, com.stockflow.customer.api.CustomerLabel> labels(
             java.util.Collection<UUID> customerIds) {
         return search.labels(customerIds);

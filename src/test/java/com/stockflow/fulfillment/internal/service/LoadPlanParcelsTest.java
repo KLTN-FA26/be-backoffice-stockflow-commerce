@@ -1,6 +1,7 @@
 package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.customer.api.CustomerService;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
@@ -11,6 +12,7 @@ import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.product.api.ProductService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -40,7 +42,10 @@ class LoadPlanParcelsTest {
     private final ParcelContents lines = mock(ParcelContents.class);
     private final ShipmentJpaRepository shipments = mock(ShipmentJpaRepository.class);
     private final OrderService orders = mock(OrderService.class);
-    private final LoadPlanParcels parcels = new LoadPlanParcels(packages, lines, shipments, orders);
+    private final CustomerService customers = mock(CustomerService.class);
+    private final ProductService products = mock(ProductService.class);
+    private final LoadPlanParcels parcels = new LoadPlanParcels(packages, lines, shipments, orders, customers,
+            products);
 
     @Test
     @DisplayName("centimetres with two decimals become whole millimetres, rounded up and never under-stated")
@@ -162,6 +167,58 @@ class LoadPlanParcelsTest {
         assertThat(described.get(single.getId()).order()).isSameAs(order);
         assertThat(described.get(single.getId()).row().getShipmentId()).isEqualTo(shipmentId);
         assertThat(described.get(single.getId()).plannable()).isTrue();
+    }
+
+    @Test
+    @DisplayName("a parcel's product name follows its part name: the variant names in the same order, joined the same "
+            + "way, and none when the parcel holds no line or the name of one of its SKUs is not known")
+    void productNames() {
+        UUID shipmentId = UUID.randomUUID();
+        OrderSummary.LineSummary a = FulfillmentFixtures.stockLine("SKU-B");
+        OrderSummary.LineSummary b = FulfillmentFixtures.stockLine("SKU-A");
+        OrderSummary.LineSummary c = FulfillmentFixtures.stockLine("SKU-C");
+        OrderSummary order = FulfillmentFixtures.orderWith(UUID.randomUUID(), OrderStatus.PACKED, List.of(a, b, c), null);
+        ShipmentJpaEntity shipment = ShipmentJpaEntity.of(com.stockflow.fulfillment.internal.domain.Shipment.ready(
+                shipmentId, "SO-1-S1", order.orderId(), null, FulfillmentFixtures.WAREHOUSE, UUID.randomUUID(),
+                4, null, UUID.randomUUID(), NOW));
+        PackageJpaEntity mixed = parcel(shipmentId, 1, "40", "40", "30", "5");
+        PackageJpaEntity single = parcel(shipmentId, 2, "40", "40", "30", "5");
+        PackageJpaEntity empty = parcel(shipmentId, 3, "40", "40", "30", "5");
+        PackageJpaEntity unnamed = parcel(shipmentId, 4, "40", "40", "30", "5");
+        when(shipments.findAllById(any())).thenReturn(List.of(shipment));
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(lines.of(any())).thenReturn(List.of(
+                new ParcelContents.Line(mixed.getId(), a.lineId(), 1),
+                new ParcelContents.Line(mixed.getId(), b.lineId(), 1),
+                new ParcelContents.Line(single.getId(), a.lineId(), 2),
+                new ParcelContents.Line(unnamed.getId(), c.lineId(), 1)));
+        when(products.variantNamesOf(any())).thenReturn(Map.of("SKU-A", "Ly giấy 12oz", "SKU-B", "Hộp bánh kraft"));
+
+        Map<UUID, LoadPlanParcels.Parcel> described = parcels.describe(List.of(mixed, single, empty, unnamed));
+
+        assertThat(described.get(mixed.getId()).productName()).isEqualTo("Ly giấy 12oz + Hộp bánh kraft");
+        assertThat(described.get(single.getId()).productName()).isEqualTo("Hộp bánh kraft");
+        assertThat(described.get(empty.getId()).productName()).isNull();
+        assertThat(described.get(unnamed.getId()).productName()).isNull();
+        assertThat(described.get(unnamed.getId()).partName()).isEqualTo("SKU-C");
+        // one lookup for every SKU the parcels hold, none for a parcel that holds nothing
+        org.mockito.ArgumentCaptor<java.util.Collection<String>> asked = org.mockito.ArgumentCaptor
+                .forClass(java.util.Collection.class);
+        verify(products, times(1)).variantNamesOf(asked.capture());
+        assertThat(asked.getValue()).containsExactlyInAnyOrder("SKU-A", "SKU-B", "SKU-C");
+    }
+
+    @Test
+    @DisplayName("customer names are asked once for the distinct customers of the orders; a missing record is absent")
+    void customerNames() {
+        OrderSummary first = FulfillmentFixtures.order(UUID.randomUUID(), null);
+        OrderSummary second = FulfillmentFixtures.order(UUID.randomUUID(), null);
+        when(customers.fullNames(any())).thenReturn(Map.of(first.customerId(), "Công ty TNHH Trà Sữa Mây"));
+
+        Map<UUID, String> names = parcels.customerNamesOf(List.of(first, second));
+
+        assertThat(names).containsOnlyKeys(first.customerId()).containsValue("Công ty TNHH Trà Sữa Mây");
+        verify(customers, times(1)).fullNames(any());
     }
 
     @Test

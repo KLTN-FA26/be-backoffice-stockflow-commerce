@@ -529,6 +529,8 @@ class ShippingWarehouseIntegrationTest {
         assertThat(coverage.orderId()).isEqualTo(orderId);
         assertThat(coverage.warehouseId()).isEqualTo(a.id());
         assertThat(coverage.warehouseCode()).isEqualTo(a.code());
+        assertThat(coverage.warehouseName()).as("the name beside the code, for the order card")
+                .isEqualTo("Warehouse " + a.code());
         assertThat(coverage.fullyHeld()).isTrue();
         assertThat(coverage.lines()).containsExactly(new LineCoverage(line, sku.sku(), CARTONS, CARTONS, 0));
         assertThat(coverage.batches()).singleElement().satisfies(batch -> {

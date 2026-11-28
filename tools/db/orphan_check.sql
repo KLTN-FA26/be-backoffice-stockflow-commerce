@@ -197,7 +197,8 @@ WITH reviewed(col, why) AS (
     ('assistant.tool_call.call_id', 'the language model''s own id for one call in its turn, pairing the call with its result'),
     ('payment.bank_transaction.provider_transaction_id', 'an external system''s id: SePay''s, for one transfer'),
     ('payment.bank_transaction.account_number', 'the bank account SePay reported, kept verbatim'),
-    ('payment.bank_transaction.payment_code', 'what SePay read out of the transfer''s content, kept verbatim')
+    ('payment.bank_transaction.payment_code', 'what SePay read out of the transfer''s content, kept verbatim'),
+    ('ordering.sales_contract.verification_code', 'the contract''s own public lookup code (unique, printed on its certificate page)')
 ), reviewed_pattern(pat, why) AS (
     VALUES
     ('%reason_code', 'enumeration code, checked by a CHECK'),    ('%province_code', 'address code'),    ('%ward_code', 'address code'),    ('%postal_code', 'address code'),    ('%country_code', 'address code'),    ('carrier_city_code', 'the carrier''s city code'),    ('%tax_code', 'tax identifier of a party'),    ('lot_number', 'copy of the lot, which the row reaches by a keyed lot id or the lot table itself'),    ('%waybill_no', 'the carrier''s waybill number, free text'),    ('tracking_number', 'the carrier''s tracking number'),    ('scanned_code', 'what a scanner read, kept verbatim'),    ('scanned_location_code', 'what a scanner read, kept verbatim'),    ('label_code', 'the carton''s own label'),    ('vehicle_code', 'snapshot of the vehicle type''s code'),    ('service_code', 'the carrier''s own service vocabulary')

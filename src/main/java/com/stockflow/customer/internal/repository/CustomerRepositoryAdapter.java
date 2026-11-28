@@ -43,6 +43,20 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     }
 
     @Override
+    public java.util.Map<UUID, String> defaultShippingProvinceNames(java.util.Collection<UUID> customerIds) {
+        java.util.Set<UUID> ids = customerIds == null ? java.util.Set.of() : customerIds.stream()
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        if (ids.isEmpty()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<UUID, String> provinces = new java.util.HashMap<>();
+        for (Object[] row : addresses.findDefaultProvinces(ids, AddressType.SHIPPING)) {
+            provinces.put((UUID) row[0], (String) row[1]);
+        }
+        return provinces;
+    }
+
+    @Override
     public java.util.Map<UUID, com.stockflow.customer.api.CustomerLabel> labels(
             java.util.Collection<UUID> customerIds) {
         java.util.Set<UUID> ids = customerIds == null ? java.util.Set.of() : customerIds.stream()

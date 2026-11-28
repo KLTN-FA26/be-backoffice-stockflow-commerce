@@ -388,6 +388,17 @@ public final class Order extends AggregateRoot {
     }
 
     /**
+     * The customer sent its contract back asking for changes (contract e-signing plan): PENDING_CONTRACT → DRAFT so Sales
+     * can draw the next revision, the history saying {@code CONTRACT_CHANGES_REQUESTED} - without the customer's text,
+     * which is on the contract's revision. Anywhere else the order is left as it is.
+     */
+    public void reopenContract(UUID by, Instant at) {
+        if (status == OrderStatus.PENDING_CONTRACT) {
+            transitionTo(OrderStatus.DRAFT, by, "CONTRACT_CHANGES_REQUESTED", at);
+        }
+    }
+
+    /**
      * Its contract signed (14 §4.3 step 15, BR-15; 15 BR-07, BR-11): held for credit when what it pays after delivery
      * does not fit - the customer is overdue or over the limit, which only accounting may then decide; waiting for an
      * installment on signing when there is one; confirmed otherwise. From here it is placed: {@code OrderPlaced}, which

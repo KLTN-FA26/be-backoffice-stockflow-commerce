@@ -24,6 +24,11 @@ class WarehouseDirectoryAdapter implements WarehouseDirectory {
     }
 
     @Override
+    public Optional<Warehouse> find(UUID warehouseId) {
+        return warehouses.findWarehouse(warehouseId).map(w -> new Warehouse(w.id(), w.prefix(), w.name()));
+    }
+
+    @Override
     public java.util.List<Warehouse> active() {
         return warehouses.activeWarehouses().stream().map(w -> new Warehouse(w.id(), w.prefix(), w.name())).toList();
     }
