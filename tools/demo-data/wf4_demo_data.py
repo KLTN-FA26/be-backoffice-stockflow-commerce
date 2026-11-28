@@ -573,6 +573,7 @@ class DemoOrder:
         self.quote = None
         self.order = None
         self.order_id = None
+        self.drawn_for_shortage = 0
 
     # ---- lookups
     def sales(self):
@@ -801,26 +802,38 @@ class DemoOrder:
             return None
         orders = self.run.actor("coordinator").data("/production-orders", {"salesOrderId": self.order_id, "size": 50})["items"]
         live = [p for p in orders if p["status"] not in ("CANCELLED", "CLOSED")]
-        if not live:
-            return "draw_production_order", "%d carton(s) short" % sum(l["shortCartons"] for l in coverage["lines"])
-        po = live[0]
-        self.po = po
-        if po["status"] == "DRAFT":
-            return "send_production_order", po["code"]
-        if po["status"] == "SAMPLE_PENDING":
-            raise Blocked("production order %s waits for a print sample approval" % po["code"])
         warehouse = self.run.actor("warehouse")
-        receipts = warehouse.data("/goods-receipts", {"productionOrderId": po["id"], "size": 50})["items"]
-        if any(r["status"] == "DRAFT" for r in receipts):
-            return "receive_goods", "finish the draft receipt"
-        for r in receipts:
-            if r["status"] == "IN_PUTAWAY" and self.open_putaway_tasks(r["id"]):
-                return "put_away", r["number"]
-        remaining = self.remaining_cartons(po)
-        if remaining > 0 and po["status"] in ("SENT", "ACCEPTED", "IN_PRODUCTION", "PARTIALLY_RECEIVED"):
-            return "receive_goods", "%d carton(s) of %s" % (remaining, po["code"])
-        raise Blocked("production order %s is %s but the order is still short; check it by hand" % (po["code"],
-                                                                                                  po["status"]))
+        unfinished = []         # a production order still to send or to receive
+        for po in live:
+            if po["status"] == "SAMPLE_PENDING":
+                raise Blocked("production order %s waits for a print sample approval" % po["code"])
+            self.po = po
+            if po["status"] == "DRAFT":
+                return "send_production_order", po["code"]
+            receipts = warehouse.data("/goods-receipts", {"productionOrderId": po["id"], "size": 50})["items"]
+            if any(r["status"] == "DRAFT" for r in receipts):
+                return "receive_goods", "finish the draft receipt"
+            for r in receipts:
+                if r["status"] == "IN_PUTAWAY" and self.open_putaway_tasks(r["id"]):
+                    return "put_away", r["number"]
+            if self.remaining_cartons(po) > 0:
+                if po["status"] in ("SENT", "ACCEPTED", "IN_PRODUCTION", "PARTIALLY_RECEIVED"):
+                    unfinished.append(po)
+                else:
+                    raise Blocked("production order %s is %s with cartons still to come; check it by hand"
+                                  % (po["code"], po["status"]))
+        if unfinished:
+            self.po = unfinished[0]
+            return "receive_goods", "%d carton(s) of %s" % (self.remaining_cartons(self.po), self.po["code"])
+        # Every production order of this order is received and put away, and the order is still short: the cartons
+        # went to older orders short of the same SKU first (17 sec. 4.2 step 3, oldest first). 17 sec. 4.3 step 6: the
+        # coordinator draws up another one for the batch; the server fills it with exactly what the batch still lacks.
+        short = sum(l["shortCartons"] for l in coverage["lines"])
+        if self.drawn_for_shortage >= 3:
+            raise Blocked("still %d carton(s) short after %d extra production orders; check it by hand"
+                          % (short, self.drawn_for_shortage))
+        return "draw_production_order", "%d carton(s) still short%s" % (
+            short, " (the cartons went to older orders first)" if live else "")
 
     def enough_without_production(self, options, wh):
         try:
@@ -941,6 +954,8 @@ class DemoOrder:
         self.sales().call("PUT", "/orders/%s/shipping-warehouse" % self.order_id, {"warehouseId": wh["id"]})
 
     def do_draw_production_order(self):
+        if self.po_exists():
+            self.drawn_for_shortage += 1
         producers = self.run.actor("coordinator").data("/producers", {"size": 100})["items"]
         active = [p for p in producers if p["status"] == "ACTIVE"]
         if not active:
@@ -948,6 +963,11 @@ class DemoOrder:
         coordinator = self.run.actor("coordinator")
         coordinator.call("POST", "/production-orders", {"salesOrderId": self.order_id, "deliveryBatchSeq": 1,
                                                         "producerId": active[0]["id"]})
+
+    def po_exists(self):
+        """True when this order already had a production order (so this one is the extra one for a shortfall)."""
+        return bool(self.run.actor("coordinator").data("/production-orders", {"salesOrderId": self.order_id,
+                                                                              "size": 50})["items"])
 
     def do_send_production_order(self):
         self.run.actor("coordinator").call("POST", "/production-orders/%s/sending" % self.po["id"],
@@ -1005,8 +1025,19 @@ class DemoOrder:
                 warehouse.call("POST", "/putaway-tasks/%s/confirmations" % task["id"],
                                {"locationCode": task["suggestions"][0]["locationCode"], "lpn": task["lpn"]})
         # holding what arrived is done by an event: wait until the order is covered
-        self.wait("the order's stock to be held", lambda: self.sales().data(
-            "/orders/%s/stock-coverage" % self.order_id)["fullyHeld"])
+        # (older orders short of the same SKU are served first: when the held count stops moving and the order is still
+        # short, go on - the state machine then draws up the production order for the rest)
+        seen = {"held": None, "since": time.time()}
+
+        def held_or_settled():
+            coverage = self.sales().data("/orders/%s/stock-coverage" % self.order_id)
+            if coverage["fullyHeld"]:
+                return True
+            held = sum(l["heldCartons"] for l in coverage["lines"])
+            if held != seen["held"]:
+                seen["held"], seen["since"] = held, time.time()
+            return time.time() - seen["since"] >= 14
+        self.wait("the order's stock to be held", held_or_settled)
 
     def wait(self, what, check, timeout=90):
         end = time.time() + timeout

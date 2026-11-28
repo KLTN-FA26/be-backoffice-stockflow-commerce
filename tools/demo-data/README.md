@@ -132,4 +132,8 @@ Again on 28/11 (`develop` 5ce4a59f, local stack): a quote priced outside the 14 
 now approves it (`SF_DEMO_USER` or `--actor salesmanager=truongkd`) instead of stopping at `QUOTE_PRICE_REVIEW_PENDING`;
 the quote, contract and payment card go to the customer's Sales owner, and a conversation left with another account
 (e.g. one opened before the customer had an owner) is handed over to them. Two orders that need the same SKU at the same
-time compete for the cartons of a production order (oldest order first): finish or cancel the earlier one first.
+time compete for the cartons of a production order (oldest order first, 17 sec. 4.2 step 3): when the new order is
+still short after its production order was received and put away, the script draws up another production order for the batch
+(the server fills it with exactly what the batch still lacks, 17 sec. 4.3 step 6; same producer choice, receipt at the shipping
+warehouse), receives it like the first one and continues; at most 3 extra ones per run, then the order is reported BLOCKED.
+It looks first, so a re-run does not draw another one while a production order is still to be received.
