@@ -93,7 +93,11 @@ public class LoadingSheetService {
         Map<UUID, String> orderOfShipment = new HashMap<>();
         plan.shipments().forEach(s -> orderOfShipment.put(s.shipmentId(), s.orderNumber()));
         Map<String, String> orderByRef = new HashMap<>();
+        Map<String, String> lpnByRef = new HashMap<>();
         for (ParcelView parcel : plan.packages()) {
+            if (parcel.lpn() != null) {
+                lpnByRef.put(parcel.packageId().toString(), parcel.lpn());
+            }
             String order = orderOfShipment.get(parcel.shipmentId());
             if (order != null) {
                 orderByRef.put(parcel.packageId().toString(), order);
@@ -106,7 +110,8 @@ public class LoadingSheetService {
                 load.map(DispatchLoadJpaEntity::getWaybillNo).orElse(null),
                 load.map(DispatchLoadJpaEntity::getVehiclePlate).orElse(null),
                 load.map(DispatchLoadJpaEntity::getDriverName).orElse(null),
-                load.map(DispatchLoadJpaEntity::getDriverPhone).orElse(null), layout, orderByRef, clock.instant());
+                load.map(DispatchLoadJpaEntity::getDriverPhone).orElse(null), layout, orderByRef, lpnByRef,
+                clock.instant());
         return new Pdf("loading-sheet-%s-vehicle%d.pdf".formatted(plan.code(), seq), document.render(facts));
     }
 }

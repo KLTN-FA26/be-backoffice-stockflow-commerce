@@ -1202,7 +1202,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         return new ParcelView(p.packageId(), p.row().getLabelCode(), p.row().getShipmentId(),
                 p.shipment() == null ? null : p.shipment().getCode(), p.partName(), c == null ? 0 : c.lengthMm(),
                 c == null ? 0 : c.widthMm(), c == null ? 0 : c.heightMm(), p.row().getWeightKg(), p.row().isRotatable(),
-                seq, unplacedReason, p.orderLineId(), fill);
+                seq, unplacedReason, p.orderLineId(), fill, p.row().getLpn());
     }
 
     private PlanDetail detail(LoadPlanJpaEntity header, LoadPlan plan) {

@@ -70,11 +70,20 @@ class LoadingSheetDocument {
      * null.
      *
      * @param orderByRef  the order number of each carton, by the layout box's {@code ref}
+     * @param lpnByRef    the LPN of each carton, by the same ref; the sheet shows it first, the label code under it
      * @param loadCode    the vehicle's dispatch load; null while the plan is not confirmed
      */
     record Facts(String planCode, String vehicleType, String warehouse, String loadCode,
                  String carrier, String waybill, String plate, String driver, String driverPhone, Layout layout,
-                 Map<String, String> orderByRef, Instant printedAt) {
+                 Map<String, String> orderByRef, Map<String, String> lpnByRef, Instant printedAt) {
+
+        /** Without LPNs: the carton list then shows the label code only. */
+        Facts(String planCode, String vehicleType, String warehouse, String loadCode, String carrier, String waybill,
+              String plate, String driver, String driverPhone, Layout layout, Map<String, String> orderByRef,
+              Instant printedAt) {
+            this(planCode, vehicleType, warehouse, loadCode, carrier, waybill, plate, driver, driverPhone, layout,
+                    orderByRef, Map.of(), printedAt);
+        }
     }
 
     private static final Locale VI = Locale.forLanguageTag("vi");
@@ -393,7 +402,10 @@ class LoadingSheetDocument {
                     ? t.getString("loading-sheet.pdf.orientation.asIs")
                     : t.getString("loading-sheet.pdf.orientation.turned").formatted(n.cm(box.dMm()), n.cm(box.wMm()),
                             n.cm(box.hMm()));
-            rows.add(List.of(Cell.of(String.valueOf(box.loadSequence())), Cell.bold(box.label()),
+            String lpn = facts.lpnByRef().get(box.ref());
+            Cell code = lpn == null || lpn.isBlank() ? Cell.bold(box.label())
+                    : Cell.bold(lpn).details(List.of(box.label()));
+            rows.add(List.of(Cell.of(String.valueOf(box.loadSequence())), code,
                     Cell.of(facts.orderByRef().getOrDefault(box.ref(), "")), Cell.of(box.partName()),
                     Cell.of("%s×%s×%s".formatted(n.cm(box.origMm().l()), n.cm(box.origMm().w()),
                             n.cm(box.origMm().h()))),

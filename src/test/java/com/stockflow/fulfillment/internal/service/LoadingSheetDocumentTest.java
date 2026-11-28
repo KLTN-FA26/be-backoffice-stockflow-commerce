@@ -121,6 +121,20 @@ class LoadingSheetDocumentTest {
     }
 
     @Test
+    @DisplayName("WF4-F5: the carton list leads with the LPN and prints the label code under it (kltn-docs 08 BR-02)")
+    void lpnLeadsLabelCodeSmall() throws Exception {
+        Layout layout = truck(2);
+        Map<String, String> lpns = new HashMap<>();
+        for (Layout.Box box : layout.boxes()) {
+            lpns.put(box.ref(), "LPN-X-" + box.loadSequence());
+        }
+        LoadingSheetDocument.Facts facts = new LoadingSheetDocument.Facts("LP-1", null, null, null, null, null, null,
+                null, null, layout, orders(layout), lpns, PRINTED);
+        String text = text(document.render(facts));
+        assertThat(text).contains("LPN-X-1", "LPN-X-2", layout.boxes().get(0).label());
+    }
+
+    @Test
     @DisplayName("a carton lying other than as measured says Xoay with its placed D×R×C")
     void turnedCartons() throws Exception {
         // The 7th carton (index 6) is turned: measured 600x400x300 placed 400 across x 300 up x 600 along as WLH.
