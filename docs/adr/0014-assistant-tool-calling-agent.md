@@ -289,6 +289,15 @@ Những gì đổi theo nghiệp vụ mới ([ADR-0010](0010-rescope-b2b-printed
 
 Mục "Bối cảnh" và các sửa đổi trước giữ nguyên, như trạng thái lúc quyết.
 
+## Sửa đổi ngày 28/11/2026: request không còn chạy trên virtual thread
+
+- **Thay cho "Virtual thread đang bật"** (mục "Vòng lặp chạy trên thread của request"): `spring.threads.virtual.enabled`
+  tắt từ 28/11/2026. Trên Java 21, virtual thread đứng trong khối `synchronized` ghim luồng mang nó; VPS 2 nhân chỉ có
+  2–3 luồng mang, và ba request cùng dựng serializer của Jackson đã làm ứng dụng khoá chết (ghi chú trong
+  `application.yml`). Request chạy trên pool thread của Tomcat (200). Một câu hỏi cho trợ lý giữ một thread đó trong vài
+  giây, chấp nhận được ở quy mô này. `ParallelTools`, `AssistantStreams` và phần chép file vẫn tự tạo virtual thread
+  riêng, không phụ thuộc cài đặt này.
+
 ## Hệ quả
 
 - Không module nào khác phải đổi. Ngoại lệ là các method `api` được thêm khi một use case cần dữ liệu
