@@ -22,8 +22,12 @@ import java.util.UUID;
  *                  2026-11-23), zero otherwise. Payment works it out; the order keeps it from here - on the shipment,
  *                  or on the closure - so that invoicing, which cannot read payment, invoices the fee less the sum of
  *                  what was waived from the one figure rather than a second copy of the rule. Zero for the other kinds
+ * @param feeBearer who bears the fee entered (D46, D50); null when none was
+ * @param feeBorneByCompany what the company bears when {@code feeBearer} is COMPANY - the cost for the accountant,
+ *                  "Phí do công ty chịu"; zero otherwise. {@code fee} is what the customer is charged and is zero then
  */
 public record OrderSettlementResult(UUID settlementId, String kind, BigDecimal collected, BigDecimal reduced,
                                     BigDecimal surplus, BigDecimal fee, BigDecimal feeCovered, BigDecimal refundable,
-                                    BigDecimal feeOwed, UUID feeItemId, String currency, BigDecimal shippingFeeWaived) {
+                                    BigDecimal feeOwed, UUID feeItemId, String currency, BigDecimal shippingFeeWaived,
+                                    FeeBearer feeBearer, BigDecimal feeBorneByCompany) {
 }

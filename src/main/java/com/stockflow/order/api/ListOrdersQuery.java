@@ -17,6 +17,8 @@ import java.util.UUID;
  * @param warehouseIds null: every order; otherwise only orders shipping from (or released to) one of these warehouses,
  *                   and none at all when it is empty - the list of a caller limited to warehouses (team plan 5-7 review
  *                   M1: the warehouse manager reads the orders of their warehouses). Empty never means "all"
+ * @param feeBearer  D50: only orders whose cancellation or closure of the rest kept a fee borne by this side - the
+ *                   accountant filters {@code COMPANY} to find "Phí do công ty chịu"; null: every order
  */
 public record ListOrdersQuery(
         int page,
@@ -27,12 +29,19 @@ public record ListOrdersQuery(
         LocalDate placedFrom,
         LocalDate placedTo,
         String sort,
-        Set<UUID> warehouseIds
+        Set<UUID> warehouseIds,
+        CancellationFeeBearer feeBearer
 ) {
 
     public ListOrdersQuery {
         statuses = statuses == null ? List.of() : List.copyOf(statuses);
         warehouseIds = warehouseIds == null ? null : Set.copyOf(warehouseIds);
+    }
+
+    /** Without the fee-bearer filter. */
+    public ListOrdersQuery(int page, int size, String search, List<OrderStatus> statuses, UUID customerId,
+                           LocalDate placedFrom, LocalDate placedTo, String sort, Set<UUID> warehouseIds) {
+        this(page, size, search, statuses, customerId, placedFrom, placedTo, sort, warehouseIds, null);
     }
 
     /** Every order the other filters match: no warehouse limit. */

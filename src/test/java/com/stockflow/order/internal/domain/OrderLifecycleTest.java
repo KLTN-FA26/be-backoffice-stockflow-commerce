@@ -775,7 +775,7 @@ class OrderLifecycleTest {
         @DisplayName("an order nothing came back of keeps no fee on its closure before printing")
         void aFeeOnTheClosureOfGoodsThatCameBack() {
             var fee = new com.stockflow.order.api.CancellationFee(new java.math.BigDecimal("50000"), "Hàng đã in",
-                    "Theo điều khoản hợp đồng");
+                    "Theo điều khoản hợp đồng", com.stockflow.order.api.CancellationFeeBearer.CUSTOMER);
             Order untouched = picking();
             untouched.recordHandover(handover(S1, cups(untouched), 6));
             assertThat(code(catchThrowable(() -> untouched.closeRemainder(CancellationReasonCode.OUT_OF_STOCK, null,

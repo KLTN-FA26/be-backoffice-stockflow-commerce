@@ -139,7 +139,9 @@ class InstallmentReceivablesApiIntegrationTest {
                 "UPDATE ordering.customer_order SET printing_started_at = NOW() WHERE id = ?", signed.orderId()));
         tx.execute(s -> payments.settleRemainderClosure(new SettleRemainderClosureCommand(signed.orderId(),
                 Identifiers.newId(), new BigDecimal("300000"), new BigDecimal("200000"), "Printed, never shipped",
-                "100 cups printed", accountant, Instant.now())));
+                "100 cups printed", accountant, Instant.now(), null,
+                com.stockflow.payment.api.SettleShipmentReturnCommand.ShippingFee.NONE, null,
+                com.stockflow.payment.api.FeeBearer.CUSTOMER)));
         UUID fee = jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ? AND milestone = "
                 + "'CANCELLATION_FEE'", UUID.class, signed.orderId());
         orders.pay(customer, signed.seq(1), new BigDecimal("1000"));

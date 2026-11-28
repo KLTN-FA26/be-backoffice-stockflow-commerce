@@ -12,17 +12,33 @@ import java.util.UUID;
  * @param cancelledBy     the member of staff deciding
  * @param agreedFee       instead of a percentage, the amount agreed with the customer (decision Q2); null
  *                        for none
+ * @param feeBearer       who bears the fee, whichever form it takes (D46, D50): required when {@code retainedPercent}
+ *                        or {@code agreedFee} keeps something, null when nothing is kept. An agreed fee carries its
+ *                        own bearer ({@link CancellationFee#bearer()}); leave this null then, or equal to it - it is
+ *                        what a share, which has no object of its own, is given
  */
 public record CancelOrderCommand(CancellationReasonCode reasonCode, String note, BigDecimal retainedPercent,
-                                 UUID cancelledBy, CancellationFee agreedFee) {
+                                 UUID cancelledBy, CancellationFee agreedFee, CancellationFeeBearer feeBearer) {
 
     public CancelOrderCommand {
         if (reasonCode == null) throw new IllegalArgumentException("reasonCode is required");
+        if (agreedFee != null) {
+            if (feeBearer != null && feeBearer != agreedFee.bearer()) {
+                throw new IllegalArgumentException("The bearer of an agreed fee is the fee's own");
+            }
+            feeBearer = agreedFee.bearer();
+        }
+    }
+
+    /** With an agreed fee (which names its bearer) or none; a share needs the form with {@code feeBearer}. */
+    public CancelOrderCommand(CancellationReasonCode reasonCode, String note, BigDecimal retainedPercent,
+                              UUID cancelledBy, CancellationFee agreedFee) {
+        this(reasonCode, note, retainedPercent, cancelledBy, agreedFee, null);
     }
 
     public CancelOrderCommand(CancellationReasonCode reasonCode, String note, BigDecimal retainedPercent,
                               UUID cancelledBy) {
-        this(reasonCode, note, retainedPercent, cancelledBy, null);
+        this(reasonCode, note, retainedPercent, cancelledBy, null, null);
     }
 
     /**

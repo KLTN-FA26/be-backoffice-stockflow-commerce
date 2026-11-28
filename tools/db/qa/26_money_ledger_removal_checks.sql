@@ -76,7 +76,7 @@ SELECT pg_temp.expect_ok('MR10 cancelled with a fee and what was retained, whate
     UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason = 'x',
            cancellation_reason_code = 'CUSTOMER_REQUEST', cancellation_fee_reason = 'Printing done',
            cancellation_fee_detail = '4 cups', cancellation_fee_amount = 200, cancellation_retained_amount = 200,
-           printing_started_at = NOW() WHERE id = md5('qa26:order')::uuid $q$);
+           cancellation_fee_bearer = 'CUSTOMER', printing_started_at = NOW() WHERE id = md5('qa26:order')::uuid $q$);
 
 \echo '--- ck_order_shipment_amounts: a shipment carries something'
 SELECT pg_temp.expect_fail('MR11 a shipment of nothing', $q$

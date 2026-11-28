@@ -33,12 +33,24 @@ import java.util.UUID;
  *                          still owes above the goods closed - its share of the fee lines - is carried onto the
  *                          closure's fee item, due from the closure's day (audit r3 LM-3): that installment's milestone
  *                          and its gate never come. Null when not known: nothing is carried, as before
+ * @param feeBearer         who bears {@code feeAmount} (D50): required with a fee, null without one
+ *                          ({@link FeeBearer#COMPANY}: the customer is charged nothing, the fee is the company's cost)
  */
 public record SettleRemainderClosureCommand(UUID orderId, UUID closureId, BigDecimal closedAmount,
                                             BigDecimal feeAmount, String feeReason, String feeDetail, UUID closedBy,
                                             Instant closedAt, Set<UUID> handedOverBatches,
                                             SettleShipmentReturnCommand.ShippingFee shippingFee,
-                                            Set<UUID> deliveringBatches) {
+                                            Set<UUID> deliveringBatches, FeeBearer feeBearer) {
+
+    /** Without a fee bearer: for a closure that keeps no fee. */
+    public SettleRemainderClosureCommand(UUID orderId, UUID closureId, BigDecimal closedAmount,
+                                         BigDecimal feeAmount, String feeReason, String feeDetail, UUID closedBy,
+                                         Instant closedAt, Set<UUID> handedOverBatches,
+                                         SettleShipmentReturnCommand.ShippingFee shippingFee,
+                                         Set<UUID> deliveringBatches) {
+        this(orderId, closureId, closedAmount, feeAmount, feeReason, feeDetail, closedBy, closedAt, handedOverBatches,
+                shippingFee, deliveringBatches, null);
+    }
 
     /**
      * Without the batches still delivering: nothing carried onto the fee item.
@@ -88,6 +100,9 @@ public record SettleRemainderClosureCommand(UUID orderId, UUID closureId, BigDec
         Objects.requireNonNull(closedAmount, "closedAmount");
         Objects.requireNonNull(closedAt, "closedAt");
         Objects.requireNonNull(shippingFee, "shippingFee (ShippingFee.NONE for an order without one)");
+        if ((feeAmount != null) != (feeBearer != null)) {
+            throw new IllegalArgumentException("A fee has its bearer, and no fee has none (D50)");
+        }
         handedOverBatches = handedOverBatches == null ? null : Set.copyOf(handedOverBatches);
         deliveringBatches = deliveringBatches == null ? null : Set.copyOf(deliveringBatches);
     }

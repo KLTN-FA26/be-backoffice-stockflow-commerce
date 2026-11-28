@@ -208,10 +208,12 @@ public class ShortageCardExecutionService {
      * Cancel the order (17 §4.14 step 58, §4.8 step 30): the short lines given up, then the staff cancellation with
      * reason {@code OUT_OF_STOCK}; a fee - a share kept or an amount agreed - only as that cancellation allows it. The
      * card is marked carried out first, inside the same transaction, so the cancellation does not end it as "cancelled by
-     * another route"; a refused cancellation rolls both back.
+     * another route"; a refused cancellation rolls both back. The fee has its bearer, Sales' choice with no default
+     * (D46, D50): an agreed fee names its own, {@code feeBearer} is the bearer of a share.
      */
     public ShortageCards.Card cancel(UUID orderId, UUID cardId, Long version, String note, BigDecimal retainedPercent,
-                                     CancellationFee fee, UUID by) {
+                                     com.stockflow.order.api.CancellationFeeBearer feeBearer, CancellationFee fee,
+                                     UUID by) {
         Locked locked = lock(orderId, cardId, version, ShortageOption.CANCEL_ORDER);
         ShortageCard card = locked.card();
         String text = noteOf(card, note);
@@ -220,7 +222,7 @@ public class ShortageCardExecutionService {
         card.executed(by, at);
         ShortageCard saved = cards.save(card);
         orderService.cancel(orderId, new CancelOrderCommand(CancellationReasonCode.OUT_OF_STOCK, text, retainedPercent,
-                by, fee));
+                by, fee, feeBearer));
         shortageCards.announce(saved, orders.findById(new OrderId(orderId)).orElse(null), "EXECUTED", at);
         log.info("Order {}: cancelled on shortage card {} by {}", orderId, cardId, by);
         return shortageCards.card(cardId).orElseThrow();

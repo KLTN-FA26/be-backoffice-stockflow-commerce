@@ -94,7 +94,8 @@ class OrderSettlementClosedBatchTest {
         batchTwo.pay(BigDecimal.valueOf(20_000), AT.minusSeconds(3_600));
 
         OrderSettlement.Outcome outcome = close(plan, 450_000, new OrderSettlement.Fee(null,
-                BigDecimal.valueOf(100_000), "Cups printed for batch 2", "1,000 cups printed before the closure"),
+                BigDecimal.valueOf(100_000), "Cups printed for batch 2", "1,000 cups printed before the closure",
+                com.stockflow.payment.api.FeeBearer.CUSTOMER),
                 Set.of());
         OrderSettlement s = outcome.settlement();
 

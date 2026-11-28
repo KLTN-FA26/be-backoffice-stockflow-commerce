@@ -89,7 +89,8 @@ class CancellationRequestServiceTest {
     @DisplayName("an agreed amount (decision Q2) is passed to the cancellation instead of a percentage")
     void approvalWithAnAgreedFee() {
         CancellationRequest request = pending();
-        CancellationFee fee = new CancellationFee(new BigDecimal("500000"), "Printed blanks", "Plates and ink used");
+        CancellationFee fee = new CancellationFee(new BigDecimal("500000"), "Printed blanks", "Plates and ink used",
+                com.stockflow.order.api.CancellationFeeBearer.CUSTOMER);
 
         service.approve(orderId, request.id(), null, fee, null, STAFF);
 

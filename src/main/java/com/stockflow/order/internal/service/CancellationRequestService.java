@@ -73,6 +73,17 @@ public class CancellationRequestService {
     @Auditable(action = AuditAction.APPROVE, resourceType = "order-cancellation-request", resourceId = "#requestId")
     public OrderSummary approve(UUID orderId, UUID requestId, BigDecimal retainedPercent,
                                 com.stockflow.order.api.CancellationFee agreedFee, String note, UUID by) {
+        return approve(orderId, requestId, retainedPercent, agreedFee, null, note, by);
+    }
+
+    /**
+     * The same, with who bears the fee (D46, D50): required whenever the approval keeps something; an agreed fee names
+     * its own, {@code feeBearer} is for a percentage.
+     */
+    @Auditable(action = AuditAction.APPROVE, resourceType = "order-cancellation-request", resourceId = "#requestId")
+    public OrderSummary approve(UUID orderId, UUID requestId, BigDecimal retainedPercent,
+                                com.stockflow.order.api.CancellationFee agreedFee,
+                                com.stockflow.order.api.CancellationFeeBearer feeBearer, String note, UUID by) {
         CancellationRequest request = load(orderId, requestId);
         request.approve(by, retainedPercent, note, clock.instant());
         Order order = orders.loadForUpdate(orderId);
@@ -80,7 +91,7 @@ public class CancellationRequestService {
         // decided. A refusal below rolls both back.
         requests.save(request);
         orders.cancelLoaded(order, new CancelOrderCommand(request.reasonCode(), request.note(), retainedPercent, by,
-                agreedFee));
+                agreedFee, feeBearer));
         log.info("Cancellation request {} approved; order {} cancelled", requestId, order.orderNumber());
         return orderService.findById(orderId).orElseThrow();
     }

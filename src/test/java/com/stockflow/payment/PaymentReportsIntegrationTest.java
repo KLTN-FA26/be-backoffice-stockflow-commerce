@@ -247,7 +247,8 @@ class PaymentReportsIntegrationTest {
                 "UPDATE ordering.customer_order SET printing_started_at = NOW() WHERE id = ?", cancelled.orderId()));
         WithCurrentUser.run(sales, DataScope.ALL, () -> orders.cancel(cancelled.orderId(), new CancelOrderCommand(
                 CancellationReasonCode.CUSTOMER_REQUEST, "agreed with the customer", null, sales.userId(),
-                new CancellationFee(dong(340_000), "Cups printed to the customer's design", "1,000 cups printed"))));
+                new CancellationFee(dong(340_000), "Cups printed to the customer's design", "1,000 cups printed",
+                        com.stockflow.order.api.CancellationFeeBearer.CUSTOMER))));
         assertThat(orders.findById(cancelled.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.CANCELLED);
         Await.until("installment cancelled", ASYNC, () -> status(cancelled.seq(1)) == InstallmentStatus.CANCELLED);
         UUID fee = jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ? "

@@ -406,7 +406,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         boolean wasHoldingStock = order.status().holdsStock();
         java.time.Instant now = clock.instant();
         order.cancel(command.reasonCode(), command.note(), command.retainedPercent(), command.agreedFee(),
-                command.cancelledBy(), now);
+                command.feeBearer(), command.cancelledBy(), now);
         resolveOpenHolds(order, command, now);
         // 17 §4.8 step 27: an order cancelled before its contract is signed takes the contract with it. A signed
         // contract stays SIGNED until the cancellation's money is settled; the nightly run then LIQUIDATES it (WF-05
@@ -494,9 +494,16 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         com.stockflow.order.api.CancellationFee fee = command.agreedFee();
         BigDecimal percent = command.retainedPercent() == null || command.retainedPercent().signum() == 0 ? null
                 : command.retainedPercent();
+        // D50: whoever bears the fee, payment is told - the company bearing it settles as no fee for the customer.
         paymentService.settleCancellation(new com.stockflow.payment.api.SettleCancellationCommand(order.id().value(),
                 percent, fee == null ? null : fee.amount(), fee == null ? null : fee.reason(),
-                fee == null ? null : fee.detail(), command.cancelledBy(), at));
+                fee == null ? null : fee.detail(), command.cancelledBy(), at,
+                percent == null && fee == null ? null : paymentBearer(command.feeBearer())));
+    }
+
+    /** The fee bearer as payment names it (it cannot read the order module's type): the same constants. */
+    private static com.stockflow.payment.api.FeeBearer paymentBearer(com.stockflow.order.api.CancellationFeeBearer bearer) {
+        return bearer == null ? null : com.stockflow.payment.api.FeeBearer.valueOf(bearer.name());
     }
 
     /**
@@ -532,8 +539,14 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         var criteria = new OrderSearchRepository.Criteria(query.search(), query.statuses(), query.customerId(),
                 query.placedFrom() == null ? null : query.placedFrom().atStartOfDay(BUSINESS_ZONE).toInstant(),
                 query.placedTo() == null ? null : query.placedTo().plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant(),
-                query.warehouseIds());
+                query.warehouseIds(), query.feeBearer());
         return Pages.toResponse(search.search(criteria, Pages.of(query.page(), query.size(), LIST_SORT.parse(query.sort()))));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Set<UUID> ordersWithFeeBorneByCompany(java.util.Collection<UUID> orderIds) {
+        return search.withFeeBorneByCompany(orderIds);
     }
 
     @Override
@@ -547,7 +560,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     public List<com.stockflow.order.api.RemainderClosure> remainderClosures(UUID orderId) {
         return remainderClosures.findByOrderIdOrderByClosedAtAscIdAsc(orderId).stream()
                 .map(row -> new com.stockflow.order.api.RemainderClosure(CancellationReasonCode.valueOf(row.getReasonCode()),
-                        row.getNote(), row.getClosedBy(), row.getClosedAt()))
+                        row.getNote(), row.getClosedBy(), row.getClosedAt(), row.getFeeAmount(), row.getFeeBearer()))
                 .toList();
     }
 
@@ -1402,7 +1415,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             waived = paymentService.settleRemainderClosure(new com.stockflow.payment.api.SettleRemainderClosureCommand(
                     orderId, order.lastClosureId(), closed, fee == null ? null : fee.amount(),
                     fee == null ? null : fee.reason(), fee == null ? null : fee.detail(), by, now,
-                    HandedOverBatches.of(order), shippingFeeOf(order), delivering))
+                    HandedOverBatches.of(order), shippingFeeOf(order), delivering,
+                    fee == null ? null : paymentBearer(fee.bearer())))
                     .map(com.stockflow.payment.api.OrderSettlementResult::shippingFeeWaived)
                     .orElse(BigDecimal.ZERO);
         }
@@ -1411,7 +1425,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // Append-only, so written once payment answered: it keeps the shipping fee waived with it (Q-19 edge), which
         // invoicing reads (ShippingFeeWaivers).
         remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId, order.lastClosureId(),
-                reasonCode.name(), note, by, now, waived));
+                reasonCode.name(), note, by, now, waived, order.lastClosureFeeAmount(), order.lastClosureFeeBearer()));
         // 17 §4.14 step 58 / 60: a card whose "ship part, close the rest" was started is carried out by this closure;
         // any other live card ends.
         ShortageCardService cardsOfOrder = shortageCards == null ? null : shortageCards.getIfAvailable();
@@ -1504,7 +1518,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 order.status() == OrderStatus.CANCELLED
                         ? new OrderSummary.Cancellation(order.cancellationReasonCode(), order.cancellationReason(),
                                 order.cancellationRetainedAmount(), order.cancellationFeeReason(),
-                                order.cancellationFeeDetail(), order.cancellationFeeAmount())
+                                order.cancellationFeeDetail(), order.cancellationFeeAmount(),
+                                order.cancellationFeeBearer())
                         : null,
                 lifecycleOf(order),
                 new OrderSummary.Charges(order.netTotal(), order.taxTotal(), order.fees().stream()

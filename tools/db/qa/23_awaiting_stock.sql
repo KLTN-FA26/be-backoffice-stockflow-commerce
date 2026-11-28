@@ -109,7 +109,8 @@ SELECT pg_temp.expect_fail('AS14 AWAITING_STOCK kept as the hold''s return while
 SELECT pg_temp.expect_fail('AS15 a fee kept before printing started (ck_order_fee_after_printing)', $q$
     UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST',
            cancellation_reason = 'CUSTOMER_REQUEST', cancellation_retained_amount = 0, cancellation_fee_amount = 500000,
-           cancellation_fee_reason = 'printed', cancellation_fee_detail = 'cups printed'
+           cancellation_fee_reason = 'printed', cancellation_fee_detail = 'cups printed',
+           cancellation_fee_bearer = 'CUSTOMER'
      WHERE id = md5('qa23:order')::uuid $q$);
 SELECT pg_temp.expect_ok('AS16 the first production order in production: printing started', $q$
     UPDATE ordering.customer_order SET printing_started_at = NOW() - INTERVAL '1 hour'
@@ -132,7 +133,8 @@ ROLLBACK TO SAVEPOINT before_release;
 SELECT pg_temp.expect_ok('AS21 cancelled while waiting, a fee kept once printing started', $q$
     UPDATE ordering.customer_order SET status = 'CANCELLED', cancellation_reason_code = 'CUSTOMER_REQUEST',
            cancellation_reason = 'CUSTOMER_REQUEST', cancellation_retained_amount = 0, cancellation_fee_amount = 500000,
-           cancellation_fee_reason = 'printed', cancellation_fee_detail = 'cups printed'
+           cancellation_fee_reason = 'printed', cancellation_fee_detail = 'cups printed',
+           cancellation_fee_bearer = 'CUSTOMER'
      WHERE id = md5('qa23:order')::uuid $q$);
 
 ROLLBACK;

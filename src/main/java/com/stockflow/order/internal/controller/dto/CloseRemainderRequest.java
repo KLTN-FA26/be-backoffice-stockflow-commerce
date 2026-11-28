@@ -25,11 +25,16 @@ public record CloseRemainderRequest(
                 + "it first, the rest is refunded, what it does not cover is owed as a receivable. Before printing: "
                 + "409 CANCELLATION_FEE_BEFORE_PRINTING")
         @jakarta.validation.Valid
-        CancellationFeeRequest agreedFee
+        CancellationFeeRequest agreedFee,
+
+        @Schema(description = "Who bears the fee (D46, D50): the customer is charged it, or the company bears it - then the customer is "
+                + "charged nothing and the amount is the company's cost. Required whenever a fee is given "
+                + "(retainedPercent above 0, or agreedFee), no default; refused without a fee")
+        com.stockflow.order.api.CancellationFeeBearer feeBearer
 ) {
 
     /** Without a fee (callers written before the review of #150). */
     public CloseRemainderRequest(CancellationReasonCode reasonCode, String note) {
-        this(reasonCode, note, null);
+        this(reasonCode, note, null, null);
     }
 }

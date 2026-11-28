@@ -36,7 +36,8 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
             id, order_id, contract_id, customer_id, order_number, contract_number, kind, source_id, currency,
             collected_amount, closed_amount, reduced_amount, surplus_amount, fee_amount, fee_percent, fee_reason,
             fee_detail, fee_covered_amount, refundable_amount, fee_owed_amount, fee_installment_id, settled_by,
-            settled_at, shipment_id, shipping_fee_waived_amount, carried_to_fee_amount""";
+            settled_at, shipment_id, shipping_fee_waived_amount, carried_to_fee_amount, fee_bearer,
+            company_fee_amount""";
 
     private static final String RECORD_COLUMNS = """
             id, order_id, customer_id, order_number, amount, currency, refunded_on, reference, note, status, recorded_by,
@@ -72,7 +73,7 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
     private List<OrderSettlement> settlements(String where, MapSqlParameterSource params) {
         List<Object[]> rows = jdbc.query("SELECT " + SETTLEMENT_COLUMNS + " FROM payment.order_settlement WHERE "
                 + where + " ORDER BY settled_at, id", params, (rs, n) -> {
-            Object[] row = new Object[26];
+            Object[] row = new Object[28];
             for (int i = 0; i < row.length; i++) {
                 row[i] = rs.getObject(i + 1);
             }
@@ -95,7 +96,8 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
             settlements.add(new OrderSettlement(id, (UUID) r[1], (UUID) r[2], (UUID) r[3], (String) r[4],
                     (String) r[5], OrderSettlement.Kind.valueOf((String) r[6]), (UUID) r[7], (String) r[8],
                     (BigDecimal) r[9], (BigDecimal) r[10], (BigDecimal) r[11], (BigDecimal) r[12], (BigDecimal) r[13],
-                    terms((BigDecimal) r[14], (BigDecimal) r[13], (String) r[15], (String) r[16]),
+                    terms((BigDecimal) r[14], ((BigDecimal) r[13]).add((BigDecimal) r[27]), (String) r[15],
+                            (String) r[16], (String) r[26]),
                     (BigDecimal) r[17], (BigDecimal) r[18], (BigDecimal) r[19], (UUID) r[20], (UUID) r[21],
                     instant(r[22]), reductions.getOrDefault(id, List.of()), (UUID) r[23], (BigDecimal) r[24],
                     (BigDecimal) r[25]));
@@ -103,12 +105,18 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
         return settlements;
     }
 
-    /** The fee's terms as stored: a share, or an agreed amount with its reason and detail, or none. */
-    private static OrderSettlement.Fee terms(BigDecimal percent, BigDecimal fee, String reason, String detail) {
+    /**
+     * The fee's terms as stored: a share, or an agreed amount with its reason and detail, or none - and who bears it.
+     * {@code fee} is the fee as entered: what the customer is charged plus what the company bears (D50).
+     */
+    private static OrderSettlement.Fee terms(BigDecimal percent, BigDecimal fee, String reason, String detail,
+                                             String bearer) {
+        com.stockflow.payment.api.FeeBearer who = bearer == null ? null
+                : com.stockflow.payment.api.FeeBearer.valueOf(bearer);
         if (percent != null) {
-            return new OrderSettlement.Fee(percent, null, null, null);
+            return new OrderSettlement.Fee(percent, null, null, null, who);
         }
-        return reason == null ? OrderSettlement.Fee.none() : new OrderSettlement.Fee(null, fee, reason, detail);
+        return reason == null ? OrderSettlement.Fee.none() : new OrderSettlement.Fee(null, fee, reason, detail, who);
     }
 
     @Override
@@ -118,8 +126,8 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                         , version, created_at, created_by)
                         VALUES (:id, :order, :contract, :customer, :orderNumber, :contractNumber, :kind, :source,
                                 :currency, :collected, :closed, :reduced, :surplus, :fee, :percent, :reason, :detail,
-                                :covered, :refundable, :owed, :feeItem, :by, :at, :shipment, :waived, :carried, 0, NOW(),
-                                :createdBy)""",
+                                :covered, :refundable, :owed, :feeItem, :by, :at, :shipment, :waived, :carried, :bearer,
+                                :companyFee, 0, NOW(), :createdBy)""",
                 new MapSqlParameterSource("id", s.id())
                         .addValue("order", s.orderId())
                         .addValue("contract", s.contractId())
@@ -146,6 +154,9 @@ class SettlementBookAdapter implements SettlementBook, RefundSearch {
                         .addValue("shipment", s.shipmentId())
                         .addValue("waived", s.shippingFeeWaived())
                         .addValue("carried", s.carriedToFee())
+                        .addValue("bearer", s.feeBearer() == null ? null : s.feeBearer().name(),
+                                java.sql.Types.VARCHAR)
+                        .addValue("companyFee", s.companyFee())
                         .addValue("createdBy", s.settledBy() == null ? "system" : s.settledBy().toString()));
         for (OrderSettlement.Reduction reduction : s.reductions()) {
             jdbc.update("""

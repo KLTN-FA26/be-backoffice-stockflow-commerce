@@ -26,12 +26,19 @@ public interface OrderSearchRepository {
      * @param placedBefore exclusive; null for no upper bound
      */
     record Criteria(String search, List<OrderStatus> statuses, UUID customerId,
-                    Instant placedFrom, Instant placedBefore, java.util.Set<UUID> warehouseIds) {
+                    Instant placedFrom, Instant placedBefore, java.util.Set<UUID> warehouseIds,
+                    com.stockflow.order.api.CancellationFeeBearer feeBearer) {
+
+        /** No fee-bearer filter. */
+        public Criteria(String search, List<OrderStatus> statuses, UUID customerId, Instant placedFrom,
+                        Instant placedBefore, java.util.Set<UUID> warehouseIds) {
+            this(search, statuses, customerId, placedFrom, placedBefore, warehouseIds, null);
+        }
 
         /** No warehouse limit. */
         public Criteria(String search, List<OrderStatus> statuses, UUID customerId, Instant placedFrom,
                         Instant placedBefore) {
-            this(search, statuses, customerId, placedFrom, placedBefore, null);
+            this(search, statuses, customerId, placedFrom, placedBefore, null, null);
         }
     }
 
@@ -83,4 +90,10 @@ public interface OrderSearchRepository {
      * empty set without touching the database.
      */
     java.util.Set<UUID> withShipments(Collection<UUID> orderIds);
+
+    /**
+     * Which of these orders had a fee kept with their cancellation or a closure of the rest that the company bears
+     * (D50), in one query. Empty input gives an empty set without touching the database.
+     */
+    java.util.Set<UUID> withFeeBorneByCompany(Collection<UUID> orderIds);
 }

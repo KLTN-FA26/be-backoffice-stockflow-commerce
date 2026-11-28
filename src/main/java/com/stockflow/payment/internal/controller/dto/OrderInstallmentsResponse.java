@@ -25,5 +25,11 @@ public record OrderInstallmentsResponse(UUID orderId, String orderNumber, String
                                                 + "delivery and on signing (BR-07, BR-08)")
                                         BigDecimal dueBeforeHandover,
                                         String currency,
-                                        List<InstallmentResponse> installments) {
+                                        List<InstallmentResponse> installments,
+                                        @Schema(description = "D50: what the company bears of the fees kept with the "
+                                                + "order's cancellation or closures of the rest - the customer is "
+                                                + "charged none of it, and it is in no installment. The accountant "
+                                                + "reads it as \"Phí do công ty chịu\"; 0 for none. Staff only: null "
+                                                + "on the customer's own view", nullable = true)
+                                        BigDecimal feeBorneByCompany) {
 }

@@ -518,7 +518,9 @@ class ShipmentReturnSettlementIntegrationTest {
         OrderSettlementResult closure = tx.execute(s -> payments.settleRemainderClosure(
                 new SettleRemainderClosureCommand(signed.orderId(), Identifiers.newId(), dong(1_100_000),
                         dong(800_000), "Printed cups never shipped", "500 cups printed to the customer's design",
-                        sales.userId(), Instant.now()))).orElseThrow();
+                        sales.userId(), Instant.now(), null,
+                com.stockflow.payment.api.SettleShipmentReturnCommand.ShippingFee.NONE, null,
+                com.stockflow.payment.api.FeeBearer.CUSTOMER))).orElseThrow();
         assertThat(closure.feeOwed()).isEqualByComparingTo(dong(800_000));
         // The other half came back with the carrier: the deposit is refundable.
         UUID shipment = shipment(signed.orderId(), "RETURNED", "REFUSED");

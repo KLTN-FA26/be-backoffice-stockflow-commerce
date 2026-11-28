@@ -115,7 +115,8 @@ class DeliveryFailureController {
             @Valid @RequestBody DeliveryFailureCaseRequests.Cancellation request, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(toResponses(List.of(operations.cancelUndelivered(orderId, caseId,
-                new DeliveryFailureService.Cancel(request.note(), OrderWebMapper.toFee(request.agreedFee())),
+                new DeliveryFailureService.Cancel(request.note(),
+                        OrderWebMapper.toFee(request.agreedFee(), request.feeBearer(), false)),
                 user.userId()))).getFirst());
     }
 
@@ -130,7 +131,8 @@ class DeliveryFailureController {
             @Valid @RequestBody DeliveryFailureCaseRequests.Cancellation request, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(toResponses(operations.cancelUndeliveredWithoutCase(orderId,
-                new DeliveryFailureService.Cancel(request.note(), OrderWebMapper.toFee(request.agreedFee())),
+                new DeliveryFailureService.Cancel(request.note(),
+                        OrderWebMapper.toFee(request.agreedFee(), request.feeBearer(), false)),
                 user.userId())));
     }
 

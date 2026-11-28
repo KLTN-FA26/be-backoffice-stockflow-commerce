@@ -266,8 +266,26 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                 .and(statusIn(criteria.statuses()))
                 .and(placedBetween(criteria.placedFrom(), criteria.placedBefore()))
                 .and(matches(criteria.search()))
-                .and(inWarehouses(criteria.warehouseIds()));
+                .and(inWarehouses(criteria.warehouseIds()))
+                .and(feeBorneBy(criteria.feeBearer()));
         return jpa.findAll(spec, pageable).map(OrderPersistenceMapper::toListSummary);
+    }
+
+    /**
+     * D50: orders with a fee borne by {@code bearer} - kept with their cancellation (the order's own column) or with a
+     * closure of the rest (a row of its history); null: no limit. Both are backed by partial indexes for COMPANY.
+     */
+    private static Specification<OrderJpaEntity> feeBorneBy(com.stockflow.order.api.CancellationFeeBearer bearer) {
+        if (bearer == null) {
+            return null;
+        }
+        return (root, query, cb) -> {
+            var closures = query.subquery(Integer.class);
+            var closure = closures.from(com.stockflow.order.internal.entity.OrderRemainderClosureJpaEntity.class);
+            closures.select(cb.literal(1)).where(cb.equal(closure.get("orderId"), root.get("id")),
+                    cb.equal(closure.get("feeBearer"), bearer));
+            return cb.or(cb.equal(root.get("cancellationFeeBearer"), bearer), cb.exists(closures));
+        };
     }
 
     /**
@@ -386,6 +404,17 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         Map<UUID, String> skus = new HashMap<>();
         rows.forEach(r -> skus.put((UUID) r[0], (String) r[1]));
         return skus;
+    }
+
+    @Override
+    public java.util.Set<UUID> withFeeBorneByCompany(Collection<UUID> orderIds) {
+        if (orderIds.isEmpty()) {
+            return java.util.Set.of();
+        }
+        Specification<OrderJpaEntity> spec = Specification.<OrderJpaEntity>where(
+                (root, query, cb) -> root.get("id").in(orderIds)).and(feeBorneBy(
+                com.stockflow.order.api.CancellationFeeBearer.COMPANY));
+        return jpa.findAll(spec).stream().map(OrderJpaEntity::getId).collect(java.util.stream.Collectors.toSet());
     }
 
     @Override

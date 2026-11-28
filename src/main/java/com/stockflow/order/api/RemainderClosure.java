@@ -11,6 +11,14 @@ import java.util.UUID;
  * @param reasonCode the closure's {@link CancellationReasonCode}
  * @param note       what staff wrote, or null
  * @param closedBy   who closed it; null when the system did
+ * @param feeAmount  the fee Sales kept with this closure (17 §4.8 step 33), as entered; null when it kept none
+ * @param feeBearer  who bears that fee (D50); null exactly when {@code feeAmount} is
  */
-public record RemainderClosure(CancellationReasonCode reasonCode, String note, UUID closedBy, Instant closedAt) {
+public record RemainderClosure(CancellationReasonCode reasonCode, String note, UUID closedBy, Instant closedAt,
+                               java.math.BigDecimal feeAmount, CancellationFeeBearer feeBearer) {
+
+    /** A closure that kept no fee. */
+    public RemainderClosure(CancellationReasonCode reasonCode, String note, UUID closedBy, Instant closedAt) {
+        this(reasonCode, note, closedBy, closedAt, null, null);
+    }
 }

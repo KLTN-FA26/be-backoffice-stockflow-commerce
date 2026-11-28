@@ -69,7 +69,7 @@ final class OrderPersistenceMapper {
         order.restoreRelease(entity.getWarehouseId(), entity.getReleasedAt(), entity.getReleasedBy());
         order.restoreCancellation(entity.getCancellationReasonCode(), entity.getCancellationRetainedAmount());
         order.restoreCancellationFee(entity.getCancellationFeeAmount(), entity.getCancellationFeeReason(),
-                entity.getCancellationFeeDetail());
+                entity.getCancellationFeeDetail(), entity.getCancellationFeeBearer());
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
         order.restoreGoodsLeft(entity.getGoodsLeftAt());
         order.restoreContractSigned(entity.getContractSignedAt());
@@ -124,7 +124,7 @@ final class OrderPersistenceMapper {
         entity.applyRelease(order.warehouseId(), order.releasedAt(), order.releasedBy());
         entity.applyCancellation(order.cancellationReasonCode(), order.cancellationRetainedAmount());
         entity.applyCancellationFee(order.cancellationFeeAmount(), order.cancellationFeeReason(),
-                order.cancellationFeeDetail());
+                order.cancellationFeeDetail(), order.cancellationFeeBearer());
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
         entity.applyGoodsLeft(order.goodsLeftAt());
         entity.applyContractSigned(order.contractSignedAt());
@@ -183,7 +183,7 @@ final class OrderPersistenceMapper {
                         ? new OrderSummary.Cancellation(entity.getCancellationReasonCode(),
                                 entity.getCancellationReason(), entity.getCancellationRetainedAmount(),
                                 entity.getCancellationFeeReason(), entity.getCancellationFeeDetail(),
-                                entity.getCancellationFeeAmount())
+                                entity.getCancellationFeeAmount(), entity.getCancellationFeeBearer())
                         : null,
                 // A list row: the hold and the milestones; no lines, no shipments, no derived amounts.
                 new OrderSummary.Lifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),

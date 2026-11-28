@@ -4589,7 +4589,8 @@ class FtlDispatchIntegrationTest {
 
     private static String cancelKeeping(long fee) {
         return "{\"note\":\"Khách không nhận lại hàng\",\"agreedFee\":{\"amount\":" + fee + ",\"reason\":"
-                + "\"Hàng đã in theo thiết kế\",\"detail\":\"Theo điều khoản hợp đồng, thống nhất với khách\"}}";
+                + "\"Hàng đã in theo thiết kế\",\"detail\":\"Theo điều khoản hợp đồng, thống nhất với khách\"},"
+                + "\"feeBearer\":\"CUSTOMER\"}";
     }
 
     @Test

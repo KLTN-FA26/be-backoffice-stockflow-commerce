@@ -175,7 +175,13 @@ public record OrderResponse(
         @Schema(description = "Audit bo-17: what of outstandingAmount is past its due day on the business day of "
                 + "today, every milestone included; overdue is worked out from the due day, there is no OVERDUE "
                 + "status. 0 when nothing is overdue. " + PAYMENT_FIGURES)
-        BigDecimal overdueAmount
+        BigDecimal overdueAmount,
+
+        @Schema(description = "D50: true when the company bears a fee kept with this order's cancellation or closure of "
+                + "the rest - the accountant's \"Phí do công ty chịu\" badge on the list row; the amount is "
+                + "feeBorneByCompany of GET /api/v1/installments/orders/{orderId}. Set on the back-office list only; "
+                + "null elsewhere", nullable = true)
+        Boolean feeBorneByCompany
 ) {
 
     /** When the three payment figures are set, and why they are null otherwise. */
@@ -205,7 +211,7 @@ public record OrderResponse(
                 holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt, deliveryFailureReason,
                 completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments, allowPartialShipment,
                 printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber, refundedAt,
-                settlementReadiness, version, warehouseCode, warehouseName, null, null, null);
+                settlementReadiness, version, warehouseCode, warehouseName, null, null, null, null);
     }
 
     /**
@@ -218,7 +224,20 @@ public record OrderResponse(
                 statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
                 deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
                 allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
-                refundedAt, settlementReadiness, version, warehouseCode, warehouseName, paid, outstanding, overdue);
+                refundedAt, settlementReadiness, version, warehouseCode, warehouseName, paid, outstanding, overdue,
+                feeBorneByCompany);
+    }
+
+    /** This response with the fee-bearer badge of the back-office list (D50). */
+    public OrderResponse withFeeBorneByCompany(boolean borneByCompany) {
+        return new OrderResponse(orderId, orderNumber, customerId, customerName, customerCode, status, totalAmount,
+                currency, lines, placedAt, createdBy, lastModifiedAt, lastModifiedBy, contactName, contactEmail,
+                contactPhone, shippingAddress, billingAddress, warehouseId, releasedAt, cancellation, holdReason,
+                statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
+                deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
+                allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
+                refundedAt, settlementReadiness, version, warehouseCode, warehouseName, paidAmount, outstandingAmount,
+                overdueAmount, borneByCompany);
     }
 
     /** Without the version: what was answered before WF-05 Q-12. */
@@ -252,7 +271,7 @@ public record OrderResponse(
                 deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
                 allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
                 refundedAt, settlementReadiness, version, warehouseCode, warehouseName, paidAmount, outstandingAmount,
-                overdueAmount);
+                overdueAmount, feeBorneByCompany);
     }
 
     /** This response naming its warehouse: {@code code} and {@code name} of {@code warehouseId}, or nulls. */
@@ -263,7 +282,7 @@ public record OrderResponse(
                 statusBeforeHold, holdReasonPublic, holdNote, packedAt, firstLabeledAt, shippedAt, deliveredAt,
                 deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
                 allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
-                refundedAt, settlementReadiness, version, code, name, paidAmount, outstandingAmount, overdueAmount);
+                refundedAt, settlementReadiness, version, code, name, paidAmount, outstandingAmount, overdueAmount, feeBorneByCompany);
     }
 
     /**
@@ -302,7 +321,7 @@ public record OrderResponse(
                 deliveryFailureReason, completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, shipments,
                 allowPartialShipment, printLinesReady, netAmount, taxAmount, fees, sourceQuoteId, sourceQuoteNumber,
                 refunded, readiness, version, warehouseCode, warehouseName, paidAmount, outstandingAmount,
-                overdueAmount);
+                overdueAmount, feeBorneByCompany);
     }
 
     /** With the quote it came from, without F-1's facts. */
@@ -375,7 +394,17 @@ public record OrderResponse(
             @Schema(description = "Why an agreed amount was kept (decision Q2)") String feeReason,
             @Schema(description = "What was agreed") String feeDetail,
             @Schema(description = "The agreed amount; above retainedAmount the rest is owed as a receivable")
-            BigDecimal feeAmount) {
+            BigDecimal feeAmount,
+            @Schema(description = "D46, D50: who bears the fee kept - the customer is charged it, or the company bears it (the "
+                    + "customer is charged nothing and the order's refund is as if no fee was kept). Null when no fee "
+                    + "was kept, and on the customer's own view", nullable = true)
+            String feeBearer) {
+
+        /** Without the bearer (D50). */
+        public Cancellation(String reasonCode, String reason, BigDecimal retainedAmount, String feeReason,
+                            String feeDetail, BigDecimal feeAmount) {
+            this(reasonCode, reason, retainedAmount, feeReason, feeDetail, feeAmount, null);
+        }
     }
 
     public record Address(String recipientName, String phone, String line1, String line2,

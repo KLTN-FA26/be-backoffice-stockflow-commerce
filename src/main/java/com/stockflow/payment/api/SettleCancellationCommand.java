@@ -14,12 +14,25 @@ import java.util.UUID;
  * @param feePercent a share (0-100] of the money collected on the installments; null for none
  * @param feeAmount  an agreed amount, whole dong; null for none. Not with {@code feePercent}
  * @param cancelledBy null when the system cancelled the order (it keeps no fee then)
+ * @param feeBearer  who bears the fee (D46, D50): required with a fee, null without one. {@link FeeBearer#COMPANY}:
+ *                   settled as no fee - the customer is charged nothing - and the amount (or the share of what was
+ *                   collected) is kept as the company's cost
  */
 public record SettleCancellationCommand(UUID orderId, BigDecimal feePercent, BigDecimal feeAmount, String feeReason,
-                                        String feeDetail, UUID cancelledBy, Instant cancelledAt) {
+                                        String feeDetail, UUID cancelledBy, Instant cancelledAt,
+                                        FeeBearer feeBearer) {
 
     public SettleCancellationCommand {
         Objects.requireNonNull(orderId, "orderId");
         Objects.requireNonNull(cancelledAt, "cancelledAt");
+        if ((feePercent != null || feeAmount != null) != (feeBearer != null)) {
+            throw new IllegalArgumentException("A fee has its bearer, and no fee has none (D50)");
+        }
+    }
+
+    /** Without a fee bearer: only for a cancellation that keeps no fee. */
+    public SettleCancellationCommand(UUID orderId, BigDecimal feePercent, BigDecimal feeAmount, String feeReason,
+                                     String feeDetail, UUID cancelledBy, Instant cancelledAt) {
+        this(orderId, feePercent, feeAmount, feeReason, feeDetail, cancelledBy, cancelledAt, null);
     }
 }
