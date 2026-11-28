@@ -1,0 +1,12 @@
+== f2_before1128
+SO-20261128-000013|ON_HOLD|INVENTORY|t
+05:29:58  PICKING -> ON_HOLD  INVENTORY: Carton LPN-20261128-000046 (1000 x LY-GIAY-2L-8OZ-KTH) removed at the check station: the warehouse manager replaces it
+04:20:19  ON_HOLD -> PICKING  HOLD_RESOLVED_INVENTORY: Short pick reallocated: line 01a2205f-0242-701e-b29a-19574426e6ee
+04:18:07  PICKING -> ON_HOLD  INVENTORY: Short pick: carton LPN-20261128-000043 (1000 x LY-GIAY-2L-8OZ-KTH) at HAN-A01-3-D, NOT_FOUND
+04:17:07  READY_TO_FULFILL -> PICKING  
+== f2_after1128
+SO-20261128-000013|PARTIALLY_FULFILLED|-|t
+05:38:07  PICKING -> PARTIALLY_FULFILLED  
+05:37:41  ON_HOLD -> PICKING  HOLD_RESOLVED_INVENTORY: Partial shipment allowed: the carton removed at the check station is no longer waited for
+05:36:55  PICKING -> ON_HOLD  INVENTORY: Carton LPN-20261128-000046 (1000 x LY-GIAY-2L-8OZ-KTH) removed at the check station: the warehouse manager replaces it
+04:20:19  ON_HOLD -> PICKING  HOLD_RESOLVED_INVENTORY: Short pick reallocated: line 01a2205f-0242-701e-b29a-19574426e6ee

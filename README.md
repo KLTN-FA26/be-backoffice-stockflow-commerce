@@ -1,0 +1,1 @@
+Before = develop jar, after = this branch, same order SO-20261128-000013 on a copy of the local database. Both runs: carton removed at the check station (order held INVENTORY), then Sales allows partial shipment. Screens: see evidence/feat/wf4-f2-carton-check-hold-info in fe-backoffice-stockflow-commerce.
