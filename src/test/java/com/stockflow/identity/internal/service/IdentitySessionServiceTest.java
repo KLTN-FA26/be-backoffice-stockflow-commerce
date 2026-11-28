@@ -342,16 +342,40 @@ class IdentitySessionServiceTest {
     }
 
     @Test
-    void theLifetimeMustBePositiveAndAtMostADay() {
-        for (Duration bad : new Duration[]{Duration.ZERO, Duration.ofSeconds(-1), Duration.ofHours(25)}) {
-            assertThatThrownBy(() -> new IdentityServiceImpl(roles, mock(PermissionJpaRepository.class),
-                    mock(RolePermissionJpaRepository.class), userRoles, users, mock(PermissionCatalog.class),
-                    encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
-                    () -> java.util.Optional.of("test"), mock(UserJpaRepository.class), mock(PrivilegeGuard.class),
-                    loginAttempts, mock(UserWarehouseJpaRepository.class),
-                    mock(com.stockflow.warehouse.api.WarehouseService.class),
-                    mock(com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository.class), events, bad)).isInstanceOf(IllegalArgumentException.class);
+    void theLifetimeMustBePositiveAndAtMostSevenDays() {
+        for (Duration bad : new Duration[]{Duration.ZERO, Duration.ofSeconds(-1), Duration.parse("P8D"),
+                Duration.ofDays(7).plusSeconds(1)}) {
+            assertThatThrownBy(() -> serviceWithLifetime(bad)).isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("at most 7 days").hasMessageContaining(bad.toString());
         }
+    }
+
+    @Test
+    void aLifetimeOfSevenDaysIsAcceptedAndReportedInSeconds() {
+        when(users.findByUsername("jane")).thenReturn(Optional.of(user(UserStatus.ACTIVE)));
+        when(encoder.matches("Passw0rd!x", "{bcrypt}hash")).thenReturn(true);
+        when(users.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(sessions.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(jwtEncoder.encode(any())).thenReturn(
+                Jwt.withTokenValue("signed").header("alg", "RS256").subject("x").build());
+
+        var token = serviceWithLifetime(Duration.parse("P7D"))
+                .login(new LoginCommand("jane", "Passw0rd!x", "10.0.0.7", "Firefox"));
+
+        var stored = ArgumentCaptor.forClass(UserSessionJpaEntity.class);
+        verify(sessions).save(stored.capture());
+        assertThat(token.expiresInSeconds()).isEqualTo(604_800L);
+        assertThat(stored.getValue().getExpiresAt()).isEqualTo(NOW.plus(Duration.ofDays(7)));
+    }
+
+    private IdentityServiceImpl serviceWithLifetime(Duration lifetime) {
+        return new IdentityServiceImpl(roles, mock(PermissionJpaRepository.class),
+                mock(RolePermissionJpaRepository.class), userRoles, users, mock(PermissionCatalog.class),
+                encoder, jwtEncoder, clock, sessions, mock(RoleAuthorizationCache.class),
+                () -> java.util.Optional.of("test"), userRows, mock(PrivilegeGuard.class),
+                loginAttempts, mock(UserWarehouseJpaRepository.class),
+                mock(com.stockflow.warehouse.api.WarehouseService.class),
+                mock(com.stockflow.identity.internal.repository.UserStatusChangeJpaRepository.class), events, lifetime);
     }
 
     private UserJpaEntity staffRow() {

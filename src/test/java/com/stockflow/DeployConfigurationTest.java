@@ -97,6 +97,23 @@ class DeployConfigurationTest {
                 .contains("answer-lease: PT15M");
     }
 
+    @Test
+    @DisplayName("requests do not run on virtual threads: on Java 21 a pinned carrier deadlocked the server (28/11)")
+    void requestsRunOnPlatformThreads() throws Exception {
+        // On Java 21 a virtual thread inside a synchronized block pins its carrier; the VPS has 2 cores. Three
+        // requests building Jackson serializers at once (synchronized SerializerCache, then a Kotlin reflection lock
+        // held by an unmounted virtual thread) hung the API for two hours. Turn this back on only on JDK 24 or later
+        // (JEP 491), where synchronized no longer pins.
+        String application = read("src/main/resources/application.yml");
+        Matcher virtual = Pattern.compile("(?m)^  threads:\\n    virtual:\\n      enabled: (\\w+)").matcher(application);
+        assertThat(virtual.find()).as("application.yml sets spring.threads.virtual.enabled").isTrue();
+        assertThat(virtual.group(1)).as("spring.threads.virtual.enabled").isEqualTo("false");
+        for (String profile : List.of("application-dev.yml", "application-prod.yml")) {
+            assertThat(read("src/main/resources/" + profile)).as("%s does not turn it back on", profile)
+                    .doesNotContainPattern("(?m)^\\s*virtual:\\s*\\n\\s*enabled:\\s*true");
+        }
+    }
+
     private static String read(String path) throws IOException {
         return Files.readString(Path.of(path), StandardCharsets.UTF_8);
     }
