@@ -30,5 +30,10 @@ public enum OnBehalfAction {
     /** WF-05 §3: what a failed delivery left undelivered cancelled. */
     CANCEL_UNDELIVERED,
     /** 17 BR-16: the delivery address changed. */
-    CHANGE_SHIPPING_ADDRESS
+    CHANGE_SHIPPING_ADDRESS,
+    /**
+     * 17 §4.14 step 58: the option the customer chose on a shortage card carried out - one entry for the press of
+     * "Thực hiện", not one per step it runs.
+     */
+    EXECUTE_SHORTAGE_CHOICE
 }

@@ -117,13 +117,13 @@ class DeliveryBatchRecordsAdapter implements DeliveryBatchRecords {
         List<Object[]> rows = entityManager.createNativeQuery("""
                         SELECT id, delivery_batch_id, old_window_start, old_window_end, new_window_start, new_window_end,
                                reason_code, note, evidence_file_key, evidence_file_name, evidence_message_id,
-                               changed_by, changed_at
+                               changed_by, changed_at, evidence_shortage_card_id
                           FROM ordering.delivery_batch_window_change WHERE order_id = :order
                          ORDER BY changed_at, id""")
                 .setParameter("order", orderId).getResultList();
         return rows.stream().map(r -> new WindowChange((UUID) r[0], (UUID) r[1], date(r[2]), date(r[3]), date(r[4]),
                 date(r[5]), WindowChangeReason.valueOf((String) r[6]), (String) r[7], (String) r[8], (String) r[9],
-                (UUID) r[10], (UUID) r[11], instant(r[12]))).toList();
+                (UUID) r[10], (UUID) r[13], (UUID) r[11], instant(r[12]))).toList();
     }
 
     @Override
@@ -131,10 +131,11 @@ class DeliveryBatchRecordsAdapter implements DeliveryBatchRecords {
         entityManager.createNativeQuery("""
                         INSERT INTO ordering.delivery_batch_window_change (id, delivery_batch_id, order_id,
                             old_window_start, old_window_end, new_window_start, new_window_end, reason_code, note,
-                            evidence_file_key, evidence_file_name, evidence_message_id, changed_by, changed_at)
+                            evidence_file_key, evidence_file_name, evidence_message_id, evidence_shortage_card_id,
+                            changed_by, changed_at)
                         VALUES (:id, :batch, :order, :oldStart, :oldEnd, :newStart, :newEnd, :reason, :note,
-                                CAST(:fileKey AS VARCHAR), CAST(:fileName AS VARCHAR), CAST(:message AS UUID), :by,
-                                :at)""")
+                                CAST(:fileKey AS VARCHAR), CAST(:fileName AS VARCHAR), CAST(:message AS UUID),
+                                CAST(:card AS UUID), :by, :at)""")
                 .setParameter("id", change.id()).setParameter("batch", change.batchId())
                 .setParameter("order", orderId)
                 .setParameter("oldStart", Date.valueOf(change.oldStart()))
@@ -143,7 +144,8 @@ class DeliveryBatchRecordsAdapter implements DeliveryBatchRecords {
                 .setParameter("newEnd", Date.valueOf(change.newEnd()))
                 .setParameter("reason", change.reason().name()).setParameter("note", change.note())
                 .setParameter("fileKey", change.evidenceFileKey()).setParameter("fileName", change.evidenceFileName())
-                .setParameter("message", change.evidenceMessageId()).setParameter("by", change.changedBy())
+                .setParameter("message", change.evidenceMessageId())
+                .setParameter("card", change.evidenceShortageCardId()).setParameter("by", change.changedBy())
                 .setParameter("at", Timestamp.from(change.changedAt()))
                 .executeUpdate();
     }

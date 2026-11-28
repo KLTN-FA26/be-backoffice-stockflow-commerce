@@ -20,8 +20,10 @@ import java.util.UUID;
  * @param executionStarted whether Sales started carrying the choice out in steps
  * @param change           what happened: {@code SENT}, {@code CHOSEN}, {@code EXECUTION_STARTED}, {@code EXECUTED},
  *                         {@code SUPERSEDED}, {@code EXPIRED} or {@code CLOSE_REST_DUE}
+ * @param shippingWarehouseId the order's shipping warehouse, whose managers hear that Sales carried a choice out (00 §6);
+ *                         null when the order has none
  */
 public record ShortageCardChanged(UUID cardId, UUID orderId, String orderNumber, UUID customerId, String status,
                                   String chosenOption, int missingCartons, boolean executionStarted, String change,
-                                  Instant occurredAt) {
+                                  Instant occurredAt, UUID shippingWarehouseId) {
 }

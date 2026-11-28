@@ -11,7 +11,11 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.identity.api.IdentityService;
+import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.ShortageOption;
+import com.stockflow.order.internal.controller.dto.CancellationFeeRequest;
+import com.stockflow.order.internal.service.OrderOperations;
+import com.stockflow.order.internal.service.ShortageCardExecutionService;
 import com.stockflow.order.internal.controller.dto.ShortageCardResponse;
 import com.stockflow.order.internal.controller.dto.ShortagePreviewResponse;
 import com.stockflow.order.internal.service.OrderWarehouseVisibility;
@@ -20,6 +24,9 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,6 +35,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -39,7 +48,15 @@ import java.util.UUID;
  * customer holds it for their own orders, which the other two endpoints use with scope OWN) and the customer's choice
  * is updating their own order ({@code sales-orders:UPDATE}, OWN), as for the cancellation they may ask for. The Sales
  * side that <em>sends</em> a card lives in the chat ({@code POST /chat/conversations/{id}/cards/shortage}: the card is
- * posted into the conversation Sales are in charge of); carrying a choice out is a later step.</p>
+ * posted into the conversation Sales are in charge of).</p>
+ *
+ * <p>Carrying the customer's choice out (17 §4.14 step 58) answers to the permission of the operation each option runs,
+ * back office only: waiting lifts the hold ({@code sales-order-holds:UPDATE}; moving the window too needs the
+ * window's own {@code sales-contracts:UPDATE}); shipping part allows partial shipment and lifts the hold
+ * ({@code sales-order-partial-shipments:UPDATE} and {@code sales-order-holds:UPDATE}); closing the rest and cancelling
+ * are cancellations ({@code sales-order-cancellations:UPDATE}, as {@code /remainder-closure} and
+ * {@code /admin-cancellation}). The second permission of an endpoint is checked by {@link CurrentUser#require}, the
+ * codebase's way to ask for one beyond the endpoint's own.</p>
  *
  * <p>Handler methods are public: the permission aspect needs a proxied public method. Another customer's order or card
  * is 404, as one that does not exist.</p>
@@ -57,13 +74,54 @@ class ShortageCardController {
                          @Schema(description = "The card's version the customer saw; a stale one is 409") Long version) {
     }
 
+    /** Sales' own words added after the system's note; 400 leaves room for it within the steps' 500 characters. */
+    private static final int NOTE_MAX = 400;
+
+    /**
+     * Wait for production (D48): with {@code moveWindow} the batch's window moves to the card's expected date and ends on
+     * {@code windowEnd} - only when the card said that date is after the window.
+     */
+    @Schema(name = "ShortageWaitExecutionRequest")
+    record WaitRequest(@Schema(description = "The card's version Sales saw; a stale one is 409") Long version,
+                       @Schema(description = "Move the batch's window to the card's expected date as well (only when "
+                               + "the card's afterWindow is true)") Boolean moveWindow,
+                       @Schema(description = "With moveWindow: the last day of the new window, on or after the card's "
+                               + "expected date") LocalDate windowEnd,
+                       @Size(max = NOTE_MAX, message = "note is at most 400 characters") String note) {
+    }
+
+    /** Ship part (step 1 of "ship part, close the rest"). */
+    @Schema(name = "ShortageShipPartExecutionRequest")
+    record ShipPartRequest(Long version, @Size(max = NOTE_MAX, message = "note is at most 400 characters") String note) {
+    }
+
+    /** Close the rest (step 2): the remainder closure's own fields. */
+    @Schema(name = "ShortageCloseRestExecutionRequest")
+    record CloseRestRequest(Long version,
+                            @NotNull(message = "reasonCode is required") CancellationReasonCode reasonCode,
+                            @Size(max = NOTE_MAX, message = "note is at most 400 characters") String note,
+                            @Valid CancellationFeeRequest agreedFee) {
+    }
+
+    /** Cancel the order (reason OUT_OF_STOCK): the staff cancellation's fee fields. */
+    @Schema(name = "ShortageCancelExecutionRequest")
+    record CancelRequest(Long version,
+                         @Size(max = NOTE_MAX, message = "note is at most 400 characters") String note,
+                         @DecimalMin(value = "0.0", message = "retainedPercent is at least 0")
+                         @DecimalMax(value = "100.0", message = "retainedPercent is at most 100")
+                         BigDecimal retainedPercent,
+                         @Valid CancellationFeeRequest agreedFee) {
+    }
+
     private final ShortageCardService cards;
     private final OrderWarehouseVisibility warehouseVisibility;
     private final CustomerService customers;
     private final IdentityService identities;
+    private final OrderOperations operations;
 
     ShortageCardController(ShortageCardService cards, OrderWarehouseVisibility warehouseVisibility,
-                           CustomerService customers, IdentityService identities) {
+                           CustomerService customers, IdentityService identities, OrderOperations operations) {
+        this.operations = operations;
         this.cards = cards;
         this.warehouseVisibility = warehouseVisibility;
         this.customers = customers;
@@ -101,6 +159,73 @@ class ShortageCardController {
                                                     @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(ShortageCardResponse.of(cards.chooseOnOrder(customerOf(user), user.userId(), orderId,
                 cardId, request.option(), request.note(), request.version())));
+    }
+
+    // ---- carrying the choice out (17 §4.14 step 58) -------------------------------------------------------------------
+
+    @PostMapping("/{orderId}/shortage-cards/{cardId}/execution/wait-for-production")
+    @Operation(summary = "Carry out the customer's choice to wait for production: the short pick lines are given up "
+            + "(their holds released), the INVENTORY hold is lifted and the warehouse manager and the production "
+            + "coordinator are told; with moveWindow the batch's window moves to the card's expected date, the card being "
+            + "the consent (17 BR-28, D48 - needs sales-contracts:UPDATE too). 409 SHORTAGE_CARD_STATE_CONFLICT, 409 "
+            + "SHORTAGE_OPTION_NOT_AVAILABLE when the customer chose another option, 404 SHORTAGE_CARD_NOT_FOUND; a "
+            + "refusal of a step (e.g. DELIVERY_BATCH_WINDOW_LOCKED) changes nothing. Back office only")
+    @RequiresPermission(resource = OrderResources.HOLDS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ShortageCardResponse> executeWait(@PathVariable UUID orderId, @PathVariable UUID cardId,
+                                                         @Valid @RequestBody WaitRequest request,
+                                                         @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        boolean move = Boolean.TRUE.equals(request.moveWindow());
+        if (move) {
+            user.require(OrderResources.SALES_CONTRACTS, Action.UPDATE);
+        }
+        return ApiResponse.ok(ShortageCardResponse.of(operations.executeShortageWait(user, orderId, cardId,
+                request.version(), new ShortageCardExecutionService.WindowMove(move, request.windowEnd()),
+                request.note())));
+    }
+
+    @PostMapping("/{orderId}/shortage-cards/{cardId}/execution/ship-part")
+    @Operation(summary = "Carry out step 1 of the customer's choice to ship part and close the rest: the short pick "
+            + "lines are given up, partial shipment is allowed and the hold lifted; the warehouse manager is told. Once "
+            + "the warehouse completed the partial check, Sales are told to close the rest. Needs "
+            + "sales-order-holds:UPDATE too. Back office only")
+    @RequiresPermission(resource = OrderResources.PARTIAL_SHIPMENTS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ShortageCardResponse> executeShipPart(@PathVariable UUID orderId, @PathVariable UUID cardId,
+                                                             @Valid @RequestBody ShipPartRequest request,
+                                                             @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        user.require(OrderResources.HOLDS, Action.UPDATE);
+        return ApiResponse.ok(ShortageCardResponse.of(operations.executeShortageShipPart(orderId, cardId,
+                request.version(), request.note(), user.userId())));
+    }
+
+    @PostMapping("/{orderId}/shortage-cards/{cardId}/execution/close-rest")
+    @Operation(summary = "Carry out step 2 of the customer's choice to ship part and close the rest: the remainder "
+            + "closure as POST /orders/{id}/remainder-closure runs it (labelled cartons not handed over stay and are "
+            + "delivered; the fee only as that closure allows it); the card is then carried out. 409 "
+            + "SHORTAGE_CARD_STATE_CONFLICT before step 1. Back office only")
+    @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ShortageCardResponse> executeCloseRest(@PathVariable UUID orderId, @PathVariable UUID cardId,
+                                                              @Valid @RequestBody CloseRestRequest request,
+                                                              @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(ShortageCardResponse.of(operations.executeShortageCloseRest(orderId, cardId,
+                request.version(), request.reasonCode(), request.note(), OrderWebMapper.toFee(request.agreedFee()),
+                user.userId())));
+    }
+
+    @PostMapping("/{orderId}/shortage-cards/{cardId}/execution/cancel")
+    @Operation(summary = "Carry out the customer's choice to cancel: the short pick lines are given up, then the staff "
+            + "cancellation with reason OUT_OF_STOCK and the fee as that cancellation allows it (17 §4.8 step 30); "
+            + "picked cartons go to the put-back queue. Back office only")
+    @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ShortageCardResponse> executeCancel(@PathVariable UUID orderId, @PathVariable UUID cardId,
+                                                           @Valid @RequestBody CancelRequest request,
+                                                           @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(ShortageCardResponse.of(operations.executeShortageCancel(orderId, cardId,
+                request.version(), request.note(), request.retainedPercent(),
+                OrderWebMapper.toFee(request.agreedFee()), user.userId())));
     }
 
     /** The signed-in customer's profile id; a back-office account is no customer. */

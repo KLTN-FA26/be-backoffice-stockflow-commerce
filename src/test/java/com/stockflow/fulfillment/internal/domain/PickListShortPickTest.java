@@ -205,4 +205,25 @@ class PickListShortPickTest {
                     .isInstanceOf(IllegalArgumentException.class);
         }
     }
+
+    @Test
+    @DisplayName("17 §4.14 step 58, D49: the shortage card's execution gives every SHORT line up - CANCELLED, the shortfall "
+            + "kept - and the task may close with the other lines picked; again, nothing more is given up")
+    void cancelShortLines() {
+        PickLine missing = open(CUP_BLUE, "HCM-A01-1-A", 5, LPN);
+        PickLine taken = open(CUP_BLUE, "HCM-A01-1-B", 5, OTHER_LPN);
+        PickList list = picking(missing, taken);
+        list.reportShort(missing.id(), "HCM-A01-1-A", ShortPickReason.NOT_FOUND);
+        list.confirm(taken.id(), "HCM-A01-1-B", OTHER_LPN, PICKER, NOW);
+
+        assertThat(list.cancelShortLines()).containsExactly(missing);
+
+        assertThat(missing.status()).isEqualTo(PickLineStatus.CANCELLED);
+        assertThat(missing.shortQty()).as("the shortfall stays on record").isEqualTo(5);
+        assertThat(missing.shortReason()).isEqualTo(ShortPickReason.NOT_FOUND);
+        assertThat(taken.status()).isEqualTo(PickLineStatus.PICKED);
+        assertThat(list.hasShortLines()).isFalse();
+        list.requireAllPicked();
+        assertThat(list.cancelShortLines()).isEmpty();
+    }
 }

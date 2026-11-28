@@ -341,6 +341,21 @@ public final class Order extends AggregateRoot {
                 .orElse(false);
     }
 
+    /**
+     * The line holding {@code reservationId} no longer lists it: the hold was released with nothing in its place - a
+     * short pick's carton given up when Sales carried out the customer's choice on a shortage card (17 §4.14 step 58).
+     *
+     * @return whether a line listed it
+     */
+    public boolean dropReservation(UUID reservationId) {
+        return lines.stream().filter(line -> line.reservationIds().contains(reservationId)).findFirst()
+                .map(line -> {
+                    line.dropHold(reservationId);
+                    return true;
+                })
+                .orElse(false);
+    }
+
     private void registerPlaced() {
         registerEvent(new OrderEvent.Placed(new OrderPlaced(
                 id.value(),

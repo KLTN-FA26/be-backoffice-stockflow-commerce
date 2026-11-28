@@ -70,4 +70,19 @@ class OrderReservationService implements OrderReservations {
         log.info("Order {}: line {} holds {} replacement hold(s) for a carton removed at the check station",
                 order.orderNumber(), orderLineId, reservationIds.size());
     }
+
+    @Override
+    public void releasedWithoutReplacement(UUID orderId, UUID reservationId) {
+        Order order = orders.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        boolean listed = order.dropReservation(reservationId);
+        if (listed) {
+            orders.save(order);
+        }
+        boolean stood = batchRecords.forget(orderId, reservationId);
+        if (listed || stood) {
+            log.info("Order {}: hold {} released with no replacement - its carton is short", order.orderNumber(),
+                    reservationId);
+        }
+    }
 }

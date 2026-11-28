@@ -697,7 +697,13 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @Override
     public OrderSummary markPartlyPacked(UUID orderId, UUID by) {
         Order order = lockOrder(orderId);
-        if (!order.markPartlyPacked(clock.instant(), by)) {
+        boolean changed = order.markPartlyPacked(clock.instant(), by);
+        // 17 §4.14 step 58: the partial check of a card's "ship part, close the rest" is done - Sales close the rest now.
+        ShortageCardService cardsOfOrder = shortageCards == null ? null : shortageCards.getIfAvailable();
+        if (cardsOfOrder != null) {
+            cardsOfOrder.partialCheckCompleted(orderId);
+        }
+        if (!changed) {
             return toSummary(order);
         }
         log.info("Order {}: packed in part, {}", order.orderNumber(), order.status());
@@ -1345,7 +1351,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // invoicing reads (ShippingFeeWaivers).
         remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId, order.lastClosureId(),
                 reasonCode.name(), note, by, now, waived));
-        endShortageCards(orderId, com.stockflow.order.api.ShortageCardEnd.REMAINDER_CLOSED);
+        // 17 §4.14 step 58 / 60: a card whose "ship part, close the rest" was started is carried out by this closure;
+        // any other live card ends.
+        ShortageCardService cardsOfOrder = shortageCards == null ? null : shortageCards.getIfAvailable();
+        if (cardsOfOrder != null) {
+            cardsOfOrder.remainderClosed(orderId, by);
+        }
         log.info("Order {}: rest closed ({}), {} {} worth; now {}", order.orderNumber(), reasonCode, closed,
                 order.total().currency(), order.status());
         OrderSummary summary = saved(order);
