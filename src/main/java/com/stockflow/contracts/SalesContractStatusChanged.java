@@ -11,9 +11,12 @@ import java.util.UUID;
  * <p>Facts only: the cancellation reason and the files stay on the contract. Consumers receive it in-process; see
  * {@code package-info.java} for the rules on changing this contract.</p>
  *
- * @param status    {@code SENT}, {@code SIGNED}, {@code CANCELLED} or - WF-05 Q-6 - {@code LIQUIDATED} (its order ended
- *                  with nothing delivered and its money settled), the order module's names
- * @param changedBy the Sales account that took the step; null for a liquidation, which the nightly run makes
+ * @param status    {@code SENT}, {@code CUSTOMER_SIGNED} (the customer signed, the company has not),
+ *                  {@code SIGNED}, {@code CANCELLED}, {@code DRAFT} (the customer asked for changes: the next revision)
+ *                  or - WF-05 Q-6 - {@code LIQUIDATED} (its order ended with nothing delivered and its money settled),
+ *                  the order module's names
+ * @param changedBy the account that took the step - a Sales one, or the customer's for DRAFT and CUSTOMER_SIGNED; null for a
+ *                  liquidation, which the nightly run makes
  */
 public record SalesContractStatusChanged(UUID contractId, String contractNumber, UUID orderId, String orderNumber,
                                          UUID customerId, String status, UUID changedBy, Instant occurredAt) {

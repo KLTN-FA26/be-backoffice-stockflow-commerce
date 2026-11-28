@@ -194,10 +194,18 @@ spring:
       pool:
         size: 4                       # the reservation sweeper and the nightly jobs share this
 
+  # Requests run on platform threads (Tomcat's pool), not virtual ones. On Java 21 a virtual thread inside a
+  # synchronized block pins its carrier, and the VPS has 2 cores, so 2-3 carriers. On 2026-11-28 three requests
+  # built Jackson serializers at once: each pinned a carrier inside Jackson's synchronized SerializerCache, one
+  # waited on a lock of Kotlin reflection (jackson-module-kotlin, brought by the Anthropic SDK) held by a fourth
+  # virtual thread that could never be mounted again - a deadlock; 445 requests queued and the API hung for two
+  # hours. JDK 24 (JEP 491) stops synchronized from pinning; until the runtime moves there, keep this off.
+  # The test profile has always run with it off, so production now runs the configuration ~5,000 tests cover,
+  # and the task.execution / task.scheduling pools above apply (virtual threads made Boot ignore them).
+  # The assistant and the storage transfers still use virtual threads they create themselves.
   threads:
     virtual:
-      enabled: true                   # Java 21 virtual threads: request handling is IO-bound, and
-                                      # this removes the platform-thread ceiling under load
+      enabled: false
 
   jackson:
     default-property-inclusion: non_null
@@ -835,6 +843,29 @@ stockflow:
       quantity-tolerance-percent: ${CONTRACT_QUANTITY_TOLERANCE_PERCENT:5}
       warranty-months: ${CONTRACT_WARRANTY_MONTHS:6}
       penalty-percent: ${CONTRACT_PENALTY_PERCENT:8}
+      # Days from sending a contract to the day the customer should have signed by (1 to 60); Sales may move the day while
+      # the contract is sent. Past it the contract shows "overdue to sign" and Sales is told once; nothing is cancelled.
+      sign-days: ${CONTRACT_SIGN_DAYS:7}
+      # When the nightly check of contracts past their signing deadline runs (Saigon time).
+      sign-deadline-cron: ${CONTRACT_SIGN_DEADLINE_CRON:0 15 1 * * *}
+    contract-signing:
+      # How the company signs a contract (ContractSigner). The certificate is a TEST one nobody vouches for: either a
+      # PKCS#12 you supply (base64, one line) with its password, or - with none - an RSA 3072 key generated at the first
+      # signing and kept in the database, sealed with the secret below. Never commit any of these.
+      keystore: ${CONTRACT_SIGNING_KEYSTORE:}
+      keystore-password: ${CONTRACT_SIGNING_KEYSTORE_PASSWORD:}
+      # Seals the generated key and hashes customers' one-time codes. Required, at least 32 characters, in every profile
+      # but local and test (the application refuses to start without it; the VPS runs dev): openssl rand -base64 48.
+      # In local and test a development default is used with a warning. Changing it makes the stored key unreadable
+      # (the signer then fails) and ends the codes in flight.
+      secret: ${CONTRACT_SIGNING_SECRET:}
+      # The storefront's origin: the QR code on a contract's certificate page points at
+      # <this>/xac-minh-hop-dong/<code>. Blank prints the code and no QR code.
+      verification-base-url: ${CONTRACT_VERIFICATION_BASE_URL:}
+      # A customer's one-time code: how long it works, how soon another may be asked for, and how many an hour.
+      otp-lifetime: ${CONTRACT_OTP_LIFETIME:PT10M}
+      otp-resend-after: ${CONTRACT_OTP_RESEND_AFTER:PT1M}
+      otp-per-hour: ${CONTRACT_OTP_PER_HOUR:5}
     production-order:
       # How long the links e-mailed to a producer - its production order slip and print files - work (4A-3). Every use
       # is checked again (the production order still open, the file still the approved one) and gets a presigned URL
@@ -905,10 +936,11 @@ stockflow:
     # @RequiresPermission is silently unenforced, which is worse than either being off.
     # Default is ON. Switch it off per profile, never here.
     enabled: true
-    # How long a sign-in lasts (ISO-8601, at most 24h). Each token has a server-side session that
+    # How long a sign-in lasts (ISO-8601, at most 7 days). Each token has a server-side session that
     # logout, "sign out other devices", a password change and a role change end immediately, so this
     # only bounds how long an abandoned or stolen device keeps working. Changing it affects tokens
-    # issued from then on; existing ones keep the lifetime they were signed with.
+    # issued from then on; existing ones keep the lifetime they were signed with. Every profile keeps this
+    # working-day default (kltn-docs 00: 8 hours) except dev, the shared staging server, which sets P7D.
     token-ttl: PT8H
     jwt:
       # The RSA key tokens are signed with (JwtSigningKey). key-path: a PKCS#8 PEM file, generated and written there

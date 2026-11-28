@@ -83,6 +83,23 @@ class DeployConfigurationTest {
                 .contains("answer-lease: PT15M");
     }
 
+    @Test
+    @DisplayName("requests do not run on virtual threads: on Java 21 a pinned carrier deadlocked the server (28/11)")
+    void requestsRunOnPlatformThreads() throws Exception {
+        // On Java 21 a virtual thread inside a synchronized block pins its carrier; the VPS has 2 cores. Three
+        // requests building Jackson serializers at once (synchronized SerializerCache, then a Kotlin reflection lock
+        // held by an unmounted virtual thread) hung the API for two hours. Turn this back on only on JDK 24 or later
+        // (JEP 491), where synchronized no longer pins.
+        String application = read("src/main/resources/application.yml");
+        Matcher virtual = Pattern.compile("(?m)^  threads:\\n    virtual:\\n      enabled: (\\w+)").matcher(application);
+        assertThat(virtual.find()).as("application.yml sets spring.threads.virtual.enabled").isTrue();
+        assertThat(virtual.group(1)).as("spring.threads.virtual.enabled").isEqualTo("false");
+        for (String profile : List.of("application-dev.yml", "application-prod.yml")) {
+            assertThat(read("src/main/resources/" + profile)).as("%s does not turn it back on", profile)
+                    .doesNotContainPattern("(?m)^\\s*virtual:\\s*\\n\\s*enabled:\\s*true");
+        }
+    }
+
     private static String read(String path) throws IOException {
         return Files.readString(Path.of(path), StandardCharsets.UTF_8);
     }
@@ -103,6 +120,33 @@ class DeployConfigurationTest {
                     + ":-[^}]+}");
             assertThat(example).as(".env.example lists %s", variable).contains("\n" + variable + "=");
         }
+    }
+
+    @Test
+    @DisplayName("Contract e-signing: the server must have CONTRACT_SIGNING_SECRET (the VPS runs dev, which refuses to "
+            + "start without it); the other variables stay optional; all are listed for the operator")
+    void contractSigningVariablesReachTheServer() throws Exception {
+        String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
+        String example = Files.readString(Path.of("deploy/.env.example"), StandardCharsets.UTF_8);
+        String application = Files.readString(Path.of("src/main/resources/application.yml"), StandardCharsets.UTF_8);
+
+        for (String variable : java.util.List.of("CONTRACT_SIGNING_KEYSTORE", "CONTRACT_SIGNING_KEYSTORE_PASSWORD",
+                "CONTRACT_SIGNING_SECRET", "CONTRACT_VERIFICATION_BASE_URL")) {
+            // Blank in the application: local and test run on a development default (SigningSecrets refuses elsewhere).
+            assertThat(application).as("the application reads %s, blank by default", variable)
+                    .contains("${" + variable + ":}");
+            assertThat(example).as(".env.example lists %s", variable).contains("\n" + variable + "=");
+        }
+        for (String optional : java.util.List.of("CONTRACT_SIGNING_KEYSTORE", "CONTRACT_SIGNING_KEYSTORE_PASSWORD",
+                "CONTRACT_VERIFICATION_BASE_URL")) {
+            assertThat(compose).as("compose passes %s", optional).contains(optional + ": ${" + optional + ":-}");
+        }
+        assertThat(compose).as("compose refuses a missing or empty secret")
+                .contains("CONTRACT_SIGNING_SECRET: ${CONTRACT_SIGNING_SECRET:?");
+        assertThat(example + read("deploy/README.md")).as("the operator is told how to make one")
+                .contains("openssl rand -base64 48");
+        assertThat(read("src/main/resources/application-dev.yml")).as("dev sets no default secret of its own")
+                .doesNotContain("CONTRACT_SIGNING_SECRET");
     }
 
     @Test

@@ -31,11 +31,11 @@ import java.util.Map;
  * <h2>Why the executor itself is not replaced</h2>
  *
  * <p>{@link #getAsyncExecutor()} hands back the executor Spring Boot builds ({@code applicationTaskExecutor}),
- * looked up by name, and builds none of its own. {@code spring.threads.virtual.enabled} is on, so Boot supplies a
- * virtual-thread executor; returning a {@code ThreadPoolTaskExecutor} here would silently override it and put the
- * application back on a bounded pool of platform threads. Boot applies a {@link TaskDecorator} bean to whichever
- * executor it builds, so declaring one is enough — and it keeps working if the virtual-thread setting is ever
- * flipped.</p>
+ * looked up by name, and builds none of its own: a pool of platform threads sized by
+ * {@code spring.task.execution.pool.*}, or a virtual-thread executor if {@code spring.threads.virtual.enabled} is
+ * turned back on (it is off since 2026-11-28, see {@code application.yml}). Building one here would silently override
+ * whichever Boot chose. Boot applies a {@link TaskDecorator} bean to whichever executor it builds, so declaring one is
+ * enough, and it keeps working whichever way the virtual-thread setting is set.</p>
  *
  * <p>It used to return null and let Spring find the executor by type. That stopped working with the STOMP broker
  * (sales chat, {@code common.websocket.WebSocketConfig}): the broker's channels are executors too, so the lookup by
