@@ -1,0 +1,15 @@
+{
+  "request": "POST /orders/{SO-20261128-000027}/admin-cancellation (sales1) {\"reasonCode\": \"OUT_OF_STOCK\", \"note\": \"Thiếu hàng, hai bên thống nhất huỷ\", \"agreedFee\": {\"amount\": 1000000, \"reason\": \"Hộp đã in theo thiết kế\", \"detail\": \"Đã in 500 hộp trước khi huỷ\"}, \"feeBearer\": \"CUSTOMER\"}",
+  "status": 200,
+  "response": {
+    "orderNumber": "SO-20261128-000027",
+    "status": "CANCELLED",
+    "cancellation": {
+      "reasonCode": "OUT_OF_STOCK",
+      "feeAmount": 1000000,
+      "feeReason": "Hộp đã in theo thiết kế",
+      "feeBearer": null
+    },
+    "feeBorneByCompany(list badge)": null
+  }
+}

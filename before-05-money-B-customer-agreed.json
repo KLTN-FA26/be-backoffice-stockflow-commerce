@@ -1,0 +1,43 @@
+{
+  "request": "GET /installments/orders/{SO-20261128-000027} + GET /refunds/orders/{SO-20261128-000027} (ketoan)",
+  "status": 200,
+  "response": {
+    "installments": {
+      "status": 200,
+      "paid": 3240000.0,
+      "outstanding": 0.0,
+      "feeBorneByCompany": "(field absent)",
+      "installments": [
+        {
+          "seq": 1,
+          "name": "Thanh toán khi ký",
+          "status": "PAID",
+          "amount": 3240000.0,
+          "paidAmount": 3240000.0
+        }
+      ]
+    },
+    "refund": {
+      "status": 200,
+      "refundable": 2240000.0,
+      "remaining": 2240000.0,
+      "feeOwed": 0,
+      "feeBorneByCompany": "(field absent)",
+      "settlements": [
+        {
+          "kind": "ORDER_CANCELLED",
+          "collected": 3240000.0,
+          "fee": 1000000.0,
+          "feePercent": "(field absent)",
+          "feeReason": "Hộp đã in theo thiết kế",
+          "feeBearer": "(field absent)",
+          "feeBorneByCompany": "(field absent)",
+          "feeCovered": 1000000.0,
+          "refundable": 2240000.0,
+          "feeOwed": 0.0,
+          "feeItemId": "(field absent)"
+        }
+      ]
+    }
+  }
+}

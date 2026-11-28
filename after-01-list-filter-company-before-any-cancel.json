@@ -1,0 +1,8 @@
+{
+  "request": "GET /orders?feeBearer=COMPANY (ketoan)",
+  "status": 200,
+  "response": {
+    "totalElements": 0,
+    "orders": []
+  }
+}

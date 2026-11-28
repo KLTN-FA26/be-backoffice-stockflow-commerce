@@ -1,0 +1,11 @@
+{
+  "request": "POST admin-cancellation SO-20261128-000007 agreedFee, NO feeBearer",
+  "status": 400,
+  "response": {
+    "success": false,
+    "errorCode": "VALIDATION_FAILED",
+    "message": "Phí cần chọn bên chịu phí: khách hoặc công ty.",
+    "correlationId": "cd4ac127-7bb4-4927-b4df-825097e34080",
+    "timestamp": "2026-11-28T10:05:28.123358Z"
+  }
+}

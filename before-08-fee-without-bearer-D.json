@@ -1,0 +1,15 @@
+{
+  "request": "POST admin-cancellation SO-20261128-000007 agreedFee, NO feeBearer",
+  "status": 200,
+  "response": {
+    "orderNumber": "SO-20261128-000007",
+    "status": "CANCELLED",
+    "cancellation": {
+      "reasonCode": "OUT_OF_STOCK",
+      "feeAmount": 500000,
+      "feeReason": "Cốc đã in",
+      "feeBearer": null
+    },
+    "feeBorneByCompany(list badge)": null
+  }
+}

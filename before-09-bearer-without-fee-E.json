@@ -1,0 +1,15 @@
+{
+  "request": "POST admin-cancellation SO-20261127-000001 feeBearer=COMPANY, no fee",
+  "status": 200,
+  "response": {
+    "orderNumber": "SO-20261127-000001",
+    "status": "CANCELLED",
+    "cancellation": {
+      "reasonCode": "OUT_OF_STOCK",
+      "feeAmount": null,
+      "feeReason": null,
+      "feeBearer": null
+    },
+    "feeBorneByCompany(list badge)": null
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "request": "GET /orders?feeBearer=CUSTOMER (ketoan)",
+  "status": 200,
+  "response": {
+    "totalElements": 2,
+    "orderNumbers": [
+      "SO-20261128-000027",
+      "SO-20261128-000029"
+    ]
+  }
+}

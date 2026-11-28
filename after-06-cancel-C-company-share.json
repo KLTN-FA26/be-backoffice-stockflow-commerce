@@ -1,0 +1,15 @@
+{
+  "request": "POST /orders/{SO-20261128-000025}/admin-cancellation (sales1) {\"reasonCode\": \"OUT_OF_STOCK\", \"note\": \"Thiếu hàng, hai bên thống nhất huỷ\", \"retainedPercent\": 10, \"feeBearer\": \"COMPANY\"}",
+  "status": 200,
+  "response": {
+    "orderNumber": "SO-20261128-000025",
+    "status": "CANCELLED",
+    "cancellation": {
+      "reasonCode": "OUT_OF_STOCK",
+      "feeAmount": null,
+      "feeReason": null,
+      "feeBearer": "COMPANY"
+    },
+    "feeBorneByCompany(list badge)": null
+  }
+}

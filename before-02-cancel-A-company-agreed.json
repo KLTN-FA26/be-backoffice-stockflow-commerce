@@ -1,0 +1,15 @@
+{
+  "request": "POST /orders/{SO-20261128-000032}/admin-cancellation (sales1) {\"reasonCode\": \"OUT_OF_STOCK\", \"note\": \"Thiếu hàng, hai bên thống nhất huỷ\", \"agreedFee\": {\"amount\": 1000000, \"reason\": \"Cốc đã in theo thiết kế\", \"detail\": \"Đã in 1.000 cốc trước khi huỷ\"}, \"feeBearer\": \"COMPANY\"}",
+  "status": 200,
+  "response": {
+    "orderNumber": "SO-20261128-000032",
+    "status": "CANCELLED",
+    "cancellation": {
+      "reasonCode": "OUT_OF_STOCK",
+      "feeAmount": 1000000,
+      "feeReason": "Cốc đã in theo thiết kế",
+      "feeBearer": null
+    },
+    "feeBorneByCompany(list badge)": null
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "request": "GET /orders?feeBearer=COMPANY (ketoan)",
+  "status": 200,
+  "response": {
+    "totalElements": 99,
+    "orders": [
+      {
+        "orderNumber": "SO-20261128-000032",
+        "status": "AWAITING_STOCK",
+        "cancellation": null,
+        "feeBorneByCompany(list badge)": null
+      },
+      {
+        "orderNumber": "SO-20261128-000031",
+        "status": "CANCELLED",
+        "cancellation": {
+          "reasonCode": "DUPLICATE_ORDER",
+          "feeAmount": null,
+          "feeReason": null,
+          "feeBearer": null
+        },
+        "feeBorneByCompany(list badge)": null
+      },
+      {
+        "orderNumber": "SO-20261128-000030",
+        "status": "PICKING",
+        "cancellation": null,
+        "feeBorneByCompany(list badge)": null
+      },
+      {
+        "orderNumber": "SO-20261128-000029",
+        "status": "CANCELLED",
+        "cancellation": {
+          "reasonCode": "CUSTOMER_REQUEST",
+          "feeAmount": 1500000.0,
+          "feeReason": "Đơn vị sản xuất đã in hàng loạt phần hàng đợt 2",
+          "feeBearer": null
+        },
+        "feeBorneByCompany(list badge)": null
+      },
+      {
+        "orderNumber": "SO-20261128-000028",
+        "status": "AWAITING_STOCK",
+        "cancellation": null,
+        "feeBorneByCompany(list badge)": null
+      }
+    ]
+  }
+}

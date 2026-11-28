@@ -1,0 +1,39 @@
+{
+  "request": "GET /orders?status=CANCELLED (ketoan): the badge per row",
+  "status": 200,
+  "response": [
+    {
+      "orderNumber": "SO-20261128-000032",
+      "status": "CANCELLED",
+      "cancellation": {
+        "reasonCode": "OUT_OF_STOCK",
+        "feeAmount": 1000000.0,
+        "feeReason": "Cốc đã in theo thiết kế",
+        "feeBearer": "COMPANY"
+      },
+      "feeBorneByCompany(list badge)": true
+    },
+    {
+      "orderNumber": "SO-20261128-000027",
+      "status": "CANCELLED",
+      "cancellation": {
+        "reasonCode": "OUT_OF_STOCK",
+        "feeAmount": 1000000.0,
+        "feeReason": "Hộp đã in theo thiết kế",
+        "feeBearer": "CUSTOMER"
+      },
+      "feeBorneByCompany(list badge)": false
+    },
+    {
+      "orderNumber": "SO-20261128-000025",
+      "status": "CANCELLED",
+      "cancellation": {
+        "reasonCode": "OUT_OF_STOCK",
+        "feeAmount": null,
+        "feeReason": null,
+        "feeBearer": "COMPANY"
+      },
+      "feeBorneByCompany(list badge)": true
+    }
+  ]
+}

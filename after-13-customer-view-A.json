@@ -1,0 +1,26 @@
+{
+  "request": "GET /orders/me/{A} + GET /refunds/me/orders/{A} (kh.trasuamay)",
+  "status": 200,
+  "response": {
+    "order": {
+      "orderNumber": "SO-20261128-000032",
+      "status": "CANCELLED",
+      "cancellation": null,
+      "feeBorneByCompany(list badge)": null
+    },
+    "refund": {
+      "status": 200,
+      "refundable": 3628800.0,
+      "settlements": [
+        {
+          "fee": 0.0,
+          "feePercent": "(field absent)",
+          "feeReason": "(field absent)",
+          "feeBearer": "(field absent)",
+          "feeBorneByCompany": "(field absent)",
+          "refundable": 3628800.0
+        }
+      ]
+    }
+  }
+}
