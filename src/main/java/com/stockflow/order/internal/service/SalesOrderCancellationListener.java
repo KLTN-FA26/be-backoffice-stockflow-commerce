@@ -2,6 +2,11 @@ package com.stockflow.order.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.contracts.OrderCancelled;
+import com.stockflow.identity.api.IdentityService;
+import com.stockflow.identity.api.StaffContact;
+import com.stockflow.notification.api.Inbox;
+import com.stockflow.notification.api.InboxMessage;
+import com.stockflow.notification.api.InboxSeverity;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.ProductionOrder;
@@ -16,6 +21,9 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.List;
+import java.util.Locale;
+import java.util.ResourceBundle;
 import java.util.UUID;
 
 /**
@@ -50,13 +58,21 @@ class SalesOrderCancellationListener {
     /** 4A-5's refusal while a goods receipt against the production order is a draft; by name, as it is 4A-5's code. */
     static final String DRAFT_RECEIPTS = "PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS";
 
+    /** Who writes to the producers (the production coordinator): holders are told, not a role name. */
+    static final String TELLS_PRODUCERS = "production-orders:UPDATE";
+
     private final ProductionOrderService service;
     private final ProductionOrderRepository productionOrders;
     private final OrderRepository orders;
     private final TransactionTemplate eachProductionOrder;
+    private final IdentityService identities;
+    private final Inbox inbox;
 
     SalesOrderCancellationListener(ProductionOrderService service, ProductionOrderRepository productionOrders,
-                                   OrderRepository orders, PlatformTransactionManager transactions) {
+                                   OrderRepository orders, PlatformTransactionManager transactions,
+                                   IdentityService identities, Inbox inbox) {
+        this.identities = identities;
+        this.inbox = inbox;
         this.service = service;
         this.productionOrders = productionOrders;
         this.orders = orders;
@@ -79,7 +95,7 @@ class SalesOrderCancellationListener {
                     event.orderNumber(), open.size());
             return;
         }
-        stopAll(open, event.orderId(), event.orderNumber(), event.cancelledBy(), reasonOf(event), "was cancelled");
+        stopAll(open, event.orderId(), event.orderNumber(), event.cancelledBy(), reasonOf(event), "was cancelled", true);
     }
 
     /**
@@ -101,16 +117,16 @@ class SalesOrderCancellationListener {
                     + "coordinator", event.orderNumber(), open.size());
             return;
         }
-        stopAll(open, event.orderId(), event.orderNumber(), event.closedBy(), reasonOf(event), "had its rest closed");
+        stopAll(open, event.orderId(), event.orderNumber(), event.closedBy(), reasonOf(event), "had its rest closed", false);
     }
 
     private void stopAll(java.util.List<ProductionOrder> open, UUID orderId, String orderNumber, UUID by, String reason,
-                         String what) {
+                         String what, boolean tellCoordinators) {
         RuntimeException failure = null;
         for (ProductionOrder production : open) {
             try {
                 eachProductionOrder.executeWithoutResult(status -> stop(production.id(), orderId, orderNumber, by,
-                        reason));
+                        reason, tellCoordinators));
             } catch (BusinessException e) {
                 if (DRAFT_RECEIPTS.equals(e.errorCode().name())) {
                     log.info("Order {} {}; production order {} has a goods receipt in progress and is stopped once it "
@@ -128,7 +144,8 @@ class SalesOrderCancellationListener {
     }
 
     /** One production order, in its own transaction: the sales order locked first, then it. */
-    private void stop(UUID productionOrderId, UUID orderId, String orderNumber, UUID by, String reason) {
+    private void stop(UUID productionOrderId, UUID orderId, String orderNumber, UUID by, String reason,
+                      boolean tellCoordinators) {
         orders.findByIdForUpdate(new OrderId(orderId)).orElseThrow();
         ProductionOrder production = productionOrders.findByIdForUpdate(productionOrderId).orElseThrow();
         if (production.status().cancellable()) {
@@ -138,7 +155,33 @@ class SalesOrderCancellationListener {
             service.close(productionOrderId, production.version(), reason, by);
             log.info("Production order {} closed with its sales order {}: mass printing had started",
                     production.code(), orderNumber);
+            if (tellCoordinators) {
+                tellCoordinators(production, orderNumber);
+            }
         }
+    }
+
+    /**
+     * WF4-F4 (kltn-docs 17 §4.8): a production order closed because its sales order was cancelled is a production
+     * already printing, so the coordinator - who writes to the producers - is told in the app to make the producer
+     * stop. In the production order's own transaction, so the notice exists exactly when the closing does; once per
+     * production order per recipient.
+     */
+    private void tellCoordinators(ProductionOrder production, String orderNumber) {
+        List<UUID> coordinators = identities.notificationRecipientsHolding(TELLS_PRODUCERS, null).stream()
+                .map(StaffContact::userId).distinct().toList();
+        if (coordinators.isEmpty()) {
+            log.warn("Production order {} was closed by the cancellation of order {} and nobody holds {}",
+                    production.code(), orderNumber, TELLS_PRODUCERS);
+            return;
+        }
+        ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        inbox.post(coordinators, new InboxMessage("PRODUCTION_ORDER", InboxSeverity.WARN,
+                texts.getString("inbox.productionOrder.closedByCancellation.title").formatted(production.code()),
+                texts.getString("inbox.productionOrder.closedByCancellation.body").formatted(production.code(),
+                        orderNumber),
+                "/production/orders/" + production.id(), "PRODUCTION_ORDER", production.id().toString(),
+                "production-order-closed-by-cancellation:" + production.id()));
     }
 
     /** "Sales order SO-… was cancelled: CODE - note", within what a production order keeps of a reason. */
