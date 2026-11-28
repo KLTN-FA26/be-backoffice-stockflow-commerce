@@ -11,6 +11,7 @@ import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.customer.internal.controller.dto.CustomerResponse;
 import com.stockflow.customer.internal.service.CustomerLegalProfileService;
+import com.stockflow.customer.internal.service.SalesOwnerViews;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -36,7 +37,7 @@ class CustomerListProvinceTest {
 
     private final CustomerService customers = mock(CustomerService.class);
     private final CustomerController controller = new CustomerController(customers,
-            mock(CustomerLegalProfileService.class));
+            mock(CustomerLegalProfileService.class), mock(SalesOwnerViews.class));
 
     private static CustomerSummary summary(UUID id, String name) {
         return new CustomerSummary(id, null, name, name.toLowerCase().replace(' ', '.') + "@example.com",
@@ -65,7 +66,7 @@ class CustomerListProvinceTest {
         CurrentUser user = staff(PermissionCode.of("customer-customers", Action.READ),
                 PermissionCode.of("customer-addresses", Action.READ));
 
-        ApiResponse<PageResponse<CustomerResponse>> response = controller.list(user, 0, 20, null, null, null, null);
+        ApiResponse<PageResponse<CustomerResponse>> response = controller.list(user, 0, 20, null, null, null, null, null, null, null, null);
 
         List<CustomerResponse> rows = response.data().items();
         assertThat(rows).extracting(CustomerResponse::defaultShippingProvinceName)
@@ -79,7 +80,7 @@ class CustomerListProvinceTest {
         listing();
         CurrentUser user = staff(PermissionCode.of("customer-customers", Action.READ));
 
-        ApiResponse<PageResponse<CustomerResponse>> response = controller.list(user, 0, 20, null, null, null, null);
+        ApiResponse<PageResponse<CustomerResponse>> response = controller.list(user, 0, 20, null, null, null, null, null, null, null, null);
 
         assertThat(response.data().items()).extracting(CustomerResponse::defaultShippingProvinceName)
                 .containsOnlyNulls();
@@ -93,7 +94,7 @@ class CustomerListProvinceTest {
         CurrentUser user = staff(PermissionCode.of("customer-customers", Action.READ),
                 PermissionCode.of("customer-addresses", Action.READ));
 
-        assertThat(controller.list(user, 0, 20, null, null, null, null).data().items()).isEmpty();
+        assertThat(controller.list(user, 0, 20, null, null, null, null, null, null, null, null).data().items()).isEmpty();
         verify(customers, never()).defaultShippingProvinceNames(any());
     }
 }
