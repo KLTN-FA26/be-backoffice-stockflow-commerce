@@ -96,6 +96,11 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_POOL_MAX: ${DB_POOL_MAX:-10}
+      # Request threads, once requests run on platform threads (spring.threads.virtual.enabled false): Tomcat's
+      # default is 200, each with its own stack outside the heap, and this container has about 100 MB to spare.
+      # 50 is five times the database pool on a 2-core machine; a burst beyond it waits in Tomcat's accept queue
+      # instead of failing. Ignored while virtual threads are on.
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_THREADS_MAX:-50}
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       # The application validates its own tokens against the keys it publishes itself.
