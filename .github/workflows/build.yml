@@ -49,11 +49,11 @@ jobs:
           # green while enforcing nothing at all.
           fetch-depth: 0
 
-      - name: Set up JDK 21
+      - name: Set up JDK 25
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
           # Caches ~/.m2/repository. Do NOT add -Dmaven.repo.local pointing elsewhere: the cache
           # would still be saved and restored, and Maven would ignore it, so every run
           # re-downloads every dependency while the cache step reports success.

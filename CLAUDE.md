@@ -117,7 +117,7 @@ unqualified name).
 
 ## 3. Architecture in one screen
 
-Modular monolith on Spring Boot 3.5 / Spring Modulith 1.4 / Java 21 / PostgreSQL 16.
+Modular monolith on Spring Boot 3.5 / Spring Modulith 1.4 / Java 25 / PostgreSQL 16.
 One database, **one schema per module**, cross-schema references are real foreign keys (ADR-0007,
 replacing ADR-0005's plain UUIDs), no cross-schema JOIN.
 
