@@ -1,5 +1,5 @@
 -- =============================================================================
--- Adversarial checks + happy paths: who bears the fee of a cancellation or a closure of the rest (V20270128000550;
+-- Adversarial checks + happy paths: who bears the fee of a cancellation or a closure of the rest (V20270129000550;
 -- kltn-docs 17 §4.8 steps 30 and 33, 15 §4.6 steps 18-19; D46, D50) - the bearer on the order, on the closure row and
 -- on the settlement, and the settlement's fee terms read as "the fee entered". Fixtures are written with triggers and
 -- foreign keys off (session_replication_role = replica): only the CHECKs and indexes of these columns are under test.

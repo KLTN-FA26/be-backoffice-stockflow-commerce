@@ -211,7 +211,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cancellation_fee_detail", length = 2000)
     private String cancellationFeeDetail;
 
-    /** V20270128000550 (D46, D50): who bears the fee kept at cancellation, agreed amount or share; null for none. */
+    /** V20270129000550 (D46, D50): who bears the fee kept at cancellation, agreed amount or share; null for none. */
     @Column(name = "cancellation_fee_bearer", length = 8)
     @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
     private com.stockflow.order.api.CancellationFeeBearer cancellationFeeBearer;

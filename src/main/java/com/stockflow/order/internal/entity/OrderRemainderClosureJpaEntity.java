@@ -28,7 +28,7 @@ public class OrderRemainderClosureJpaEntity extends BaseEntity {
     /** WF-05 Q-19 edge: the shipping fee payment waived with this closure; 0 when none (V20261217000400). */
     @Column(name = "shipping_fee_waived", nullable = false, updatable = false, precision = 19, scale = 4)
     private java.math.BigDecimal shippingFeeWaived = java.math.BigDecimal.ZERO;
-    /** D50 (V20270128000550): the fee this closure kept, as entered, and who bears it; both null when it kept none. */
+    /** D50 (V20270129000550): the fee this closure kept, as entered, and who bears it; both null when it kept none. */
     @Column(name = "fee_amount", updatable = false, precision = 19, scale = 4)
     private java.math.BigDecimal feeAmount;
     @Column(name = "fee_bearer", updatable = false, length = 8)

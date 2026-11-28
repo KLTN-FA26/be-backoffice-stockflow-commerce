@@ -11,7 +11,7 @@ import java.sql.DriverManager;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20270128000550 on the real upgrade path (D46, D50): every fee kept before it was the customer's, so it is backfilled
+ * V20270129000550 on the real upgrade path (D46, D50): every fee kept before it was the customer's, so it is backfilled
  * as CUSTOMER - an agreed fee and a share on a cancelled order, and the fee of a closure of the rest on its own row -
  * while an order, a closure and a settlement without a fee keep no bearer and the company bears nothing.
  */
