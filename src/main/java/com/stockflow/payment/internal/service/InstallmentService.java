@@ -475,6 +475,15 @@ public class InstallmentService {
                 owing, null, page, size, sort);
     }
 
+    @Transactional(readOnly = true)
+    public PageResponse<Installment> installments(UUID customerId, java.util.Collection<UUID> customerIds,
+                                                  String term, UUID orderId, InstallmentStatus status,
+                                                  InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
+                                                  Boolean overdue, Boolean owing, int page, int size, String sort) {
+        return installments(customerId, customerIds, term, orderId, status, milestone, dueBefore, reached, overdue,
+                owing, null, page, size, sort);
+    }
+
     /**
      * {@link #installments(UUID, java.util.Collection, UUID, InstallmentStatus, InstallmentMilestone, LocalDate,
      * Boolean, Boolean, Boolean, int, int, String)}, the accountant's search also finding the contract and order

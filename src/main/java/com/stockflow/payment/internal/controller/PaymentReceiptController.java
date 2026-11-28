@@ -13,6 +13,7 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
 import com.stockflow.customer.api.CustomerSearch;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.payment.api.LoadingLoadLookup;
 import com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse;
 import com.stockflow.payment.internal.controller.dto.PaymentReceiptSummaryResponse;
 import com.stockflow.payment.internal.controller.dto.RecordReceiptRequest;
@@ -67,17 +68,20 @@ class PaymentReceiptController {
     private final PaymentReceiptService receipts;
     private final PaymentReceiptExportService exports;
     private final CustomerService customers;
+    private final LoadingLoadLookup loadingLoads;
     private final CustomerSearch customerSearch;
     private final com.stockflow.identity.api.IdentityService identities;
 
     PaymentReceiptController(PaymentReceiptService receipts, PaymentReceiptExportService exports,
                              CustomerService customers, CustomerSearch customerSearch,
-                             com.stockflow.identity.api.IdentityService identities) {
+                             com.stockflow.identity.api.IdentityService identities,
+                             LoadingLoadLookup loadingLoads) {
         this.identities = identities;
         this.customerSearch = customerSearch;
         this.receipts = receipts;
         this.exports = exports;
         this.customers = customers;
+        this.loadingLoads = loadingLoads;
     }
 
     @PostMapping
@@ -208,8 +212,13 @@ class PaymentReceiptController {
 
     /** One receipt with its customer and the names of who recorded and voided it. */
     private PaymentReceiptResponse toResponse(PaymentReceiptService.ReceiptDetail detail) {
+        var beforeDeliveryOrders = detail.installments().values().stream()
+                .filter(i -> i.milestone() == com.stockflow.payment.internal.domain.InstallmentMilestone.BEFORE_DELIVERY)
+                .map(com.stockflow.payment.internal.domain.Installment::orderId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
         return PaymentWebMapper.toResponse(detail.receipt(), detail.installments(), labelOf(detail.receipt()),
-                namesOf(java.util.List.of(detail.receipt())), detail.voidable(), detail.voidBlockedBy());
+                namesOf(java.util.List.of(detail.receipt())), detail.voidable(), detail.voidBlockedBy(),
+                loadingLoads.loadingLoadCodes(beforeDeliveryOrders));
     }
 
     /** R5-8: who recorded and voided each receipt, by name, in one read for the whole page. */

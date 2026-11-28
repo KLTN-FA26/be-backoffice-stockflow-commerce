@@ -42,7 +42,10 @@ public record PaymentReceiptResponse(UUID receiptId, UUID customerId,
                                              allowableValues = {"PAYMENT_RECEIPT_ALREADY_VOIDED",
                                                      "PAYMENT_RECEIPT_VOID_NOT_ALLOWED",
                                                      "PAYMENT_RECEIPT_VOID_AFTER_HANDOVER"})
-                                     String voidBlockedBy) {
+                                     String voidBlockedBy,
+                                     @Schema(description = "WF4 U87: codes of vehicles currently loading this receipt's "
+                                             + "BEFORE_DELIVERY orders; voiding this receipt may block their handover")
+                                     List<String> loadingLoadCodes) {
 
     /** One installment the receipt pays; the installment's facts are null when it cannot be read. */
     public record Line(UUID installmentId, BigDecimal amount, String contractNumber, UUID orderId, String orderNumber,

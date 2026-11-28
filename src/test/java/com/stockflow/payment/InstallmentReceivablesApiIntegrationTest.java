@@ -131,6 +131,19 @@ class InstallmentReceivablesApiIntegrationTest {
     }
 
     @Test
+    @DisplayName("WF4 U81: search also matches the order or contract code")
+    void searchByOrderOrContractCode() throws Exception {
+        List<Object> both = List.of(signed.seq(1).toString(), signed.seq(2).toString());
+        Map<String, Object> codes = jdbc.queryForMap(
+                "SELECT order_number, contract_number FROM payment.installment WHERE order_id = ? LIMIT 1",
+                signed.orderId());
+        for (String code : List.of((String) codes.get("order_number"), (String) codes.get("contract_number"))) {
+            assertThat(ids(rows(get("/api/v1/installments").param("search", code))))
+                    .containsAll(both);
+        }
+    }
+
+    @Test
     @DisplayName("BE-5: owing=true is what is due and still owed - paid in part, the fee item - never what is not due")
     void owing() throws Exception {
         // A closure of the rest keeping a fee nothing collected covers: the fee is owed on a fee item, due at once. A
