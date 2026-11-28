@@ -1,6 +1,5 @@
 package com.stockflow.fulfillment.internal.service;
 
-import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.security.CurrentUser;
 import org.springframework.stereotype.Component;
 
@@ -26,7 +25,7 @@ public class ShortageReallocation {
 
     /**
      * @return the new lines
-     * @throws BusinessException as {@link PickLists#reallocateShort}; nothing changes when it refuses
+     * @throws com.stockflow.common.error.BusinessException as {@link PickLists#reallocateShort}; nothing changes when it refuses
      */
     public List<PickLists.PickLineView> reallocate(UUID taskId, UUID lineId, CurrentUser actor) {
         return pickLists.reallocateShort(taskId, lineId, actor);
