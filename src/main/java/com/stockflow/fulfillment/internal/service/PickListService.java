@@ -29,6 +29,7 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.inventory.api.ReallocateStockCommand;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.api.ShortageCardEnd;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
 import jakarta.persistence.criteria.Predicate;
@@ -955,7 +956,8 @@ class PickListService implements PickLists, com.stockflow.order.spi.ShortPickLin
         OrderSummary order = orders.findById(orderId).orElseThrow();
         if (order.status() == com.stockflow.order.api.OrderStatus.ON_HOLD && order.lifecycle() != null
                 && order.lifecycle().holdReason() == com.stockflow.order.api.HoldReason.INVENTORY) {
-            orders.resolveHold(orderId, note, by);
+            // The warehouse replaced the carton: a live shortage card ends as REALLOCATED (17 §4.14 step 60).
+            orders.resolveHold(orderId, note, by, ShortageCardEnd.REALLOCATED);
         }
     }
 

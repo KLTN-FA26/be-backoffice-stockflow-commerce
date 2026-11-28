@@ -1,6 +1,6 @@
 -- =============================================================================
--- Adversarial checks + happy paths: carrying out a customer's choice on a shortage card (V20270128000510,
--- V20270128000520; kltn-docs 17 §4.14 step 58, BR-28, BR-32, D48) - the window moved with the card as the evidence
+-- Adversarial checks + happy paths: carrying out a customer's choice on a shortage card (V20270129000510,
+-- V20270129000520; kltn-docs 17 §4.14 step 58, BR-28, BR-32, D48) - the window moved with the card as the evidence
 -- (exactly one of file, message and card; the card is the order's batch's, the customer chose to wait, the window
 -- starts on the card's date, the seller's delay) and the "làm hộ" action of the press. Needs the demo seed
 -- (demo.editor). Rolled back at the end.

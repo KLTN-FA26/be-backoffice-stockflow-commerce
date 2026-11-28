@@ -697,7 +697,7 @@ class PickListServiceTest {
 
             service.reallocateShort(task.getId(), removed.getId(), actor);
 
-            verify(orders).resolveHold(eq(task.getOrderId()), any(), eq(picker));
+            verify(orders).resolveHold(eq(task.getOrderId()), any(), eq(picker), eq(com.stockflow.order.api.ShortageCardEnd.REALLOCATED));
             verify(orders, never()).startPicking(any(), any());
         }
 
@@ -808,7 +808,7 @@ class PickListServiceTest {
             });
             assertThat(row.getStatus()).isEqualTo(PickLineStatus.CANCELLED);
             verify(orderReservations).replaceHold(eq(task.getOrderId()), eq(reservation), any());
-            verify(orders).resolveHold(eq(task.getOrderId()), any(), eq(picker));
+            verify(orders).resolveHold(eq(task.getOrderId()), any(), eq(picker), eq(com.stockflow.order.api.ShortageCardEnd.REALLOCATED));
         }
 
         @Test
@@ -820,7 +820,7 @@ class PickListServiceTest {
 
             service.reallocateShort(task.getId(), row.getId(), actor);
 
-            verify(orders, never()).resolveHold(any(), any(), any());
+            verify(orders, never()).resolveHold(any(), any(), any(), any());
         }
 
         @Test
@@ -833,7 +833,7 @@ class PickListServiceTest {
 
             service.reallocateShort(task.getId(), row.getId(), actor);
 
-            verify(orders, never()).resolveHold(any(), any(), any());
+            verify(orders, never()).resolveHold(any(), any(), any(), any());
         }
 
         @Test

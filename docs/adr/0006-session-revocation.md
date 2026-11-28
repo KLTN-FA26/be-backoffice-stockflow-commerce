@@ -32,7 +32,8 @@ ended by setting `revoked_at`:
 `GET /identity/auth/sessions` lists the live ones, marking the caller's own.
 
 Because a token can now be revoked, the lifetime only bounds how long an abandoned device keeps
-working, so `stockflow.security.token-ttl` defaults to **8 hours** (a working day; at most 24h).
+working, so `stockflow.security.token-ttl` defaults to **8 hours** (a working day; at most 7 days). The shared dev/staging server
+(`application-dev.yml`) sets **P7D**, owner decision TTL-VPS-1126, 26 November 2026; prod keeps 8 hours.
 
 ## Alternatives considered
 

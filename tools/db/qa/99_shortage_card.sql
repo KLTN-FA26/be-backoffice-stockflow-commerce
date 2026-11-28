@@ -1,5 +1,5 @@
 -- =============================================================================
--- Adversarial checks + happy paths: the shortage choice card (V20270128000500; kltn-docs 17 §4.14, §5.6, BR-33; 16
+-- Adversarial checks + happy paths: the shortage choice card (V20270129000500; kltn-docs 17 §4.14, §5.6, BR-33; 16
 -- BR-15) - every CHECK of ordering.shortage_card and ordering.shortage_card_line, the one live card per batch, the
 -- deferred supersede link, and the new chat card kind. Needs the demo seed (demo.editor). Rolled back at the end.
 -- =============================================================================
