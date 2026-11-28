@@ -1,69 +1,103 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.security.Roles;
-import com.stockflow.identity.api.IdentityService;
-import com.stockflow.identity.api.StaffContact;
-import com.stockflow.identity.api.StaffUser;
+import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.customer.api.Responsible;
+import com.stockflow.customer.api.ResponsibleSales;
 import org.springframework.stereotype.Component;
 
+import java.time.Clock;
+import java.time.LocalDate;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
 /**
- * Who hears about a contract or an order on Sales' side (WF-02 FLOW-4): the salesperson responsible for it - who sent
- * its contract, or for none recorded who recorded it signed (Q-11) - while that account is ACTIVE. When it is gone,
- * locked or unknown, every active Sales account hears instead, marked as a hand-over, the rule docs 00 §6 already gives
- * for a quote ({@code QuoteNotificationListener}). It only chooses who is told; who may act is unchanged.
+ * Who hears about a contract or an order on Sales' side (WF-02 FLOW-4 as changed by the sales-owner plan on 2026-11-28;
+ * kltn-docs 00 §6, 15 BR-22, 18 BR-20): whoever looks after the order's <b>customer</b> today - its owner, the owner's
+ * cover while one is in force, or, when the customer has no active owner, the active Sales Managers (else the System
+ * Admins) with the notice marked "cần phân công". The answer is {@link ResponsibleSales}'s, the one rule chat and every
+ * notice follow; it replaced "who sent the contract, else every Sales account", which gave an order two salespeople
+ * (chat's and the follow-ups') and told the whole team when one left. Never every salesperson (owner decision D6).
+ * It only chooses who is told; who may act is unchanged.
  */
 @Component
 class SalesRecipients {
 
-    private final IdentityService identity;
+    private final ResponsibleSales responsible;
+    private final Clock clock;
 
-    SalesRecipients(IdentityService identity) {
-        this.identity = identity;
+    SalesRecipients(ResponsibleSales responsible, Clock clock) {
+        this.responsible = responsible;
+        this.clock = clock;
     }
 
-    /** Who is told, and whether it is a hand-over from an account that is no longer active. */
-    record Recipients(List<UUID> userIds, boolean handover) {
+    /**
+     * Who is told, and whether the customer has no active owner (the notice says "cần phân công").
+     *
+     * @param needsAssignment the recipients are the managers standing in for a missing owner
+     */
+    record Recipients(List<UUID> userIds, boolean needsAssignment) {
+
+        Recipients {
+            userIds = List.copyOf(userIds);
+        }
 
         boolean nobody() {
             return userIds.isEmpty();
         }
+
+        /** The same people plus {@code first} ahead of them, each once. */
+        Recipients withFirst(UUID first) {
+            if (first == null) {
+                return this;
+            }
+            Set<UUID> all = new LinkedHashSet<>();
+            all.add(first);
+            all.addAll(userIds);
+            return new Recipients(List.copyOf(all), needsAssignment);
+        }
     }
 
-    /** A chooser for one run: each account, and the Sales team, is read once. */
+    /** A chooser for one run: each customer is asked once, and {@link Chooser#load} asks for a batch in one go. */
     Chooser chooser() {
-        return new Chooser();
+        return new Chooser(BusinessCalendar.date(clock.instant()));
     }
 
     final class Chooser {
 
-        private final Map<UUID, Boolean> active = new HashMap<>();
-        private List<UUID> team;
+        private final LocalDate day;
+        private final Map<UUID, Responsible> known = new HashMap<>();
+        private final Set<UUID> asked = new java.util.HashSet<>();
 
-        Recipients of(UUID salesUserId) {
-            if (salesUserId != null && active.computeIfAbsent(salesUserId, SalesRecipients.this::isActive)) {
-                return new Recipients(List.of(salesUserId), false);
-            }
-            if (team == null) {
-                team = identity.notificationRecipients(Set.of(Roles.SALES_STAFF), null).stream()
-                        .map(StaffContact::userId).distinct().toList();
-            }
-            return new Recipients(team, true);
+        private Chooser(LocalDate day) {
+            this.day = day;
         }
-    }
 
-    private boolean isActive(UUID userId) {
-        try {
-            StaffUser user = identity.user(userId);
-            return user != null && "ACTIVE".equals(user.status());
-        } catch (BusinessException gone) {
-            return false;
+        /** Reads the customers not read yet, in one batched question (a constant handful of statements). */
+        Chooser load(Collection<UUID> customerIds) {
+            List<UUID> missing = customerIds.stream().filter(Objects::nonNull).filter(id -> !asked.contains(id))
+                    .distinct().toList();
+            if (!missing.isEmpty()) {
+                known.putAll(responsible.responsibleFor(missing, day));
+                asked.addAll(missing);
+            }
+            return this;
+        }
+
+        /** Who looks after the customer; nobody for an unknown or null one. */
+        Recipients of(UUID customerId) {
+            if (customerId == null) {
+                return new Recipients(List.of(), false);
+            }
+            load(List.of(customerId));
+            Responsible who = known.get(customerId);
+            return who == null ? new Recipients(List.of(), false)
+                    : new Recipients(who.recipients(), who.needsAssignment());
         }
     }
 }

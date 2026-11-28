@@ -5,17 +5,21 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.contracts.SalesOwnerChangeReason;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.customer.internal.domain.Customer;
 import com.stockflow.customer.internal.domain.CustomerRepository;
 import com.stockflow.customer.internal.domain.CustomerStatus;
 import com.stockflow.customer.internal.domain.CustomerStatusChange;
 import com.stockflow.customer.internal.domain.CustomerStatusHistory;
+import com.stockflow.customer.internal.domain.Lead;
 import com.stockflow.customer.internal.domain.TaxCode;
+import com.stockflow.customer.internal.domain.TaxCodeExemptions;
 import com.stockflow.identity.api.InviteCustomerAccountCommand;
 import com.stockflow.identity.api.PortalAccountService;
 import com.stockflow.identity.api.PortalInvitationLink;
 import com.stockflow.identity.api.PortalInvitationStatus;
+import com.stockflow.identity.api.SalesStaff;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.api.PortalInvitationMail;
 import org.slf4j.Logger;
@@ -63,18 +67,28 @@ public class CustomerOnboardingService {
 
     private final CustomerRepository customers;
     private final CustomerStatusHistory history;
+    private final SalesOwnershipService ownership;
+    private final LeadService leads;
+    private final TaxCodeExemptions exemptions;
+    private final SalesStaff salesStaff;
     private final PortalAccountService accounts;
     private final NotificationService notifications;
     private final TransactionTemplate transactions;
     private final Clock clock;
     private final String activationUrl;
 
-    CustomerOnboardingService(CustomerRepository customers, CustomerStatusHistory history, PortalAccountService accounts,
+    CustomerOnboardingService(CustomerRepository customers, CustomerStatusHistory history,
+                              SalesOwnershipService ownership, LeadService leads, TaxCodeExemptions exemptions,
+                              SalesStaff salesStaff, PortalAccountService accounts,
                               NotificationService notifications, PlatformTransactionManager transactionManager,
                               Clock clock,
                               @Value("${stockflow.customer.portal-activation-url:}") String activationUrl) {
         this.customers = customers;
         this.history = history;
+        this.ownership = ownership;
+        this.leads = leads;
+        this.exemptions = exemptions;
+        this.salesStaff = salesStaff;
         this.accounts = accounts;
         this.notifications = notifications;
         this.transactions = new TransactionTemplate(transactionManager);
@@ -83,13 +97,30 @@ public class CustomerOnboardingService {
     }
 
     /**
-     * What Sales enters. {@code companyName} names the customer; {@code taxCode} identifies it (BR-01) but
-     * is optional - household businesses and small shops may supply it later (decision 2026-10-12);
-     * {@code contactName} is the person invited; {@code actorUserId} is the Sales account, recorded on
-     * the invitation and in the status history.
+     * What Sales enters. {@code companyName} names the customer; {@code taxCode} identifies it (BR-01) and is required
+     * (sales-owner plan BR-S14, D4) unless a Sales Manager exempts the customer ({@code taxCodeExemption}, with
+     * {@code taxCodeExemptionReason}); {@code contactName} is the person invited; {@code actorUserId} is the Sales
+     * account, recorded on the invitation and in the status history.
+     *
+     * <p>{@code salesOwnerId} (sales-owner plan BR-S02): null for the default - the creating salesperson owns the
+     * customer - or the salesperson a manager chose. Anyone who is not a salesperson (a Sales Manager, a System Admin)
+     * must name one: no new customer is left without an owner (owner decision 2026-11-28). {@code leadId} (plan 10.7):
+     * the lead the customer is made from; its salesperson is the owner (LEAD_CONVERTED) and the lead becomes CONVERTED
+     * in the same transaction.</p>
      */
     public record CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
-                                         String phone, UUID actorUserId) {
+                                         String phone, UUID actorUserId, UUID salesOwnerId, boolean taxCodeExemption,
+                                         String taxCodeExemptionReason, UUID leadId) {
+
+        public CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
+                                      String phone, UUID actorUserId) {
+            this(companyName, taxCode, contactName, email, phone, actorUserId, null);
+        }
+
+        public CreateBusinessCustomer(String companyName, String taxCode, String contactName, String email,
+                                      String phone, UUID actorUserId, UUID salesOwnerId) {
+            this(companyName, taxCode, contactName, email, phone, actorUserId, salesOwnerId, false, null, null);
+        }
     }
 
     public enum InvitationDelivery { SENT, FAILED }
@@ -109,11 +140,19 @@ public class CustomerOnboardingService {
     }
 
     /**
-     * @throws BusinessException {@code VALIDATION_FAILED} (malformed tax code when one is given, or phone);
+     * @throws BusinessException {@code VALIDATION_FAILED} (malformed tax code when one is given, or phone; an exemption
+     *         with a tax code or without a reason; a lead with another owner named); {@code CUSTOMER_TAX_CODE_REQUIRED}
+     *         without a tax code or an exemption; {@code FORBIDDEN} for an exemption asked by someone who is not a
+     *         manager; the lead's refusals ({@code LEAD_NOT_FOUND}, {@code LEAD_ALREADY_HANDLED},
+     *         {@code LEAD_NOT_ASSIGNED}, {@code FORBIDDEN} for another salesperson's lead);
      *         {@code CUSTOMER_TAX_CODE_ALREADY_EXISTS} for a pending or active customer with this tax
      *         code; {@code CUSTOMER_EMAIL_ALREADY_EXISTS}; {@code USER_EMAIL_ALREADY_EXISTS} for any
      *         account - staff or customer - with this e-mail; {@code PORTAL_INVITATION_UNAVAILABLE} when
-     *         no activation address is configured, before anything is written
+     *         no activation address is configured, before anything is written; {@code FORBIDDEN} for a
+     *         salesperson naming another owner; {@code SALES_OWNER_REQUIRED} for someone who is not a salesperson
+     *         naming no owner and no lead; {@code SALES_OWNER_NOT_ASSIGNABLE} for an owner who is not an active
+     *         salesperson; {@code CUSTOMER_OWNED_BY_OTHER_SALES} for a salesperson creating a unit (or the company) of
+     *         an organisation another salesperson looks after (P4)
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "customer", resourceId = "#result?.customer()?.customerId()")
     public Invited create(CreateBusinessCustomer command) {
@@ -126,6 +165,7 @@ public class CustomerOnboardingService {
         } catch (IllegalArgumentException invalid) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
         }
+        String exemptionReason = exemption(command, taxCode);
         record Created(CustomerSummary customer, PortalInvitationLink link) {
         }
         Created created = writeRejectingDuplicates(() -> transactions.execute(status -> {
@@ -135,21 +175,115 @@ public class CustomerOnboardingService {
             if (customers.findByEmail(email).isPresent()) {
                 throw new BusinessException(ErrorCode.CUSTOMER_EMAIL_ALREADY_EXISTS);
             }
+            requireMayTakeTheOrganisation(taxCode, command.actorUserId());
+            Lead lead = command.leadId() == null ? null : leads.lockForConversion(command.leadId(),
+                    command.actorUserId());
+            if (lead != null && command.salesOwnerId() != null && !command.salesOwnerId().equals(lead.assignedTo())) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "A customer made from a lead is looked after by the lead's salesperson");
+            }
+            UUID owner = lead != null ? lead.assignedTo() : firstOwner(command);
             PortalInvitationLink link = accounts.invite(new InviteCustomerAccountCommand(email,
                     command.contactName().trim(), command.actorUserId()));
             Customer customer;
             try {
-                customer = Customer.onboard(Identifiers.newId(), link.userId(), command.companyName(), email,
-                        command.phone(), taxCode);
+                customer = Customer.onboardBusiness(Identifiers.newId(), link.userId(), command.companyName(), email,
+                        command.phone(), taxCode, exemptionReason != null);
             } catch (IllegalArgumentException invalid) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, invalid.getMessage());
             }
-            CustomerSummary saved = CustomerServiceImpl.toSummary(customers.save(customer));
+            Customer stored = customers.save(customer);
             history.record(new CustomerStatusChange(Identifiers.newId(), customer.id(), null,
                     CustomerStatus.PENDING_ACTIVATION, null, command.actorUserId(), clock.instant()));
+            if (exemptionReason != null) {
+                exemptions.grant(stored.id(), exemptionReason, command.actorUserId(), clock.instant());
+            }
+            stored = ownership.assignAtCreation(stored, owner, lead != null ? SalesOwnerChangeReason.LEAD_CONVERTED
+                    : SalesOwnerChangeReason.CREATED_BY_SALES, command.actorUserId());
+            if (lead != null) {
+                leads.converted(lead, stored.id(), command.actorUserId());
+            }
+            CustomerSummary saved = CustomerServiceImpl.toSummary(stored);
             return new Created(saved, link);
         }));
         return invited(created.customer(), created.link());
+    }
+
+    /**
+     * Finding P4: a salesperson could create a dependent unit ({@code 0123456789-001}) of a company another salesperson
+     * looks after - or the company of a unit - and become its owner. When the 10-digit root is a customer's with a
+     * working owner other than the one creating, only a manager goes on (and names the owner, as always for a manager).
+     *
+     * @throws BusinessException {@code CUSTOMER_OWNED_BY_OTHER_SALES} naming the owner
+     */
+    private void requireMayTakeTheOrganisation(String taxCode, UUID actor) {
+        String root = TaxCode.root(taxCode);
+        if (root == null || actor == null) {
+            return;
+        }
+        for (UUID related : customers.idsWithTaxCodeRoot(root)) {
+            ownership.requireMayTakeRelated(actor, related);
+        }
+    }
+
+    /**
+     * BR-S14 / D4: without a tax code, a Sales Manager's exemption with its reason; checked before anything is written.
+     *
+     * @return the exemption's reason, or null when the customer has a tax code
+     * @throws BusinessException {@code CUSTOMER_TAX_CODE_REQUIRED}; {@code FORBIDDEN}; {@code VALIDATION_FAILED}
+     */
+    private String exemption(CreateBusinessCustomer command, String taxCode) {
+        if (taxCode != null) {
+            if (command.taxCodeExemption()) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "An exemption is for a customer without a tax code");
+            }
+            return null;
+        }
+        if (!command.taxCodeExemption()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_TAX_CODE_REQUIRED);
+        }
+        UUID actor = command.actorUserId();
+        if (actor == null || !salesStaff.holdsPermission(actor, SalesOwnershipService.MANAGES_OWNERS)) {
+            throw new BusinessException(ErrorCode.FORBIDDEN,
+                    "Only a Sales Manager creates a customer without a tax code");
+        }
+        String reason = command.taxCodeExemptionReason();
+        if (reason == null || reason.isBlank()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Say why the customer has no tax code");
+        }
+        if (reason.strip().length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The reason is at most 500 characters");
+        }
+        return reason.strip();
+    }
+
+    /**
+     * The customer's first owner (sales-owner plan BR-S02, plan §4 cases 1 and 2): the salesperson a manager named, or
+     * the creating salesperson. Never nobody (owner decision 2026-11-28): a customer without an owner reaches nobody's
+     * list and its notices go to the managers, so a manager or an admin who creates one says who looks after it. The
+     * only customers without an owner are those whose owner left (NEEDS_ASSIGNMENT) and those of the one-time backfill
+     * that had no document (UNASSIGNED). Only a manager names someone other than themselves; whether the one named may
+     * own customers (BR-S04, D42: an active SALES_STAFF account) is checked when the owner is assigned.
+     *
+     * @return the owner, never null
+     * @throws BusinessException {@code FORBIDDEN} for a salesperson naming someone else; {@code SALES_OWNER_REQUIRED}
+     *         for anyone else naming nobody
+     */
+    private UUID firstOwner(CreateBusinessCustomer command) {
+        UUID actor = command.actorUserId();
+        boolean managesOwners = actor != null && salesStaff.holdsPermission(actor, SalesOwnershipService.MANAGES_OWNERS);
+        if (command.salesOwnerId() != null) {
+            if (!managesOwners && !command.salesOwnerId().equals(actor)) {
+                throw new BusinessException(ErrorCode.FORBIDDEN,
+                        "Only a Sales Manager chooses another salesperson to look after a new customer");
+            }
+            return command.salesOwnerId();
+        }
+        if (actor != null && !managesOwners && salesStaff.isActiveSalesAgent(actor)) {
+            return actor;
+        }
+        throw new BusinessException(ErrorCode.SALES_OWNER_REQUIRED);
     }
 
     /**

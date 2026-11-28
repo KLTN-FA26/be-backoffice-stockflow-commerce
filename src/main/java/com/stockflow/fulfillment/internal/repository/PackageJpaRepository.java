@@ -21,6 +21,15 @@ public interface PackageJpaRepository extends BaseJpaRepository<PackageJpaEntity
              order by p.labeledAt desc, p.id desc""")
     List<PackageJpaEntity> findLabeledByLpn(@org.springframework.data.repository.query.Param("lpn") String lpn);
 
+    /** A carton still at Carton Check, used to explain why its valid LPN cannot be loaded yet. */
+    @org.springframework.data.jpa.repository.Query("""
+            select p from PackageJpaEntity p
+             where p.lpn = :lpn and p.status in (
+                 com.stockflow.fulfillment.internal.domain.PackageStatus.TO_CHECK,
+                 com.stockflow.fulfillment.internal.domain.PackageStatus.CHECKED)
+             order by p.createdAt desc, p.id desc""")
+    List<PackageJpaEntity> findUnlabeledByLpn(@org.springframework.data.repository.query.Param("lpn") String lpn);
+
     /** 4C-6: the shipping cartons of these pick lines (one row per pick line, uk_package_pick_line). */
     List<PackageJpaEntity> findByPickLineIdIn(Collection<UUID> pickLineIds);
 

@@ -93,7 +93,8 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     @Override
     public Quote save(Quote quote) {
         QuoteJpaEntity entity = jpa.findByIdWithLines(quote.id()).orElseGet(() ->
-                new QuoteJpaEntity(quote.id(), quote.quoteNumber(), quote.requestId(), quote.customerId()));
+                new QuoteJpaEntity(quote.id(), quote.quoteNumber(), quote.requestId(), quote.customerId(),
+                        quote.salesOwnerId()));
         Quote.Offer offer = quote.offer();
         entity.apply(quote.status(), quote.revision(), offer.validUntil(), offer.terms(), quote.sentAt(), quote.sentBy(), quote.respondedAt(),
                 quote.respondedBy(), quote.customerFeedback(), quote.cancellationReason(), quote.convertedOrderId(),
@@ -187,7 +188,41 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
 
     @Override
     public Page<Row> search(Criteria criteria, Pageable pageable) {
-        Specification<QuoteJpaEntity> spec = Specification
+        return jpa.findAll(spec(criteria), pageable).map(QuoteRepositoryAdapter::toRow);
+    }
+
+    /**
+     * One statement grouped by the stored status, over the very {@link #spec} the list pages through, so a tab never
+     * counts what its list does not show. The expiry and the revision being written are counted beside the status
+     * rather than grouped by, as conditional counts: the service reads each status as the list reads its rows.
+     */
+    @Override
+    public List<StatusCount> statusCounts(Criteria criteria) {
+        org.hibernate.query.criteria.HibernateCriteriaBuilder cb =
+                (org.hibernate.query.criteria.HibernateCriteriaBuilder) entityManager.getCriteriaBuilder();
+        jakarta.persistence.criteria.CriteriaQuery<Object[]> query = cb.createQuery(Object[].class);
+        jakarta.persistence.criteria.Root<QuoteJpaEntity> root = query.from(QuoteJpaEntity.class);
+        jakarta.persistence.criteria.Predicate where = spec(criteria).toPredicate(root, query, cb);
+        jakarta.persistence.criteria.Path<QuoteStatus> status = root.get("status");
+        jakarta.persistence.criteria.Path<UUID> id = root.get("id");
+        query.multiselect(status, cb.count(id),
+                        cb.count(cb.<UUID>selectCase().when(cb.and(cb.equal(status, QuoteStatus.SENT),
+                                cb.lessThanOrEqualTo(root.<Instant>get("validUntil"), criteria.now())), id)),
+                        cb.count(cb.<UUID>selectCase().when(cb.isNotNull(root.get("sentAt")), id)),
+                        cb.count(cb.<UUID>selectCase().when(cb.equal(root.get("priceReview"), "PENDING"), id)))
+                .groupBy(status);
+        if (where != null) {
+            query.where(where);
+        }
+        return entityManager.createQuery(query).getResultList().stream()
+                .map(r -> new StatusCount((QuoteStatus) r[0], ((Number) r[1]).longValue(), ((Number) r[2]).longValue(),
+                        ((Number) r[3]).longValue(), ((Number) r[4]).longValue()))
+                .toList();
+    }
+
+    /** What the list searches: {@link Criteria} as a specification, shared by the page and the counts. */
+    private static Specification<QuoteJpaEntity> spec(Criteria criteria) {
+        return Specification
                 .<QuoteJpaEntity>allOf(Specs.eq("customerId", criteria.customerId()))
                 .and(Specs.contains("quoteNumber", criteria.number()))
                 .and(criteria.statuses() == null || criteria.statuses().isEmpty()
@@ -203,7 +238,6 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                 // 14 BR-10: the Sales Manager's queue - drafts waiting for their prices to be approved.
                 .and(criteria.priceReviewPendingOnly()
                         ? (root, query, cb) -> cb.equal(root.get("priceReview"), "PENDING") : null);
-        return jpa.findAll(spec, pageable).map(QuoteRepositoryAdapter::toRow);
     }
 
     /**
@@ -359,7 +393,8 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         return Quote.restore(e.getId(), e.getQuoteNumber(), e.getRequestId(), e.getCustomerId(), e.getStatus(),
                 e.getRevision(), new Quote.Offer(e.getValidUntil(), e.getTerms(), e.getRequestedDeliveryDate(), lines, fees),
                 e.getSentAt(), e.getSentBy(), e.getRespondedAt(), e.getRespondedBy(), e.getCustomerFeedback(),
-                e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt(), e.isPriceReviewPending());
+                e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt(), e.isPriceReviewPending(),
+                e.getSalesOwnerId());
     }
 
     private static QuoteLine toDomain(QuoteLineJpaEntity l) {

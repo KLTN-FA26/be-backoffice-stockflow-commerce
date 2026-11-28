@@ -77,6 +77,7 @@ class AssistantMoneyIntegrationTest {
     private static final String CUSTOMER_NAME = "Công ty TNHH Bao Bì Thử Nghiệm Trợ Lý";
 
     @Autowired MockMvc mockMvc;
+    @Autowired org.springframework.context.ApplicationContext context;
     @MockitoBean JwtDecoder decoder;
     @MockitoBean LanguageModel model;
     @Autowired SalesContracts contracts;
@@ -119,6 +120,10 @@ class AssistantMoneyIntegrationTest {
         });
         sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 50, "STANDARD", true);
         today = LocalDate.now(VIETNAM);
+        // The collections list names whoever looks after the customer (15 BR-22, 2026-11-28): the test's salesperson.
+        com.stockflow.support.SalesOwners owners = new com.stockflow.support.SalesOwners(context);
+        owners.grant(salesUser, "SALES_STAFF");
+        owners.own(customerId, salesUser);
     }
 
     /** A new order signed today: 30% due three days after signing, the rest before delivery. */
@@ -221,8 +226,8 @@ class AssistantMoneyIntegrationTest {
     // ---- 2.2 collections --------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("the installment due in three days is on the list with its customer, the salesperson who sent the "
-            + "contract and why; ranked by points, bounded, never an installment before delivery")
+    @DisplayName("the installment due in three days is on the list with its customer, the salesperson who looks "
+            + "after the customer and why; ranked by points, bounded, never an installment before delivery")
     void collections() throws Exception {
         Signed signed = signed();
 

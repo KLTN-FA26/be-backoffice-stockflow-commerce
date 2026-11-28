@@ -151,6 +151,9 @@ public class CustomerChatService {
             UUID agent = c.assignedAgentId();
             c.reopen(caller.actor(), writer.now(), writer.resolutionDue(writer.now()));
             writer.save(c, agent);
+            if (writer.rerouteReopened(c)) {
+                writer.changed(c, agent);
+            }
         }
         return views.detail(c, user.userId(), null);
     }

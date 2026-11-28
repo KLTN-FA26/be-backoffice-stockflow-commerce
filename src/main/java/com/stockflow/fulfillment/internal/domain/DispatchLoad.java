@@ -675,19 +675,20 @@ public final class DispatchLoad {
         ShipmentFacts shipment = parcel.shipment();
         if (!parcel.status().ships() || shipment == null) {
             throw new BusinessException(ErrorCode.PACKAGE_NOT_READY, "Package %s is %s%s; it is not ready to hand over"
-                    .formatted(parcel.labelCode(), parcel.status(), shipment == null ? " and in no shipment" : ""));
+                    .formatted(parcel.labelCode(), parcel.status(), shipment == null ? " and in no shipment" : ""),
+                    List.of(), scanDetails(parcel));
         }
         if (shipment.status() != ShipmentStatus.READY_TO_DISPATCH) {
             throw new BusinessException(ErrorCode.PACKAGE_NOT_READY, "Package %s belongs to shipment %s, which is %s"
-                    .formatted(parcel.labelCode(), shipment.code(), shipment.status()));
+                    .formatted(parcel.labelCode(), shipment.code(), shipment.status()), List.of(), scanDetails(parcel));
         }
         if (parcel.otherLoadCode() != null) {
             throw new BusinessException(ErrorCode.PACKAGE_ALREADY_LOADED, "Package %s is already on load %s"
-                    .formatted(parcel.labelCode(), parcel.otherLoadCode()));
+                    .formatted(parcel.labelCode(), parcel.otherLoadCode()), List.of(), scanDetails(parcel));
         }
         if (!warehouseId.equals(shipment.warehouseId())) {
             throw new BusinessException(ErrorCode.PACKAGE_NOT_IN_LOAD, "Package %s leaves from another warehouse"
-                    .formatted(parcel.labelCode()));
+                    .formatted(parcel.labelCode()), List.of(), scanDetails(parcel));
         }
         requirePlacedHere(parcel);
         Member member = members.get(shipment.shipmentId());
@@ -696,7 +697,7 @@ public final class DispatchLoad {
                     ? "Package %s belongs to shipment %s, which is on load %s".formatted(parcel.labelCode(),
                     shipment.code(), shipment.otherLoadCode())
                     : "Package %s belongs to shipment %s, which is not on this manifest: put the shipment on it first"
-                    .formatted(parcel.labelCode(), shipment.code())));
+                    .formatted(parcel.labelCode(), shipment.code())), List.of(), scanDetails(parcel));
         }
         loaded.put(parcel.packageId(), new Loaded(parcel.packageId(), shipment.shipmentId(), scanId, at,
                 Objects.requireNonNull(by), true, null, null));
@@ -728,7 +729,28 @@ public final class DispatchLoad {
                 where.add(com.stockflow.common.api.FieldError.of("loadCode", placed.loadCode()));
             }
         }
-        throw new BusinessException(ErrorCode.PACKAGE_NOT_IN_LOAD, message, where);
+        throw new BusinessException(ErrorCode.PACKAGE_NOT_IN_LOAD, message, where, scanDetails(parcel));
+    }
+
+    private static Map<String, Object> scanDetails(ParcelFacts parcel) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("packageStatus", parcel.status().name());
+        if (parcel.shipment() != null) {
+            details.put("shipmentCode", parcel.shipment().code());
+            details.put("shipmentStatus", parcel.shipment().status().name());
+        }
+        if (parcel.placement() != null) {
+            Placement placed = parcel.placement();
+            if (placed.planCode() != null) details.put("planCode", placed.planCode());
+            if (placed.vehicleSeq() != null) details.put("vehicleSeq", placed.vehicleSeq());
+            if (placed.loadCode() != null) details.put("loadCode", placed.loadCode());
+        }
+        if (parcel.otherLoadCode() != null) {
+            details.put("loadCode", parcel.otherLoadCode());
+        } else if (parcel.shipment() != null && parcel.shipment().otherLoadCode() != null) {
+            details.put("loadCode", parcel.shipment().otherLoadCode());
+        }
+        return details;
     }
 
     /** Takes a scanned parcel off the vehicle again before the handover. Not loaded here: nothing changes. */

@@ -32,6 +32,9 @@ import java.util.Set;
  * @param typingInterval       at most one typing signal per person per conversation in this time; the rest are dropped
  * @param presenceTimeout      a staff socket silent this long (no heartbeat, no frame) shows the agent as away
  * @param maxPageSize          the most messages or conversations one request returns
+ * @param claimMakesOwner      whether a salesperson who claims a conversation of a customer with no active Sales owner
+ *                             becomes the customer's owner (sales-owner plan BR-S05, 16 BR-13: on by default). Off,
+ *                             only a Sales Manager assigns owners and a claim takes the conversation alone
  */
 @ConfigurationProperties(prefix = "stockflow.chat")
 public record ChatProperties(
@@ -48,7 +51,8 @@ public record ChatProperties(
         @DefaultValue("100") int slaJobBatch,
         @DefaultValue("PT2S") Duration typingInterval,
         @DefaultValue("PT90S") Duration presenceTimeout,
-        @DefaultValue("100") int maxPageSize) {
+        @DefaultValue("100") int maxPageSize,
+        @DefaultValue("true") boolean claimMakesOwner) {
 
     public ChatProperties {
         requirePositive(firstResponseTarget, "first-response-target");

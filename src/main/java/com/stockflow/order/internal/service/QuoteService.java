@@ -128,6 +128,8 @@ class QuoteService implements Quotes {
     private final QuotePriceReviews priceReviews;
     /** 14 BR-10: how far below its reference, in percent, a price break may be before the quote waits for approval. */
     private final BigDecimal priceApprovalPercent;
+    /** 14 BR-25, BR-26: who may work on a customer's quotes, and whose customer it is when one is drawn up. */
+    private final CustomerOwnership ownership;
 
     QuoteService(QuoteRepository quotes, QuoteSearch search, CustomerService customers,
                  UomConversionService units, QuotedOrders quotedOrders, OrderService orders, ObjectMapper json,
@@ -139,13 +141,15 @@ class QuoteService implements Quotes {
                  com.stockflow.identity.api.IdentityService identities, LineNames lineNames,
                  QuotePriceReviews priceReviews,
                  @org.springframework.beans.factory.annotation.Value(
-                         "${stockflow.order.quote.price-approval-percent:10}") BigDecimal priceApprovalPercent) {
+                         "${stockflow.order.quote.price-approval-percent:10}") BigDecimal priceApprovalPercent,
+                 CustomerOwnership ownership) {
         if (priceApprovalPercent == null || priceApprovalPercent.signum() < 0
                 || priceApprovalPercent.compareTo(BigDecimal.valueOf(100)) >= 0) {
             throw new IllegalArgumentException("stockflow.order.quote.price-approval-percent must be in [0, 100)");
         }
         this.priceReviews = priceReviews;
         this.priceApprovalPercent = priceApprovalPercent;
+        this.ownership = ownership;
         this.lineNames = lineNames;
         this.skuDesigns = skuDesigns;
         this.identities = identities;
@@ -180,9 +184,13 @@ class QuoteService implements Quotes {
             return view(earlier.get());
         }
         requireNewWorkFor(customerId);
+        // 14 BR-25: the owner, their cover, a manager - or anyone while the customer has no active owner. Drawing the
+        // quote up claims nobody (D43).
+        ownership.requireMayActFor(user, customerId);
         Quote.Offer offer = offer(customerId, command.draft());
         requireActiveSkus(null, offer);
-        Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), command.requestId(), customerId, offer);
+        Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), command.requestId(), customerId, offer,
+                ownership.ownerAtDrawingUp(customerId));
         quotes.save(quote);
         transition(quote,1, null, QuoteStatus.DRAFT, null, null, clock.instant(), user.userId());
         log.info("Quote {} drafted for customer {} ({} line(s))", quote.quoteNumber(), customerId, offer.lines().size());
@@ -194,18 +202,7 @@ class QuoteService implements Quotes {
     public PageResponse<Row> list(CurrentUser user, Criteria criteria) {
         Optional<UUID> own = portalCustomer(user);
         Instant now = clock.instant();
-        // The customer meets a revision being written as the quote they asked to change (Quote#revisingSentQuote):
-        // listed under CHANGES_REQUESTED, at the revision they were last sent. Only sent quotes reach them, so a first
-        // draft is not added by asking for CHANGES_REQUESTED.
-        List<QuoteStatus> statuses = criteria.statuses();
-        if (own.isPresent() && statuses != null && statuses.contains(QuoteStatus.CHANGES_REQUESTED)
-                && !statuses.contains(QuoteStatus.DRAFT)) {
-            statuses = new ArrayList<>(statuses);
-            statuses.add(QuoteStatus.DRAFT);
-        }
-        var page = search.search(new QuoteSearch.Criteria(own.orElse(criteria.customerId()), statuses,
-                criteria.search(), own.isPresent(), now, own.isEmpty() && criteria.priceReviewPendingOnly()),
-                Pages.of(criteria.page(), criteria.size(),
+        var page = search.search(searchCriteria(own, criteria, now), Pages.of(criteria.page(), criteria.size(),
                 SORT.parse(criteria.sort())));
         // The validity each revising row was last sent with, for the whole page in one statement: read row by row it
         // was a history query and a quote load per revising quote listed.
@@ -231,16 +228,64 @@ class QuoteService implements Quotes {
             QuoteSearch.ConvertedOrderRef order = r.convertedOrderId() == null ? null
                     : converted.get(r.convertedOrderId());
             // 17 §5.2: the customer meets the order once its contract is sent, not while it is drafted - as view().
-            String orderNumber = order == null
-                    || own.isPresent() && com.stockflow.order.api.OrderStatus.DRAFT.name().equals(order.status())
-                    ? null : order.orderNumber();
+            boolean orderShown = order != null
+                    && !(own.isPresent() && com.stockflow.order.api.OrderStatus.DRAFT.name().equals(order.status()));
             return new Row(r.id(), r.quoteNumber(), r.customerId(), status, revising ? r.revision() - 1 : r.revision(),
                     revising ? lastSentValidUntil.getOrDefault(r.id(), r.validUntil()) : r.validUntil(), r.sentAt(),
                     r.convertedOrderId(), r.createdAt(), r.version(), summary == null ? null : summary.total(),
                     summary == null ? null : summary.lineCount(), summary == null ? null : summary.firstItemName(),
-                    label == null ? null : label.name(), label == null ? null : label.code(), orderNumber,
-                    own.isEmpty() && r.priceReviewPending());
+                    label == null ? null : label.name(), label == null ? null : label.code(),
+                    orderShown ? order.orderNumber() : null, own.isEmpty() && r.priceReviewPending(),
+                    orderShown ? com.stockflow.order.api.OrderStatus.valueOf(order.status()) : null);
         }));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public StatusCounts statusCounts(CurrentUser user, Criteria criteria) {
+        Optional<UUID> own = portalCustomer(user);
+        Map<QuoteStatus, Long> byStatus = new java.util.EnumMap<>(QuoteStatus.class);
+        for (QuoteStatus status : QuoteStatus.values()) {
+            byStatus.put(status, 0L);
+        }
+        long pending = 0;
+        for (QuoteSearch.StatusCount count : search.statusCounts(searchCriteria(own, criteria, clock.instant()))) {
+            // Each stored status read as list() reads its rows: a SENT quote past its validity is EXPIRED, and to the
+            // customer a revision Sales are writing after sending it is the quote they asked to change.
+            switch (count.status()) {
+                case SENT -> {
+                    byStatus.merge(QuoteStatus.SENT, count.total() - count.pastValidity(), Long::sum);
+                    byStatus.merge(QuoteStatus.EXPIRED, count.pastValidity(), Long::sum);
+                }
+                case DRAFT -> {
+                    long revising = own.isPresent() ? count.sent() : 0;
+                    byStatus.merge(QuoteStatus.DRAFT, count.total() - revising, Long::sum);
+                    byStatus.merge(QuoteStatus.CHANGES_REQUESTED, revising, Long::sum);
+                }
+                default -> byStatus.merge(count.status(), count.total(), Long::sum);
+            }
+            pending += count.priceReviewPending();
+        }
+        long total = byStatus.values().stream().mapToLong(Long::longValue).sum();
+        return new StatusCounts(java.util.Collections.unmodifiableMap(byStatus), total, own.isEmpty() ? pending : 0);
+    }
+
+    /**
+     * What {@link #list} and {@link #statusCounts} search, from one place so a tab's count is the length of the list it
+     * opens. A portal user is held to their own customer's quotes, as they were ever shown them.
+     */
+    private static QuoteSearch.Criteria searchCriteria(Optional<UUID> own, Criteria criteria, Instant now) {
+        // The customer meets a revision being written as the quote they asked to change (Quote#revisingSentQuote):
+        // listed under CHANGES_REQUESTED, at the revision they were last sent. Only sent quotes reach them, so a first
+        // draft is not added by asking for CHANGES_REQUESTED.
+        List<QuoteStatus> statuses = criteria.statuses();
+        if (own.isPresent() && statuses != null && statuses.contains(QuoteStatus.CHANGES_REQUESTED)
+                && !statuses.contains(QuoteStatus.DRAFT)) {
+            statuses = new ArrayList<>(statuses);
+            statuses.add(QuoteStatus.DRAFT);
+        }
+        return new QuoteSearch.Criteria(own.orElse(criteria.customerId()), statuses, criteria.search(), own.isPresent(),
+                now, own.isEmpty() && criteria.priceReviewPendingOnly());
     }
 
     /** What a list row shows of its offer (R5-2). */
@@ -316,6 +361,7 @@ class QuoteService implements Quotes {
     public QuoteView send(CurrentUser user, UUID quoteId, long version) {
         ScopeGuards.requireBackOffice(user);
         Quote quote = lock(user, quoteId, version);
+        ownership.requireMayActFor(user, quote.customerId());
         requireCustomerSkus(quote, "sent");
         requireNewWorkFor(quote.customerId());
         requireActiveSkus(quote.quoteNumber(), quote.offer());
@@ -410,6 +456,8 @@ class QuoteService implements Quotes {
     public QuoteView withdrawPriceReview(CurrentUser user, UUID quoteId, long version) {
         ScopeGuards.requireBackOffice(user);
         Quote quote = lock(user, quoteId, version);
+        // 14 BR-25: a salesperson who lost the customer no longer withdraws what they sent for approval.
+        ownership.requireMayActFor(user, quote.customerId());
         QuotePriceReviews.Review review = waitingReview(quote);
         quote.withdrawPriceReview();
         quotes.save(quote);
@@ -588,9 +636,11 @@ class QuoteService implements Quotes {
         return expired;
     }
 
+    /** Edit, reopen (a revision) and cancel: each a step 14 BR-25 keeps to whoever may act for the customer. */
     private QuoteView backOffice(CurrentUser user, UUID quoteId, long version, Consumer<Quote> change, String reason) {
         ScopeGuards.requireBackOffice(user);
         Quote quote = lock(user, quoteId, version);
+        ownership.requireMayActFor(user, quote.customerId());
         QuoteStatus from = quote.status();
         int revision = quote.revision();
         change.accept(quote);

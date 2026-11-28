@@ -99,6 +99,13 @@ public interface IdentityService {
     java.util.Map<UUID, String> displayNames(java.util.Collection<UUID> userIds);
 
     /**
+     * {@link #displayNames} with whether each account is still ACTIVE, for a screen that names a colleague who may have
+     * left (the back office customer list's salesperson, owner decision 2026-11-27): one query, users that exist only.
+     * Like the names it needs no user-management permission - it tells active from not, never why.
+     */
+    java.util.Map<UUID, UserLabel> userLabels(java.util.Collection<UUID> userIds);
+
+    /**
      * Create a staff account with its roles. The password is temporary: the user must change it.
      *
      * @throws com.stockflow.common.error.BusinessException {@code USERNAME_ALREADY_EXISTS},

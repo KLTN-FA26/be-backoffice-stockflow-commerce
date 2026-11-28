@@ -138,6 +138,11 @@ class ProductionScheduleIntegrationTest {
         UUID salesUser = tx.execute(s -> ReferenceRows.user(entityManager));
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
+        // Strict mode (14 BR-25) never blocks a manager: the drafting account draws contracts whoever owns the customer.
+        sql("""
+                INSERT INTO identity.user_role (id, user_id, role_id, version, created_at)
+                SELECT ?, ?, r.id, 0, NOW() FROM identity.app_role r WHERE r.code = 'SALES_MANAGER'""",
+                Identifiers.newId(), salesUser);
         coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
         manager = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = Identifiers.newId();
@@ -495,6 +500,8 @@ class ProductionScheduleIntegrationTest {
     void poNeededOpensAndClosesItself() {
         UUID coordinatorUser = staff("PRODUCTION_COORDINATOR", null);
         UUID salesUser = staff("SALES_STAFF", null);
+        // 17 BR-30 (2026-11-28): of Sales, the customer's owner is told.
+        new com.stockflow.support.SalesOwners(context).own(customerId, salesUser);
         UUID managerOfA = staff("WAREHOUSE_MANAGER", a);
 
         UUID later = confirmedOrder(oneBatchIn(15), a);
@@ -593,6 +600,8 @@ class ProductionScheduleIntegrationTest {
     void deliveryLateAndTheNightlySweep() throws Exception {
         UUID coordinatorUser = staff("PRODUCTION_COORDINATOR", null);
         UUID salesUser = staff("SALES_STAFF", null);
+        // 17 BR-30 (2026-11-28): of Sales, the customer's owner is told.
+        new com.stockflow.support.SalesOwners(context).own(customerId, salesUser);
         UUID managerOfA = staff("WAREHOUSE_MANAGER", a);
         UUID managerOfB = staff("WAREHOUSE_MANAGER", b);
 
@@ -769,6 +778,8 @@ class ProductionScheduleIntegrationTest {
             + "no recompute asked for")
     void theOrdersWritesAreTriggers() {
         UUID salesUser = staff("SALES_STAFF", null);
+        // 17 BR-30 (2026-11-28): of Sales, the customer's owner is told.
+        new com.stockflow.support.SalesOwners(context).own(customerId, salesUser);
         UUID orderId = confirmedOrder(oneBatchIn(10), a);
         UUID batch = batchId(orderId, 1);
 

@@ -28,6 +28,7 @@ import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.CarrierJpaRepository;
+import com.stockflow.fulfillment.internal.repository.CarrierEventJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository;
@@ -109,6 +110,7 @@ class DispatchService implements Dispatching {
     private final Waybills waybills;
     private final com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository waybillChanges;
     private final com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository carrierBookings;
+    private final CarrierEventJpaRepository carrierEvents;
     private final VehicleRelayout relayouts;
     private final TransactionOperations tx;
     private final Clock clock;
@@ -125,6 +127,7 @@ class DispatchService implements Dispatching {
                     Waybills waybills,
                     com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository waybillChanges,
                     com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository carrierBookings,
+                    CarrierEventJpaRepository carrierEvents,
                     VehicleRelayout relayouts, TransactionOperations tx, Clock clock) {
         this.loads = loads;
         this.members = members;
@@ -147,6 +150,7 @@ class DispatchService implements Dispatching {
         this.waybills = waybills;
         this.waybillChanges = waybillChanges;
         this.carrierBookings = carrierBookings;
+        this.carrierEvents = carrierEvents;
         this.relayouts = relayouts;
         this.tx = tx;
         this.clock = clock;
@@ -253,7 +257,7 @@ class DispatchService implements Dispatching {
             }
             return detail(header, load);
         }
-        PackageJpaEntity parcel = parcelScanned(code);
+        PackageJpaEntity parcel = parcelScannedForLoading(code);
         // BR-SEC-002: a parcel of a warehouse the caller is not assigned to is answered as unknown, before a refusal
         // below names its shipment, its status or the load it is on - whether or not it is in a shipment yet, so the
         // warehouse is its task's, which every parcel has.
@@ -276,10 +280,11 @@ class DispatchService implements Dispatching {
         // SCRUM-474 UNLOAD-DESIGN point 4: a parcel of a vehicle called off stays locked until it is scanned off.
         Map<UUID, UUID> awaitingUnload = store.pendingUnloadLoads(List.of(parcel.getId()));
         if (!awaitingUnload.isEmpty()) {
+            String pendingLoadCode = loads.findById(awaitingUnload.get(parcel.getId()))
+                    .map(DispatchLoadJpaEntity::getCode).orElse("?");
             throw new BusinessException(ErrorCode.PACKAGE_UNLOAD_PENDING, ("Package %s is still on load %s, which was "
                     + "called off: scan it off there first").formatted(parcel.getLabelCode(),
-                    loads.findById(awaitingUnload.get(parcel.getId())).map(DispatchLoadJpaEntity::getCode)
-                            .orElse("?")));
+                    pendingLoadCode), List.of(), Map.of("loadCode", pendingLoadCode));
         }
         // SCRUM-392: a vehicle takes only what its plan placed on it (read: placements change under the plan's lock,
         // and an order cancelled meanwhile finds the parcel on board and asks for it to be unloaded). A load of the
@@ -371,6 +376,29 @@ class DispatchService implements Dispatching {
                 .or(() -> packages.findByLabelCode(upper))
                 .or(() -> packages.findLabeledByLpn(upper).stream().findFirst())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PACKAGE_NOT_FOUND, "No package labelled " + code));
+    }
+
+    private PackageJpaEntity parcelScannedForLoading(String code) {
+        try {
+            return parcelScanned(code);
+        } catch (BusinessException missing) {
+            if (missing.errorCode() != ErrorCode.PACKAGE_NOT_FOUND) {
+                throw missing;
+            }
+            PackageJpaEntity unlabelled = packages.findUnlabeledByLpn(code.toUpperCase(Locale.ROOT)).stream()
+                    .findFirst().orElseThrow(() -> missing);
+            // Keep the same warehouse boundary as a labelled parcel before disclosing its state.
+            if (WarehouseScope.restriction().isPresent()) {
+                UUID warehouse = picks.warehouseOfPack(unlabelled.getPackId()).orElse(null);
+                if (warehouse == null || !WarehouseScope.restriction().orElseThrow().ids().contains(warehouse)) {
+                    throw missing;
+                }
+            }
+            throw new BusinessException(ErrorCode.PACKAGE_NOT_READY,
+                    "Carton %s is %s; finish Carton Check and print its label before loading"
+                            .formatted(code, unlabelled.getStatus()), List.of(),
+                    Map.of("packageStatus", unlabelled.getStatus().name()));
+        }
     }
 
     /**
@@ -1448,7 +1476,11 @@ class DispatchService implements Dispatching {
                         .map(b -> new CarrierBookingView(b.getStatus(), b.getCarrierOrderId(), b.getTrackingLink(),
                                 b.getRequestedAt(), b.getBookedAt(), b.getLastError())).orElse(null),
                 List.of(), names.get(header.getLoadingStartedBy()), names.get(header.getBookedBy()),
-                warehouse == null ? null : warehouse.prefix());
+                warehouse == null ? null : warehouse.prefix(),
+                (header.getStatus() == LoadStatus.VEHICLE_BOOKED || header.getStatus() == LoadStatus.LOADING)
+                        && header.getDriverName() == null && carrier != null
+                        && "API_BOOKING".equals(carrier.getConnectionType())
+                        ? carrierEvents.lastDriverReleasedAt(header.getId()) : null);
     }
 
     /**

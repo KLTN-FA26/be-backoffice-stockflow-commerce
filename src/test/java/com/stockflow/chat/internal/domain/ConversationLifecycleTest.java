@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The conversation's lifecycle, kltn-docs 16 §5, without a container: the move table (every one of the 121 pairs),
  * each allowed move reached through the aggregate's own methods by the side that makes it, and the refusals - wrong
  * move, wrong person, the reopen window, internal notes. {@code tools/db/qa/97_chat.sql} sweeps the same 110 moves
- * against the database's trigger.
+ * against the database's trigger, unflagged; {@code 99_chat_sales_owner.sql} the six flagged moves back to the queue.
  */
 class ConversationLifecycleTest {
 
@@ -37,25 +37,32 @@ class ConversationLifecycleTest {
     private static final Actor OTHER_AGENT = Actor.agent(Identifiers.newId(), false);
     private static final Actor SUPERVISOR = Actor.agent(Identifiers.newId(), true);
 
-    /** 16 §5, written out once more by hand: the test must not read the table it checks. */
+    /**
+     * 16 §5, written out once more by hand: the test must not read the table it checks. Since 2026-11-28 (sales-owner
+     * plan BR-S08, 16 BR-14) every open state with an agent goes back to QUEUED when the agent's account stops working.
+     */
     private static final Map<ConversationStatus, Set<ConversationStatus>> ALLOWED = Map.ofEntries(
             Map.entry(ConversationStatus.NEW, EnumSet.of(ConversationStatus.QUEUED, ConversationStatus.ASSIGNED)),
             Map.entry(ConversationStatus.QUEUED, EnumSet.of(ConversationStatus.ASSIGNED)),
-            Map.entry(ConversationStatus.ASSIGNED, EnumSet.of(ConversationStatus.ACTIVE)),
+            Map.entry(ConversationStatus.ASSIGNED, EnumSet.of(ConversationStatus.ACTIVE, ConversationStatus.QUEUED)),
             Map.entry(ConversationStatus.ACTIVE, EnumSet.of(ConversationStatus.WAITING_ON_CUSTOMER,
-                    ConversationStatus.WAITING_ON_INTERNAL, ConversationStatus.ESCALATED, ConversationStatus.RESOLVED)),
+                    ConversationStatus.WAITING_ON_INTERNAL, ConversationStatus.ESCALATED, ConversationStatus.RESOLVED,
+                    ConversationStatus.QUEUED)),
             Map.entry(ConversationStatus.WAITING_ON_CUSTOMER, EnumSet.of(ConversationStatus.ACTIVE,
-                    ConversationStatus.AUTO_CLOSED)),
-            Map.entry(ConversationStatus.WAITING_ON_INTERNAL, EnumSet.of(ConversationStatus.ACTIVE)),
-            Map.entry(ConversationStatus.ESCALATED, EnumSet.of(ConversationStatus.ACTIVE, ConversationStatus.RESOLVED)),
+                    ConversationStatus.AUTO_CLOSED, ConversationStatus.QUEUED)),
+            Map.entry(ConversationStatus.WAITING_ON_INTERNAL, EnumSet.of(ConversationStatus.ACTIVE,
+                    ConversationStatus.QUEUED)),
+            Map.entry(ConversationStatus.ESCALATED, EnumSet.of(ConversationStatus.ACTIVE, ConversationStatus.RESOLVED,
+                    ConversationStatus.QUEUED)),
             Map.entry(ConversationStatus.RESOLVED, EnumSet.of(ConversationStatus.REOPENED, ConversationStatus.CLOSED)),
-            Map.entry(ConversationStatus.REOPENED, EnumSet.of(ConversationStatus.ACTIVE)),
+            Map.entry(ConversationStatus.REOPENED, EnumSet.of(ConversationStatus.ACTIVE, ConversationStatus.QUEUED)),
             Map.entry(ConversationStatus.AUTO_CLOSED, EnumSet.of(ConversationStatus.REOPENED,
                     ConversationStatus.CLOSED)),
             Map.entry(ConversationStatus.CLOSED, EnumSet.noneOf(ConversationStatus.class)));
 
     @Test
-    @DisplayName("the move table is 16 §5: 18 moves allowed, the other 103 pairs (the 11 stays included) refused")
+    @DisplayName("the move table is 16 §5: 24 moves allowed (BR-S08's six back to the queue included), the other 97 "
+            + "pairs (the 11 stays included) refused")
     void theMoveTableIsTheSpecification() {
         int allowed = 0;
         List<String> wrong = new ArrayList<>();
@@ -70,7 +77,7 @@ class ConversationLifecycleTest {
             assertThat(from.next()).as(from + " next()").isEqualTo(ALLOWED.get(from));
         }
         assertThat(wrong).isEmpty();
-        assertThat(allowed).isEqualTo(18);
+        assertThat(allowed).isEqualTo(24);
         assertThat(ConversationStatus.values()).hasSize(11);
     }
 

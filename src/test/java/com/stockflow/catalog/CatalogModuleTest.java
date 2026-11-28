@@ -36,6 +36,9 @@ class CatalogModuleTest {
     // customer (bootstrapped) invites portal accounts and mails the invitation (SCRUM-429): its ports, not the modules.
     @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
     @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;
+    // customer (bootstrapped) validates and names a Sales owner and their cover (sales-owner plan, 2026-11-28).
+    @MockitoBean com.stockflow.identity.api.SalesStaff salesStaffMock;
+    @MockitoBean com.stockflow.identity.api.StaffCovers staffCoversMock;
 
     @Test
     @DisplayName("catalog starts and answers through its api with the other modules absent")

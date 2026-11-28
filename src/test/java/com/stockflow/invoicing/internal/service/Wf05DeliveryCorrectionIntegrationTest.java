@@ -198,6 +198,22 @@ class Wf05DeliveryCorrectionIntegrationTest {
         });
     }
 
+    /**
+     * Waits until invoicing's own listener has handled the correction of {@code shipment} - its publication of
+     * {@code ShipmentStatusChanged} completed - so what the test does next cannot race it. Asking
+     * {@code voidForCorrectedDelivery} instead proves nothing: the test's own call does the voiding, answers at once,
+     * and the listener still runs afterwards on the one async thread, behind whatever earlier steps left queued. Run
+     * after an adjustment held back by the provider was issued, it finds nothing holding the original back any more and
+     * reduces it itself, and the accountant's reduction the test makes next is refused as already reduced.
+     */
+    private void correctionHeard(UUID shipment) {
+        Await.until("the correction heard by invoicing", ASYNC, () -> Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT count(*) > 0 AND count(*) FILTER (WHERE completion_date IS NULL) = 0 FROM event_publication
+                 WHERE event_type LIKE '%ShipmentStatusChanged' AND listener_id LIKE '%DeliveryCorrectionListener%'
+                   AND serialized_event LIKE ? AND serialized_event LIKE '%"status":"DELIVERY_FAILED"%'""",
+                Boolean.class, "%" + shipment + "%")));
+    }
+
     private List<UUID> originalsOf(UUID shipment) {
         return jdbc.queryForList("""
                 SELECT id FROM invoicing.einvoice WHERE shipment_id = ? AND type = 'ORIGINAL' AND status <> 'VOIDED_DRAFT'
@@ -612,8 +628,9 @@ class Wf05DeliveryCorrectionIntegrationTest {
         assertThat(adjustment.status()).as("taken in, its reply lost").isEqualTo(EInvoiceStatus.SUBMITTING);
 
         correctToFailed(shipment);
-        Await.until("the failure heard", ASYNC, () -> drafts.voidForCorrectedDelivery(orderId, shipment)
-                != EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
+        correctionHeard(shipment);
+        assertThat(drafts.voidForCorrectedDelivery(orderId, shipment))
+                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
         assertThat(drafts.reverseOrExplain(orderId, shipment).notReversed())
                 .isEqualTo(com.stockflow.contracts.EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_NOT_REVERSED);
         assertThat(reductionsOf(original.id())).isZero();
@@ -625,17 +642,14 @@ class Wf05DeliveryCorrectionIntegrationTest {
         assertThat(deliveryInvoices.invoiced(List.of(shipment))).as("N-1: the order's block names the shipment")
                 .containsExactly(shipment);
 
+        // The adjustment was never marked (only an original or a replacement at the provider is), so its issue hands
+        // nothing on to be settled: the reduction is the accountant's, below, and nothing draws it up meanwhile.
         assertThat(issuance.reconcile(adjustment.id()).status()).isEqualTo(EInvoiceStatus.ISSUED);
-        Await.until("the adjustment's answer settled", ASYNC, () -> jdbc.queryForObject("""
-                SELECT count(*) FROM event_publication WHERE completion_date IS NULL
-                   AND event_type LIKE '%DeliveryFailedInvoiceAnswered'""", Long.class) == 0);
-        if (reductionsOf(original.id()) == 0) {
-            EInvoice.Snapshot settled = queries.get(original.id());
-            assertThat(drafts.deliveryFailureReducible(settled)).as("BE #423: the button is offered").isTrue();
-            assertThat(reductionsOf(original.id())).as("reading the flag writes nothing").isZero();
-            EInvoice.Snapshot reduction = drafts.reduceForFailedDelivery(settled.id(), settled.version());
-            assertThat(reduction.correctionBasis()).isEqualTo(CorrectionBasis.DELIVERY_FAILED);
-        }
+        EInvoice.Snapshot settled = queries.get(original.id());
+        assertThat(drafts.deliveryFailureReducible(settled)).as("BE #423: the button is offered").isTrue();
+        assertThat(reductionsOf(original.id())).as("reading the flag writes nothing").isZero();
+        EInvoice.Snapshot reduction = drafts.reduceForFailedDelivery(settled.id(), settled.version());
+        assertThat(reduction.correctionBasis()).isEqualTo(CorrectionBasis.DELIVERY_FAILED);
         assertThat(reductionsOf(original.id())).isEqualTo(1);
         assertThat(drafts.deliveryFailureReducible(queries.get(original.id()))).as("reduced: no button").isFalse();
         assertThat(deliveryInvoices.invoiced(List.of(shipment))).as("reduced: the block names nothing").isEmpty();
@@ -656,8 +670,9 @@ class Wf05DeliveryCorrectionIntegrationTest {
                 .isEqualTo(ErrorCode.EINVOICE_EXTERNAL_REDUCTION_NOT_APPLICABLE);
 
         correctToFailed(shipment);
-        Await.until("the failure heard", ASYNC, () -> drafts.voidForCorrectedDelivery(orderId, shipment)
-                == EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
+        correctionHeard(shipment);
+        assertThat(drafts.voidForCorrectedDelivery(orderId, shipment))
+                .isEqualTo(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
         assertThat(drafts.reverseOrExplain(orderId, shipment).notReversed())
                 .isEqualTo(com.stockflow.contracts.EInvoiceNeedsAttention.Cause.REPLACEMENT_NOT_REDUCIBLE);
         assertThat(reductionsOf(replacement.id())).isZero();

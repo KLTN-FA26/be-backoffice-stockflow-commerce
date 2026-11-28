@@ -14,6 +14,11 @@ final class ChatResources {
     static final String SUPERVISION = ChatCallers.SUPERVISION;
     /** Saved replies (package 3). */
     static final String CANNED_RESPONSES = ChatCallers.CANNED_RESPONSES;
+    /**
+     * The managers' assignment board (sales-owner plan §10.4): declared by {@code customer}, which owns the board
+     * (V20270128000140); the chat serves its conversation counts under the same permission.
+     */
+    static final String SALES_WORKLOAD = "sales-workload";
 
     private ChatResources() {
     }

@@ -47,6 +47,19 @@ class NoRoleNameAccessTest {
     }
 
     private static final List<Allowed> ALLOWED = List.of(
+            // D42 (owner decision 2026-11-28, kltn-docs 18 BR-13): a customer's Sales owner and a cover are, by
+            // definition, accounts holding the Sales Staff role - a business role, not an access check; the database
+            // triggers on customer.customer and identity.staff_cover state the same rule. Who may ACT is still read
+            // from permissions (customer-sales-owners:UPDATE, requireMayActFor).
+            new Allowed("identity/api/SalesStaff.java", "Set<String> SALES_ROLES = Set.of(",
+                    "D42: an owner or a cover is a Sales Staff account (who is eligible, not who may act)"),
+            new Allowed("identity/internal/service/SalesStaffDirectory.java",
+                    "held.values().forEach(list -> list.sort(Comparator.comparing(StaffMember.Role::code)));",
+                    "sorts the roles shown beside a name in the Sales pickers; no access decision"),
+            new Allowed("identity/internal/service/SalesStaffDirectory.java", "return ids(Set.of(Roles.SALES_MANAGER));",
+                    "D6: who is told when a customer has no active owner (recipients, not access)"),
+            new Allowed("identity/internal/service/SalesStaffDirectory.java", "return ids(Set.of(Roles.SYSTEM_ADMIN));",
+                    "plan case 25: the last fallback recipients when no Sales Manager is active (recipients, not access)"),
             // ---- the security layer: converting a token, and the one data-scope test that has to name CUSTOMER
             new Allowed("assistant/internal/controller/dto/NextStepsResponse.java",
                     "allowableValues = {\"CUSTOMER\", \"SALES\", \"ACCOUNTANT\", \"WAREHOUSE\",",
@@ -91,19 +104,17 @@ class NoRoleNameAccessTest {
             new Allowed("identity/internal/controller/dto/RoleResponse.java", "example = \"ACCOUNTANT\"",
                     "OpenAPI example of a role code"),
             // ---- who is told: the audience of a notification, not access
-            new Allowed("notification/internal/service/QuoteNotificationListener.java", "staff.activeStaff(Role.SALES_STAFF)",
-                    "who is told of a quote with no handler"),
             new Allowed("application.yml", "heldOrders: ${ASSISTANT_WATCH_HELD_ORDERS_ROLES",
                     "assistant watch audience (whose list it is), not access: the tool's guard still decides"),
-            new Allowed("order/internal/service/SalesRecipients.java",
-                    "identity.notificationRecipients(Set.of(Roles.SALES_STAFF), null)",
-                    "who is told of a contract or an order whose salesperson is gone (WF-02 FLOW-4): the same rule as "
-                            + "a quote with no handler, kltn-docs 00 §6 - it addresses a message, it grants no access"),
             new Allowed("notification/internal/service/WarehouseCapacityNotificationListener.java",
                     "staff.activeStaff(Role.WAREHOUSE_MANAGER, event.warehouseId())",
                     "who is told the projected free room turned negative: kltn-docs 00 §6 picks recipients by role "
                             + "and warehouse at send time, and C42 names only the receiving warehouse's Warehouse "
                             + "Manager - it addresses a message, it grants no access"),
+            new Allowed("notification/internal/service/SalesNotices.java",
+                    ".filter(member -> member.roles().stream().allMatch(role -> SalesStaff.SALES_ROLES.contains(",
+                    "17 BR-30 (2026-11-28): a delay alert drops only the plain salespeople who do not look after the "
+                            + "customer; one who also holds another role is told as that role - recipients, not access"),
             // ---- checks on the user an action is about, not on the caller
             new Allowed("fulfillment/internal/service/FulfillmentServiceImpl.java",
                     "Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority()",

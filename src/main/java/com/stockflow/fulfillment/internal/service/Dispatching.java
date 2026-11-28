@@ -62,7 +62,8 @@ public interface Dispatching {
                       boolean carrierBookingToCancel, String cancelReasonCode, UUID replacementLoadId,
                       String replacementLoadCode, String waybillNo, String carrierConnectionType,
                       CarrierBookingView carrierBooking, List<HandoverWarning> handoverWarnings,
-                      String loadingStartedByName, String bookedByName, String warehouseCode) {
+                      String loadingStartedByName, String bookedByName, String warehouseCode,
+                      Instant driverReleasedAt) {
 
         public LoadDetail {
             handoverWarnings = handoverWarnings == null ? List.of() : List.copyOf(handoverWarnings);
@@ -87,7 +88,7 @@ public interface Dispatching {
                     expectedPackageCount, loadedPackageCount, version, shipments, loadPlanId, loadPlanCode, vehicleSeq,
                     vehicleTypeCode, bookedAt, bookedBy, bookingCancelledAt, bookingCancelReason, pendingUnloads,
                     carrierBookingToCancel, cancelReasonCode, replacementLoadId, replacementLoadCode, waybillNo,
-                    carrierConnectionType, carrierBooking, List.of(), null, null, null);
+                    carrierConnectionType, carrierBooking, List.of(), null, null, null, null);
         }
 
         /** The same load with the warnings the start of loading found. */
@@ -99,7 +100,7 @@ public interface Dispatching {
                     loadPlanCode, vehicleSeq, vehicleTypeCode, bookedAt, bookedBy, bookingCancelledAt,
                     bookingCancelReason, pendingUnloads, carrierBookingToCancel, cancelReasonCode, replacementLoadId,
                     replacementLoadCode, waybillNo, carrierConnectionType, carrierBooking, warnings,
-                    loadingStartedByName, bookedByName, warehouseCode);
+                    loadingStartedByName, bookedByName, warehouseCode, driverReleasedAt);
         }
     }
 

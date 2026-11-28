@@ -55,10 +55,14 @@ class OrderReleaseController {
     private final com.stockflow.order.api.OrderService orders;
     private final OrderWarehouseVisibility visibility;
     private final com.stockflow.warehouse.api.WarehouseService warehouses;
+    /** 17 BR-32: holds and their lifting by hand, recorded as done on the owner's behalf when someone else does it. */
+    private final com.stockflow.order.internal.service.OrderOperations operations;
 
     OrderReleaseController(OrderReleases releases, com.stockflow.order.api.OrderService orders,
                            OrderWarehouseVisibility visibility,
-                           com.stockflow.warehouse.api.WarehouseService warehouses) {
+                           com.stockflow.warehouse.api.WarehouseService warehouses,
+                           com.stockflow.order.internal.service.OrderOperations operations) {
+        this.operations = operations;
         this.warehouses = warehouses;
         this.releases = releases;
         this.orders = orders;
@@ -110,7 +114,7 @@ class OrderReleaseController {
                     java.util.List.of(new FieldError("reasonCode", "must be one of PAYMENT, ADDRESS, INVENTORY, "
                             + "CUSTOMER, FRAUD, OTHER", "NotRaisedByHand")));
         }
-        return ApiResponse.ok(OrderWebMapper.toResponse(orders.putOnHold(orderId, request.reasonCode(),
+        return ApiResponse.ok(OrderWebMapper.toResponse(operations.putOnHold(orderId, request.reasonCode(),
                 request.note(), user.userId())));
     }
 
@@ -123,7 +127,7 @@ class OrderReleaseController {
                                                   @Valid @RequestBody ResolveHoldRequest request,
                                                   @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(OrderWebMapper.toResponse(orders.resolveHold(orderId, request.note(), user.userId())));
+        return ApiResponse.ok(OrderWebMapper.toResponse(operations.resolveHold(orderId, request.note(), user.userId())));
     }
 
     /**

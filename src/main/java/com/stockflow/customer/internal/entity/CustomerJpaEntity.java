@@ -1,5 +1,6 @@
 package com.stockflow.customer.internal.entity;
 
+import com.stockflow.customer.api.SalesOwnerState;
 import com.stockflow.customer.internal.domain.CustomerStatus;
 import com.stockflow.common.persistence.BaseEntity;
 import jakarta.persistence.Column;
@@ -9,6 +10,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -50,6 +52,17 @@ public class CustomerJpaEntity extends BaseEntity {
     @Column(name = "status", nullable = false, length = 32)
     private CustomerStatus status;
 
+    /** The Sales owner (sales-owner plan §2.1), FK to {@code identity.app_user}; for NEEDS_ASSIGNMENT the one who left. */
+    @Column(name = "sales_owner_id")
+    private UUID salesOwnerId;
+
+    @Column(name = "sales_owner_since")
+    private Instant salesOwnerSince;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "sales_owner_state", nullable = false, length = 32)
+    private SalesOwnerState salesOwnerState = SalesOwnerState.UNASSIGNED;
+
     /** Required by JPA. Application code uses the id-taking constructor. */
     protected CustomerJpaEntity() {
     }
@@ -74,6 +87,12 @@ public class CustomerJpaEntity extends BaseEntity {
         this.status = status;
     }
 
+    public void applySalesOwner(UUID salesOwnerId, SalesOwnerState salesOwnerState, Instant salesOwnerSince) {
+        this.salesOwnerId = salesOwnerId;
+        this.salesOwnerState = salesOwnerState;
+        this.salesOwnerSince = salesOwnerSince;
+    }
+
     public UUID getUserId() { return userId; }
     public String getFullName() { return fullName; }
     public String getEmail() { return email; }
@@ -81,6 +100,9 @@ public class CustomerJpaEntity extends BaseEntity {
     public String getTaxCode() { return taxCode; }
     public UUID getSegmentId() { return segmentId; }
     public CustomerStatus getStatus() { return status; }
+    public UUID getSalesOwnerId() { return salesOwnerId; }
+    public Instant getSalesOwnerSince() { return salesOwnerSince; }
+    public SalesOwnerState getSalesOwnerState() { return salesOwnerState; }
 
     // TODO: loyalty points, default-address pointer, marketing-consent flags — add when the
     //       corresponding use cases are specified. See docs/business-design for the field list.

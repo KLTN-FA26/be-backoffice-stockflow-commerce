@@ -55,11 +55,15 @@ class DeliveryFailureController {
     private final com.stockflow.identity.api.IdentityService identities;
     private final com.stockflow.customer.api.CustomerService customers;
     private final com.stockflow.warehouse.api.WarehouseService warehouses;
+    /** 17 BR-32: Sales' decisions on a case, recorded as done on the owner's behalf when someone else makes them. */
+    private final com.stockflow.order.internal.service.OrderOperations operations;
 
     DeliveryFailureController(DeliveryFailureService failures, OrderWarehouseVisibility warehouseVisibility,
                               com.stockflow.identity.api.IdentityService identities,
                               com.stockflow.customer.api.CustomerService customers,
-                              com.stockflow.warehouse.api.WarehouseService warehouses) {
+                              com.stockflow.warehouse.api.WarehouseService warehouses,
+                              com.stockflow.order.internal.service.OrderOperations operations) {
+        this.operations = operations;
         this.failures = failures;
         this.warehouseVisibility = warehouseVisibility;
         this.identities = identities;
@@ -110,7 +114,7 @@ class DeliveryFailureController {
     public ApiResponse<DeliveryFailureCaseResponse> cancel(@PathVariable UUID orderId, @PathVariable UUID caseId,
             @Valid @RequestBody DeliveryFailureCaseRequests.Cancellation request, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(toResponses(List.of(failures.cancelUndelivered(orderId, caseId,
+        return ApiResponse.ok(toResponses(List.of(operations.cancelUndelivered(orderId, caseId,
                 new DeliveryFailureService.Cancel(request.note(), OrderWebMapper.toFee(request.agreedFee())),
                 user.userId()))).getFirst());
     }
@@ -125,7 +129,7 @@ class DeliveryFailureController {
     public ApiResponse<List<DeliveryFailureCaseResponse>> cancelWithoutCase(@PathVariable UUID orderId,
             @Valid @RequestBody DeliveryFailureCaseRequests.Cancellation request, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(toResponses(failures.cancelWithoutCase(orderId,
+        return ApiResponse.ok(toResponses(operations.cancelUndeliveredWithoutCase(orderId,
                 new DeliveryFailureService.Cancel(request.note(), OrderWebMapper.toFee(request.agreedFee())),
                 user.userId())));
     }

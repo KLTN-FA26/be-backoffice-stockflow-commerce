@@ -9,7 +9,6 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
 import com.stockflow.order.internal.controller.dto.ShippingAddressChangeRequest;
-import com.stockflow.order.internal.service.ShippingAddressChanges;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -40,10 +39,11 @@ import java.util.UUID;
         actions = {Action.UPDATE})
 class ShippingAddressController {
 
-    private final ShippingAddressChanges addresses;
+    /** 17 BR-32: the change, recorded as done on the owner's behalf when someone else makes it. */
+    private final com.stockflow.order.internal.service.OrderOperations operations;
 
-    ShippingAddressController(ShippingAddressChanges addresses) {
-        this.addresses = addresses;
+    ShippingAddressController(com.stockflow.order.internal.service.OrderOperations operations) {
+        this.operations = operations;
     }
 
     @PutMapping("/{orderId}/shipping-address")
@@ -55,7 +55,7 @@ class ShippingAddressController {
     public ApiResponse<OrderResponse> change(@PathVariable UUID orderId,
                                              @Valid @RequestBody ShippingAddressChangeRequest request,
                                              @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(OrderWebMapper.toResponse(addresses.change(orderId, request.shippingAddressId(),
+        return ApiResponse.ok(OrderWebMapper.toResponse(operations.changeShippingAddress(orderId, request.shippingAddressId(),
                 user.userId())));
     }
 }

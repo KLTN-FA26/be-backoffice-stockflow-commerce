@@ -52,10 +52,12 @@ public class QuoteFromRequestService implements QuotesFromRequests {
     private final ApplicationEventPublisher events;
     private final Clock clock;
     private final Duration validity;
+    private final CustomerOwnership ownership;
 
     public QuoteFromRequestService(QuoteRequests requests, QuoteCards quotes, QuoteRepository repository,
                                    ApplicationEventPublisher events, Clock clock,
-                                   @Value("${stockflow.order.quote.draft-from-request-validity:P14D}") Duration validity) {
+                                   @Value("${stockflow.order.quote.draft-from-request-validity:P14D}") Duration validity,
+                                   CustomerOwnership ownership) {
         if (validity == null || validity.isNegative() || validity.isZero()) {
             throw new IllegalArgumentException("stockflow.order.quote.draft-from-request-validity must be positive");
         }
@@ -65,6 +67,7 @@ public class QuoteFromRequestService implements QuotesFromRequests {
         this.events = events;
         this.clock = clock;
         this.validity = validity;
+        this.ownership = ownership;
     }
 
     @Override
@@ -85,6 +88,9 @@ public class QuoteFromRequestService implements QuotesFromRequests {
             return new Drawn(earlier.get().id(), earlier.get().quoteNumber(), earlier.get().customerId(), false);
         }
         Asked asked = scope == Scope.PROJECT ? project(requestId) : design(requestId);
+        // 14 BR-25: the request card shows to every salesperson; drawing the quote up is for whoever may act for the
+        // customer - refused before the request is closed. It claims nobody (D43).
+        ownership.requireMayActFor(staff, asked.customerId());
         Instant now = clock.instant();
         LocalDate today = LocalDate.ofInstant(now, BUSINESS_ZONE);
         QuoteCards.Card quote = quotes.draft(staff, new QuoteCards.Draft(quoteRequestId, asked.customerId(),

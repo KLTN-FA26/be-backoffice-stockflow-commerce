@@ -39,9 +39,13 @@ class OrderCompletionHoldController {
     private final OrderCompletionHolds holds;
     private final OrderWarehouseVisibility visibility;
     private final com.stockflow.identity.api.IdentityService identities;
+    /** 17 BR-32: holding and releasing completion, recorded as done on the owner's behalf when someone else does it. */
+    private final com.stockflow.order.internal.service.OrderOperations operations;
 
     OrderCompletionHoldController(OrderCompletionHolds holds, OrderWarehouseVisibility visibility,
-                                  com.stockflow.identity.api.IdentityService identities) {
+                                  com.stockflow.identity.api.IdentityService identities,
+                                  com.stockflow.order.internal.service.OrderOperations operations) {
+        this.operations = operations;
         this.holds = holds;
         this.visibility = visibility;
         this.identities = identities;
@@ -68,7 +72,7 @@ class OrderCompletionHoldController {
                                                     @Valid @RequestBody CompletionHoldRequest request,
                                                     @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(toResponse(holds.hold(orderId, request.reasonCode(), request.note(), user.userId())));
+        return ApiResponse.ok(toResponse(operations.holdCompletion(orderId, request.reasonCode(), request.note(), user.userId())));
     }
 
     @PostMapping("/release")
@@ -79,7 +83,7 @@ class OrderCompletionHoldController {
                                                        @Valid @RequestBody ReleaseCompletionHoldRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(toResponse(holds.release(orderId, request.note(), user.userId())));
+        return ApiResponse.ok(toResponse(operations.releaseCompletionHold(orderId, request.note(), user.userId())));
     }
 
     /** With who held and who released it, named in one lookup. */

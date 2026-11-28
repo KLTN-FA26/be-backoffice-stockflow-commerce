@@ -12,6 +12,13 @@ import java.util.UUID;
 /** Every call made to a carrier's webhook (3-5). */
 public interface CarrierEventJpaRepository extends BaseJpaRepository<CarrierEventJpaEntity> {
 
+    /** Last applied driver release, visible in the load detail without granting access to webhook payloads. */
+    @Query("select max(coalesce(e.carrierReportedAt, e.receivedAt)) from CarrierEventJpaEntity e "
+            + "where e.loadId = :loadId and e.eventKind = "
+            + "com.stockflow.fulfillment.internal.domain.CarrierEventKind.DRIVER_RELEASED and e.result = "
+            + "com.stockflow.fulfillment.internal.domain.CarrierEventResult.APPLIED")
+    Instant lastDriverReleasedAt(@Param("loadId") UUID loadId);
+
     /**
      * The latest carrier time among the reports applied to the load as a whole (BR-27: an older one is outdated);
      * null when none was.

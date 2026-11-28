@@ -45,6 +45,10 @@ public record CustomerOrderCardResponse(
 
         @Schema(example = "PENDING", description = "The customer's latest cancellation request: PENDING, APPROVED or "
                 + "REJECTED; null when they never asked (G3-2)")
-        String cancellationRequestStatus
+        String cancellationRequestStatus,
+
+        @Schema(example = "Ly giay in logo", description = "What the order's first line is: the name of the design its "
+                + "SKU was made to, else the SKU itself, as a quote row's firstItemName; null for an order with no line")
+        String firstItemName
 ) {
 }

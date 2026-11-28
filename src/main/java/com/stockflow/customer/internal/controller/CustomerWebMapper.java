@@ -41,16 +41,43 @@ final class CustomerWebMapper {
     }
 
     /** A row of the staff list: masked tax code, and the province of the default shipping address if it is known. */
-    static CustomerResponse toListRow(CustomerSummary summary, String defaultShippingProvinceName) {
-        return new CustomerResponse(summary.customerId(), summary.userId(), summary.fullName(),
-                summary.email(), summary.phone(), maskTaxCode(summary.taxCode()), summary.segmentId(),
-                summary.status(), summary.version(), summary.createdAt(), defaultShippingProvinceName);
+    static CustomerResponse toListRow(CustomerSummary summary,
+                                      com.stockflow.customer.internal.service.SalesOwnerViews.OwnerColumns owner,
+                                      String defaultShippingProvinceName) {
+        return toResponse(summary, maskTaxCode(summary.taxCode()), owner, defaultShippingProvinceName);
     }
 
     private static CustomerResponse toResponse(CustomerSummary summary, String taxCode) {
+        return toResponse(summary, taxCode, null);
+    }
+
+    /** The staff detail, with its Sales owner (sales-owner plan) and the tax code whole. */
+    static CustomerResponse toResponse(CustomerSummary summary,
+                                       com.stockflow.customer.internal.service.SalesOwnerViews.OwnerColumns owner) {
+        return toResponse(summary, summary.taxCode(), owner);
+    }
+
+    /** A staff list row: the tax code masked, the Sales owner shown (sales-owner plan, list rows). */
+    static CustomerResponse toMaskedResponse(CustomerSummary summary,
+                                             com.stockflow.customer.internal.service.SalesOwnerViews.OwnerColumns owner) {
+        return toResponse(summary, maskTaxCode(summary.taxCode()), owner);
+    }
+
+    private static CustomerResponse toResponse(CustomerSummary summary, String taxCode,
+                                               com.stockflow.customer.internal.service.SalesOwnerViews.OwnerColumns owner) {
+        return toResponse(summary, taxCode, owner, null);
+    }
+
+    private static CustomerResponse toResponse(CustomerSummary summary, String taxCode,
+                                               com.stockflow.customer.internal.service.SalesOwnerViews.OwnerColumns owner,
+                                               String defaultShippingProvinceName) {
         return new CustomerResponse(summary.customerId(), summary.userId(), summary.fullName(),
                 summary.email(), summary.phone(), taxCode, summary.segmentId(), summary.status(),
-                summary.version(), summary.createdAt());
+                summary.version(), summary.createdAt(),
+                owner == null ? null : owner.salesOwnerId(), owner == null ? null : owner.salesOwnerName(),
+                owner == null ? null : owner.salesOwnerActive(), owner == null ? null : owner.salesOwnerState(),
+                owner == null ? null : owner.salesOwnerSince(), summary.taxCode() == null,
+                defaultShippingProvinceName);
     }
 
     /**
