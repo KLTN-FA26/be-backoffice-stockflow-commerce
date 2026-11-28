@@ -11,6 +11,7 @@ import com.stockflow.identity.api.CreateStaffUserCommand;
 import com.stockflow.identity.api.CreatedStaffUser;
 import com.stockflow.identity.api.ListUsersQuery;
 import com.stockflow.identity.api.PasswordReset;
+import com.stockflow.identity.api.SalesStaff;
 import com.stockflow.identity.api.StaffUser;
 import com.stockflow.identity.api.UpdateRoleCommand;
 import com.stockflow.identity.api.UpdateUserCommand;
@@ -400,6 +401,7 @@ class IdentityServiceImpl implements IdentityService {
     @Override
     @Auditable(action = AuditAction.GRANT, resourceType = "user", resourceId = "#userId")
     public void assignRole(UUID userId, String roleCode) {
+        users.lockById(userId);
         UserJpaEntity account = requireAccount(userId);
         RoleJpaEntity role = findRoleByCode(roleCode);
         List<String> held = codesOf(rolesOf(new UserId(userId)));
@@ -414,11 +416,16 @@ class IdentityServiceImpl implements IdentityService {
         }
         userRoles.save(new UserRoleJpaEntity(Identifiers.newId(), userId, role.getId()));
         endSessionsAfterRoleChange(userId);
+        if (SalesStaff.SALES_ROLES.contains(role.getCode()) && account.getStatus() == UserStatus.ACTIVE) {
+            events.publishEvent(new com.stockflow.contracts.StaffAccountReactivated(userId, actorId(),
+                    clock.instant()));
+        }
     }
 
     @Override
     @Auditable(action = AuditAction.REVOKE, resourceType = "user", resourceId = "#userId")
     public void revokeRole(UUID userId, String roleCode) {
+        users.lockById(userId);
         UserJpaEntity account = requireAccount(userId);
         RoleJpaEntity role = findRoleByCode(roleCode);
         if (Roles.CUSTOMER.equals(role.getCode())) {
@@ -435,6 +442,15 @@ class IdentityServiceImpl implements IdentityService {
         }
         userRoles.delete(held.get());
         endSessionsAfterRoleChange(userId);
+        if (SalesStaff.SALES_ROLES.contains(role.getCode()) && account.getStatus() == UserStatus.ACTIVE) {
+            events.publishEvent(new com.stockflow.contracts.StaffAccountDeactivated(userId,
+                    com.stockflow.contracts.StaffAccountDeactivated.SALES_ROLE_REVOKED, actorId(), clock.instant()));
+        }
+    }
+
+    /** The signed-in administrator, null when no signed-in user acts. */
+    private UUID actorId() {
+        return guard.actor().map(com.stockflow.common.security.CurrentUser::userId).orElse(null);
     }
 
     /** Refuses to leave the platform without an active SYSTEM_ADMIN, if {@code userId} is one now. */
@@ -722,6 +738,11 @@ class IdentityServiceImpl implements IdentityService {
             details = "{change: #change.name(), reason: #reason}")
     public StaffUser changeUserStatus(UUID userId, UserStatusChange change, String reason) {
         String why = StatusChangeReason.require(reason);
+        // Finding C2: the account's row first, FOR UPDATE, before anything is read. A write that makes the account
+        // responsible for something reads it FOR SHARE (SalesStaff.lockActiveSalesAgent, the triggers): one waits for the
+        // other, so a lock never commits between such a write's check and its commit, which would leave customers
+        // assigned to a locked account after the listener that releases them had run.
+        users.lockById(userId);
         requireStaffAccount(userId);
         User user = loadUser(userId);
         UserStatus before = user.status();
@@ -749,7 +770,25 @@ class IdentityServiceImpl implements IdentityService {
         } else if (change == UserStatusChange.DISABLE) {
             sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.ACCOUNT_DISABLED);
         }
+        publishActivityChange(userId, before, user.status(), actor.map(com.stockflow.common.security.CurrentUser::userId)
+                .orElse(null));
         return user(userId);
+    }
+
+    /**
+     * Sales-owner plan BR-S08 / BR-S10: tells the other modules that a staff account stopped or started working again.
+     * Only a real change of whether the account works counts - ACTIVE to LOCKED or DISABLED, or back to ACTIVE - so a
+     * locked account being disabled, or an unlock that only ends a wrong-password lockout, says nothing. Published in
+     * this transaction: identity's own listener cancels the covers the account stood in for before the commit, the
+     * other modules hear it after.
+     */
+    private void publishActivityChange(UUID userId, UserStatus before, UserStatus after, UUID byUserId) {
+        if (before == UserStatus.ACTIVE && after != UserStatus.ACTIVE) {
+            events.publishEvent(new com.stockflow.contracts.StaffAccountDeactivated(userId, after.name(), byUserId,
+                    clock.instant()));
+        } else if (before != UserStatus.ACTIVE && after == UserStatus.ACTIVE) {
+            events.publishEvent(new com.stockflow.contracts.StaffAccountReactivated(userId, byUserId, clock.instant()));
+        }
     }
 
     /**

@@ -21,6 +21,9 @@ public final class IdentityResources {
      */
     public static final String AUDIT_LOGS = "platform-audit-logs";
 
+    /** Sales-owner plan BR-S07: covers during leave - READ, CREATE, UPDATE (cancel). */
+    public static final String STAFF_COVERS = "staff-covers";
+
     private IdentityResources() {
     }
 }

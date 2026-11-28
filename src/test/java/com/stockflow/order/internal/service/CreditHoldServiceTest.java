@@ -195,7 +195,8 @@ class CreditHoldServiceTest {
             verify(holds).save(hold);
             verify(repository).save(order);
             verify(events).publishEventsOf(order);
-            verify(followUps).creditDecided(order.id().value(), order.orderNumber().value(), null, true);
+            // 15 BR-22 (2026-11-28): told by the order's customer - whoever looks after it - not by the contract's sender.
+            verify(followUps).creditDecided(order.id().value(), order.orderNumber().value(), order.customerId(), true);
         }
 
         @Test
@@ -262,7 +263,7 @@ class CreditHoldServiceTest {
             assertThat(command.getValue().reasonCode()).isEqualTo(CancellationReasonCode.CREDIT_REJECTED);
             assertThat(command.getValue().note()).isEqualTo("over the limit");
             assertThat(command.getValue().cancelledBy()).isEqualTo(STAFF);
-            verify(followUps).creditDecided(order.id().value(), order.orderNumber().value(), null, false);
+            verify(followUps).creditDecided(order.id().value(), order.orderNumber().value(), order.customerId(), false);
         }
 
         @Test

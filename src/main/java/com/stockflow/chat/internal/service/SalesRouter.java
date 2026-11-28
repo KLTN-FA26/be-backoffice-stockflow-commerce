@@ -1,55 +1,47 @@
 package com.stockflow.chat.internal.service;
 
 import com.stockflow.chat.internal.domain.Conversation;
-import com.stockflow.chat.internal.domain.ConversationRepository;
+import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.customer.api.Responsible;
+import com.stockflow.customer.api.ResponsibleSales;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-import java.util.Objects;
+import java.time.Clock;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 /**
- * The routing of kltn-docs 16 §4.1 step 2, in its order:
- * <ol>
- *   <li>the Sales account that answers for the document the conversation is about - who sent the quote or the
- *       contract, or the quote an order or a production order came from (2.1: a production order's Sales is its sales
- *       order's, since the Production Coordinator does not chat with customers);</li>
- *   <li>the Sales account that looked after the customer most recently (2.2), so a customer keeps talking to the
- *       person who knows them;</li>
- *   <li>nobody: the conversation waits in the queue for a chat supervisor to assign (2.3).</li>
- * </ol>
- * At each step only someone who still answers customers counts ({@link AgentDirectory}: an active account holding
- * {@code chat-conversations:UPDATE}) - a Sales who left is skipped, not handed a conversation nobody will read. The
- * set of agents is read once per routing.
+ * The routing of kltn-docs 16 §4.1 step 2 since 2026-11-28 (sales-owner plan §2.3, 16 BR-12): one customer, one
+ * contact. A new conversation goes to whoever acts for the customer today by the one rule of {@link ResponsibleSales}
+ * - the Sales owner, or the owner's cover in force today (BR-S07) - whatever it is about: a quote another salesperson
+ * sent still reaches the owner (cases 3, 4). With no active owner it waits in the queue (case 2, 8), where a Sales
+ * Manager assigns it or a salesperson claims it (BR-S05).
  *
- * <p>Being offline does not skip anyone: the conversation is the customer's relationship with that agent, and outside
- * business hours everyone is offline; the first-response alert (BR-09) is what catches an agent who does not answer.</p>
+ * <p>The steps it replaced are gone on purpose: "the Sales of the document" gave one customer several contacts, and "the
+ * agent who served the customer last" handed a customer to someone who no longer looks after them.</p>
+ *
+ * <p>The acting user gets the conversation only while they answer customers ({@link AgentDirectory}: an active account
+ * holding {@code chat-conversations:UPDATE}); otherwise the queue, never a conversation nobody will read. Being offline
+ * does not count: the first-response alert (BR-09) catches an owner who does not answer, cover or not (case 6). Which
+ * cover is in force is read when the conversation opens; a cover starting or ending moves no open conversation (F9).</p>
  */
 @Component
 public class SalesRouter implements ConversationRouter {
 
-    /** How far back the customer's agents are looked for: a handful is enough to find one still at work. */
-    private static final int RECENT_AGENTS = 5;
-
+    private final ResponsibleSales responsible;
     private final AgentDirectory agents;
-    private final ConversationRepository conversations;
+    private final Clock clock;
 
-    public SalesRouter(AgentDirectory agents, ConversationRepository conversations) {
+    public SalesRouter(ResponsibleSales responsible, AgentDirectory agents, Clock clock) {
+        this.responsible = responsible;
         this.agents = agents;
-        this.conversations = conversations;
+        this.clock = clock;
     }
 
     @Override
-    public Optional<UUID> agentFor(Conversation conversation, List<ContextResolver.Resolved> contexts) {
-        Set<UUID> answering = agents.agents();
-        Optional<UUID> owner = contexts.stream().map(ContextResolver.Resolved::responsibleUserId)
-                .filter(Objects::nonNull).filter(answering::contains).findFirst();
-        if (owner.isPresent()) {
-            return owner;
-        }
-        return conversations.recentAgentsOf(conversation.customerId(), conversation.id(), RECENT_AGENTS).stream()
-                .filter(answering::contains).findFirst();
+    public Optional<UUID> agentFor(Conversation conversation) {
+        return responsible.responsibleFor(conversation.customerId(), BusinessCalendar.date(clock.instant()))
+                .map(Responsible::actingUserId)
+                .filter(agents::answersCustomers);
     }
 }

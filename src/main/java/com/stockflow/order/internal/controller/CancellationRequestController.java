@@ -44,10 +44,14 @@ class CancellationRequestController {
     private final CancellationRequestService requests;
     private final com.stockflow.order.internal.service.CancellationQueue queue;
     private final com.stockflow.identity.api.IdentityService identities;
+    /** 17 BR-32: decisions on requests, recorded as done on the owner's behalf when someone else makes them. */
+    private final com.stockflow.order.internal.service.OrderOperations operations;
 
     CancellationRequestController(CancellationRequestService requests,
                                   com.stockflow.order.internal.service.CancellationQueue queue,
-                                  com.stockflow.identity.api.IdentityService identities) {
+                                  com.stockflow.identity.api.IdentityService identities,
+                                  com.stockflow.order.internal.service.OrderOperations operations) {
+        this.operations = operations;
         this.requests = requests;
         this.queue = queue;
         this.identities = identities;
@@ -77,7 +81,7 @@ class CancellationRequestController {
     public ApiResponse<OrderResponse> approve(@PathVariable UUID orderId, @PathVariable UUID requestId,
                                               @Valid @RequestBody(required = false) ApproveCancellationRequest request,
                                               @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(OrderWebMapper.toResponse(requests.approve(orderId, requestId,
+        return ApiResponse.ok(OrderWebMapper.toResponse(operations.approveCancellationRequest(orderId, requestId,
                 request == null ? null : request.retainedPercent(),
                 request == null ? null : OrderWebMapper.toFee(request.agreedFee()),
                 request == null ? null : request.note(), user.userId())));
@@ -89,7 +93,8 @@ class CancellationRequestController {
     public ApiResponse<CancellationRequestResponse> reject(@PathVariable UUID orderId, @PathVariable UUID requestId,
                                                            @Valid @RequestBody RejectCancellationRequest request,
                                                            @AuthenticatedUser CurrentUser user) {
-        CancellationRequest rejected = requests.reject(orderId, requestId, request.note(), user.userId());
+        CancellationRequest rejected = operations.rejectCancellationRequest(orderId, requestId, request.note(),
+                user.userId());
         return ApiResponse.ok(toResponse(rejected, null, namesOf(java.util.List.of(rejected))));
     }
 

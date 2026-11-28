@@ -217,6 +217,10 @@ public class ResourceServerSecurityConfig {
                         // A Sales-invited contact has no password yet; the invitation token in the
                         // body is the credential (SCRUM-450). POST only: nothing else lives there.
                         .requestMatchers(HttpMethod.POST, "/api/v1/customers/portal-activation").permitAll()
+                        // The public "open a business account" form (sales-owner plan 10.7): a business that is not a
+                        // customer yet has no account. Rate-limited per address, a honeypot field, and one answer for
+                        // every outcome, checked by the endpoint. POST only.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/leads").permitAll()
                         // The mail provider's delivery reports (SCRUM-352): it cannot hold a token, so its Svix
                         // signature is the credential, checked by the endpoint. POST only.
                         .requestMatchers(HttpMethod.POST, "/api/v1/notifications/webhooks/resend").permitAll()

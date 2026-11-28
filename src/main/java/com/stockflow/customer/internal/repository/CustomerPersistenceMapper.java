@@ -16,8 +16,13 @@ final class CustomerPersistenceMapper {
     static Customer toDomain(CustomerJpaEntity entity, List<AddressJpaEntity> addresses) {
         return new Customer(entity.getId(), entity.getUserId(), entity.getFullName(), entity.getEmail(),
                 entity.getPhone(), entity.getTaxCode(), entity.getSegmentId(), entity.getStatus(),
-                addresses.stream().map(CustomerPersistenceMapper::toDomain).toList(),
+                addresses.stream().map(CustomerPersistenceMapper::toDomain).toList(), salesOwnerOf(entity),
                 entity.getVersion(), entity.getCreatedAt());
+    }
+
+    static com.stockflow.customer.internal.domain.SalesOwner salesOwnerOf(CustomerJpaEntity entity) {
+        return new com.stockflow.customer.internal.domain.SalesOwner(entity.getSalesOwnerId(),
+                entity.getSalesOwnerState(), entity.getSalesOwnerSince());
     }
 
     static CustomerAddress toDomain(AddressJpaEntity entity) {
@@ -29,8 +34,11 @@ final class CustomerPersistenceMapper {
     }
 
     static CustomerJpaEntity toNewEntity(Customer customer) {
-        return new CustomerJpaEntity(customer.id(), customer.userId(), customer.fullName(),
+        CustomerJpaEntity entity = new CustomerJpaEntity(customer.id(), customer.userId(), customer.fullName(),
                 customer.email(), customer.phone(), customer.taxCode(), customer.segmentId(), customer.status());
+        entity.applySalesOwner(customer.salesOwner().userId(), customer.salesOwner().state(),
+                customer.salesOwner().since());
+        return entity;
     }
 
     static AddressJpaEntity toNewEntity(java.util.UUID customerId, CustomerAddress address) {
@@ -43,6 +51,8 @@ final class CustomerPersistenceMapper {
     static void apply(Customer customer, CustomerJpaEntity entity) {
         entity.apply(customer.fullName(), customer.phone(), customer.taxCode(), customer.segmentId(),
                 customer.status());
+        entity.applySalesOwner(customer.salesOwner().userId(), customer.salesOwner().state(),
+                customer.salesOwner().since());
     }
 
     static void apply(CustomerAddress address, AddressJpaEntity entity) {

@@ -13,6 +13,7 @@ import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.SalesOwners;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -34,10 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * WF-02 FLOW-1..3, CONC-2 against a real database: the scans the hourly follow-up reads find an order held for credit
- * (since its hold was raised, with the salesperson who sent its contract), an order confirmed with no shipping
- * warehouse, an order of a signed contract still waiting for its installment on signing, and an order a voided
- * receipt put on PAYMENT hold (not one put on it by hand); and accounting's credit decision reaches that salesperson's
- * inbox once.
+ * (since its hold was raised, with its customer), an order confirmed with no shipping warehouse, an order of a signed
+ * contract still waiting for its installment on signing, and an order a voided receipt put on PAYMENT hold (not one put
+ * on it by hand); and accounting's credit decision reaches the inbox of whoever looks after the customer once (15 BR-22
+ * as changed on 2026-11-28: the customer's owner, here the salesperson who also sent the contract).
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -68,6 +69,9 @@ class SalesFollowUpIntegrationTest {
         accountant = tx.execute(s -> ReferenceRows.user(entityManager));
         sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 50);
         confirmedOrders.legalProfile(customer);
+        // The salesperson who drafts and sends the contracts owns the customer (an owner is an ACTIVE SALES_STAFF).
+        SalesOwners owners = new SalesOwners(context);
+        owners.own(customer, confirmedOrders.sales().userId());
     }
 
     private UUID heldForCredit() {
@@ -98,7 +102,7 @@ class SalesFollowUpIntegrationTest {
 
         SalesFollowUps.WaitingOrder held = find(followUps.heldFor("CREDIT", 200), order);
         assertThat(held).isNotNull();
-        assertThat(held.salesUserId()).as("who sent its contract").isEqualTo(sales);
+        assertThat(held.customerId()).as("whose order it is: its owner is told").isEqualTo(customer);
         Timestamp raised = jdbc.queryForObject("""
                 SELECT raised_at FROM ordering.order_hold WHERE order_id = ? AND reason = 'CREDIT'
                 AND resolved_at IS NULL""", Timestamp.class, order);
@@ -141,7 +145,7 @@ class SalesFollowUpIntegrationTest {
         assertThat(followUps.awaitingOnSigning(2000)).doesNotContain(confirmed.orderId());
         SalesFollowUps.WaitingOrder unplaced = find(followUps.confirmedWithoutWarehouse(200), confirmed.orderId());
         assertThat(unplaced).isNotNull();
-        assertThat(unplaced.salesUserId()).isEqualTo(confirmedOrders.sales().userId());
+        assertThat(unplaced.customerId()).isEqualTo(customer);
     }
 
     @Test
@@ -162,6 +166,6 @@ class SalesFollowUpIntegrationTest {
                 SalesFollowUps.VOIDED_RECEIPT_HOLD_NOTE.formatted("PT-0001"), order));
         SalesFollowUps.WaitingOrder voided = find(followUps.heldAfterVoidedReceipt(200), order);
         assertThat(voided).isNotNull();
-        assertThat(voided.salesUserId()).isEqualTo(confirmedOrders.sales().userId());
+        assertThat(voided.customerId()).isEqualTo(customer);
     }
 }

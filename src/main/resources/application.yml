@@ -551,6 +551,9 @@ stockflow:
     customer-notice-period: ${CHAT_CUSTOMER_NOTICE_PERIOD:PT1H}
     # How often the SLA, auto-close and close jobs run.
     sla-job-interval: ${CHAT_SLA_JOB_INTERVAL:PT1M}
+    # 16 BR-13: a salesperson who claims a conversation of a customer with no Sales owner becomes the owner. Off, only a
+    # Sales Manager assigns owners and a claim takes the conversation alone.
+    claim-makes-owner: ${CHAT_CLAIM_MAKES_OWNER:true}
 
   # The back-office AI assistant (ADR-0014, docs/assistant-design.md §11). Off by default; with no key it still starts
   # and answers 503 ASSISTANT_DISABLED. The key comes from the environment only, never from this file.

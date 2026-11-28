@@ -7,6 +7,8 @@ import java.util.UUID;
 /**
  * What waits on the customer long enough for Sales to be told (kltn-docs 14 §6: "Khách đã ký nhưng chậm thanh toán đợt
  * ON_SIGNING - Sale nhắc"): a contract sent and not signed, an order signed and waiting for the installment on signing.
+ * Each names the order's customer: whoever looks after the customer today is told (00 §6, 18 BR-20), not who sent the
+ * contract.
  * The newest first, so that a bounded read always reaches the ones that only just crossed the line; those further back
  * were told on an earlier run, and telling them again is a no-op of the inbox.
  */
@@ -20,20 +22,12 @@ public interface SalesFollowUps {
      */
     String VOIDED_RECEIPT_HOLD_NOTE = "Payment receipt %s voided: the installment on signing is short";
 
-    /**
-     * A contract the customer has not signed since {@code sentAt}.
-     *
-     * @param salesUserId who sent it: the salesperson handling it
-     */
+    /** A contract the customer has not signed since {@code sentAt}. */
     record UnsignedContract(UUID contractId, String contractNumber, UUID orderId, String orderNumber,
-                            UUID salesUserId, Instant sentAt) { }
+                            UUID customerId, Instant sentAt) { }
 
-    /**
-     * An order waiting for the installment on signing since its contract was signed at {@code signedAt}.
-     *
-     * @param salesUserId who sent its contract, or - for none recorded - who recorded it signed
-     */
-    record UnpaidOrder(UUID orderId, String orderNumber, UUID contractId, String contractNumber, UUID salesUserId,
+    /** An order waiting for the installment on signing since its contract was signed at {@code signedAt}. */
+    record UnpaidOrder(UUID orderId, String orderNumber, UUID contractId, String contractNumber, UUID customerId,
                        Instant signedAt) { }
 
     /** SENT contracts sent at or before {@code sentBy}, the newest first, at most {@code limit}. */
@@ -45,10 +39,9 @@ public interface SalesFollowUps {
     /**
      * An order whose next step waits on someone inside (WF-02 FLOW-1..3).
      *
-     * @param salesUserId who sent its signed contract, or - for none recorded - who recorded it signed; null without one
-     * @param since       when the hold now open was raised, or for a confirmed order when its contract was signed
+     * @param since when the hold now open was raised, or for a confirmed order when its contract was signed
      */
-    record WaitingOrder(UUID orderId, String orderNumber, UUID salesUserId, Instant since) { }
+    record WaitingOrder(UUID orderId, String orderNumber, UUID customerId, Instant since) { }
 
     /** ON_HOLD orders held for {@code reason} ({@code CREDIT}, {@code PAYMENT}), the newest hold first. */
     List<WaitingOrder> heldFor(String reason, int limit);

@@ -53,6 +53,10 @@ public class QuoteJpaEntity extends BaseEntity {
     @Column(name = "sent_by")
     private UUID sentBy;
 
+    /** V20270128000300 (14 BR-26): the customer's Sales owner when drawn up; written once, with the row. */
+    @Column(name = "sales_owner_id", updatable = false)
+    private UUID salesOwnerId;
+
     @Column(name = "responded_at")
     private Instant respondedAt;
 
@@ -89,11 +93,12 @@ public class QuoteJpaEntity extends BaseEntity {
     protected QuoteJpaEntity() {
     }
 
-    public QuoteJpaEntity(UUID id, String quoteNumber, UUID requestId, UUID customerId) {
+    public QuoteJpaEntity(UUID id, String quoteNumber, UUID requestId, UUID customerId, UUID salesOwnerId) {
         super(id);
         this.quoteNumber = quoteNumber;
         this.requestId = requestId;
         this.customerId = customerId;
+        this.salesOwnerId = salesOwnerId;
     }
 
     public void apply(QuoteStatus status, int revision, Instant validUntil, String terms, Instant sentAt, UUID sentBy, Instant respondedAt,
@@ -135,6 +140,7 @@ public class QuoteJpaEntity extends BaseEntity {
     public String getTerms() { return terms; }
     public Instant getSentAt() { return sentAt; }
     public UUID getSentBy() { return sentBy; }
+    public UUID getSalesOwnerId() { return salesOwnerId; }
     public Instant getRespondedAt() { return respondedAt; }
     public UUID getRespondedBy() { return respondedBy; }
     public String getCustomerFeedback() { return customerFeedback; }

@@ -37,6 +37,9 @@ class NotificationModuleTest {
      */
     @MockitoBean CustomerDirectory customerDirectory;
     @MockitoBean com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectory;
+    /** Implemented by order (sales-owner plan): who on Sales' side hears about a customer. */
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.SalesAudiences salesAudiencesMock;
     // WF-05 E5: the e-invoice mail reads the invoice through this port, implemented by invoicing (not booted here).
     @MockitoBean com.stockflow.notification.api.EInvoiceDirectory einvoiceDirectory;
 

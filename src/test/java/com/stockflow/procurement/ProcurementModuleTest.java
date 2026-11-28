@@ -33,6 +33,9 @@ class ProcurementModuleTest {
     // notification (booted here) asks the order module for production orders; order is not booted.
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectoryMock;
+    /** Implemented by order (sales-owner plan): who on Sales' side hears about a customer. */
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.SalesAudiences salesAudiencesMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
