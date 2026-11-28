@@ -878,8 +878,8 @@ public final class Order extends AggregateRoot {
      * before the first label) - must stop the label that would lock the address it was put on to correct.</p>
      *
      * @return whether this was the first label
-     * @throws BusinessException {@code ORDER_CANCELLED}; {@code PACK_STATE_CONFLICT} while the order is on hold, or in
-     *         any status the check station does not work in
+     * @throws BusinessException {@code ORDER_CANCELLED}; {@code PACK_ORDER_ON_HOLD} (with the {@code holdReason}) while the
+     *         order is on hold; {@code PACK_STATE_CONFLICT} in any status the check station does not work in
      */
     public boolean recordFirstLabel(Instant at) {
         java.util.Objects.requireNonNull(at, "at");
@@ -896,8 +896,9 @@ public final class Order extends AggregateRoot {
             return false;
         }
         if (status == OrderStatus.ON_HOLD) {
-            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, ("Order %s is on hold (%s); its cartons are "
-                    + "labelled once the hold is resolved").formatted(orderNumber, holdReason));
+            throw new BusinessException(ErrorCode.PACK_ORDER_ON_HOLD, ("Order %s is on hold (%s); its cartons are "
+                    + "labelled once Sales resolves the hold").formatted(orderNumber, holdReason),
+                    java.util.List.of(), java.util.Map.of("holdReason", String.valueOf(holdReason)));
         }
         // 08 §4.1 step 1: an order still AWAITING_STOCK is checked and labelled only when Sales allowed its part held to
         // go first (17 §4.5 step 18).

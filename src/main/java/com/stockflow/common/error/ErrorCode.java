@@ -873,6 +873,12 @@ public enum ErrorCode {
     /** G4-5: another packer took this order at the packing table; a warehouse manager may step in. */
     PACKING_TAKEN("Another packer is packing this order", 409),
     PACK_STATE_CONFLICT("Packing cannot do that in its current status", 409),
+    /**
+     * WF4-K2 (owner decision P5, 2026-11-25): the order is on hold, so its cartons are not labelled and the check is not
+     * completed until Sales resolves the hold with a note. The details carry {@code holdReason}; starting the session,
+     * scanning, viewing, reprinting and removing a damaged carton stay open to a held order.
+     */
+    PACK_ORDER_ON_HOLD("The order is on hold: Sales must resolve the hold before cartons are labelled or the check is completed", 409),
     /** The scanned code is on two lines of the order (a plain and a printed cup of one SKU): name the line. */
     PACKAGE_SHIPPED("The package is in a shipment already", 409),
     /** Docs 08 BR-01: everything the order still wants must be packed, or a partial shipment asked for. */

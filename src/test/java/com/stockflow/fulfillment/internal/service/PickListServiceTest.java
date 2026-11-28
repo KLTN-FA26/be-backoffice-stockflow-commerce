@@ -616,10 +616,14 @@ class PickListServiceTest {
 
         /** The order line holds both picked cartons' holds and, once replaced, the replacement's. */
         private void orderIs(OrderStatus status, HoldReason hold) {
+            orderIs(status, hold, false);
+        }
+
+        private void orderIs(OrderStatus status, HoldReason hold, boolean allowPartialShipment) {
             when(orders.findById(task.getOrderId())).thenReturn(Optional.of(FulfillmentFixtures.orderWith(
                     task.getOrderId(), status, List.of(new OrderSummary.LineSummary(orderLine, "SKU-A", 10,
                             com.stockflow.common.domain.Money.vnd(10_000), com.stockflow.common.domain.Money.vnd(100_000),
-                            List.of(removedHold, keptHold, newHold))), hold)));
+                            List.of(removedHold, keptHold, newHold))), hold, allowPartialShipment)));
         }
 
         private void inventoryReplacesIt() {
@@ -734,6 +738,60 @@ class PickListServiceTest {
             orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY);
             service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
             verify(orders, org.mockito.Mockito.times(1)).putOnHold(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("WF4-F2: Sales allows partial shipment while the order is held only for the removed carton: the "
+                + "hold is resolved, with a note, by the one who allowed it")
+        void partialShipmentLiftsTheHold() {
+            when(picks.lockAllByOrderId(task.getOrderId())).thenReturn(List.of(task));
+            orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY, true);
+
+            assertThat(service.liftHoldForRemovedCartons(task.getOrderId(), picker)).isTrue();
+
+            verify(orders).resolveHold(eq(task.getOrderId()), any(), eq(picker));
+        }
+
+        @Test
+        @DisplayName("WF4-F2: a hold for another reason, an order not held, or partial shipment not allowed is left")
+        void partialShipmentLeavesOtherHolds() {
+            when(picks.lockAllByOrderId(task.getOrderId())).thenReturn(List.of(task));
+
+            orderIs(OrderStatus.ON_HOLD, HoldReason.ADDRESS, true);
+            assertThat(service.liftHoldForRemovedCartons(task.getOrderId(), picker)).isFalse();
+            orderIs(OrderStatus.PARTIALLY_FULFILLED, null, true);
+            assertThat(service.liftHoldForRemovedCartons(task.getOrderId(), picker)).isFalse();
+            orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY, false);
+            assertThat(service.liftHoldForRemovedCartons(task.getOrderId(), picker)).isFalse();
+
+            verify(orders, never()).resolveHold(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("WF4-F2: a short pick line behind the hold keeps it: only the removed carton is not enough to lift")
+        void partialShipmentKeepsAHoldForAShortPick() {
+            when(picks.lockAllByOrderId(task.getOrderId())).thenReturn(List.of(task));
+            orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY, true);
+            PickLineJpaEntity shortLine = pickedLine(UUID.randomUUID(), "LPN-SHORT");
+            shortLine.apply(0, PickLineStatus.SHORT, null, null, null, "HCM-A-01", null, 0, null, null, null);
+            shortLine.recordShort(5, ShortPickReason.NOT_FOUND);
+
+            assertThat(service.liftHoldForRemovedCartons(task.getOrderId(), picker)).isFalse();
+
+            verify(orders, never()).resolveHold(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("WF4-F2: an INVENTORY hold with no removed carton lacking (a replacement is in) is left")
+        void partialShipmentKeepsAHoldWithoutARemovedCarton() {
+            when(picks.lockAllByOrderId(task.getOrderId())).thenReturn(List.of(task));
+            orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY, true);
+            stored.add(new PickLineJpaEntity(UUID.randomUUID(), task.getId(), orderLine, newHold, "SKU-A", "HCM-B-01",
+                    "LOT-2", 3, 5, "LPN-NEW", true));
+
+            assertThat(service.liftHoldForRemovedCartons(task.getOrderId(), picker)).isFalse();
+
+            verify(orders, never()).resolveHold(any(), any(), any());
         }
 
         @Test

@@ -174,7 +174,8 @@ class CartonCheckService implements CartonChecks {
         });
         // Oldest pick first: its cartons have waited longest at the dispatch area. Orders live in another module, so
         // the candidates - picked, not completed, in the caller's warehouses: a bounded working set - are read whole,
-        // asked about in one call, and paged here; an order on hold or out of reach is left out.
+        // asked about in one call, and paged here; an order out of reach is left out, one on hold is shown with its
+        // reason (WF4-K2: the queue never hides it, only labelling and completing are refused).
         List<PickJpaEntity> candidates = picks.findAll(Specification.allOf(filters),
                 PageRequest.of(0, QUEUE_WORKING_SET, Sort.by(Sort.Direction.ASC, "pickedAt", "id"))).getContent();
         Map<UUID, OrderHoldState> states = orders.holdStates(candidates.stream().map(PickJpaEntity::getOrderId)
@@ -186,6 +187,7 @@ class CartonCheckService implements CartonChecks {
                 .filter(pick -> states.get(pick.getOrderId()) != null
                         && (workable(states.get(pick.getOrderId()).status(),
                                 states.get(pick.getOrderId()).allowPartialShipment())
+                        || states.get(pick.getOrderId()).status() == OrderStatus.ON_HOLD
                         || replacing.contains(pick.getId())))
                 .toList();
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.ASC, "pickedAt", "id"));
@@ -219,7 +221,8 @@ class CartonCheckService implements CartonChecks {
                     (int) cartons.stream().filter(c -> c.getStatus() != PackageStatus.TO_CHECK).count(),
                     (int) cartons.stream().filter(c -> c.getStatus() == PackageStatus.LABELED).count(),
                     shipmentsByPack.getOrDefault(pack.getId(), 0L).intValue(), pick.getTaskNumber(),
-                    warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
+                    warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name(),
+                    holdReasonOf(states.get(pick.getOrderId())));
         });
     }
 
@@ -228,7 +231,7 @@ class CartonCheckService implements CartonChecks {
     @Override
     public Session start(UUID taskId, CurrentUser actor) {
         Context ctx = forWork(taskId);
-        requireWorkable(ctx);
+        requireWorkableOrHeld(ctx);
         CartonCheck check = load(ctx);
         if (check.start(actor.userId(), isManager(actor), clock.instant())) {
             log.info("Check of order {} started by {}", ctx.pick().getOrderNumber(), actor.userId());
@@ -250,7 +253,7 @@ class CartonCheckService implements CartonChecks {
     @Override
     public Session check(UUID taskId, String lpn, CurrentUser actor) {
         Context ctx = forWork(taskId);
-        requireWorkable(ctx);
+        requireWorkableOrHeld(ctx);
         CartonCheck check = load(ctx);
         check.requireWorkable(actor.userId(), isManager(actor));
         CartonCheck.Scan scan;
@@ -273,7 +276,7 @@ class CartonCheckService implements CartonChecks {
     @Override
     public Session label(UUID taskId, List<String> lpns, CurrentUser actor) {
         Context ctx = forWork(taskId);
-        requireWorkable(ctx);
+        requireNotHeld(ctx);
         CartonCheck check = load(ctx);
         check.requireWorkable(actor.userId(), isManager(actor));
         List<CartonCheck.Carton> labeled = check.label(lpns, specs(check.cartons()), measures.divisor(),
@@ -407,7 +410,7 @@ class CartonCheckService implements CartonChecks {
                     paymentDue(ctx.order()));
         }
         check.requireWorkable(actor.userId(), isManager(actor));
-        requireWorkable(ctx);
+        requireNotHeld(ctx);
         Map<UUID, Integer> wanted = new LinkedHashMap<>();
         Map<UUID, String> skus = new HashMap<>();
         Map<UUID, Integer> closed = closedUnits(ctx.order());
@@ -621,6 +624,38 @@ class CartonCheckService implements CartonChecks {
     }
 
     /**
+     * Start and scan (WF4-K2, owner decision P5, 2026-11-25: "always easy to operate, don't block stubbornly"): neither
+     * locks the delivery address, so a held order - any reason - is worked as before; any other status the station does
+     * not work in is refused as ever.
+     */
+    private void requireWorkableOrHeld(Context ctx) {
+        if (ctx.order().status() != OrderStatus.ON_HOLD) {
+            requireWorkable(ctx);
+        }
+    }
+
+    /**
+     * Label and complete: refused while the order is on hold (08 BR-04: the first label locks the address an ADDRESS hold
+     * is put on to correct), with {@code PACK_ORDER_ON_HOLD} naming the reason, until Sales resolves the hold - except
+     * for the check reopened for the replacement cartons of a cancelled shipment ({@link #requireWorkable(Context)}).
+     */
+    private void requireNotHeld(Context ctx) {
+        if (ctx.order().status() == OrderStatus.ON_HOLD && !reopenedForReplacement(ctx)) {
+            HoldReason reason = ctx.order().lifecycle() == null ? null : ctx.order().lifecycle().holdReason();
+            throw new BusinessException(ErrorCode.PACK_ORDER_ON_HOLD, ("Order %s is on hold (%s); Sales must resolve the "
+                    + "hold before its cartons are labelled or the check is completed").formatted(
+                    ctx.order().orderNumber(), reason), java.util.List.of(),
+                    reason == null ? java.util.Map.of() : java.util.Map.of("holdReason", reason.name()));
+        }
+        requireWorkable(ctx);
+    }
+
+    private boolean reopenedForReplacement(Context ctx) {
+        HoldReason reason = ctx.order().lifecycle() == null ? null : ctx.order().lifecycle().holdReason();
+        return replacementStatus(ctx.order().status(), reason) && !replacingPicks(List.of(ctx.pick().getId())).isEmpty();
+    }
+
+    /**
      * {@link #requireWorkable(OrderSummary)}, with the one exception of RTM-RTDCANCEL (owner decision 2026-11-19; 09
      * §5.1 steps 1-5, 08 §5.1, 07 §4.3 step 7): the check reopened for the replacement cartons of a shipment the
      * warehouse manager cancelled before dispatch is worked while the order waits on the shortage hold that
@@ -629,9 +664,7 @@ class CartonCheckService implements CartonChecks {
      * any other session, is refused as before.
      */
     private void requireWorkable(Context ctx) {
-        HoldReason reason = ctx.order().lifecycle() == null ? null : ctx.order().lifecycle().holdReason();
-        if (replacementStatus(ctx.order().status(), reason)
-                && !replacingPicks(List.of(ctx.pick().getId())).isEmpty()) {
+        if (reopenedForReplacement(ctx)) {
             return;
         }
         requireWorkable(ctx.order());
@@ -750,7 +783,13 @@ class CartonCheckService implements CartonChecks {
         return new Session(ctx.pick().getId(), order.orderId(), order.orderNumber(), ctx.pick().getWarehouseId(),
                 check.status().name(), check.startedBy(), startedByName, check.startedAt(), check.completedAt(), locked,
                 lines, cartons.stream().map(CartonCheckService::cartonView).toList(), made, paymentDue(order),
-                List.copyOf(unmeasured));
+                List.copyOf(unmeasured),
+                order.status() == OrderStatus.ON_HOLD && order.lifecycle() != null
+                        && order.lifecycle().holdReason() != null ? order.lifecycle().holdReason().name() : null);
+    }
+
+    private static String holdReasonOf(OrderHoldState state) {
+        return state.status() == OrderStatus.ON_HOLD && state.holdReason() != null ? state.holdReason().name() : null;
     }
 
     private static Carton cartonView(CartonCheck.Carton c) {

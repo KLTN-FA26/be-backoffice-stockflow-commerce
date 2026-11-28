@@ -19,13 +19,16 @@ import java.util.UUID;
  *                              refused until it is paid (08 BR-11). Absent when nothing is due
  * @param skusWithoutCartonSpec SKUs whose carton spec has no size or weight: their cartons get no label until a
  *                              warehouse manager completes it (08 BR-07)
+ * @param holdReason            why the order is on hold ({@code HoldReason} name); absent when it is not. Labelling and
+ *                              completing are refused with {@code PACK_ORDER_ON_HOLD} until Sales resolves the hold
  */
 public record CartonCheckSessionResponse(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId,
                                          String status, UUID startedBy, String startedByName, Instant startedAt,
                                          Instant completedAt, boolean orderLocked, List<Line> lines,
                                          List<Carton> cartons, List<Shipment> shipments,
                                          @JsonInclude(JsonInclude.Include.NON_NULL) PaymentDue paymentDue,
-                                         List<String> skusWithoutCartonSpec) {
+                                         List<String> skusWithoutCartonSpec,
+                                         @JsonInclude(JsonInclude.Include.NON_NULL) String holdReason) {
 
     /**
      * @param wantedUnits  what the order still wants of the line

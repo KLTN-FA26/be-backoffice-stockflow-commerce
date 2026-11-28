@@ -681,6 +681,43 @@ class PickListService implements PickLists {
     }
 
     @Override
+    public boolean liftHoldForRemovedCartons(UUID orderId, UUID by) {
+        List<PickJpaEntity> tasks = picks.lockAllByOrderId(orderId).stream()
+                .filter(pick -> pick.getStatus() != PickStatus.CANCELLED).toList();
+        if (tasks.isEmpty()) {
+            return false;
+        }
+        orders.lockedStatus(orderId);
+        OrderSummary order = orders.findById(orderId).orElseThrow();
+        if (order.status() != com.stockflow.order.api.OrderStatus.ON_HOLD || order.lifecycle() == null
+                || order.lifecycle().holdReason() != com.stockflow.order.api.HoldReason.INVENTORY
+                || !order.lifecycle().allowPartialShipment()) {
+            return false;
+        }
+        boolean lackingRemoved = false;
+        for (PickJpaEntity pick : tasks) {
+            if (replacingCancelledShipment(pick)
+                    || toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())).hasShortLines()) {
+                return false;
+            }
+            lackingRemoved |= lacksRemovedCartons(pick);
+        }
+        if (!lackingRemoved) {
+            return false;
+        }
+        try {
+            orders.resolveHold(orderId, "Partial shipment allowed: the carton removed at the check station is no longer "
+                    + "waited for", by);
+        } catch (BusinessException e) {
+            // E.g. an installment on signing still unpaid: the hold stays for Sales to resolve by hand.
+            log.warn("Order {}: hold for a removed carton not lifted: {}", order.orderNumber(), e.getMessage());
+            return false;
+        }
+        log.info("Order {}: partial shipment allowed, hold for a removed carton lifted by {}", order.orderNumber(), by);
+        return true;
+    }
+
+    @Override
     public void holdForCancelledShipment(UUID taskId, UUID lineId, String shipmentCode, CurrentUser actor) {
         holdForLackingCarton(taskId, lineId, actor, "Shipment " + shipmentCode.replace("%", "%%") + " cancelled before "
                 + "dispatch: carton %s (%d x %s) is to be replaced by the warehouse manager",

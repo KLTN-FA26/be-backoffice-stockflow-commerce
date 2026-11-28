@@ -117,6 +117,17 @@ public interface PickLists {
     void holdForRemovedCarton(UUID taskId, UUID lineId, CurrentUser actor);
 
     /**
+     * Sales allowed the order to ship in parts (kltn-docs 17 §4.5, 08 §4.2 step 4; owner decision WF4-F2, 2026-11-28): an
+     * order held {@code INVENTORY} only because a carton was removed at the check station - no short pick, no shipment
+     * cancelled before dispatch, no other hold reason - waits for nothing else, so the hold is resolved back to where it
+     * was, with a history entry, and the check goes on (the part short is then completed as a partial, 08 BR-01). Any
+     * other hold, or an order not on hold, changes nothing. Locks every task of the order, then the order.
+     *
+     * @return whether the hold was lifted
+     */
+    boolean liftHoldForRemovedCartons(UUID orderId, UUID by);
+
+    /**
      * The warehouse manager cancelled shipment {@code shipmentCode} before dispatch (kltn-docs 09 §5.1; owner decision
      * RTM-RTDCANCEL, 2026-11-19): the line's carton left it - damaged into quarantine, or good back onto a bin - and its
      * order line lacks it, so the order is held {@code INVENTORY} as for a carton removed at the check station

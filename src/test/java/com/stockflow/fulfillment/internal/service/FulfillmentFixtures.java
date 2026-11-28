@@ -99,9 +99,14 @@ final class FulfillmentFixtures {
     /** An order in the given status with the given lines and, when {@code holdReason} is set, held for it. */
     static OrderSummary orderWith(UUID id, OrderStatus status, List<OrderSummary.LineSummary> lines,
                                   com.stockflow.order.api.HoldReason holdReason) {
+        return orderWith(id, status, lines, holdReason, false);
+    }
+
+    static OrderSummary orderWith(UUID id, OrderStatus status, List<OrderSummary.LineSummary> lines,
+                                  com.stockflow.order.api.HoldReason holdReason, boolean allowPartialShipment) {
         OrderSummary.Lifecycle lifecycle = new OrderSummary.Lifecycle(holdReason, null, null, null, null, null, null,
                 null, null, new BigDecimal("1000000"), BigDecimal.ZERO,
-                List.of(), List.of());
+                List.of(), List.of(), allowPartialShipment, null);
         return new OrderSummary(id, "SO-0001", UUID.randomUUID(), status, Money.vnd(1_000_000), lines,
                 NOW.minusSeconds(86_400), null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle);
     }
