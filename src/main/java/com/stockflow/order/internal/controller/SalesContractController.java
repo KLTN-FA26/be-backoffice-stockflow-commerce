@@ -247,8 +247,11 @@ class SalesContractController {
 
     @PostMapping(path = "/signature", consumes = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Record the contract signed (14 §4.3 step 14, BR-14): the signed file uploaded through "
-            + "/signed-file/uploads and the day it was signed, not before it was sent nor after today. Immutable from "
-            + "then on; the same uploadId again answers the same contract")
+            + "/signed-file/uploads and the day it was signed, not before it was sent nor after today: a paper signed by "
+            + "both, SENT only. A contract the customer signed electronically (CUSTOMER_SIGNED) is refused with 409 "
+            + "SALES_CONTRACT_STATUS_INVALID, details.reason USE_COMPANY_SIGNATURE: the company signs it with "
+            + "/company-signature or /company-signature/upload. Immutable from then on; the same uploadId again answers "
+            + "the same contract")
     @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.APPROVE)
     public ApiResponse<SalesContracts.ContractView> sign(@PathVariable UUID orderId,
                                                          @Valid @RequestBody SalesContractRequests.Signature request,
@@ -260,7 +263,7 @@ class SalesContractController {
 
     @PostMapping(path = "/signature", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Record the contract signed with the signed file sent here (multipart: file, version, "
-            + "signedOn)")
+            + "signedOn); SENT only, as the JSON form")
     @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.APPROVE)
     public ApiResponse<SalesContracts.ContractView> signWithFile(@PathVariable UUID orderId,
                                                                  @RequestPart("file") MultipartFile file,

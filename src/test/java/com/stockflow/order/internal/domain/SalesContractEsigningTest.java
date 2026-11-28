@@ -143,18 +143,26 @@ class SalesContractEsigningTest {
     }
 
     @Test
-    @DisplayName("a file signed by both sides is recorded from SENT or CUSTOMER_SIGNED (the existing endpoint); a draft refuses")
-    void recordedSignedFileFromEitherState() {
+    @DisplayName("a file signed by both sides is recorded from SENT only: once the customer signed electronically the "
+            + "company signs with its own signature (USE_COMPANY_SIGNATURE); a draft refuses")
+    void recordedSignedFileFromSentOnly() {
         Order order = order();
         SalesContract fromSent = sent(order);
         fromSent.sign(TODAY, "k", "f.pdf", NOW, SALES);
         assertThat(fromSent.status()).isEqualTo(SalesContractStatus.SIGNED);
 
-        SalesContract fromCustomerSigned = sent(order);
-        fromCustomerSigned.customerSigned(NOW);
-        fromCustomerSigned.requireSignable(TODAY, NOW);
-        fromCustomerSigned.sign(TODAY, "k", "f.pdf", NOW, SALES);
-        assertThat(fromCustomerSigned.status()).isEqualTo(SalesContractStatus.SIGNED);
+        SalesContract customerSigned = sent(order);
+        customerSigned.customerSigned(NOW);
+        for (Runnable attempt : List.<Runnable>of(customerSigned::requireSignable,
+                () -> customerSigned.sign(TODAY, "k", "f.pdf", NOW, SALES))) {
+            assertThatThrownBy(attempt::run).isInstanceOfSatisfying(BusinessException.class, ex -> {
+                assertThat(ex.errorCode()).isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
+                assertThat(ex.details()).containsEntry("reason", SalesContract.USE_COMPANY_SIGNATURE);
+            });
+        }
+        assertThat(customerSigned.status()).isEqualTo(SalesContractStatus.CUSTOMER_SIGNED);
+        customerSigned.companySigned(TODAY, "k", "f.pdf", NOW, UUID.randomUUID());
+        assertThat(customerSigned.status()).as("the company's signature is the way").isEqualTo(SalesContractStatus.SIGNED);
 
         assertThatThrownBy(() -> draft(order).sign(TODAY, "k", "f.pdf", NOW, SALES))
                 .extracting(SalesContractEsigningTest::code).isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);

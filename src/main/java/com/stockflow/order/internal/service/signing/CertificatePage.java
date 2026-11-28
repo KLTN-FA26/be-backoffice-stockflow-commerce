@@ -11,9 +11,13 @@ import com.stockflow.common.document.BusinessDocument.Title;
 import com.stockflow.common.document.DocumentFonts;
 import com.stockflow.common.document.DocumentParts;
 import com.stockflow.common.label.LabelDrawing;
-import org.apache.pdfbox.io.IOUtils;
-import org.apache.pdfbox.io.RandomAccessReadBuffer;
-import org.apache.pdfbox.multipdf.PDFMergerUtility;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSBase;
+import org.apache.pdfbox.cos.COSDictionary;
+import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.multipdf.PDFCloneUtility;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.springframework.stereotype.Component;
 
@@ -24,16 +28,24 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.ResourceBundle;
 
 /**
- * The certificate page of a signed contract: one A4 page in Vietnamese, appended to the contract's PDF before the
+ * The certificate page of a signed contract: one A4 page in Vietnamese, added to the contract's PDF before the
  * company signs, that says what was signed (the SHA-256 of the PDF the customer was sent), who signed for each side and
  * how, and where anyone can check the file ({@code <storefront>/xac-minh-hop-dong/<code>}, as a QR code and as text).
  * While the company's certificate is the system's own test certificate, the page says that no certification authority
- * issued it.
+ * issued it. The page of the PDF prepared for the company to sign outside the system names no company signer, account
+ * or time - it is made before anyone signs - and says it was prepared to be signed outside.
+ *
+ * <p>The page is added as an <b>incremental update</b> of the sent PDF ({@link #append}): the sent bytes stay the first
+ * bytes of the result, so the company's signed file still begins with exactly what the customer was sent, and anyone
+ * holding the sent PDF can check that with {@code SignedPdfInspector} - which a merge that rewrites the file would
+ * make impossible.</p>
  *
  * <p>Set with the same fonts and page kit as every contract paper ({@link BusinessDocument}), so diacritics draw and the
  * page looks like part of the contract. All words are the {@code contract.certificate.*} keys of the bundles.</p>
@@ -67,6 +79,8 @@ public class CertificatePage {
 
     /**
      * @param sentDocumentSha256 lower-case hex SHA-256 of the PDF the customer was sent (the revision's document)
+     * @param company            who signs for the company; null for the page of the PDF to sign outside the system,
+     *                           prepared before anyone signs (it says so instead)
      * @param verificationCode   as {@link VerificationCodes#newCode()} made it
      * @param verificationUrl    where the QR code points, or null for a page with the code in text only
      * @param testCertificate    whether to print the notice that the certificate is the system's own
@@ -114,14 +128,19 @@ public class CertificatePage {
 
         CompanySignature company = content.company();
         blocks.add(new Heading(t.getString("contract.certificate.company")));
-        List<Field> seller = new ArrayList<>();
-        add(seller, t, "signerName", company.signerName());
-        add(seller, t, "signerTitle", company.signerTitle());
-        add(seller, t, "account", company.accountName());
-        add(seller, t, "signedAt", when(company.signedAt()));
-        add(seller, t, "certSubject", company.certificateSubject());
-        add(seller, t, "certIssuer", company.certificateIssuer());
-        blocks.add(new BusinessDocument.Fields(seller, 0));
+        if (company == null) {
+            // Prepared before anyone signs: a name, an account or a time here would be a signature claimed in advance.
+            blocks.add(Paragraph.of(t.getString("contract.certificate.preparedOutside")));
+        } else {
+            List<Field> seller = new ArrayList<>();
+            add(seller, t, "signerName", company.signerName());
+            add(seller, t, "signerTitle", company.signerTitle());
+            add(seller, t, "account", company.accountName());
+            add(seller, t, "signedAt", when(company.signedAt()));
+            add(seller, t, "certSubject", company.certificateSubject());
+            add(seller, t, "certIssuer", company.certificateIssuer());
+            blocks.add(new BusinessDocument.Fields(seller, 0));
+        }
 
         blocks.add(new Heading(t.getString("contract.certificate.verify")));
         List<Field> lookup = new ArrayList<>();
@@ -140,17 +159,42 @@ public class CertificatePage {
                 t.getString("contract.certificate.title"), blocks);
     }
 
-    /** {@code contract} followed by {@code certificatePage}: the contract's pages as they were, then the page. */
+    /**
+     * {@code contract} with {@code certificatePage} added after its last page, as an incremental update: the result is
+     * {@code contract}, byte for byte, followed by the update that adds the page (its objects copied over, the page tree
+     * written again in the update). The contract is our own PDF, so it is read with PDFBox's defaults.
+     *
+     * @throws IllegalArgumentException when {@code contract} is encrypted
+     * @throws IllegalStateException    when the result does not begin with {@code contract} - never expected, and never
+     *                                  to be signed over if it happened
+     */
     public byte[] append(byte[] contract, byte[] certificatePage) {
-        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            PDFMergerUtility merger = new PDFMergerUtility();
-            merger.setDestinationStream(out);
-            merger.addSource(new RandomAccessReadBuffer(contract));
-            merger.addSource(new RandomAccessReadBuffer(certificatePage));
-            merger.mergeDocuments(IOUtils.createMemoryOnlyStreamCache());
-            return out.toByteArray();
+        try (PDDocument target = Loader.loadPDF(contract); PDDocument source = Loader.loadPDF(certificatePage);
+             ByteArrayOutputStream out = new ByteArrayOutputStream(contract.length + certificatePage.length + 4096)) {
+            if (target.isEncrypted()) {
+                throw new IllegalArgumentException("A certificate page is not added to an encrypted PDF");
+            }
+            PDPage page = source.getPage(0);
+            // The page without its place in the other document's tree, with what it inherits from there made its own.
+            COSDictionary detached = new COSDictionary();
+            for (Map.Entry<COSName, COSBase> entry : page.getCOSObject().entrySet()) {
+                if (!COSName.PARENT.equals(entry.getKey())) {
+                    detached.setItem(entry.getKey(), entry.getValue());
+                }
+            }
+            detached.setItem(COSName.RESOURCES, page.getResources().getCOSObject());
+            detached.setItem(COSName.MEDIA_BOX, page.getMediaBox().getCOSArray());
+            COSDictionary copied = new PDFCloneUtility(target) { }.cloneForNewDocument(detached);
+            target.addPage(new PDPage(copied));
+            target.saveIncremental(out);
+            byte[] appended = out.toByteArray();
+            if (appended.length <= contract.length
+                    || !Arrays.equals(appended, 0, contract.length, contract, 0, contract.length)) {
+                throw new IllegalStateException("The certificate page was not added as an incremental update");
+            }
+            return appended;
         } catch (IOException ex) {
-            throw new UncheckedIOException("The certificate page could not be appended", ex);
+            throw new UncheckedIOException("The certificate page could not be added", ex);
         }
     }
 

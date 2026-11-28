@@ -75,7 +75,11 @@ public interface ContractSigning {
     ContractView companySign(CurrentUser user, UUID orderId, long version, String signerName, String signerTitle,
                              Origin origin);
 
-    /** A link to the PDF to sign outside the system (the sent contract and its certificate page), made once. */
+    /**
+     * A link to the PDF to sign outside the system, made once: the sent contract with its certificate page added as an
+     * incremental update (so it begins with the sent bytes), the page prepared before anyone signs - no company signer,
+     * account or time on it, the verification code fixed from here on.
+     */
     DownloadLink companyDocumentToSign(CurrentUser user, UUID orderId);
 
     /**

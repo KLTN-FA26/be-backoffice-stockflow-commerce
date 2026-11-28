@@ -854,9 +854,10 @@ stockflow:
       # signing and kept in the database, sealed with the secret below. Never commit any of these.
       keystore: ${CONTRACT_SIGNING_KEYSTORE:}
       keystore-password: ${CONTRACT_SIGNING_KEYSTORE_PASSWORD:}
-      # Seals the generated key and hashes customers' one-time codes. Required in the prod profile (the application
-      # refuses to start without it); elsewhere a development default is used with a warning. Changing it makes the
-      # stored key unreadable (the signer then fails) and ends the codes in flight. Any long random string.
+      # Seals the generated key and hashes customers' one-time codes. Required, at least 32 characters, in every profile
+      # but local and test (the application refuses to start without it; the VPS runs dev): openssl rand -base64 48.
+      # In local and test a development default is used with a warning. Changing it makes the stored key unreadable
+      # (the signer then fails) and ends the codes in flight.
       secret: ${CONTRACT_SIGNING_SECRET:}
       # The storefront's origin: the QR code on a contract's certificate page points at
       # <this>/xac-minh-hop-dong/<code>. Blank prints the code and no QR code.

@@ -346,6 +346,12 @@ public enum ErrorCode {
     /** 15 BR-11, four eyes: whoever sent a contract for the credit review does not decide it. */
     CONTRACT_CREDIT_REVIEW_SELF("The credit of a contract is decided by someone other than whoever sent it for review",
             403),
+    /**
+     * QĐ-4, four eyes: the account that drew a contract up or sent it for the terms review does not approve or reject
+     * its terms (as {@link #CONTRACT_CREDIT_REVIEW_SELF} for the credit review).
+     */
+    CONTRACT_TERMS_REVIEW_SELF("The terms of a contract are decided by someone other than whoever drew it up or sent it "
+            + "for review", 403),
     /** QĐ-4: a draft that deviates from the standard terms is approved by a Sales Manager before it is sent. */
     CONTRACT_TERMS_REVIEW_REQUIRED("This contract deviates from the standard terms; a Sales Manager approves it before it "
             + "is sent", 409),
@@ -1460,6 +1466,12 @@ public enum ErrorCode {
      * {@code details.retryAfterSeconds} says when it will be answered.
      */
     CONTRACT_OTP_TOO_MANY("Too many confirmation codes were asked for this contract", 429),
+    /**
+     * Contract e-signing: wrong codes for this revision of the contract reached the lifetime cap
+     * ({@code ContractSignOtps.MAX_FAILED_TRIES}); no code is issued or checked until Sales extends the signing deadline
+     * or the contract is redrawn as a new revision. Not retryable: waiting does not lift it.
+     */
+    CONTRACT_OTP_LOCKED("Too many wrong confirmation codes were entered for this contract", 429),
     /** ADR-0014: the per-user daily cap on assistant questions ({@code stockflow.assistant.daily-message-limit}). */
     ASSISTANT_DAILY_LIMIT("You have asked the assistant as many questions as allowed today", 429),
     /**
@@ -1477,6 +1489,11 @@ public enum ErrorCode {
     /** A dependency we call failed. Separated from INTERNAL_ERROR so alerting can tell them apart. */
     EXTERNAL_SERVICE_ERROR("An upstream service is unavailable", 502),
     STORAGE_ERROR("File storage is unavailable", 503),
+    /**
+     * Contract e-signing: as many uploaded signed PDFs as the server checks at once are being checked
+     * ({@code SignedPdfInspector}); a PDF is parsed in memory, so the number at once is bounded. Retryable.
+     */
+    CONTRACT_INSPECTION_BUSY("Other signed files are being checked right now; try again in a moment", 503),
     /** No portal activation address is configured, so no invitation link can be built. */
     PORTAL_INVITATION_UNAVAILABLE("Portal invitations cannot be sent right now", 503),
     /** The company bank account customers transfer to is not configured for this deployment (SCRUM-193). */
@@ -1535,7 +1552,7 @@ public enum ErrorCode {
         return switch (this) {
             case OPTIMISTIC_LOCK, LOCK_TIMEOUT, RATE_LIMITED,
                  EXTERNAL_SERVICE_ERROR, STORAGE_ERROR, IDEMPOTENT_REQUEST_IN_PROGRESS,
-                 AUTHORIZATION_UNAVAILABLE, ASSISTANT_BUSY, ASSISTANT_UNAVAILABLE -> true;
+                 AUTHORIZATION_UNAVAILABLE, ASSISTANT_BUSY, ASSISTANT_UNAVAILABLE, CONTRACT_INSPECTION_BUSY -> true;
             default -> false;
         };
     }

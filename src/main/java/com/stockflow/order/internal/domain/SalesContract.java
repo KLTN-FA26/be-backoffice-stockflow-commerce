@@ -380,9 +380,11 @@ public final class SalesContract {
 
     /**
      * Signed outside the system and recorded (14 §4.3 step 14, BR-14): the signed file - a scan of the signed paper or
-     * a digitally signed PDF - and the day it was signed, not before the contract was sent nor after today.
+     * a digitally signed PDF - and the day it was signed, not before the contract was sent nor after today. SENT →
+     * SIGNED only: a contract the customer signed on the portal is signed by the company ({@link #companySigned}).
      *
-     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID}; {@code VALIDATION_FAILED} for the day
+     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID} ({@code details.reason}
+     *         {@code USE_COMPANY_SIGNATURE} from CUSTOMER_SIGNED); {@code VALIDATION_FAILED} for the day
      */
     public void sign(LocalDate on, String fileKey, String fileName, Instant at, UUID by) {
         requireSignable(on, at);
@@ -502,6 +504,12 @@ public final class SalesContract {
         return text;
     }
 
+    /**
+     * {@code details.reason} of the refusal to record a file signed by both for a contract the customer signed on the
+     * portal: the company signs it through the company signature.
+     */
+    public static final String USE_COMPANY_SIGNATURE = "USE_COMPANY_SIGNATURE";
+
     /** How far ahead Sales may put the signing deadline. */
     public static final int MAX_SIGN_DAYS_AHEAD = 60;
 
@@ -564,9 +572,15 @@ public final class SalesContract {
         this.termsReviewedAt = null;
     }
 
-    /** A Sales Manager approves the terms as written; the contract may now be sent. The note is optional. */
+    /**
+     * A Sales Manager approves the terms as written; the contract may now be sent. The note is optional.
+     *
+     * @throws BusinessException {@code CONTRACT_TERMS_REVIEW_NOT_PENDING}; {@code CONTRACT_TERMS_REVIEW_SELF} for the
+     *         account that drew the contract up or asked for the review
+     */
     public void approveTerms(String note, Instant at, UUID by) {
         requireTermsReviewPending();
+        requireOtherThanAuthorOfReview(by);
         String text = decisionNote(note, false);
         this.termsReview = TermsReview.APPROVED;
         this.termsReviewNote = text;
@@ -574,9 +588,14 @@ public final class SalesContract {
         this.termsReviewedAt = Objects.requireNonNull(at, "at");
     }
 
-    /** A Sales Manager refuses, with the reason; the draft goes back to Sales to change and send for review again. */
+    /**
+     * A Sales Manager refuses, with the reason; the draft goes back to Sales to change and send for review again.
+     *
+     * @throws BusinessException as {@link #approveTerms}
+     */
     public void rejectTerms(String note, Instant at, UUID by) {
         requireTermsReviewPending();
+        requireOtherThanAuthorOfReview(by);
         String text = decisionNote(note, true);
         this.termsReview = TermsReview.REJECTED;
         this.termsReviewNote = text;
@@ -588,6 +607,19 @@ public final class SalesContract {
     public void withdrawTermsReview() {
         requireTermsReviewPending();
         clearTermsReview();
+    }
+
+    /**
+     * Four eyes on the terms (QĐ-4, as 15 BR-11 is on the credit): a Sales Manager who drew the contract up, or asked
+     * for the review, would otherwise approve their own deviation from the standard terms - the role holds both
+     * permissions, so the permission matrix alone does not stop it.
+     */
+    private void requireOtherThanAuthorOfReview(UUID by) {
+        if (by != null && (by.equals(drawnUpBy) || by.equals(termsReviewRequestedBy))) {
+            throw new BusinessException(ErrorCode.CONTRACT_TERMS_REVIEW_SELF, ("Contract %s was drawn up or sent for "
+                    + "review by you: another Sales Manager decides its terms").formatted(contractNumber))
+                    .localized("refusal.contract.termsReviewSelf", contractNumber);
+        }
     }
 
     private void requireTermsReviewPending() {
@@ -694,12 +726,23 @@ public final class SalesContract {
     }
 
     /**
-     * Whether a file signed by both sides may be recorded: a sent contract, or one the customer signed on the portal.
+     * Whether staff may record a file signed by both sides: a SENT contract only. Once the customer signed on the
+     * portal (CUSTOMER_SIGNED), the company's side is signed through the company signature alone ({@link
+     * #companySigned}), which asks for {@code sales-contract-signatures:APPROVE} and four eyes ({@link
+     * #requireNotAuthor}); recording a file here would turn the contract SIGNED with neither - any holder of
+     * {@code sales-contracts:APPROVE}, the contract's own author included, could put it in force.
      *
-     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID}
+     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID}; with {@code details.reason}
+     *         {@code USE_COMPANY_SIGNATURE} when the customer has signed
      */
     public void requireSignable() {
-        if (!status.awaitingSignatures()) {
+        if (status == SalesContractStatus.CUSTOMER_SIGNED) {
+            throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, ("Contract %s was signed by the customer "
+                    + "electronically: the company signs it with its own signature, not by recording a file")
+                    .formatted(contractNumber), java.util.List.of(), java.util.Map.of("reason", USE_COMPANY_SIGNATURE),
+                    "refusal.contract.useCompanySignature", contractNumber);
+        }
+        if (status != SalesContractStatus.SENT) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, ("Contract %s is %s: only a sent "
                     + "contract is signed").formatted(contractNumber, status))
                     .localized("refusal.contract.status.signed", contractNumber, status);
@@ -707,8 +750,8 @@ public final class SalesContract {
     }
 
     /**
-     * Whether it may be recorded signed on {@code on}, now: a sent contract, signed not before it was sent nor after
-     * today - checked before the signed file is, so a refusal costs no upload.
+     * Whether it may be recorded signed on {@code on}, now: a SENT contract ({@link #requireSignable()}), signed not
+     * before it was sent nor after today - checked before the signed file is, so a refusal costs no upload.
      *
      * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID}; {@code VALIDATION_FAILED} for the day
      */

@@ -1,5 +1,7 @@
 package com.stockflow.order.internal.repository;
 
+import com.stockflow.common.security.DataScopeContext;
+import com.stockflow.common.security.ScopeViolationException;
 import com.stockflow.order.internal.domain.SalesContractList;
 import com.stockflow.order.internal.domain.SalesContractStatus;
 import com.stockflow.order.internal.domain.TermsReview;
@@ -22,6 +24,13 @@ import java.util.UUID;
  * their total) and the summary two, however many contracts there are. The buyer's name is the one written on the contract
  * when it was drawn up, and the Sales owner the one it recorded then (14 BR-26): the same table, no other schema is
  * joined. Everything user-given is a bound parameter; the order of the rows is fixed.
+ *
+ * <p><b>Data scope.</b> Both the page and the summary see only the contracts of the orders the caller's data scope
+ * reaches, the same rows a single contract is read under ({@code OrderRepository#findByIdInScopeForReading}): this is
+ * plain SQL, so the scope that {@code ScopedJpaRepository} applies to the order is applied here by hand, with the same
+ * rules as {@link com.stockflow.common.security.DataScopeSpecifications#forScope} over the order (owner = the order's
+ * customer, no warehouse, no team) and the same refusal when no scope is in force. Without it a caller limited to some
+ * orders would list - and count - every customer's contract with its prices.</p>
  */
 @Repository
 class SalesContractListAdapter implements SalesContractList {
@@ -41,7 +50,7 @@ class SalesContractListAdapter implements SalesContractList {
     @Transactional(readOnly = true)
     public Page page(Query query) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("today", Date.valueOf(query.today()));
-        String where = where(query, params);
+        String where = where(query, params) + inScope(params);
         Long total = jdbc.queryForObject("SELECT count(*)" + FROM + where, params, Long.class);
         if (total == null || total == 0) {
             return new Page(List.of(), 0);
@@ -70,20 +79,47 @@ class SalesContractListAdapter implements SalesContractList {
     public Summary summary(LocalDate today) {
         Map<SalesContractStatus, Long> byStatus = new EnumMap<>(SalesContractStatus.class);
         long[] overdue = new long[1];
+        long[] pending = new long[1];
+        MapSqlParameterSource params = new MapSqlParameterSource("today", Date.valueOf(today));
+        String scope = inScope(params);
         jdbc.query("""
                 SELECT k.status, count(*) AS n,
                        count(*) FILTER (WHERE k.status = 'SENT' AND k.sign_by IS NOT NULL AND k.sign_by < :today)
-                           AS overdue
-                  FROM ordering.sales_contract k GROUP BY k.status""",
-                new MapSqlParameterSource("today", Date.valueOf(today)), rs -> {
+                           AS overdue,
+                       count(*) FILTER (WHERE k.terms_review = 'PENDING') AS terms_pending"""
+                + FROM + " WHERE TRUE" + scope + " GROUP BY k.status", params, rs -> {
                     byStatus.put(SalesContractStatus.valueOf(rs.getString("status")), rs.getLong("n"));
                     overdue[0] += rs.getLong("overdue");
+                    pending[0] += rs.getLong("terms_pending");
                 });
-        Long pending = jdbc.queryForObject(
-                "SELECT count(*) FROM ordering.sales_contract WHERE terms_review = 'PENDING'",
-                new MapSqlParameterSource(), Long.class);
         return new Summary(byStatus, byStatus.getOrDefault(SalesContractStatus.CUSTOMER_SIGNED, 0L), overdue[0],
-                pending == null ? 0 : pending);
+                pending[0]);
+    }
+
+    /**
+     * The caller's data scope over the order, as a condition on {@code o}: see the class comment.
+     *
+     * @throws ScopeViolationException when no scope is in force, or OWN without a user id, or WAREHOUSE (an order has
+     *         no warehouse) - loud, as the scoped repositories are, never every row
+     */
+    private static String inScope(MapSqlParameterSource params) {
+        DataScopeContext.Scope scope = DataScopeContext.current().orElseThrow(() -> new ScopeViolationException(
+                "No data scope in force for the contract list: annotate the endpoint with @RequiresPermission"));
+        return switch (scope.effective()) {
+            case ALL -> "";
+            case OWN -> {
+                if (scope.user().userId() == null) {
+                    throw new ScopeViolationException("OWN scope requires a user id, and the current principal has "
+                            + "none");
+                }
+                params.addValue("scopeOwner", scope.user().userId());
+                yield " AND o.customer_id = :scopeOwner";
+            }
+            // As DataScopeSpecifications: team membership is not known yet, so TEAM sees nothing rather than all.
+            case TEAM -> " AND FALSE";
+            case WAREHOUSE -> throw new ScopeViolationException("An order has no warehouse: WAREHOUSE scope cannot be "
+                    + "applied to the contract list");
+        };
     }
 
     private static String where(Query query, MapSqlParameterSource params) {

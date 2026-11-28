@@ -164,6 +164,15 @@ class ContractNegotiationIntegrationTest {
         return WithCurrentUser.call(user, DataScope.ALL, call);
     }
 
+    /** The contract list as the back office reads it: under a data scope, here everything. */
+    private com.stockflow.common.api.PageResponse<SalesContracts.ContractRow> list(SalesContracts.ContractQuery query) {
+        return as(sales, () -> contracts.list(query));
+    }
+
+    private SalesContracts.ContractSummary summary() {
+        return as(sales, () -> contracts.summary());
+    }
+
     private static ErrorCode code(Throwable e) {
         return ((BusinessException) e).errorCode();
     }
@@ -214,6 +223,15 @@ class ContractNegotiationIntegrationTest {
                 .isEqualTo(ErrorCode.CONTRACT_TERMS_REVIEW_PENDING);
         assertThatThrownBy(() -> approve(orderId, drafted.version(), null)).as("a version read before it waited")
                 .extracting(ContractNegotiationIntegrationTest::code).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+
+        // Four eyes on the terms: whoever drew it up or asked for the review does not decide it, a manager included.
+        CurrentUser author = SalesOwners.caller(sales.userId(), Role.SALES_MANAGER);
+        for (boolean approving : new boolean[] {true, false}) {
+            assertThatThrownBy(() -> as(author, () -> approving
+                    ? contracts.approveTerms(author, orderId, waiting.version(), null)
+                    : contracts.rejectTerms(author, orderId, waiting.version(), "Not like this")))
+                    .extracting(ContractNegotiationIntegrationTest::code).isEqualTo(ErrorCode.CONTRACT_TERMS_REVIEW_SELF);
+        }
 
         SalesContracts.ContractView approved = approve(orderId, waiting.version(), "Agreed with the director");
         assertThat(approved.termsReview()).isEqualTo("APPROVED");
@@ -388,6 +406,15 @@ class ContractNegotiationIntegrationTest {
         assertThat(jdbc.queryForList("SELECT sent_document_key FROM ordering.sales_contract_revision WHERE contract_id = ? "
                 + "ORDER BY revision", String.class, sent.id())).hasSize(2).doesNotContainNull()
                 .doesNotHaveDuplicates();
+        // The orphaned-file sweep keeps revision 1's PDF, which only the revision row names any more.
+        String firstKey = jdbc.queryForObject("SELECT sent_document_key FROM ordering.sales_contract_revision "
+                + "WHERE contract_id = ? AND revision = 1", String.class, sent.id());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.sales_contract WHERE sent_document_key = ? "
+                + "OR signed_file_key = ?", Long.class, firstKey, firstKey)).as("the contract row no longer names it")
+                .isZero();
+        assertThat(context.getBeansOfType(com.stockflow.common.storage.StoredFileReferences.class).values().stream()
+                .flatMap(r -> r.referenced(com.stockflow.common.storage.FileCategory.DOCUMENT, Set.of(firstKey,
+                        "documents/never-stored.pdf")).stream()).toList()).containsExactly(firstKey);
         assertThatThrownBy(() -> as(sales, () -> contracts.revisionDocument(orderId, 3)))
                 .extracting(ContractNegotiationIntegrationTest::code).isEqualTo(ErrorCode.NOT_FOUND);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.sales_contract_revision WHERE contract_id = ?",
@@ -449,9 +476,9 @@ class ContractNegotiationIntegrationTest {
         assertThat(as(sales, () -> contracts.get(onTimeOrder)).overdueToSign()).isFalse();
         assertThatThrownBy(() -> contracts.customerSigned(buyer.customerId(), customerUser(), orderId, overdue.version(), null))
                 .extracting(ContractNegotiationIntegrationTest::code).isEqualTo(ErrorCode.CONTRACT_SIGN_DEADLINE_PASSED);
-        SalesContracts.ContractSummary summary = contracts.summary();
+        SalesContracts.ContractSummary summary = summary();
         assertThat(summary.overdueToSign()).isGreaterThanOrEqualTo(1);
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of("SENT"), null, today, null,
+        assertThat(list(new SalesContracts.ContractQuery(Set.of("SENT"), null, today, null,
                 overdue.contractNumber(), 0, 20)).items()).singleElement().satisfies(row -> {
                     assertThat(row.contractId()).isEqualTo(sent.id());
                     assertThat(row.overdueToSign()).isTrue();
@@ -491,7 +518,7 @@ class ContractNegotiationIntegrationTest {
 
     @Test
     @DisplayName("CUSTOMER_SIGNED is not signed: the order keeps waiting, the customer cannot ask for changes, the contract "
-            + "reads as sent and waiting for the company; a file signed by both makes it SIGNED and confirms the order")
+            + "reads as sent and waiting for the company; staff may not record it signed with a file")
     void customerSignedDoesNotConfirmTheOrder() {
         Buyer buyer = buyer("Cong ty Da Ky");
         UUID orderId = draftOrder(buyer);
@@ -523,17 +550,27 @@ class ContractNegotiationIntegrationTest {
                 .isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
         assertThat(as(sales, () -> contracts.history(orderId))).singleElement()
                 .extracting(SalesContracts.ContractView::status).isEqualTo("CUSTOMER_SIGNED");
-        assertThat(contracts.summary().awaitingCompanySignature()).isGreaterThanOrEqualTo(1);
+        assertThat(summary().awaitingCompanySignature()).isGreaterThanOrEqualTo(1);
 
-        // The existing "record a signed file" path works from CUSTOMER_SIGNED, and then the order is placed.
+        // Recording a file signed by both is for a SENT contract: once the customer signed electronically, the company
+        // signs with its own signature (permission and four eyes), never by staff recording a file - not even the
+        // manager, and not by uploading the file first.
         byte[] scan = TestPdfs.blank();
-        SalesContracts.ContractView signed = as(sales, () -> contracts.sign(sales, orderId, waiting.version(),
-                IncomingFiles.sent(List.of(new FileUpload("signed.pdf", "application/pdf", scan.length,
-                        new ByteArrayInputStream(scan)))), today));
-        assertThat(signed.status()).isEqualTo("SIGNED");
-        assertThat(signed.customerSignedAt()).as("kept").isNotNull();
-        assertThat(status(orderId)).as("placed now: the plan's installment is due on signing")
-                .isEqualTo(OrderStatus.PENDING_PAYMENT);
+        for (CurrentUser staff : List.of(sales, manager)) {
+            assertThatThrownBy(() -> as(staff, () -> contracts.sign(staff, orderId, waiting.version(),
+                    IncomingFiles.sent(List.of(new FileUpload("signed.pdf", "application/pdf", scan.length,
+                            new ByteArrayInputStream(scan)))), today))).isInstanceOfSatisfying(BusinessException.class,
+                    ex -> {
+                        assertThat(ex.errorCode()).isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
+                        assertThat(ex.details()).containsEntry("reason", "USE_COMPANY_SIGNATURE");
+                    });
+        }
+        assertThatThrownBy(() -> as(sales, () -> contracts.beginSignedFileUpload(sales, orderId,
+                new com.stockflow.common.storage.UploadSlotRequest("signed.pdf", "application/pdf", 1000L, "a".repeat(64)))))
+                .extracting(ContractNegotiationIntegrationTest::code).isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
+        assertThat(jdbc.queryForObject("SELECT status FROM ordering.sales_contract WHERE id = ?", String.class,
+                waiting.id())).isEqualTo("CUSTOMER_SIGNED");
+        assertThat(status(orderId)).as("still waiting for the company").isEqualTo(OrderStatus.PENDING_CONTRACT);
     }
 
     @Test
@@ -638,6 +675,41 @@ class ContractNegotiationIntegrationTest {
     // ---- the list ------------------------------------------------------------------------------------------------------------
 
     @Test
+    @DisplayName("the contract list and its tiles apply the caller's data scope, as a single contract's read does: OWN "
+            + "sees its own orders' contracts only, TEAM nothing, no scope is refused")
+    void theContractListIsScoped() {
+        Buyer mine = buyer("Cong ty Pham Vi Mot");
+        Buyer theirs = buyer("Cong ty Pham Vi Hai");
+        UUID myOrder = draftOrder(mine);
+        SalesContracts.ContractView myContract = sentContract(mine, myOrder);
+        UUID theirOrder = draftOrder(theirs);
+        SalesContracts.ContractView theirContract = sentContract(theirs, theirOrder);
+        // OWN on an order is "the order's customer is me" (OrderJpaEntity#ownerAttribute): the caller is that id.
+        CurrentUser owner = SalesOwners.caller(mine.customerId(), Role.SALES_STAFF);
+        SalesContracts.ContractQuery everything = new SalesContracts.ContractQuery(Set.of(), null, null, null,
+                "Pham Vi", 0, 50);
+
+        assertThat(list(everything).items()).extracting(SalesContracts.ContractRow::contractId)
+                .contains(myContract.id(), theirContract.id());
+        var own = WithCurrentUser.call(owner, DataScope.OWN, () -> contracts.list(everything));
+        assertThat(own.items()).extracting(SalesContracts.ContractRow::contractId)
+                .containsExactly(myContract.id());
+        assertThat(own.totalElements()).isEqualTo(1);
+        assertThatThrownBy(() -> WithCurrentUser.call(owner, DataScope.OWN, () -> contracts.get(theirOrder)))
+                .as("as the single read").extracting(ContractNegotiationIntegrationTest::code)
+                .isEqualTo(ErrorCode.NOT_FOUND);
+        SalesContracts.ContractSummary ownTiles = WithCurrentUser.call(owner, DataScope.OWN, () -> contracts.summary());
+        assertThat(ownTiles.byStatus().values().stream().mapToLong(Long::longValue).sum())
+                .as("the tiles count the caller's own contracts only").isEqualTo(1);
+        assertThat(ownTiles.byStatus().get("SENT")).isEqualTo(1);
+        assertThat(WithCurrentUser.call(owner, DataScope.TEAM, () -> contracts.list(everything)).items()).isEmpty();
+        assertThatThrownBy(() -> contracts.list(everything))
+                .isInstanceOf(com.stockflow.common.security.ScopeViolationException.class);
+        assertThatThrownBy(() -> contracts.summary())
+                .isInstanceOf(com.stockflow.common.security.ScopeViolationException.class);
+    }
+
+    @Test
     @DisplayName("the contract list: filters by status, owner, deadline, terms review and a search; paged; one row for each "
             + "contract with its order's number and total, the owner's name, and the tiles over it")
     void theContractList() {
@@ -660,10 +732,10 @@ class ContractNegotiationIntegrationTest {
         UUID otherOrder = draftOrder(unowned);
         SalesContracts.ContractView drafted = drawnUp(otherOrder, null);
 
-        SalesContracts.ContractSummary before = contracts.summary();
+        SalesContracts.ContractSummary before = summary();
 
         // The owner's contracts, newest first, with their order's number and the owner's name.
-        var mine = contracts.list(new SalesContracts.ContractQuery(Set.of(), owner, null, null, null, 0, 20));
+        var mine = list(new SalesContracts.ContractQuery(Set.of(), owner, null, null, null, 0, 20));
         assertThat(mine.items()).extracting(SalesContracts.ContractRow::contractId)
                 .containsExactly(sent.id(), pending.id(), sentOne.id());
         assertThat(mine.totalElements()).isEqualTo(3);
@@ -684,44 +756,44 @@ class ContractNegotiationIntegrationTest {
         assertThat(row.salesOwnerName()).isNotBlank();
         assertThat(mine.items().get(2).customerSignedAt()).isNotNull();
 
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of("CUSTOMER_SIGNED"), owner, null, null, null, 0,
+        assertThat(list(new SalesContracts.ContractQuery(Set.of("CUSTOMER_SIGNED"), owner, null, null, null, 0,
                 20)).items()).extracting(SalesContracts.ContractRow::contractId).containsExactly(sentOne.id());
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of("DRAFT", "SENT"), owner, null, null, null, 0,
+        assertThat(list(new SalesContracts.ContractQuery(Set.of("DRAFT", "SENT"), owner, null, null, null, 0,
                 20)).items()).extracting(SalesContracts.ContractRow::contractId).containsExactly(sent.id(), pending.id());
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of(), owner, null, "PENDING", null, 0, 20))
+        assertThat(list(new SalesContracts.ContractQuery(Set.of(), owner, null, "PENDING", null, 0, 20))
                 .items()).extracting(SalesContracts.ContractRow::contractId).containsExactly(pending.id());
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of(), owner, today.plusDays(8), null, null, 0, 20))
+        assertThat(list(new SalesContracts.ContractQuery(Set.of(), owner, today.plusDays(8), null, null, 0, 20))
                 .items()).as("deadline before the day after the deadline: SENT only")
                 .extracting(SalesContracts.ContractRow::contractId).containsExactly(sent.id());
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of(), owner, today.plusDays(7), null, null, 0, 20))
+        assertThat(list(new SalesContracts.ContractQuery(Set.of(), owner, today.plusDays(7), null, null, 0, 20))
                 .items()).as("the deadline day itself is not before it").isEmpty();
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of(), null, null, null,
+        assertThat(list(new SalesContracts.ContractQuery(Set.of(), null, null, null,
                 "danh sach alpha", 0, 20)).items()).as("a search by the buyer's name").hasSize(3);
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of(), null, null, null, sent.contractNumber(), 0,
+        assertThat(list(new SalesContracts.ContractQuery(Set.of(), null, null, null, sent.contractNumber(), 0,
                 20)).items()).extracting(SalesContracts.ContractRow::contractId).containsExactly(sent.id());
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of(), null, null, null, row.orderNumber(), 0, 20))
+        assertThat(list(new SalesContracts.ContractQuery(Set.of(), null, null, null, row.orderNumber(), 0, 20))
                 .items()).extracting(SalesContracts.ContractRow::contractId).containsExactly(sent.id());
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of(), null, null, null, "100%_", 0, 20)).items())
+        assertThat(list(new SalesContracts.ContractQuery(Set.of(), null, null, null, "100%_", 0, 20)).items())
                 .as("wildcards are text").isEmpty();
-        var page = contracts.list(new SalesContracts.ContractQuery(Set.of(), owner, null, null, null, 1, 2));
+        var page = list(new SalesContracts.ContractQuery(Set.of(), owner, null, null, null, 1, 2));
         assertThat(page.items()).extracting(SalesContracts.ContractRow::contractId).containsExactly(sentOne.id());
         assertThat(page.totalElements()).isEqualTo(3);
         assertThat(page.hasPrevious()).isTrue();
         assertThat(page.hasNext()).isFalse();
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of(), null, null, null, "Beta", 0, 20)).items())
+        assertThat(list(new SalesContracts.ContractQuery(Set.of(), null, null, null, "Beta", 0, 20)).items())
                 .extracting(SalesContracts.ContractRow::contractId).containsExactly(drafted.id());
-        assertThat(contracts.list(new SalesContracts.ContractQuery(Set.of(), null, null, null, "Beta", 0, 20)).items()
+        assertThat(list(new SalesContracts.ContractQuery(Set.of(), null, null, null, "Beta", 0, 20)).items()
                 .getFirst().salesOwnerId()).as("no owner when it was drawn up").isNull();
-        assertThatThrownBy(() -> contracts.list(new SalesContracts.ContractQuery(Set.of("NOPE"), null, null, null, null,
+        assertThatThrownBy(() -> list(new SalesContracts.ContractQuery(Set.of("NOPE"), null, null, null, null,
                 0, 20))).extracting(ContractNegotiationIntegrationTest::code).isEqualTo(ErrorCode.UNSUPPORTED_PARAMETER);
-        assertThatThrownBy(() -> contracts.list(new SalesContracts.ContractQuery(Set.of(), null, null, "MAYBE", null, 0,
+        assertThatThrownBy(() -> list(new SalesContracts.ContractQuery(Set.of(), null, null, "MAYBE", null, 0,
                 20))).extracting(ContractNegotiationIntegrationTest::code).isEqualTo(ErrorCode.UNSUPPORTED_PARAMETER);
 
         // The tiles move by what changes.
         UUID anotherOrder = draftOrder(buyer);
         as(ownerUser, () -> contracts.send(ownerUser, anotherOrder, drawnUp(ownerUser, anotherOrder, null).version()));
         customerSigns(buyer, anotherOrder);
-        SalesContracts.ContractSummary after = contracts.summary();
+        SalesContracts.ContractSummary after = summary();
         assertThat(after.byStatus().get("CUSTOMER_SIGNED")).isEqualTo(before.byStatus().get("CUSTOMER_SIGNED") + 1);
         assertThat(after.awaitingCompanySignature()).isEqualTo(before.awaitingCompanySignature() + 1);
         assertThat(after.termsReviewPending()).isGreaterThanOrEqualTo(1);

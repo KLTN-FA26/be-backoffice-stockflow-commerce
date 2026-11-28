@@ -126,8 +126,9 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
         }
         Set<String> kept = new HashSet<>(jpa.sentDocumentKeysIn(keys));
         kept.addAll(jpa.signedFileKeysIn(keys));
-        // The PDF handed to the company's signer to sign outside, and the files of the evidence (a customer's uploaded
-        // signed file, the company's signed file): kept while a row names them.
+        // Every column that names a stored file, kept while a row names it: the PDF handed to the company's signer to
+        // sign outside and its certificate page, the files of the evidence (a customer's uploaded signed file, the
+        // company's signed file, the certificate page), and the PDF of every revision sent.
         MapSqlParameterSource in = new MapSqlParameterSource("keys", keys);
         kept.addAll(named.queryForList("SELECT outside_document_key FROM ordering.sales_contract "
                 + "WHERE outside_document_key IN (:keys)", in, String.class));
@@ -137,6 +138,10 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 + "WHERE file_key IN (:keys)", in, String.class));
         kept.addAll(named.queryForList("SELECT certificate_page_key FROM ordering.sales_contract_signature "
                 + "WHERE certificate_page_key IN (:keys)", in, String.class));
+        // What each earlier revision was sent as: the contract row names only its current revision's PDF, and an
+        // earlier one stays the record of what the customer was sent before asking for changes.
+        kept.addAll(named.queryForList("SELECT sent_document_key FROM ordering.sales_contract_revision "
+                + "WHERE sent_document_key IN (:keys)", in, String.class));
         return kept;
     }
 

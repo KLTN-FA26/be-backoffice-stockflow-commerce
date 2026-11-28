@@ -236,7 +236,7 @@ class ContractSigningIntegrationTest {
         var fresh = new TestCertificateSigner(SigningTestSupport.properties("", "", SigningTestSupport.SECRET),
                 SigningTestSupport.seller(), new SigningSecrets(
                 SigningTestSupport.properties("", "", SigningTestSupport.SECRET),
-                new org.springframework.mock.env.MockEnvironment()), keys, java.time.Clock.systemUTC());
+                SigningTestSupport.testProfile()), keys, java.time.Clock.systemUTC());
 
         var identity = fresh.identity();
         String sealed = jdbc.queryForObject("SELECT private_key_sealed FROM ordering.contract_signing_key",
@@ -246,7 +246,7 @@ class ContractSigningIntegrationTest {
         var again = new TestCertificateSigner(SigningTestSupport.properties("", "", SigningTestSupport.SECRET),
                 SigningTestSupport.seller(), new SigningSecrets(
                 SigningTestSupport.properties("", "", SigningTestSupport.SECRET),
-                new org.springframework.mock.env.MockEnvironment()), keys, java.time.Clock.systemUTC());
+                SigningTestSupport.testProfile()), keys, java.time.Clock.systemUTC());
         assertThat(again.identity().serial()).isEqualTo(identity.serial());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.contract_signing_key", Integer.class))
                 .isEqualTo(1);
@@ -260,7 +260,7 @@ class ContractSigningIntegrationTest {
         var wrongSecret = new TestCertificateSigner(SigningTestSupport.properties("", "", "another-secret"),
                 SigningTestSupport.seller(), new SigningSecrets(
                 SigningTestSupport.properties("", "", "another-secret"),
-                new org.springframework.mock.env.MockEnvironment()), keys, java.time.Clock.systemUTC());
+                SigningTestSupport.testProfile()), keys, java.time.Clock.systemUTC());
         assertThatThrownBy(wrongSecret::identity).isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("CONTRACT_SIGNING_SECRET");
     }

@@ -39,6 +39,13 @@ final class SigningTestSupport {
                 "Giam doc", null, null, null, null, null, null, null, null);
     }
 
+    /** The environment of the test profile, where a short or missing secret is allowed (SigningSecrets). */
+    static MockEnvironment testProfile() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("test");
+        return environment;
+    }
+
     static ContractSigningProperties properties(String keystore, String password, String secret) {
         return new ContractSigningProperties(keystore, password, secret, "https://portal.example.vn",
                 java.time.Duration.ofMinutes(10), java.time.Duration.ofMinutes(1), 5);

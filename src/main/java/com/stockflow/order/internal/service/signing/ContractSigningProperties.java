@@ -9,10 +9,11 @@ import java.time.Duration;
 /**
  * How contracts are signed, bound from {@code stockflow.order.contract-signing.*}.
  *
- * <p>Everything is optional: a laptop or a demo server runs with none of it set (a test certificate is generated and
- * kept in the database, the secret falls back to a derived default with a warning). The {@code prod} profile refuses to
- * start without a {@code secret}, because a default secret would make every sealed key and every OTP hash guessable
- * from the source code.</p>
+ * <p>On a laptop and in tests (the {@code local} and {@code test} profiles) everything is optional: a test certificate is
+ * generated and kept in the database, the secret falls back to a fixed default with a warning. Every other profile -
+ * the VPS's {@code dev} included - refuses to start without a {@code secret} of at least 32 characters
+ * ({@link SigningSecrets}), because a default secret would make every sealed key and every OTP hash guessable from the
+ * source code.</p>
  *
  * @param keystore            base64 of a PKCS#12 holding the company's signing key and certificate chain; blank to use
  *                            the generated test certificate. Takes the place of the generated one entirely

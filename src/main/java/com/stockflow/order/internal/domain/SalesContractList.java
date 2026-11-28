@@ -11,6 +11,8 @@ import java.util.UUID;
 /**
  * Port: the back office's list of contracts and its tiles - one statement for a page, one for its total, one for the
  * summary, whatever the number of rows (the buyer's name, the order's number and total are read in the same join).
+ * Both count only the contracts of orders within the caller's data scope, as a single contract is read; with no scope in
+ * force they refuse rather than answer for everyone.
  */
 public interface SalesContractList {
 

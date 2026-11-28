@@ -4,6 +4,7 @@ import com.stockflow.common.persistence.BaseJpaRepository;
 import com.stockflow.order.internal.entity.ContractSignOtpJpaEntity;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -29,6 +30,25 @@ public interface ContractSignOtpJpaRepository extends BaseJpaRepository<Contract
     Optional<ContractSignOtpJpaEntity> findLiveForUpdate(@Param("contractId") UUID contractId);
 
     Optional<ContractSignOtpJpaEntity> findFirstByContractIdOrderByCreatedAtDesc(UUID contractId);
+
+    /**
+     * Wrong codes entered for one revision since they were last forgiven, over every code issued for it: the lifetime
+     * count {@code ContractSignOtps} caps.
+     */
+    @Query(value = "SELECT COALESCE(SUM(attempts), 0) FROM ordering.contract_sign_otp "
+            + "WHERE contract_id = :contractId AND revision = :revision AND forgiven_at IS NULL", nativeQuery = true)
+    long wrongTries(@Param("contractId") UUID contractId, @Param("revision") int revision);
+
+    /**
+     * Forgives the wrong codes counted so far for one revision (Sales extended the signing deadline). The live code is
+     * superseded with them: a code whose earlier tries no longer count must not take more, or its later wrong tries
+     * would escape the count too. The customer asks for a new one.
+     */
+    @Modifying
+    @Query(value = "UPDATE ordering.contract_sign_otp SET forgiven_at = :at, superseded_at = CASE "
+            + "WHEN consumed_at IS NULL AND superseded_at IS NULL THEN :at ELSE superseded_at END "
+            + "WHERE contract_id = :contractId AND revision = :revision AND forgiven_at IS NULL", nativeQuery = true)
+    int forgive(@Param("contractId") UUID contractId, @Param("revision") int revision, @Param("at") Instant at);
 
     /** The codes issued since {@code since}, oldest first. */
     List<ContractSignOtpJpaEntity> findByContractIdAndCreatedAtAfterOrderByCreatedAtAsc(UUID contractId,

@@ -182,6 +182,15 @@ class ContractESigningFlowIntegrationTest {
         }
     }
 
+    private byte[] sentDocument(UUID orderId) {
+        return stored(jdbc.queryForObject("SELECT sent_document_key FROM ordering.sales_contract WHERE order_id = ?",
+                String.class, orderId));
+    }
+
+    private static byte[] sha256(byte[] bytes) {
+        return com.stockflow.common.storage.Checksums.sha256().digest(bytes);
+    }
+
     private String signedFileKey(UUID orderId) {
         return jdbc.queryForObject("SELECT signed_file_key FROM ordering.sales_contract WHERE order_id = ?",
                 String.class, orderId);
@@ -270,6 +279,13 @@ class ContractESigningFlowIntegrationTest {
         assertThat(inspection.kind()).isEqualTo(SignedPdfInspector.Kind.DIGITAL);
         assertThat(inspection.valid()).isTrue();
         assertThat(inspection.coversWholeDocument()).isTrue();
+        // The certificate page went in as an incremental update: the very bytes the customer was sent come first.
+        byte[] sent = sentDocument(orderId);
+        byte[] companySigned = stored(signedFileKey(orderId));
+        assertThat(java.util.Arrays.copyOf(companySigned, sent.length)).isEqualTo(sent);
+        SignedPdfInspector.Inspection againstSent = inspector.inspect(companySigned, sha256(sent), sent.length);
+        assertThat(againstSent.matchesSentDocument()).isTrue();
+        assertThat(againstSent.acceptedAsSentContract()).isTrue();
 
         // The evidence reads back as the plan's signature view, with the address only in the back office.
         SalesContracts.SignatureView evidence = as(manager, () -> signing.signatures(orderId));
@@ -329,6 +345,56 @@ class ContractESigningFlowIntegrationTest {
     }
 
     @Test
+    @DisplayName("20 wrong codes over a revision lock it: no code is issued or checked, the right one included, until "
+            + "Sales extend the deadline")
+    void wrongCodesLockTheRevisionUntilSalesExtendTheDeadline() {
+        Buyer buyer = buyer("Cong ty Khoa Ma");
+        UUID orderId = sentContract(buyer);
+        UUID contractId = view(orderId).id();
+        // Three earlier codes spent on wrong tries (15), long enough ago that neither limit of asking applies.
+        tx.executeWithoutResult(s -> {
+            for (int i = 0; i < 3; i++) {
+                jdbc.update("""
+                    INSERT INTO ordering.contract_sign_otp (id, contract_id, revision, customer_user_id, email,
+                        code_hash, expires_at, attempts, superseded_at, created_at)
+                    VALUES (?, ?, 1, ?, 'x@example.com', ?, NOW() - interval '2 hours', 5, NOW() - interval '2 hours',
+                        NOW() - interval '3 hours')""", Identifiers.newId(), contractId, buyer.account().userId(),
+                        "a".repeat(64));
+            }
+        });
+        String code = mailedCode(buyer, orderId);
+        String wrong = code.equals("000000") ? "000001" : "000000";
+        long version = view(orderId).version();
+        for (int left = 4; left >= 0; left--) {
+            int expected = left;
+            assertThatThrownBy(() -> signing.customerSignWithOtp(buyer.account(), orderId, version, wrong,
+                    "Pham Van E", "Director", true, ORIGIN)).isInstanceOfSatisfying(BusinessException.class, ex -> {
+                assertThat(ex.errorCode()).isEqualTo(ErrorCode.CONTRACT_OTP_INVALID);
+                assertThat(ex.details()).containsEntry("attemptsLeft", expected);
+            });
+        }
+        assertThat(jdbc.queryForList("SELECT revision || ':' || attempts || ':' || (forgiven_at IS NULL) || ':' "
+                + "|| contract_id FROM ordering.contract_sign_otp WHERE contract_id = ?", String.class, contractId))
+                .as("20 wrong tries over revision 1").hasSize(4);
+        assertThat(jdbc.queryForObject("SELECT sum(attempts) FROM ordering.contract_sign_otp WHERE contract_id = ? "
+                + "AND revision = 1 AND forgiven_at IS NULL", Long.class, contractId)).isEqualTo(20);
+        assertThatThrownBy(() -> signing.customerSignWithOtp(buyer.account(), orderId, version, code, "Pham Van E",
+                "Director", true, ORIGIN)).as("the right code, too late").extracting(
+                ContractESigningFlowIntegrationTest::code).isEqualTo(ErrorCode.CONTRACT_OTP_LOCKED);
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.contract_sign_otp SET created_at = created_at "
+                + "- interval '2 hours' WHERE contract_id = ?", contractId));
+        assertThatThrownBy(() -> signing.requestOtp(buyer.account(), orderId, ORIGIN.ip()))
+                .as("no new code either").extracting(ContractESigningFlowIntegrationTest::code)
+                .isEqualTo(ErrorCode.CONTRACT_OTP_LOCKED);
+        assertThat(view(orderId).status()).isEqualTo("SENT");
+
+        as(sales, () -> contracts.extendSignBy(sales, orderId, view(orderId).version(), today.plusDays(10)));
+
+        assertThat(customerSignsWithCode(buyer, orderId).status()).as("forgiven: a new code signs")
+                .isEqualTo("CUSTOMER_SIGNED");
+    }
+
+    @Test
     @DisplayName("the company signs outside: the PDF to sign is made once; the file signed over exactly it signs the "
             + "contract; a scan, or a signature over other content, is refused")
     void companySignsOutside() {
@@ -346,6 +412,21 @@ class ContractESigningFlowIntegrationTest {
         assertThatThrownBy(() -> as(sales, () -> signing.companyDocumentToSign(sales, orderId)))
                 .extracting(ContractESigningFlowIntegrationTest::code).isEqualTo(ErrorCode.CONTRACT_SIGNER_IS_AUTHOR);
         byte[] toSign = stored(outsideKey);
+        byte[] sent = sentDocument(orderId);
+        assertThat(java.util.Arrays.copyOf(toSign, sent.length)).as("the sent bytes come first").isEqualTo(sent);
+        try (var document = org.apache.pdfbox.Loader.loadPDF(toSign)) {
+            var lastPage = new org.apache.pdfbox.text.PDFTextStripper();
+            lastPage.setStartPage(document.getNumberOfPages());
+            String text = lastPage.getText(document);
+            assertThat(text).contains("Chuẩn bị để ký ngoài hệ thống")
+                    .contains(jdbc.queryForObject("SELECT verification_code FROM ordering.sales_contract "
+                            + "WHERE order_id = ?", String.class, orderId).substring(0, 4))
+                    .doesNotContain("Tài khoản thực hiện").doesNotContain(manager.username());
+            assertThat(text.substring(text.indexOf("3. Bên bán ký"))).as("no company signer or time in advance")
+                    .doesNotContain("Thời điểm ký").doesNotContain("Người ký");
+        } catch (IOException ex) {
+            throw new IllegalStateException(ex);
+        }
 
         assertThatThrownBy(() -> as(manager, () -> signing.companySignWithFile(manager, orderId, version, null, null,
                 "scan.pdf", toSign, ORIGIN))).as("unsigned: the very PDF handed out is not a signature")
@@ -377,6 +458,30 @@ class ContractESigningFlowIntegrationTest {
         assertThat(signed.companySignature().inspection().matchesSentDocument()).isTrue();
         assertThat(signed.companySignature().inspection().coversWholeDocument()).isTrue();
         assertThat(signed.verificationCode()).as("the code its certificate page printed").isNotBlank();
+        SignedPdfInspector.Inspection againstSent = inspector.inspect(stored(signedFileKey(orderId)), sha256(sent),
+                sent.length);
+        assertThat(againstSent.matchesSentDocument()).as("signed outside, still the contract the customer was sent")
+                .isTrue();
+
+        // Every file the contract keeps is kept by the orphaned-file sweep while a row names it.
+        List<String> keys = jdbc.queryForList("""
+                SELECT k FROM (
+                    SELECT sent_document_key AS k FROM ordering.sales_contract WHERE order_id = :o
+                    UNION SELECT signed_file_key FROM ordering.sales_contract WHERE order_id = :o
+                    UNION SELECT outside_document_key FROM ordering.sales_contract WHERE order_id = :o
+                    UNION SELECT outside_page_key FROM ordering.sales_contract WHERE order_id = :o
+                    UNION SELECT r.sent_document_key FROM ordering.sales_contract_revision r
+                          JOIN ordering.sales_contract c ON c.id = r.contract_id WHERE c.order_id = :o
+                    UNION SELECT s.file_key FROM ordering.sales_contract_signature s
+                          JOIN ordering.sales_contract c ON c.id = s.contract_id WHERE c.order_id = :o
+                    UNION SELECT s.certificate_page_key FROM ordering.sales_contract_signature s
+                          JOIN ordering.sales_contract c ON c.id = s.contract_id WHERE c.order_id = :o
+                ) keys WHERE k IS NOT NULL""".replace(":o", "'" + orderId + "'"), String.class);
+        assertThat(keys).as("sent, signed, to sign outside, its page, the revision's PDF").hasSizeGreaterThanOrEqualTo(4);
+        assertThat(context.getBeansOfType(com.stockflow.common.storage.StoredFileReferences.class).values().stream()
+                .flatMap(r -> r.referenced(com.stockflow.common.storage.FileCategory.DOCUMENT,
+                        new java.util.HashSet<>(keys)).stream()).collect(java.util.stream.Collectors.toSet()))
+                .containsAll(keys);
         assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
         assertThat(signing.matches(signed.verificationCode(), signedOutside)).contains(true);
     }

@@ -430,9 +430,11 @@ public interface SalesContracts {
 
     /**
      * QĐ-4: a Sales Manager approves the terms as written; the contract may now be sent. The note is optional. Not a
-     * Sales-owner step: any manager decides, whoever owns the customer.
+     * Sales-owner step: any manager decides, whoever owns the customer - but not the one who drew the contract up or
+     * asked for the review (four eyes).
      *
-     * @throws com.stockflow.common.error.BusinessException {@code CONTRACT_TERMS_REVIEW_NOT_PENDING}
+     * @throws com.stockflow.common.error.BusinessException {@code CONTRACT_TERMS_REVIEW_NOT_PENDING};
+     *         {@code CONTRACT_TERMS_REVIEW_SELF}
      */
     ContractView approveTerms(CurrentUser user, UUID orderId, long version, String note);
 
@@ -440,7 +442,7 @@ public interface SalesContracts {
      * QĐ-4: a Sales Manager rejects the terms, with the reason; the draft goes back to Sales.
      *
      * @throws com.stockflow.common.error.BusinessException {@code CONTRACT_TERMS_REVIEW_NOT_PENDING};
-     *         {@code VALIDATION_FAILED} without a reason
+     *         {@code CONTRACT_TERMS_REVIEW_SELF}; {@code VALIDATION_FAILED} without a reason
      */
     ContractView rejectTerms(CurrentUser user, UUID orderId, long version, String reason);
 
@@ -449,7 +451,8 @@ public interface SalesContracts {
 
     /**
      * Moves the day the customer should have signed by, while the contract is SENT: today or later, at most 60 days ahead.
-     * The Sales owner's step.
+     * The Sales owner's step. It also forgives the wrong one-time codes counted against the revision, lifting
+     * {@code CONTRACT_OTP_LOCKED}.
      *
      * @throws com.stockflow.common.error.BusinessException {@code SALES_CONTRACT_STATUS_INVALID}; {@code VALIDATION_FAILED}
      */
@@ -478,10 +481,13 @@ public interface SalesContracts {
     /** A link to the PDF an earlier or the current revision was sent as, for the customer. */
     DownloadLink customerRevisionDocument(UUID customerId, UUID orderId, int revision);
 
-    /** The contracts of every order, newest first (the back office's contract page). */
+    /**
+     * The contracts of every order the caller's data scope reaches, newest first (the back office's contract page): the
+     * same scope a single contract is read under.
+     */
     com.stockflow.common.api.PageResponse<ContractRow> list(ContractQuery query);
 
-    /** How many contracts are in each status and what is waiting, for the tiles over the list. */
+    /** How many contracts are in each status and what is waiting, for the tiles over the list; in scope as the list. */
     ContractSummary summary();
 
     /**
@@ -548,12 +554,17 @@ public interface SalesContracts {
     ContractView companySigned(CurrentUser user, UUID orderId, long version, String signedFileKey,
                                String signedFileName, Instant signedAt);
 
-    /** Where the browser uploads the signed file (FileCategory.DOCUMENT); the contract is sent. */
+    /** Where the browser uploads the signed file (FileCategory.DOCUMENT); the contract is SENT (as {@link #sign}). */
     UploadSlot beginSignedFileUpload(CurrentUser user, UUID orderId, UploadSlotRequest request);
 
     /**
      * Recorded signed with the signed file - sent with the request, or uploaded through
-     * {@link #beginSignedFileUpload} - and the day it was signed (14 §4.3 step 14, BR-14).
+     * {@link #beginSignedFileUpload} - and the day it was signed (14 §4.3 step 14, BR-14): a paper signed by both,
+     * SENT → SIGNED. Refused once the customer signed on the portal: the company then signs through
+     * {@link #companySigned}, under its own permission and four eyes.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code SALES_CONTRACT_STATUS_INVALID}, with
+     *         {@code details.reason} {@code USE_COMPANY_SIGNATURE} for a CUSTOMER_SIGNED contract
      */
     ContractView sign(CurrentUser user, UUID orderId, long version, IncomingFiles signedFile, LocalDate signedOn);
 

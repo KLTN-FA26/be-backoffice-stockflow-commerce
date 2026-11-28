@@ -52,12 +52,15 @@ public interface ContractSignatures {
 
     Optional<Signature> find(UUID contractId, int revision, Party party);
 
-    /** Sets the contract's verification code, once. */
+    /**
+     * Sets the contract's verification code, once: when the PDF to sign outside is prepared (its page prints it) or when
+     * the company signs, whichever comes first.
+     */
     void sealWithCode(UUID contractId, String code);
 
     boolean codeExists(String code);
 
-    /** The code of a contract, or empty before it is signed. */
+    /** The code of a contract, or empty before the company signed it or the PDF to sign outside was prepared. */
     Optional<String> codeOf(UUID contractId);
 
     Optional<Verified> findByCode(String code);

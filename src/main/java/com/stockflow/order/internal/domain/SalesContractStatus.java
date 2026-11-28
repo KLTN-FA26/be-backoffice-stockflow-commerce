@@ -18,7 +18,10 @@ public enum SalesContractStatus {
      * SENT's. The order is not bound - it still waits in PENDING_CONTRACT - until the company signs (QĐ-1).
      */
     CUSTOMER_SIGNED,
-    /** Signed by both sides - by the company's signer after the customer, or recorded from a signed file; immutable. */
+    /**
+     * Signed by both sides - by the company's signer after the customer (from CUSTOMER_SIGNED, the only way), or
+     * recorded by staff from a file signed by both (from SENT only); immutable.
+     */
     SIGNED,
     /** The order is complete and every installment collected (wired in 4B-8). */
     COMPLETED,
@@ -46,6 +49,7 @@ public enum SalesContractStatus {
             case DRAFT -> target == SENT || target == CANCELLED;
             // DRAFT again: the customer asked for changes (SalesContract#requestChanges); SIGNED: a paper signed by both recorded.
             case SENT -> target == CUSTOMER_SIGNED || target == SIGNED || target == CANCELLED || target == DRAFT;
+            // SIGNED: the company's signature only (SalesContract#companySigned), never staff recording a file.
             case CUSTOMER_SIGNED -> target == SIGNED || target == CANCELLED;
             case SIGNED -> target == COMPLETED || target == LIQUIDATED;
             case COMPLETED, CANCELLED, LIQUIDATED -> false;

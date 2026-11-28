@@ -20,9 +20,15 @@ import java.util.GregorianCalendar;
  * exactly as they were and a signature a customer or a reader checks covers a file that begins with the sent one
  * ({@link SignedPdfInspector} checks that).
  *
- * <p>The signature is invisible. What a reader of the printed contract sees is the certificate page appended before
- * signing ({@link CertificatePage}); a visible stamp on a page of the contract would be one more thing a template change
- * could clip. The document itself goes nowhere: {@link ContractSigner} gets the SHA-256 of the signed ranges only.</p>
+ * <p>The PDF it signs for the company is the sent PDF with the certificate page added, itself an incremental update
+ * ({@link CertificatePage#append}): so the signed file begins with exactly the bytes the customer was sent - the sent
+ * PDF, then the update that adds the page, then this one - and {@code SignedPdfInspector} finds the sent contract in it,
+ * unchanged, with one page after it.</p>
+ *
+ * <p>The signature is invisible. What a reader of the printed contract sees is the certificate page added before
+ * signing; a visible stamp on a page of the contract would be one more thing a template change could clip - and an
+ * annotation over the sent pages, which the inspector refuses. The document itself goes nowhere: {@link ContractSigner}
+ * gets the SHA-256 of the signed ranges only.</p>
  */
 @Component
 public class PadesSigner {

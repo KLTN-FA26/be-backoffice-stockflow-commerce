@@ -89,7 +89,11 @@ class ContractEvidence {
     record Inspected(Inspection raw, InspectionView view, String json) { }
 
     /**
-     * Inspects a signed file against the sent document it must be the contract of.
+     * Inspects a signed file against the sent document it must be the contract of. Every file that comes in - the
+     * customer's, the company's signed outside, the one staff record - is held to the strict comparison
+     * ({@link SignedPdfInspector.Additions#NONE}): the pages of the expected document, unchanged, and nothing added but
+     * signatures. (The company's own file adds the certificate page, but against the PDF it was handed - which already
+     * has that page - it adds nothing either.)
      *
      * @param sentDocument the PDF that was sent (or, for the company's upload, the PDF it was handed to sign); null to
      *                     inspect without comparing
@@ -101,7 +105,8 @@ class ContractEvidence {
 
     /** {@link #inspect(byte[], byte[])} against a document known by its SHA-256 and length (the PDF a signer was handed). */
     Inspected inspect(byte[] file, byte[] expectedSha256, long expectedLength) {
-        return inspected(inspector.inspect(file, expectedSha256, expectedLength));
+        return inspected(inspector.inspect(file, expectedSha256, expectedLength,
+                SignedPdfInspector.Additions.NONE));
     }
 
     private Inspected inspected(Inspection found) {
@@ -206,9 +211,10 @@ class ContractEvidence {
     // ---- staff recording a signed paper ----------------------------------------------------------------------------
 
     /**
-     * Staff recorded the contract signed by both sides with a file: the evidence of both, method STAFF_RECORDED - the
-     * customer's only when they have none (they signed on the portal first), and the file inspected, never refused for
-     * being a scan. Written in the transaction that makes the contract SIGNED.
+     * Staff recorded the contract signed by both sides with a file: the evidence of both, method STAFF_RECORDED, and the
+     * file inspected, never refused for being a scan. Written in the transaction that makes the contract SIGNED. Only a
+     * SENT contract is recorded so ({@code SalesContract#requireSignable}); the customer's row is still written only
+     * when there is none, so a row kept from elsewhere is never duplicated against the unique key.
      *
      * @param sentSha256 the SHA-256 of the PDF that was sent
      */

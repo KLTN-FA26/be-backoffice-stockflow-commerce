@@ -122,6 +122,8 @@ class SalesContractService implements SalesContracts {
     private final SalesContractList contractList;
     private final com.stockflow.identity.api.IdentityService identity;
     private final ContractEvidence evidence;
+    /** The customer's one-time codes: moving the signing deadline lifts their lock ({@link #extendSignBy}). */
+    private final com.stockflow.order.internal.service.signing.ContractSignOtps otps;
     /** Days from sending to the day the customer should have signed by (contract e-signing plan). */
     private final int signDays;
 
@@ -140,6 +142,7 @@ class SalesContractService implements SalesContracts {
                          CustomerOwnership ownership, SalesContractRevisions revisions,
                          SalesContractList contractList, com.stockflow.identity.api.IdentityService identity,
                          ContractEvidence evidence,
+                         com.stockflow.order.internal.service.signing.ContractSignOtps otps,
                          @org.springframework.beans.factory.annotation.Value("${stockflow.order.contract.sign-days:7}")
                          int signDays) {
         if (signDays < 1 || signDays > SalesContract.MAX_SIGN_DAYS_AHEAD) {
@@ -150,6 +153,7 @@ class SalesContractService implements SalesContracts {
         this.contractList = contractList;
         this.identity = identity;
         this.evidence = evidence;
+        this.otps = otps;
         this.signDays = signDays;
         this.ownership = ownership;
         this.lineNames = lineNames;
@@ -649,6 +653,9 @@ class SalesContractService implements SalesContracts {
         SalesContract contract = live(order, version);
         contract.extendSignBy(signBy, today());
         SalesContract saved = contracts.save(contract);
+        // Sales giving the customer more time is also Sales vouching for them: the wrong codes counted so far are
+        // forgiven, so a customer locked out by CONTRACT_OTP_LOCKED can sign again (and no sooner than a person acted).
+        otps.forgiveWrongTries(saved.id(), saved.revision(), clock.instant());
         log.info("Sales contract {} of order {}: to be signed by {}", saved.contractNumber(), order.orderNumber(),
                 saved.signBy());
         return view(saved, order, null);

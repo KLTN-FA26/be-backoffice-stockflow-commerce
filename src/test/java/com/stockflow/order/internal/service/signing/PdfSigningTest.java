@@ -4,18 +4,38 @@ import com.stockflow.common.document.DocumentFonts;
 import com.stockflow.order.internal.service.signing.SignedPdfInspector.Inspection;
 import com.stockflow.order.internal.service.signing.SignedPdfInspector.Kind;
 import com.stockflow.order.internal.service.signing.SignedPdfInspector.Reasons;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.order.internal.service.signing.SignedPdfInspector.Additions;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSArray;
+import org.apache.pdfbox.cos.COSDictionary;
+import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.cos.COSStream;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.common.PDStream;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.List;
+import java.util.zip.DeflaterOutputStream;
 
 import static com.stockflow.order.internal.service.signing.SigningTestSupport.pdf;
 import static com.stockflow.order.internal.service.signing.SigningTestSupport.sha256;
@@ -40,6 +60,32 @@ class PdfSigningTest {
 
     private static byte[] signed(byte[] pdf) {
         return PADES.sign(pdf, signer, "Nguyen Van A", "Sign contract", "Viet Nam", Instant.now());
+    }
+
+    /** What a change does when it is saved as an incremental update of {@code pdf}: {@code pdf} followed by the update. */
+    private static byte[] updated(byte[] pdf, PdfChange change) {
+        try (PDDocument document = Loader.loadPDF(pdf); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            change.apply(document);
+            document.saveIncremental(out);
+            byte[] result = out.toByteArray();
+            assertThat(Arrays.copyOf(result, pdf.length)).as("an incremental update").isEqualTo(pdf);
+            return result;
+        } catch (IOException ex) {
+            throw new UncheckedIOException(ex);
+        }
+    }
+
+    @FunctionalInterface
+    private interface PdfChange {
+        void apply(PDDocument document) throws IOException;
+    }
+
+    private static CertificatePage.Content certificateContent(byte[] contract, String code,
+                                                              CertificatePage.CompanySignature company) {
+        return new CertificatePage.Content("045/2027/HDMB", 2, java.util.HexFormat.of().formatHex(sha256(contract)),
+                new CertificatePage.CustomerSignature("Le Thi B", "Giam doc", "b***@example.com", Instant.now(),
+                        "203.0.113.7", CertificatePage.Method.OTP),
+                company, code, "https://portal.example.vn/xac-minh-hop-dong/" + code, company != null);
     }
 
     @Test
@@ -210,19 +256,16 @@ class PdfSigningTest {
     }
 
     @Test
-    @DisplayName("the certificate page is one Vietnamese page with the code, the hash and the test notice; appended, a PDF "
-            + "of one more page that signs and inspects as the contract plus its page")
+    @DisplayName("the certificate page is one Vietnamese page with the code, the hash and the test notice; added as an "
+            + "incremental update, the company's signed file begins with the very bytes that were sent and inspects as "
+            + "the sent contract plus its page")
     void certificatePageAppendedAndSigned() throws Exception {
         CertificatePage page = new CertificatePage(new DocumentFonts());
         byte[] contract = pdf(2);
         String code = VerificationCodes.newCode();
-        byte[] certificate = page.render(new CertificatePage.Content("045/2027/HDMB", 2,
-                java.util.HexFormat.of().formatHex(sha256(contract)),
-                new CertificatePage.CustomerSignature("Le Thi B", "Giam doc", "b***@example.com", Instant.now(),
-                        "203.0.113.7", CertificatePage.Method.OTP),
-                new CertificatePage.CompanySignature("Nguyen Van A", "Giam doc", "an.nguyen", Instant.now(),
-                        signer.identity().subject(), signer.identity().issuer()),
-                code, "https://portal.example.vn/xac-minh-hop-dong/" + code, true));
+        byte[] certificate = page.render(certificateContent(contract, code, new CertificatePage.CompanySignature(
+                "Nguyen Van A", "Giam doc", "an.nguyen", Instant.now(), signer.identity().subject(),
+                signer.identity().issuer())));
 
         try (PDDocument document = Loader.loadPDF(certificate)) {
             assertThat(document.getNumberOfPages()).isEqualTo(1);
@@ -233,11 +276,167 @@ class PdfSigningTest {
         }
 
         byte[] merged = page.append(contract, certificate);
+        assertThat(Arrays.copyOf(merged, contract.length)).as("the sent bytes, untouched").isEqualTo(contract);
         try (PDDocument document = Loader.loadPDF(merged)) {
             assertThat(document.getNumberOfPages()).isEqualTo(3);
+            PDFTextStripper last = new PDFTextStripper();
+            last.setStartPage(3);
+            assertThat(last.getText(document)).contains("TRANG CHỨNG NHẬN KÝ ĐIỆN TỬ");
         }
-        Inspection inspection = INSPECTOR.inspect(signed(merged), sha256(merged), merged.length);
-        assertThat(inspection.acceptedAsSentContract()).isTrue();
+        byte[] companySigned = signed(merged);
+        assertThat(Arrays.copyOf(companySigned, contract.length)).isEqualTo(contract);
+        assertThat(INSPECTOR.inspect(companySigned, sha256(merged), merged.length).acceptedAsSentContract()).isTrue();
+        // Against the PDF the customer was sent: the sent pages unchanged, and the certificate page after them.
+        Inspection againstSent = INSPECTOR.inspect(companySigned, sha256(contract), contract.length);
+        assertThat(againstSent.matchesSentDocument()).isTrue();
+        assertThat(againstSent.acceptedAsSentContract()).isTrue();
+        // Nobody else's file may add a page: in strict mode the very same file is content changed after it was sent.
+        Inspection strict = INSPECTOR.inspect(companySigned, sha256(contract), contract.length, Additions.NONE);
+        assertThat(strict.matchesSentDocument()).isFalse();
+        assertThat(strict.reason()).isEqualTo(Reasons.CONTENT_CHANGED_AFTER_SENT);
+    }
+
+    @Test
+    @DisplayName("the PDF to sign outside prints that it was prepared to be signed outside, no signer, account or time; "
+            + "signed outside, it begins with the sent bytes and inspects as the sent contract plus its page")
+    void outsideDocumentSignedOutside() throws Exception {
+        CertificatePage page = new CertificatePage(new DocumentFonts());
+        byte[] contract = pdf(2);
+        String code = VerificationCodes.newCode();
+        byte[] outsidePage = page.render(certificateContent(contract, code, null));
+        try (PDDocument document = Loader.loadPDF(outsidePage)) {
+            String text = new PDFTextStripper().getText(document);
+            assertThat(text).contains("Chuẩn bị để ký ngoài hệ thống").contains(VerificationCodes.grouped(code))
+                    .doesNotContain("Tài khoản thực hiện").doesNotContain("dùng thử");
+            // The customer signed: their time is printed; the company's section has none.
+            assertThat(text.substring(text.indexOf("3. Bên bán ký"))).doesNotContain("Thời điểm ký")
+                    .doesNotContain("Người ký");
+        }
+        byte[] toSign = page.append(contract, outsidePage);
+        byte[] signedOutside = PADES.sign(toSign, SigningTestSupport.signer(), "Someone outside", "r", "l",
+                Instant.now());
+
+        assertThat(Arrays.copyOf(signedOutside, contract.length)).isEqualTo(contract);
+        assertThat(INSPECTOR.inspect(signedOutside, sha256(toSign), toSign.length, Additions.NONE)
+                .acceptedAsSentContract()).as("against exactly the PDF handed out").isTrue();
+        assertThat(INSPECTOR.inspect(signedOutside, sha256(contract), contract.length).matchesSentDocument())
+                .as("against the PDF the customer was sent").isTrue();
+    }
+
+    // ---- shadow attacks: an incremental update before the signature ------------------------------------------------
+
+    @Test
+    @DisplayName("a page's content replaced in an update before the signature: the signature holds, the file begins "
+            + "with the sent bytes, and it is still not the sent contract")
+    void contentReplacedBeforeSigningIsRejected() {
+        byte[] sent = pdf(2);
+        byte[] changed = updated(sent, document -> {
+            PDPage first = document.getPage(0);
+            try (PDPageContentStream content = new PDPageContentStream(document, first,
+                    PDPageContentStream.AppendMode.OVERWRITE, false)) {
+                content.beginText();
+                content.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA), 12);
+                content.newLineAtOffset(72, 700);
+                content.showText("Price: 1 VND");
+                content.endText();
+            }
+        });
+
+        Inspection inspection = INSPECTOR.inspect(signed(changed), sha256(sent), sent.length, Additions.NONE);
+
+        assertThat(inspection.valid()).isTrue();
+        assertThat(inspection.coversWholeDocument()).isTrue();
+        assertThat(inspection.matchesSentDocument()).isFalse();
+        assertThat(inspection.reason()).isEqualTo(Reasons.CONTENT_CHANGED_AFTER_SENT);
+        assertThat(inspection.acceptedAsSentContract()).isFalse();
+        assertThat(INSPECTOR.inspect(signed(changed), sha256(sent), sent.length).acceptedAsSentContract())
+                .as("the company's allowance is one page after the last, not a changed page").isFalse();
+    }
+
+    @Test
+    @DisplayName("an annotation laid over a page in an update before the signature is rejected")
+    void annotationAddedBeforeSigningIsRejected() {
+        byte[] sent = pdf(2);
+        byte[] covered = updated(sent, document -> {
+            COSDictionary square = new COSDictionary();
+            square.setItem(COSName.TYPE, COSName.ANNOT);
+            square.setItem(COSName.SUBTYPE, COSName.getPDFName("Square"));
+            square.setItem(COSName.RECT, new PDRectangle(60, 690, 300, 30).getCOSArray());
+            square.setItem(COSName.IC, COSArray.ofCOSIntegers(List.of(1, 1, 1)));
+            document.getPage(0).setAnnotations(List.of(PDAnnotation.createAnnotation(square)));
+        });
+
+        Inspection inspection = INSPECTOR.inspect(signed(covered), sha256(sent), sent.length, Additions.NONE);
+
+        assertThat(inspection.valid()).isTrue();
+        assertThat(inspection.matchesSentDocument()).isFalse();
+        assertThat(inspection.reason()).isEqualTo(Reasons.CONTENT_CHANGED_AFTER_SENT);
+    }
+
+    @Test
+    @DisplayName("a page added by anyone but the company, before the signature, is terms nobody sent")
+    void pageAddedBeforeSigningIsRejectedInStrictMode() {
+        byte[] sent = pdf(1);
+        byte[] longer = updated(sent, document -> document.addPage(new PDPage(PDRectangle.A4)));
+
+        Inspection inspection = INSPECTOR.inspect(signed(longer), sha256(sent), sent.length, Additions.NONE);
+
+        assertThat(inspection.matchesSentDocument()).isFalse();
+        assertThat(inspection.reason()).isEqualTo(Reasons.CONTENT_CHANGED_AFTER_SENT);
+    }
+
+    @Test
+    @DisplayName("a clean signature over the sent PDF, and an update that changes nothing drawn, are the sent contract")
+    void cleanSignatureIsAccepted() {
+        byte[] sent = pdf(2);
+        assertThat(INSPECTOR.inspect(signed(sent), sha256(sent), sent.length, Additions.NONE).acceptedAsSentContract())
+                .isTrue();
+        // Metadata changed, the pages not: no visible difference, no refusal.
+        byte[] retitled = updated(sent, document -> document.getDocumentInformation().setTitle("Hop dong"));
+        assertThat(INSPECTOR.inspect(signed(retitled), sha256(sent), sent.length, Additions.NONE)
+                .acceptedAsSentContract()).isTrue();
+    }
+
+    // ---- bounded inspection -------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("a Flate bomb (64 MiB of zeros in a few kilobytes) is described as too large before it is decoded")
+    void flateBombIsTooLarge() throws Exception {
+        byte[] bomb;
+        try (PDDocument document = new PDDocument(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            PDPage page = new PDPage(PDRectangle.A4);
+            document.addPage(page);
+            COSStream stream = document.getDocument().createCOSStream();
+            try (OutputStream raw = stream.createRawOutputStream();
+                 DeflaterOutputStream deflated = new DeflaterOutputStream(raw)) {
+                byte[] zeros = new byte[1024 * 1024];
+                for (int i = 0; i < 64; i++) {
+                    deflated.write(zeros);
+                }
+            }
+            stream.setItem(COSName.FILTER, COSName.FLATE_DECODE);
+            page.setContents(new PDStream(stream));
+            document.save(out, org.apache.pdfbox.pdfwriter.compress.CompressParameters.NO_COMPRESSION);
+            bomb = out.toByteArray();
+        }
+        assertThat(bomb.length).as("small on the wire").isLessThan(1024 * 1024);
+
+        Inspection inspection = INSPECTOR.inspect(bomb);
+
+        assertThat(inspection.kind()).isEqualTo(Kind.UNREADABLE);
+        assertThat(inspection.reason()).isEqualTo(Reasons.TOO_LARGE);
+    }
+
+    @Test
+    @DisplayName("past the inspections allowed at once, a caller is refused with CONTRACT_INSPECTION_BUSY, not queued "
+            + "forever")
+    void tooManyInspectionsAtOnceAreRefused() {
+        SignedPdfInspector none = new SignedPdfInspector(0, 10);
+        assertThatThrownBy(() -> none.inspect(pdf(1))).isInstanceOfSatisfying(BusinessException.class,
+                ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.CONTRACT_INSPECTION_BUSY));
+        assertThat(ErrorCode.CONTRACT_INSPECTION_BUSY.httpStatus()).isEqualTo(503);
+        // Not a property of the file: the cheap refusals still answer without a permit.
+        assertThat(none.inspect(new byte[0]).reason()).isEqualTo(Reasons.EMPTY);
     }
 
     @Test
@@ -275,7 +474,7 @@ class PdfSigningTest {
         String keystore = SigningTestSupport.keystore("s3cret", "Real Company");
         var properties = SigningTestSupport.properties(keystore, "s3cret", "x");
         var fromKeystore = new TestCertificateSigner(properties, SigningTestSupport.seller(),
-                new SigningSecrets(properties, new MockEnvironment()), null, Clock.systemUTC());
+                new SigningSecrets(properties, SigningTestSupport.testProfile()), null, Clock.systemUTC());
 
         assertThat(fromKeystore.identity().subject()).contains("CN=Real Company");
         assertThat(fromKeystore.identity().testCertificate()).isTrue();
@@ -287,22 +486,37 @@ class PdfSigningTest {
 
         var wrongPassword = SigningTestSupport.properties(keystore, "nope", "x");
         assertThatThrownBy(() -> new TestCertificateSigner(wrongPassword, SigningTestSupport.seller(),
-                new SigningSecrets(wrongPassword, new MockEnvironment()), null, Clock.systemUTC()))
+                new SigningSecrets(wrongPassword, SigningTestSupport.testProfile()), null, Clock.systemUTC()))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("CONTRACT_SIGNING_KEYSTORE")
                 .message().doesNotContain("nope").doesNotContain(keystore);
     }
 
     @Test
-    @DisplayName("the prod profile refuses to start without CONTRACT_SIGNING_SECRET; other profiles warn and go on")
-    void productionNeedsASecret() {
-        MockEnvironment production = new MockEnvironment();
-        production.setActiveProfiles("prod");
-        assertThatThrownBy(() -> new SigningSecrets(SigningTestSupport.properties("", "", ""), production))
-                .isInstanceOf(IllegalStateException.class).hasMessageContaining("CONTRACT_SIGNING_SECRET");
-        new SigningSecrets(SigningTestSupport.properties("", "", "set"), production);
-        new SigningSecrets(SigningTestSupport.properties("", "", ""), new MockEnvironment());
+    @DisplayName("every profile but local and test - prod, and dev, which the VPS runs - refuses to start without a "
+            + "CONTRACT_SIGNING_SECRET of 32 characters or more; local and test warn and go on")
+    void serversNeedASecret() {
+        String strong = "x".repeat(SigningSecrets.MIN_LENGTH);
+        for (String profile : new String[] {"prod", "dev"}) {
+            MockEnvironment server = new MockEnvironment();
+            server.setActiveProfiles(profile);
+            assertThatThrownBy(() -> new SigningSecrets(SigningTestSupport.properties("", "", ""), server))
+                    .as(profile).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("CONTRACT_SIGNING_SECRET").hasMessageContaining("openssl rand -base64 48");
+            assertThatThrownBy(() -> new SigningSecrets(SigningTestSupport.properties("", "", "short"), server))
+                    .as(profile + ", too short").isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("32").message().doesNotContain("short");
+            new SigningSecrets(SigningTestSupport.properties("", "", strong), server);
+        }
+        assertThatThrownBy(() -> new SigningSecrets(SigningTestSupport.properties("", "", ""), new MockEnvironment()))
+                .as("no profile is not a laptop").isInstanceOf(IllegalStateException.class);
+        for (String profile : new String[] {"local", "test"}) {
+            MockEnvironment laptop = new MockEnvironment();
+            laptop.setActiveProfiles(profile);
+            new SigningSecrets(SigningTestSupport.properties("", "", ""), laptop);
+            new SigningSecrets(SigningTestSupport.properties("", "", "short"), laptop);
+        }
         // The secret and a purpose make the key: another purpose, another key.
-        var secrets = new SigningSecrets(SigningTestSupport.properties("", "", "set"), new MockEnvironment());
+        var secrets = new SigningSecrets(SigningTestSupport.properties("", "", strong), new MockEnvironment());
         assertThat(secrets.derive("a")).hasSize(32).isNotEqualTo(secrets.derive("b"));
     }
 }

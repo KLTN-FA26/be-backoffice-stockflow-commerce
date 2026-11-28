@@ -1,6 +1,11 @@
 package com.stockflow.order.internal.service.signing;
 
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.io.MemoryUsageSetting;
+import org.apache.pdfbox.io.RandomAccessStreamCache;
+import org.apache.pdfbox.io.ScratchFile;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
 import org.bouncycastle.cert.X509CertificateHolder;
@@ -13,12 +18,15 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.math.BigInteger;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Looks at a PDF somebody uploaded as a signed contract and says what is true of it: a scan (no digital signature), or a
@@ -34,18 +42,45 @@ import java.util.List;
  *
  * <p>{@code coversWholeDocument}: the last signature's range ends at the end of the file, so nothing was appended after
  * it that nobody signed. {@code matchesSentDocument}: the file begins with exactly the PDF that was sent (its first
- * {@code expectedLength} bytes hash to the expected SHA-256) and every signature was made after it, in an incremental
- * update - so what was signed is the sent contract plus the signer's own additions, not another contract.</p>
+ * {@code expectedLength} bytes hash to the expected SHA-256), every signature was made after it, in an incremental
+ * update, <b>and what each signature covers shows the same thing as the sent PDF</b> ({@link PdfRevisions}). The byte
+ * prefix alone is not enough: an incremental update made before the signature may replace a page's content or its
+ * resources, or lay an annotation over it (the "shadow attack" on PDF signatures), and the signature then covers - and
+ * holds over - a contract that reads differently from the one sent. Each signed revision is opened and compared with the
+ * sent PDF page by page; anything changed is {@code CONTENT_CHANGED_AFTER_SENT}. The one addition always allowed is the
+ * signature itself (its widget annotation), and, when the caller allows it ({@link Additions#CERTIFICATE_PAGE}), one
+ * page after the last: the certificate page the company adds before it signs.</p>
  *
  * <p>The bytes come from a person, so: at most {@value #MAX_BYTES} bytes; an encrypted or malformed file is described,
- * never thrown at the caller; the PDF is only parsed (no external resource is fetched, no script runs); and the CMS
- * parsing is guarded as one - any runtime failure there is "not valid", not a 500.</p>
+ * never thrown at the caller; the PDF is only parsed (no external resource is fetched, no script runs); the CMS parsing
+ * is guarded as one - any runtime failure there is "not valid", not a 500. And memory is bounded, because a 20 MB upload
+ * can claim gigabytes once decompressed (a "Flate bomb" in an object stream, which PDFBox decodes into memory to parse
+ * it): every Flate stream of the file is first inflated into nothing, counting, and a file that would decode past
+ * {@value #MAX_DECODED_STREAM_BYTES} bytes in one stream or {@value #MAX_DECODED_BYTES} in all is {@code TOO_LARGE}
+ * before PDFBox sees it ({@link FlateBudget}); what PDFBox buffers goes to a bounded temporary file, not the heap; the
+ * content comparison hashes streams as they are stored, never decoded; and at most {@value #CONCURRENT} inspections run
+ * at once - another waits up to {@value #WAIT_SECONDS} s, then is refused with 503 {@code CONTRACT_INSPECTION_BUSY}, so a
+ * burst of uploads queues rather than piles up in the heap. {@link OutOfMemoryError} is deliberately not caught: once it
+ * is thrown other threads may have failed with it too, and the bounds above are what keep it from being thrown.</p>
  */
 @Component
 public class SignedPdfInspector {
 
     /** The largest upload looked at. */
     public static final int MAX_BYTES = 20 * 1024 * 1024;
+    /**
+     * The most one stream of the file may decompress to. A contract page scanned at 300 dpi in colour and Flate-coded is
+     * about 26 MB; an object stream of a real contract is kilobytes.
+     */
+    static final long MAX_DECODED_STREAM_BYTES = 48L * 1024 * 1024;
+    /** The most all streams of the file together may decompress to. */
+    static final long MAX_DECODED_BYTES = 512L * 1024 * 1024;
+    /** What PDFBox may buffer on disk for one document it opens. */
+    private static final long MAX_SCRATCH_BYTES = 256L * 1024 * 1024;
+    /** Inspections at once; each may hold the file a few times over plus what PDFBox parses. */
+    static final int CONCURRENT = 2;
+    /** How long an inspection waits for another to finish before it is refused. */
+    static final int WAIT_SECONDS = 10;
 
     /** What the file is. */
     public enum Kind {
@@ -55,6 +90,17 @@ public class SignedPdfInspector {
         SCAN,
         /** Not a PDF this can read: empty, too large, malformed or encrypted ({@link Inspection#reason()} says which). */
         UNREADABLE
+    }
+
+    /** What a signed revision may add to the sent document besides the signatures themselves. */
+    public enum Additions {
+        /** Nothing: every page the same, no page added. A customer's file, staff's, the company's signed outside. */
+        NONE,
+        /**
+         * One page after the last, with no annotation but signature widgets: the certificate page the company adds to
+         * the sent PDF before signing it. Never for a customer's file - an extra page there would be terms nobody sent.
+         */
+        CERTIFICATE_PAGE
     }
 
     /**
@@ -95,6 +141,7 @@ public class SignedPdfInspector {
     /** The codes of {@link Inspection#reason()}. */
     public static final class Reasons {
         public static final String EMPTY = "EMPTY";
+        /** Larger than {@link #MAX_BYTES}, or it would decompress past the bounds (see the class comment). */
         public static final String TOO_LARGE = "TOO_LARGE";
         public static final String NOT_A_PDF = "NOT_A_PDF";
         public static final String ENCRYPTED = "ENCRYPTED";
@@ -108,21 +155,55 @@ public class SignedPdfInspector {
         public static final String CERTIFICATE_NOT_VALID_AT_SIGNING = "CERTIFICATE_NOT_VALID_AT_SIGNING";
         public static final String NOT_WHOLE_DOCUMENT = "NOT_WHOLE_DOCUMENT";
         public static final String NOT_SENT_DOCUMENT = "NOT_SENT_DOCUMENT";
+        /**
+         * The file begins with the sent PDF and its signatures hold, but what a signature covers does not show what was
+         * sent: a page's content or resources replaced, an annotation added, or a page added or taken away, in an update
+         * made before the signature.
+         */
+        public static final String CONTENT_CHANGED_AFTER_SENT = "CONTENT_CHANGED_AFTER_SENT";
 
         private Reasons() {
         }
     }
 
+    private final Semaphore permits;
+    private final long waitMillis;
+
+    public SignedPdfInspector() {
+        this(CONCURRENT, TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+    }
+
+    /** For tests: another bound on the inspections at once, and on the wait. */
+    SignedPdfInspector(int concurrent, long waitMillis) {
+        this.permits = new Semaphore(concurrent, true);
+        this.waitMillis = waitMillis;
+    }
+
     /** Inspects {@code pdf} on its own; {@code matchesSentDocument} is false. */
     public Inspection inspect(byte[] pdf) {
-        return inspect(pdf, null, 0);
+        return inspect(pdf, null, 0, Additions.NONE);
+    }
+
+    /**
+     * Inspects the company's signed contract against the PDF that was sent: the sent pages unchanged, and the
+     * certificate page the company adds after them ({@link Additions#CERTIFICATE_PAGE}). A file anybody else signed is
+     * inspected with {@link Additions#NONE}.
+     *
+     * @param expectedSha256 SHA-256 of the document that was sent, or null to skip the comparison
+     * @param expectedLength its length in bytes
+     */
+    public Inspection inspect(byte[] pdf, byte[] expectedSha256, long expectedLength) {
+        return inspect(pdf, expectedSha256, expectedLength, Additions.CERTIFICATE_PAGE);
     }
 
     /**
      * @param expectedSha256 SHA-256 of the document that was sent, or null to skip the comparison
      * @param expectedLength its length in bytes
+     * @param allowed        what a signed revision may add to it besides the signatures
+     * @throws BusinessException 503 {@code CONTRACT_INSPECTION_BUSY} when {@value #CONCURRENT} inspections are running
+     *                           and none ended within {@value #WAIT_SECONDS} s
      */
-    public Inspection inspect(byte[] pdf, byte[] expectedSha256, long expectedLength) {
+    public Inspection inspect(byte[] pdf, byte[] expectedSha256, long expectedLength, Additions allowed) {
         if (pdf == null || pdf.length == 0) {
             return Inspection.unreadable(Reasons.EMPTY);
         }
@@ -132,24 +213,55 @@ public class SignedPdfInspector {
         if (!startsLikePdf(pdf)) {
             return Inspection.unreadable(Reasons.NOT_A_PDF);
         }
-        try (PDDocument document = Loader.loadPDF(pdf)) {
-            if (document.isEncrypted()) {
+        acquire();
+        try {
+            if (!FlateBudget.within(pdf, MAX_DECODED_STREAM_BYTES, MAX_DECODED_BYTES)) {
+                return Inspection.unreadable(Reasons.TOO_LARGE);
+            }
+            try (PDDocument document = load(pdf)) {
+                if (document.isEncrypted()) {
+                    return Inspection.unreadable(Reasons.ENCRYPTED);
+                }
+                List<PDSignature> signatures = new ArrayList<>(document.getSignatureDictionaries());
+                if (signatures.isEmpty()) {
+                    return new Inspection(Kind.SCAN, false, false, false, false, List.of(),
+                            Reasons.NO_DIGITAL_SIGNATURE);
+                }
+                return inspectSignatures(pdf, signatures, expectedSha256, expectedLength,
+                        allowed == null ? Additions.NONE : allowed);
+            } catch (org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException encrypted) {
                 return Inspection.unreadable(Reasons.ENCRYPTED);
+            } catch (IOException | RuntimeException | StackOverflowError malformed) {
+                return Inspection.unreadable(Reasons.MALFORMED);
             }
-            List<PDSignature> signatures = new ArrayList<>(document.getSignatureDictionaries());
-            if (signatures.isEmpty()) {
-                return new Inspection(Kind.SCAN, false, false, false, false, List.of(), Reasons.NO_DIGITAL_SIGNATURE);
+        } finally {
+            permits.release();
+        }
+    }
+
+    /**
+     * Opens a PDF of an inspection's: what PDFBox buffers goes to a bounded file on disk, never the heap (the bytes
+     * themselves are in memory already, bounded by {@link #MAX_BYTES}).
+     */
+    static PDDocument load(byte[] pdf) throws IOException {
+        MemoryUsageSetting disk = MemoryUsageSetting.setupTempFileOnly(MAX_SCRATCH_BYTES);
+        RandomAccessStreamCache.StreamCacheCreateFunction cache = () -> new ScratchFile(disk);
+        return Loader.loadPDF(pdf, null, null, null, cache);
+    }
+
+    private void acquire() {
+        try {
+            if (!permits.tryAcquire(waitMillis, TimeUnit.MILLISECONDS)) {
+                throw new BusinessException(ErrorCode.CONTRACT_INSPECTION_BUSY);
             }
-            return inspectSignatures(pdf, signatures, expectedSha256, expectedLength);
-        } catch (org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException encrypted) {
-            return Inspection.unreadable(Reasons.ENCRYPTED);
-        } catch (java.io.IOException | RuntimeException | StackOverflowError malformed) {
-            return Inspection.unreadable(Reasons.MALFORMED);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException(ErrorCode.CONTRACT_INSPECTION_BUSY);
         }
     }
 
     private Inspection inspectSignatures(byte[] pdf, List<PDSignature> signatures, byte[] expectedSha256,
-                                         long expectedLength) {
+                                         long expectedLength, Additions allowed) {
         String reason = null;
         List<SignerFacts> signers = new ArrayList<>();
         List<int[]> ranges = new ArrayList<>();
@@ -169,8 +281,14 @@ public class SignedPdfInspector {
         boolean matches = false;
         if (expectedSha256 != null) {
             matches = startsWith(pdf, expectedSha256, expectedLength) && !ranges.isEmpty()
-                    && ranges.stream().allMatch(r -> r[1] >= expectedLength);
+                    && ranges.size() == signatures.size() && ranges.stream().allMatch(r -> r[1] >= expectedLength);
             reason = first(reason, matches ? null : Reasons.NOT_SENT_DOCUMENT);
+            if (matches) {
+                // Only now, the prefix being the sent PDF: every signed revision opened and read against it.
+                String changed = PdfRevisions.sameAsSent(pdf, (int) expectedLength, ranges, allowed);
+                matches = changed == null;
+                reason = first(reason, changed);
+            }
         }
         return new Inspection(Kind.DIGITAL, valid, covers, matches, false, signers, reason);
     }

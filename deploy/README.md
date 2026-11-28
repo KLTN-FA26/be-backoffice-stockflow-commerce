@@ -106,6 +106,14 @@ appended. Compose refuses a missing or empty value. Without it the application w
 `PORTAL_INVITATION_UNAVAILABLE` to every customer creation, and since self-registration is closed no customer could
 be created at all. Check after the deploy: Sales creates a test customer with an address you own and gets 201, and the
 invitation that arrives carries the portal link.
+Contract e-signing needs `CONTRACT_SIGNING_SECRET` in `/opt/stockflow/.env`: at least 32 characters, generated once with
+`openssl rand -base64 48` (64 characters). It seals the company's generated signing key in the database and hashes the
+customers' one-time signing codes. Compose refuses a missing or empty value, and the application itself refuses to start
+without it (or with a shorter one) in every profile but `local` and `test`: the server runs `dev`, and a default from the
+source code would let anyone who read the code unseal the key and check codes offline. Keep it with the database
+backups - changing it makes the stored key unreadable (the signer then fails rather than make a new key silently) and ends
+the codes in flight. `CONTRACT_SIGNING_KEYSTORE`, `CONTRACT_SIGNING_KEYSTORE_PASSWORD` and
+`CONTRACT_VERIFICATION_BASE_URL` stay optional.
 Bank transfer instructions (SCRUM-193): set `COMPANY_BANK_NAME`, `COMPANY_BANK_ACCOUNT_NUMBER` and
 `COMPANY_BANK_ACCOUNT_NAME` in `/opt/stockflow/.env` - the company account `GET /api/v1/orders/me/{orderId}/transfer-instructions`
 tells a customer to transfer to (the transfer content is the order number). They are not required by Compose: while any

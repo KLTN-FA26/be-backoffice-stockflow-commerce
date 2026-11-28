@@ -153,7 +153,7 @@ class ContractSigningService implements ContractSigning {
             return tx.execute(status -> {
                 ContractView signed = contracts.customerSigned(me.customerId(), user.userId(), orderId, version, now);
                 signatures.record(new ContractSignatures.Signature(facts.contractId(), facts.revision(),
-                        Party.CUSTOMER, Method.UPLOAD, name, title, emailOf(me), user.userId(), now, origin.ip(),
+                        Party.CUSTOMER, Method.UPLOAD, name, title, addressOf(me), user.userId(), now, origin.ip(),
                         truncated(origin.userAgent()), ContractEvidence.sha256Hex(sent), key, inspected.json(), null,
                         null, null, null, false));
                 prepared.adopt();
@@ -230,7 +230,7 @@ class ContractSigningService implements ContractSigning {
     @Override
     public DownloadLink companyDocumentToSign(CurrentUser user, UUID orderId) {
         SigningFacts facts = contracts.companySigningFacts(user, orderId, null);
-        OutsideDocument document = outsideDocument(user, facts);
+        OutsideDocument document = outsideDocument(facts);
         return files.downloadLink(document.key(), facts.contractNumber() + "-to-sign.pdf");
     }
 
@@ -238,7 +238,7 @@ class ContractSigningService implements ContractSigning {
     public ContractView companySignWithFile(CurrentUser user, UUID orderId, long version, String signerName,
                                             String signerTitle, String fileName, byte[] file, Origin origin) {
         SigningFacts facts = contracts.companySigningFacts(user, orderId, version);
-        OutsideDocument expected = outsideDocument(user, facts);
+        OutsideDocument expected = outsideDocument(facts);
         ContractEvidence.Inspected inspected = evidence.inspect(file, HexFormat.of().parseHex(expected.sha256()),
                 expected.length());
         Inspection found = inspected.raw();
@@ -275,22 +275,23 @@ class ContractSigningService implements ContractSigning {
     }
 
     /**
-     * The PDF the company's signer signs outside - the sent contract and its certificate page - made once and kept, with
-     * the verification code its page prints, so that the file that comes back is held against exactly these bytes.
+     * The PDF the company's signer signs outside - the sent contract with its certificate page added as an incremental
+     * update, so it begins with the sent bytes - made once and kept, with the verification code its page prints (the
+     * contract's code is fixed from here on), so that the file that comes back is held against exactly these bytes.
+     * Its page is prepared before anyone signs, so it names no company signer, account or time.
      */
-    private OutsideDocument outsideDocument(CurrentUser user, SigningFacts facts) {
+    private OutsideDocument outsideDocument(SigningFacts facts) {
         Optional<OutsideDocument> kept = signatures.outsideDocument(facts.contractId());
         if (kept.isPresent()) {
             return kept.get();
         }
         ContractSignatures.Signature customer = customerEvidence(facts);
         byte[] sent = sentDocument(facts, customer);
-        Instant now = clock.instant();
         String code = signatures.codeOf(facts.contractId()).orElseGet(evidence::newUnusedCode);
-        // The certificate of whoever signs outside is theirs, not ours: the page names the seller's signer and no
-        // certificate, and does not carry the system's trial-certificate notice.
-        byte[] page = certificatePage.render(pageContent(facts, customer, code, new CertificatePage.CompanySignature(
-                facts.sellerSignerName(), facts.sellerSignerTitle(), accountName(user), now, null, null), false));
+        // Nobody has signed for the company yet, and whoever will signs with a certificate of their own: the page
+        // says it was prepared to be signed outside, names no signer, account, time or certificate, and does not
+        // carry the system's trial-certificate notice.
+        byte[] page = certificatePage.render(pageContent(facts, customer, code, null, false));
         byte[] appended = certificatePage.append(sent, page);
         try (PreparedFiles prepared = files.prepare(FileCategory.DOCUMENT, List.of(
                 pdf(facts.contractNumber() + "-to-sign.pdf", appended),
@@ -398,6 +399,14 @@ class ContractSigningService implements ContractSigning {
             throw invalid("email", "The customer's account has no e-mail address to send the code to");
         }
         return customer.email();
+    }
+
+    /**
+     * The customer's address, if the account has one, kept with a signature made by sending a file: the file is the
+     * evidence there, nothing was mailed, so an account without an e-mail address signs that way too.
+     */
+    private static String addressOf(CustomerSummary customer) {
+        return customer.email() == null || customer.email().isBlank() ? null : customer.email();
     }
 
     private String accountName(CurrentUser user) {

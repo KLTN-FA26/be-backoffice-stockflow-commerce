@@ -1,6 +1,7 @@
 -- =============================================================================
 -- Contract e-signing tables (V20270129000200): the signing key stored only sealed, one per purpose; one-time codes stored
--- only as a hash, five tries, one live code per contract. Needs the demo seed; rolled back.
+-- only as a hash, five tries, one live code per contract; forgiven not before made (V20270129000400). Needs the demo
+-- seed; rolled back.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
@@ -81,6 +82,14 @@ SELECT pg_temp.expect_fail('OT9 a code for a contract that does not exist', form
     INSERT INTO ordering.contract_sign_otp (id, contract_id, revision, customer_user_id, email, code_hash, expires_at)
     SELECT md5('qa:otp:9')::uuid, md5('qa:no-such-contract')::uuid, 1, user_id, 'a@example.com', %L,
            now() + interval '10 minutes' FROM qa_target $q$, repeat('c', 64)));
+
+-- V20270129000400: a code forgiven before it was made would let a backdated stamp hide tries made after it.
+SELECT pg_temp.expect_fail('OT10 forgiven before the code was made', $q$
+    UPDATE ordering.contract_sign_otp SET forgiven_at = created_at - interval '1 second'
+     WHERE id = md5('qa:otp:2')::uuid $q$);
+SELECT pg_temp.expect_ok('OT11 forgiven after it was made', $q$
+    UPDATE ordering.contract_sign_otp SET forgiven_at = created_at + interval '1 second'
+     WHERE id = md5('qa:otp:2')::uuid $q$);
 
 ROLLBACK;
 \echo 'PASS 99_contract_signing'
