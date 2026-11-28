@@ -17,8 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CancellationFeeBearerMigrationUpgradeTest {
 
-    private static final String BEFORE = "20270128000540";
-    private static final String MIGRATION = "20270128000550";
+    private static final String BEFORE = "20270129000540";
+    private static final String MIGRATION = "20270129000550";
     private static final String CUSTOMER = "c0000000-0000-4000-8000-000000000001";
 
     @Test
