@@ -24,7 +24,7 @@ import java.util.Set;
  * See {@link FakeAhamove}. A step changes the fake order, then the order is reported to
  * {@link FakeAhamoveCallbacks#receiveFromFake} as Ahamove's callback would be - the whole order each time, as Ahamove
  * sends it: the plain order id for a change of the order, {@code <order id>-<k>} with the order IN PROCESS for
- * drop-off k; {@code supplier_name} and {@code supplier_id} (the driver's phone) once a driver accepted; epoch-second times
+ * drop-off k; {@code supplier_name} and an opaque {@code supplier_id} once a driver accepted; epoch-second times
  * strictly increasing; {@code cancel_by_user} on a cancel. No call leaves the machine.
  *
  * <p>When the system's pipeline does not take a step - the load has not left the warehouse (NEEDS_REVIEW), the report
@@ -324,7 +324,7 @@ class FakeAhamoveDriver implements FakeAhamove {
         }
         if (o.driverName != null) {
             body.put("supplier_name", o.driverName);
-            body.put("supplier_id", o.driverPhone);
+            body.put("supplier_id", "STG-DRIVER");
         }
         time(body, "accept_time", o.acceptTime);
         time(body, "pickup_time", o.pickupTime);

@@ -155,7 +155,7 @@ class DispatchLoadTest {
 
     @Test
     @DisplayName("WF4-DRIVER: a driver event writes only what the carrier sends - a phone-only event keeps the typed "
-            + "name and updates the phone, a name-only event keeps the phone, an empty one changes nothing; only a "
+            + "name and updates the phone, a new name without a phone clears the previous phone; only a "
             + "release takes the driver off")
     void theCarriersDriverWritesOnlyWhatItSends() {
         DispatchLoad load = vehicle();
@@ -169,7 +169,7 @@ class DispatchLoadTest {
         assertThat(load.carrierAssignedDriver(null, null)).isFalse();
         assertThat(load.carrierAssignedDriver("Lâm", null)).isTrue();
         assertThat(load.snapshot().driverName()).isEqualTo("Lâm");
-        assertThat(load.snapshot().driverPhone()).isEqualTo("0911");
+        assertThat(load.snapshot().driverPhone()).isNull();
 
         assertThat(load.carrierReleasedDriver()).isTrue();
         assertThat(load.snapshot().driverName()).isNull();

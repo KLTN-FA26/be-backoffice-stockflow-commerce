@@ -46,7 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * The fake Ahamove (stockflow.fulfillment.ahamove.mode=fake) through the real filter chain, permission aspect and
  * database - the whole API_BOOKING demo with no network and no secrets key: a load booked at the seeded AHAMOVE carrier
- * gets a fake order id for its waybill number; a driver takes it (name and phone on the load, so the handover can be
+ * gets a fake order id for its waybill number; a driver takes it (name on the load, so the handover can be
  * signed); the pickup reported before the handover is for review and is put back; after the handover the order is
  * delivered or fails through the system's own webhook pipeline; a cancel works before pickup; Ahamove cancelling the
  * order sends the load back to PLANNED; and the remote control is the warehouse manager's.
@@ -323,7 +323,7 @@ class FakeAhamoveIntegrationTest {
         assertThat(result(accepted)).isEqualTo("APPLIED");
         assertThat(accepted.path("order").path("status").asText()).isEqualTo("ACCEPTED");
         assertThat(load(loadId).path("driverName").asText()).isEqualTo("Le Van Tai");
-        assertThat(load(loadId).path("driverPhone").asText()).isEqualTo("0911222333");
+        assertThat(load(loadId).path("driverPhone").isNull()).isTrue();
 
         // The vehicle has not left: the system will not take a pickup yet, and the fake puts the step back.
         JsonNode early = event(order, "PICKUP", "");
