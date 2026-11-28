@@ -1,0 +1,11 @@
+{
+  "request" : "POST /api/v1/orders/bf980c55-c67b-4ea1-bc5e-954d156b112a/shortage-cards/01a22121-51d3-7050-b0de-5c7cb3ee5da9/execution/wait-for-production {}",
+  "status" : 409,
+  "response" : {
+    "success" : false,
+    "errorCode" : "SHORTAGE_CARD_STATE_CONFLICT",
+    "message" : "Thẻ đã có lựa chọn hoặc không còn hiệu lực — tải lại để xem trạng thái mới.",
+    "correlationId" : "a31a95b6-71f4-46b7-ad19-4240005ffde1",
+    "timestamp" : "2026-11-28T07:49:21.870003Z"
+  }
+}

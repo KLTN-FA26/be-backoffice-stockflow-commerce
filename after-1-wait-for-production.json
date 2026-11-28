@@ -1,0 +1,55 @@
+{
+  "request" : "POST /api/v1/orders/bf980c55-c67b-4ea1-bc5e-954d156b112a/shortage-cards/01a22121-51d3-7050-b0de-5c7cb3ee5da9/execution/wait-for-production {\"moveWindow\":true,\"windowEnd\":\"2026-12-15\",\"note\":\"Khách đồng ý nhận sau\"}",
+  "status" : 200,
+  "response" : {
+    "success" : true,
+    "data" : {
+      "cardId" : "01a22121-51d3-7050-b0de-5c7cb3ee5da9",
+      "orderId" : "bf980c55-c67b-4ea1-bc5e-954d156b112a",
+      "orderNumber" : "SO-20261128-8347805",
+      "status" : "EXECUTED",
+      "version" : 2,
+      "batch" : {
+        "seq" : 1,
+        "windowFrom" : "2026-12-12",
+        "windowTo" : "2026-12-15",
+        "moved" : true
+      },
+      "missingCartons" : 1,
+      "lines" : [ {
+        "sku" : "TB0E1D58B8742-CB721",
+        "skuName" : "Ly in logo khach",
+        "batchCartons" : 4,
+        "availableCartons" : 3,
+        "missingCartons" : 1,
+        "unitsPerCarton" : 10
+      } ],
+      "options" : [ {
+        "option" : "WAIT_FOR_PRODUCTION",
+        "expectedDeliveryDate" : "2026-12-12",
+        "afterWindow" : true
+      }, {
+        "option" : "REDUCE_CARTONS",
+        "amountReduced" : 60000000
+      }, {
+        "option" : "SHIP_PART_CLOSE_REST",
+        "amountReduced" : 60000000,
+        "laterBatchesClosed" : [ ]
+      }, {
+        "option" : "CANCEL_ORDER",
+        "refundUpTo" : 2.4E8,
+        "feePossible" : false
+      } ],
+      "salesNote" : "Kho báo thiếu 1 thùng ly giấy, anh/chị chọn giúp em hướng xử lý",
+      "sentAt" : "2026-11-28T07:49:21.488727Z",
+      "chosen" : {
+        "option" : "WAIT_FOR_PRODUCTION",
+        "at" : "2026-11-28T07:49:21.587521Z",
+        "note" : "Chờ hàng về giao đủ nhé"
+      },
+      "executedAt" : "2026-11-28T07:49:21.755545Z",
+      "executionStarted" : false
+    },
+    "timestamp" : "2026-11-28T07:49:21.780227Z"
+  }
+}

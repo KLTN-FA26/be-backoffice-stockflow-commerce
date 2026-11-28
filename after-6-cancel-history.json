@@ -1,0 +1,10 @@
+{
+  "onBehalf" : [ {
+    "action" : "EXECUTE_SHORTAGE_CHOICE"
+  } ],
+  "order" : {
+    "status" : "CANCELLED",
+    "cancellation_reason_code" : "OUT_OF_STOCK",
+    "cancellation_reason" : "OUT_OF_STOCK: Theo lựa chọn của khách trên thẻ thiếu thùng 01a22121-55bd-7074-a506-bbbf20fc8587. Khách huỷ vì thiếu hàng"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "order" : {
+    "order_number" : "SO-20261128-8347805",
+    "status" : "PICKING"
+  },
+  "shortPickLine" : {
+    "status" : "CANCELLED",
+    "short_reason" : "NOT_FOUND",
+    "hold_status" : "RELEASED",
+    "release_reason" : "SHORT_PICKED"
+  },
+  "card" : {
+    "status" : "EXECUTED",
+    "chosen_option" : "WAIT_FOR_PRODUCTION",
+    "executed" : true
+  }
+}

@@ -1,0 +1,3 @@
+def
+"CHECK ((((evidence_file_key IS NULL) = (evidence_file_name IS NULL)) AND (num_nonnulls(evidence_file_key, evidence_message_id) = 1)))"
+"CHECK (((action)::text = ANY ((ARRAY['CHOOSE_SHIPPING_WAREHOUSE'::character varying, 'HOLD'::character varying, 'RESOLVE_HOLD'::character varying, 'HOLD_COMPLETION'::character varying, 'RELEASE_COMPLETION_HOLD'::character varying, 'APPROVE_CANCELLATION_REQUEST'::character varying, 'REJECT_CANCELLATION_REQUEST'::character varying, 'CANCEL_ORDER'::character varying, 'CLOSE_REMAINDER'::character varying, 'DECIDE_PARTIAL_SHIPMENT'::character varying, 'CANCEL_UNDELIVERED'::character varying, 'CHANGE_SHIPPING_ADDRESS'::character varying])::text[])))"
