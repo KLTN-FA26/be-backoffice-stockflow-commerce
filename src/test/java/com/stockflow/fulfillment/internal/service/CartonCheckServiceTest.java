@@ -655,6 +655,24 @@ class CartonCheckServiceTest {
         }
 
         @Test
+        @DisplayName("RTM-RTDCANCEL: the check reopened for replacement cartons of a cancelled shipment carries no hold "
+                + "reason (the station must not block) and labels although the order waits on the shortage hold")
+        void replacementCheckHasNoBlockingReason() {
+            ShipmentJpaEntity cancelled = mock(ShipmentJpaEntity.class);
+            when(cancelled.getPackId()).thenReturn(pack.getId());
+            when(cancelled.getStatus()).thenReturn(com.stockflow.fulfillment.internal.domain.ShipmentStatus.CANCELLED);
+            when(packs.findByPickIdIn(any())).thenReturn(List.of(pack));
+            when(shipments.findByPackIdIn(any())).thenReturn(List.of(cancelled));
+            held(com.stockflow.order.api.HoldReason.INVENTORY);
+
+            assertThat(service.start(pick.getId(), actor).holdReason()).isNull();
+            assertThat(service.check(pick.getId(), "LPN-1", actor).holdReason()).isNull();
+            service.label(pick.getId(), null, actor);
+
+            assertThat(check.carton("LPN-1").orElseThrow().status()).isEqualTo(PackageStatus.LABELED);
+        }
+
+        @Test
         @DisplayName("once Sales resolves the hold the same session labels again")
         void labelsAfterTheHoldIsResolved() {
             started();

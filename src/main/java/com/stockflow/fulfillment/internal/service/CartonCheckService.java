@@ -222,7 +222,7 @@ class CartonCheckService implements CartonChecks {
                     (int) cartons.stream().filter(c -> c.getStatus() == PackageStatus.LABELED).count(),
                     shipmentsByPack.getOrDefault(pack.getId(), 0L).intValue(), pick.getTaskNumber(),
                     warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name(),
-                    holdReasonOf(states.get(pick.getOrderId())));
+                    replacing.contains(pick.getId()) ? null : holdReasonOf(states.get(pick.getOrderId())));
         });
     }
 
@@ -784,8 +784,11 @@ class CartonCheckService implements CartonChecks {
                 check.status().name(), check.startedBy(), startedByName, check.startedAt(), check.completedAt(), locked,
                 lines, cartons.stream().map(CartonCheckService::cartonView).toList(), made, paymentDue(order),
                 List.copyOf(unmeasured),
+                // No reason for the check reopened for replacement cartons (RTM-RTDCANCEL): label and complete are open
+                // there although the order waits on the shortage hold, so the station must not read it as a block.
                 order.status() == OrderStatus.ON_HOLD && order.lifecycle() != null
-                        && order.lifecycle().holdReason() != null ? order.lifecycle().holdReason().name() : null);
+                        && order.lifecycle().holdReason() != null && !reopenedForReplacement(ctx)
+                        ? order.lifecycle().holdReason().name() : null);
     }
 
     private static String holdReasonOf(OrderHoldState state) {

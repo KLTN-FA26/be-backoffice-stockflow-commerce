@@ -109,7 +109,8 @@ public interface CartonChecks {
      * @param warehouseCode the code (prefix) of {@code warehouseId}; null only if the warehouse is unknown
      * @param warehouseName the name of {@code warehouseId}; null only if the warehouse is unknown
      * @param holdReason   why the order is on hold ({@code HoldReason} name) - the row is shown, dimmed, with only
-     *                     start, scan, view, reprint and removing a damaged carton open (WF4-K2); null when not held
+     *                     start, scan, view, reprint and removing a damaged carton open (WF4-K2); null when not held, and for the
+     *                     check reopened for replacement cartons (RTM-RTDCANCEL), where label and complete are open
      */
     record QueueRow(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId, String status, Instant pickedAt,
                     String pickerName, UUID startedBy, String startedByName, Instant startedAt, int cartonCount,
