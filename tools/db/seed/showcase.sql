@@ -29,6 +29,11 @@
 --     reduction (60); a VAT e-invoice per delivery through the sandbox provider, with a replacement, an error notice,
 --     a discount and the return adjustments (70); chat, in-app notifications, the mail log, the audit log (80); and
 --     the number counters (90).
+--   * section 100 (2026-11-28, sales-owner and contract e-signing plans): every customer owned by one of three
+--     salespeople (sales1-3) from the day it was opened, with history; a Sales Manager's bulk transfer, customers'
+--     requests to change salesperson (approved, refused, waiting), covers during leave, assignment settings, and leads
+--     from the public form in every status. Every quote and contract names its owner; every contract its signers, its
+--     signing deadline and its revision 1, and one in eight carries non-standard terms the Sales Manager approved.
 -- Every size and weight is the carton's (inventory.uom_conversions): an item carries none since V20261215000100, and
 -- stock is whole LPN cartons only.
 -- What it leaves out: files (every storage key it names is a placeholder; no object exists for it), events
@@ -37,7 +42,12 @@
 -- application fills: identity.user_session, platform.idempotency_record, platform.shedlock, platform.legacy_archive
 -- (rows of dropped tables), warehouse.slotting_rule (no code writes it) and
 -- ordering.delivery_failure_case_hold (only a case waiting for redelivery has holds, and since 2026-11-19 no code
--- path leaves one).
+-- path leaves one); the contract e-signing machinery and evidence (ordering.contract_signing_key, contract_sign_otp,
+-- sales_contract_signature: the key is the running application's, a code lives minutes, and every contract here was
+-- signed on paper, which the application records without a signature row); and the tables of features added after
+-- 2026-11-24 that no section fills yet (assistant.*, payment.credit_request*, catalog.standard_price*,
+-- ordering.quote_price_review, ordering.contract_credit_review, ordering.order_on_behalf_action, the e-invoice watch
+-- tables, ...): 207 of 245 tables hold rows.
 --
 -- Every trigger is on and the steps run in the order the application writes them, so every CHECK and trigger judges
 -- these rows as it judges the application's. Ids are md5('showcase:...')::uuid and every "random" choice is a hash of
@@ -104,6 +114,7 @@ INSERT INTO s_staff VALUES
     ('sf.sales', 'sf.sales@stockflow.test', 'Lê Thu Hà', 'SALES_MANAGER', NULL, 'ACTIVE'),
     ('sales1', 'sales1@stockflow.example', 'Nguyễn Thị Lan', 'SALES_STAFF', NULL, 'ACTIVE'),
     ('sales2', 'sales2@stockflow.example', 'Trần Quốc Bảo', 'SALES_STAFF', NULL, 'ACTIVE'),
+    ('sales3', 'sales3@stockflow.example', 'Đinh Văn Hải', 'SALES_STAFF', NULL, 'ACTIVE'),
     ('ketoan', 'ketoan@stockflow.example', 'Hoàng Thị Kế', 'ACCOUNTANT', NULL, 'ACTIVE'),
     ('dieuphoi', 'dieuphoi@stockflow.example', 'Võ Thị Điều Phối', 'PRODUCTION_COORDINATOR', NULL, 'ACTIVE'),
     ('quanly.bd', 'quanly.bd@stockflow.example', 'Đỗ Văn Quản', 'WAREHOUSE_MANAGER', 'BDG', 'ACTIVE'),
@@ -568,7 +579,8 @@ UPDATE s_customer
        phone = '09' || lpad((12000000 + idx * 7919)::text, 8, '0'),
        email = 'muahang.' || lower(code) || '@khachhang.example',
        username = coalesce(username, 'kh.' || lower(code)), user_email = coalesce(user_email, lower(code) || '@khachhang.example'),
-       sales = (ARRAY['sales1', 'sales2', 'sf.sales'])[1 + idx % 3],
+       -- A customer's owner is an active SALES_STAFF (sales-owner plan BR-S04, D42): a Sales Manager never owns one.
+       sales = (ARRAY['sales1', 'sales2', 'sales3'])[1 + idx % 3],
        -- Seven customers in ten buy on credit (15 BR-11); the rest pay before delivery.
        credit_limit = CASE WHEN pg_temp.rnd('credit:' || code) < 0.7
                            THEN (8 + pg_temp.pick('limit:' || code, 0, 22)) * 100000000::numeric END,
@@ -658,9 +670,18 @@ SELECT pg_temp.sid('user-role:' || c.username), pg_temp.sid('user:' || c.usernam
        pg_temp.staff(c.sales)::text
   FROM s_customer c JOIN identity.app_role r ON r.code = 'CUSTOMER';
 
-INSERT INTO customer.customer (id, full_name, email, phone, status, version, created_at, created_by, user_id, tax_code)
+-- The Sales who opened the account owns the customer from that day (sales-owner plan §10.3 channel A).
+INSERT INTO customer.customer (id, full_name, email, phone, status, version, created_at, created_by, user_id, tax_code,
+                               sales_owner_id, sales_owner_since, sales_owner_state)
 SELECT id, name, email, phone, 'ACTIVE', 0, pg_temp.at(since, '09:00'), pg_temp.staff(sales)::text,
-       pg_temp.sid('user:' || username), tax_code
+       pg_temp.sid('user:' || username), tax_code, pg_temp.staff(sales), pg_temp.at(since, '09:00'), 'ASSIGNED'
+  FROM s_customer;
+
+INSERT INTO customer.customer_sales_owner_history (id, customer_id, from_user_id, to_user_id, to_state, reason, note,
+                                                   changed_by, changed_at, version, created_at, created_by)
+SELECT pg_temp.sid('owner-history:' || code || ':0'), id, NULL, pg_temp.staff(sales), 'ASSIGNED', 'CREATED_BY_SALES',
+       NULL, pg_temp.staff(sales), pg_temp.at(since, '09:00'), 0, pg_temp.at(since, '09:00'),
+       pg_temp.staff(sales)::text
   FROM s_customer;
 
 INSERT INTO customer.customer_legal_profile (id, customer_id, registered_address, representative_name,
@@ -899,12 +920,13 @@ SELECT o.key, o.seq, l.ln, l.sku, l.line_id, l.upc, l.length_cm, l.width_cm, l.h
 -- 9. Quotes (14 §4.1): drawn up and sent by Sales, accepted by the customer's own login, converted - or left in draft,
 --    sent, sent back for changes, expired or cancelled
 -- ---------------------------------------------------------------------------------------------
+-- sales_owner_id: the customer's owner when the quote is drawn up (14 BR-26), the Sales who draws it up (strict mode).
 INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, revision, valid_until, terms, sent_at,
                             sent_by, responded_at, responded_by, requested_delivery_date, version, created_at,
-                            created_by)
+                            created_by, sales_owner_id)
 SELECT o.quote_id, o.quote_number, pg_temp.sid('quote-request:' || o.key), o.customer_id, 'DRAFT', 1,
        pg_temp.at(o.s - 7, '17:00'), 'Giá đã gồm in 2 màu; giao theo đợt trong hợp đồng.', NULL, NULL, NULL, NULL,
-       o.window_start, 0, pg_temp.at(o.s + 7, '09:00'), pg_temp.staff(o.sales)::text
+       o.window_start, 0, pg_temp.at(o.s + 7, '09:00'), pg_temp.staff(o.sales)::text, pg_temp.staff(o.sales)
   FROM h_order o;
 
 INSERT INTO ordering.quote_line (id, quote_id, line_no, sku, uom_conversion_id, cartons, units_per_carton, tax_class,
@@ -1085,15 +1107,38 @@ SET CONSTRAINTS ALL DEFERRED;
 -- ---------------------------------------------------------------------------------------------
 CREATE TEMP TABLE h_contract ON COMMIT DROP AS SELECT * FROM h_order WHERE st >= 3;
 
+-- Who signs for each side (contract e-signing plan, BE-A): the Sales Director under the company's standing
+-- authorization, the customer's director. About one contract in eight carries an article of its own ("Thoả thuận
+-- khác") and a higher penalty: non-standard, so the Sales Manager approved its terms on the draft before it was sent
+-- (QĐ-4). sales_owner_id is the customer's owner when it was drawn up (14 BR-26); drawn_up_by may not sign for the
+-- company (four eyes).
+CREATE TEMP TABLE h_contract_terms ON COMMIT DROP AS
+SELECT o.key, pg_temp.rnd('contract-terms:' || o.key) < 0.125 AS non_standard FROM h_contract o;
+
 INSERT INTO ordering.sales_contract (id, contract_number, order_id, status, seller_name, seller_tax_code,
                                      seller_address, seller_representative, seller_representative_title, buyer_name,
                                      buyer_tax_code, buyer_address, buyer_representative, buyer_representative_title,
-                                     free_sample_rounds, version, created_at, created_by)
+                                     free_sample_rounds, version, created_at, created_by, sales_owner_id, drawn_up_by,
+                                     seller_signer_name, seller_signer_title, seller_signer_authorization_ref,
+                                     buyer_signer_name, buyer_signer_title, special_terms, penalty_percent,
+                                     non_standard_terms, terms_review, terms_review_requested_by,
+                                     terms_review_requested_at, terms_reviewed_by, terms_reviewed_at, terms_review_note)
 SELECT o.contract_id, o.contract_number, o.id, 'DRAFT', 'CÔNG TY TNHH BAO BÌ STOCKFLOW', '0318888888',
        'Số 8 Đường số 6, KCN Sóng Thần 1, Phường Dĩ An, TP. Hồ Chí Minh', 'Phạm Minh Trưởng', 'Giám đốc kinh doanh',
        c.name, c.tax_code, c.line1 || ', ' || c.ward || ', ' || c.province, c.contact, 'Giám đốc', 2, 0,
-       pg_temp.at(o.s + 4, '10:00'), pg_temp.staff(o.sales)::text
-  FROM h_contract o JOIN s_customer c ON c.code = o.cust;
+       pg_temp.at(o.s + 4, '10:00'), pg_temp.staff(o.sales)::text, pg_temp.staff(o.sales), pg_temp.staff(o.sales),
+       'Phạm Minh Trưởng', 'Giám đốc kinh doanh', 'Giấy uỷ quyền số 01/2026/UQ-SF', c.contact, 'Giám đốc',
+       CASE WHEN t.non_standard THEN
+           'Bên A được đổi màu in tối đa 01 lần trước khi Bên B chốt bản in mẫu, không tính thêm phí khuôn in.' END,
+       CASE WHEN t.non_standard THEN 5 END,
+       t.non_standard,
+       CASE WHEN t.non_standard THEN 'APPROVED' ELSE 'NONE' END,
+       CASE WHEN t.non_standard THEN pg_temp.staff(o.sales) END,
+       CASE WHEN t.non_standard THEN pg_temp.at(o.s + 4, '10:30') END,
+       CASE WHEN t.non_standard THEN pg_temp.staff('truongkd') END,
+       CASE WHEN t.non_standard THEN pg_temp.at(o.s + 4, '16:00') END,
+       CASE WHEN t.non_standard THEN 'Đồng ý: khách mua thường xuyên, chỉ một lần đổi màu trước bản in mẫu.' END
+  FROM h_contract o JOIN s_customer c ON c.code = o.cust JOIN h_contract_terms t ON t.key = o.key;
 
 INSERT INTO ordering.delivery_batch (id, contract_id, seq, window_start, window_end)
 SELECT o.batch_id, o.contract_id, 1, o.window_start, o.window_end FROM h_contract o;
@@ -1117,11 +1162,18 @@ SELECT pg_temp.sid('plan:' || o.key || ':2'), o.contract_id, 2,
 SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
+-- Sent with a signing deadline a week out (ContractSignDeadlineService), as revision 1 of the contract.
 UPDATE ordering.sales_contract k
    SET status = 'SENT', sent_at = pg_temp.at(o.s + 3, '09:00'), sent_by = pg_temp.staff(o.sales),
-       sent_document_key = 'documents/showcase/' || o.contract_number || '.pdf', version = 1,
-       last_modified_at = pg_temp.at(o.s + 3, '09:00'), last_modified_by = pg_temp.staff(o.sales)::text
+       sent_document_key = 'documents/showcase/' || o.contract_number || '.pdf', sign_by = pg_temp.day(o.s + 3) + 7,
+       version = 1, last_modified_at = pg_temp.at(o.s + 3, '09:00'), last_modified_by = pg_temp.staff(o.sales)::text
   FROM h_contract o WHERE k.id = o.contract_id;
+
+INSERT INTO ordering.sales_contract_revision (contract_id, revision, sent_document_key, sent_at, sent_by, created_at,
+                                              created_by)
+SELECT o.contract_id, 1, 'documents/showcase/' || o.contract_number || '.pdf', pg_temp.at(o.s + 3, '09:00'),
+       pg_temp.staff(o.sales), pg_temp.at(o.s + 3, '09:00'), pg_temp.staff(o.sales)::text
+  FROM h_contract o;
 
 UPDATE ordering.customer_order co
    SET status = 'PENDING_CONTRACT', version = 1, last_modified_at = pg_temp.at(o.s + 3, '09:00'),
@@ -3366,9 +3418,20 @@ SELECT pg_temp.sid('ox:user-role:' || n.code), pg_temp.sid('ox:user:' || n.code)
        pg_temp.staff(n.sales)::text
   FROM x_ox_new n JOIN identity.app_role r ON r.code = 'CUSTOMER';
 
-INSERT INTO customer.customer (id, full_name, email, phone, status, version, created_at, created_by, user_id, tax_code)
+INSERT INTO customer.customer (id, full_name, email, phone, status, version, created_at, created_by, user_id, tax_code,
+                               sales_owner_id, sales_owner_since, sales_owner_state)
 SELECT pg_temp.sid('ox:customer:' || n.code), n.name, n.email, n.phone, 'PENDING_ACTIVATION', 0,
-       pg_temp.at(n.created, '10:00'), pg_temp.staff(n.sales)::text, pg_temp.sid('ox:user:' || n.code), n.tax_code
+       pg_temp.at(n.created, '10:00'), pg_temp.staff(n.sales)::text, pg_temp.sid('ox:user:' || n.code), n.tax_code,
+       pg_temp.staff(n.sales), pg_temp.at(n.created, '10:00'), 'ASSIGNED'
+  FROM x_ox_new n;
+
+INSERT INTO customer.customer_sales_owner_history (id, customer_id, from_user_id, to_user_id, to_state, reason, note,
+                                                   changed_by, changed_at, version, created_at, created_by)
+SELECT pg_temp.sid('ox:owner-history:' || n.code || ':0'), pg_temp.sid('ox:customer:' || n.code), NULL,
+       -- TDP came in through the public form (section 100's converted lead).
+       pg_temp.staff(n.sales), 'ASSIGNED', CASE n.code WHEN 'TDP' THEN 'LEAD_CONVERTED' ELSE 'CREATED_BY_SALES' END,
+       NULL, pg_temp.staff(n.sales),
+       pg_temp.at(n.created, '10:00'), 0, pg_temp.at(n.created, '10:00'), pg_temp.staff(n.sales)::text
   FROM x_ox_new n;
 
 INSERT INTO customer.customer_status_history (id, customer_id, from_status, to_status, reason, changed_by, changed_at,
@@ -8620,6 +8683,185 @@ SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;
 
 -- <<< sections 10-90 <<<
+
+-- ---------------------------------------------------------------------------------------------
+-- 100. Sales owners, leads and covers (sales-owner plan of 2026-11-28; V20270128000100-000470). Every customer has been
+--      owned since it was opened (section 5); here a Sales Manager moves two customers to even the load, a customer's
+--      request to change salesperson is approved, one refused and one waits, a salesperson stands in for another, and
+--      the public "open a business account" form has brought leads in every status. A move is dated after the
+--      customer's last quote, so every document keeps the owner it was drawn up under (14 BR-26).
+-- ---------------------------------------------------------------------------------------------
+INSERT INTO customer.sales_assignment_setting (user_id, paused, capacity_per_month, version, created_at, created_by)
+VALUES (pg_temp.staff('sales1'), FALSE, 15, 0, pg_temp.at(60, '09:00'), pg_temp.staff('truongkd')::text),
+       (pg_temp.staff('sales2'), FALSE, 12, 0, pg_temp.at(60, '09:00'), pg_temp.staff('truongkd')::text),
+       (pg_temp.staff('sales3'), FALSE, 8, 0, pg_temp.at(60, '09:00'), pg_temp.staff('truongkd')::text);
+
+-- Which customer plays which part: owned by the right person, nothing drawn up for it since before the first move.
+CREATE TEMP TABLE x_owner_case ON COMMIT DROP AS
+WITH quiet AS (
+    SELECT c.id, c.user_id, u.username AS owner,
+           row_number() OVER (PARTITION BY u.username ORDER BY c.full_name) AS n
+      FROM customer.customer c
+      JOIN identity.app_user u ON u.id = c.sales_owner_id
+     WHERE c.status = 'ACTIVE'
+       AND NOT EXISTS (SELECT 1 FROM ordering.quote q WHERE q.customer_id = c.id AND q.created_at > pg_temp.at(11, '00:00'))
+       AND NOT EXISTS (SELECT 1 FROM ordering.sales_contract k JOIN ordering.customer_order o ON o.id = k.order_id
+                        WHERE o.customer_id = c.id AND k.created_at > pg_temp.at(11, '00:00')))
+SELECT q.*, r.role, r.to_owner
+  FROM quiet q
+  JOIN (VALUES ('sales1', 1, 'moved', 'sales3'), ('sales1', 2, 'moved', 'sales3'),
+               ('sales2', 1, 'req_approved', 'sales1'), ('sales3', 1, 'req_rejected', NULL),
+               ('sales1', 3, 'req_pending', NULL)) AS r (owner, n, role, to_owner)
+    ON r.owner = q.owner AND r.n = q.n;
+
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM x_owner_case) <> 5 THEN
+        RAISE EXCEPTION 'owners: expected 5 quiet customers for section 100, found %', (SELECT count(*) FROM x_owner_case);
+    END IF;
+END $$;
+
+-- A bulk transfer to even the load (BR-S09): two of sales1's customers to sales3, ten days ago.
+INSERT INTO customer.sales_owner_transfer_batch (id, request_id, from_user_id, reason, note, temporary, notify_customer,
+                                                 moved, skipped, requested_by, requested_at, version, created_at,
+                                                 created_by)
+VALUES (pg_temp.sid('owner-batch:workload'), pg_temp.sid('owner-batch-request:workload'), pg_temp.staff('sales1'),
+        'WORKLOAD', 'Chia bớt khách cho Hải vì Lan đang phụ trách nhiều đơn in gấp.', FALSE, TRUE, 2, 0,
+        pg_temp.staff('truongkd'), pg_temp.at(10, '14:00'), 0, pg_temp.at(10, '14:00'),
+        pg_temp.staff('truongkd')::text);
+
+INSERT INTO customer.sales_owner_transfer_item (id, batch_id, customer_id, outcome, to_user_id, version, created_at,
+                                                created_by)
+SELECT pg_temp.sid('owner-batch-item:' || x.id), pg_temp.sid('owner-batch:workload'), x.id, 'MOVED',
+       pg_temp.staff(x.to_owner), 0, pg_temp.at(10, '14:00'), pg_temp.staff('truongkd')::text
+  FROM x_owner_case x WHERE x.role = 'moved';
+
+-- The customers' requests (§10.5): approved, refused, and one still waiting for the manager.
+INSERT INTO customer.sales_owner_change_request (id, customer_id, requested_by, requested_at, current_owner_id, reason,
+                                                 note, preferred_sales_user_id, status, decided_by, decided_at,
+                                                 decision_note, new_sales_owner_id, version, created_at, created_by)
+SELECT pg_temp.sid('owner-request:' || x.role), x.id, x.user_id, pg_temp.at(r.asked, '09:15'),
+       pg_temp.staff(x.owner), r.reason, r.note, pg_temp.staff(r.preferred), r.status,
+       CASE WHEN r.status <> 'PENDING' THEN pg_temp.staff('truongkd') END,
+       CASE WHEN r.status <> 'PENDING' THEN pg_temp.at(r.asked - 1, '11:00') END,
+       r.decision_note, pg_temp.staff(x.to_owner), CASE WHEN r.status = 'PENDING' THEN 0 ELSE 1 END,
+       pg_temp.at(r.asked, '09:15'), x.user_id::text
+  FROM x_owner_case x
+  JOIN (VALUES ('req_approved', 8, 'SLOW_RESPONSE', 'APPROVED',
+                'Bên mình nhắn hỏi tiến độ đơn in thường phải chờ cả ngày mới có phản hồi.', 'sales1',
+                'Đồng ý, chuyển sang chị Lan từ hôm nay.'),
+               ('req_rejected', 20, 'PREFER_KNOWN_CONTACT', 'REJECTED',
+                'Mình quen làm việc với anh Bảo từ công ty cũ.', 'sales2',
+                'Anh Bảo đang đủ số khách tháng này; anh Hải vẫn phụ trách và sẽ gọi lại cho anh/chị trong hôm nay.'),
+               ('req_pending', 1, 'OTHER', 'PENDING',
+                'Văn phòng mới chuyển ra Hà Nội, muốn có nhân viên kinh doanh ở gần để gặp trực tiếp.', NULL, NULL))
+       AS r (role, asked, reason, status, note, preferred, decision_note)
+    ON r.role = x.role;
+
+UPDATE customer.customer c
+   SET sales_owner_id = pg_temp.staff(x.to_owner),
+       sales_owner_since = CASE x.role WHEN 'moved' THEN pg_temp.at(10, '14:00') ELSE pg_temp.at(7, '11:00') END,
+       version = c.version + 1,
+       last_modified_at = CASE x.role WHEN 'moved' THEN pg_temp.at(10, '14:00') ELSE pg_temp.at(7, '11:00') END,
+       last_modified_by = pg_temp.staff('truongkd')::text
+  FROM x_owner_case x WHERE c.id = x.id AND x.to_owner IS NOT NULL;
+
+INSERT INTO customer.customer_sales_owner_history (id, customer_id, from_user_id, to_user_id, to_state, reason, note,
+                                                   changed_by, changed_at, batch_id, version, created_at, created_by)
+SELECT pg_temp.sid('owner-history:' || x.id || ':' || x.role), x.id, pg_temp.staff(x.owner), pg_temp.staff(x.to_owner),
+       'ASSIGNED', CASE x.role WHEN 'moved' THEN 'WORKLOAD' ELSE 'CUSTOMER_REQUEST' END,
+       CASE x.role WHEN 'moved' THEN 'Chia bớt khách cho Hải vì Lan đang phụ trách nhiều đơn in gấp.'
+                   ELSE 'Đồng ý, chuyển sang chị Lan từ hôm nay.' END,
+       pg_temp.staff('truongkd'), CASE x.role WHEN 'moved' THEN pg_temp.at(10, '14:00') ELSE pg_temp.at(7, '11:00') END,
+       CASE x.role WHEN 'moved' THEN pg_temp.sid('owner-batch:workload') END, 0,
+       CASE x.role WHEN 'moved' THEN pg_temp.at(10, '14:00') ELSE pg_temp.at(7, '11:00') END,
+       pg_temp.staff('truongkd')::text
+  FROM x_owner_case x WHERE x.to_owner IS NOT NULL;
+
+-- Covers during leave (BR-S07): sales2 stood in for sales3 for a week in the autumn; sales1 will cover sales2 next week.
+INSERT INTO identity.staff_cover (id, user_id, cover_user_id, from_date, to_date, reason, status, arranged_by, version,
+                                  created_at, created_by)
+VALUES (pg_temp.sid('cover:sales3-autumn'), pg_temp.staff('sales3'), pg_temp.staff('sales2'), pg_temp.day(42),
+        pg_temp.day(36), 'Nghỉ phép năm', 'ACTIVE', pg_temp.staff('truongkd'), 0, pg_temp.at(45, '16:00'),
+        pg_temp.staff('truongkd')::text),
+       (pg_temp.sid('cover:sales2-next-week'), pg_temp.staff('sales2'), pg_temp.staff('sales1'), pg_temp.day(-3),
+        pg_temp.day(-9), 'Đi công tác Đà Nẵng gặp khách', 'ACTIVE', pg_temp.staff('sales2'), 0, pg_temp.at(1, '17:30'),
+        pg_temp.staff('sales2')::text),
+       (pg_temp.sid('cover:sales1-cancelled'), pg_temp.staff('sales1'), pg_temp.staff('sales3'), pg_temp.day(20),
+        pg_temp.day(18), 'Nghỉ ốm', 'ACTIVE', pg_temp.staff('sales1'), 0, pg_temp.at(22, '08:00'),
+        pg_temp.staff('sales1')::text);
+
+UPDATE identity.staff_cover
+   SET status = 'CANCELLED', cancelled_at = pg_temp.at(21, '07:45'), cancelled_by = pg_temp.staff('sales1'),
+       cancel_reason = 'MANUAL', version = 1, last_modified_at = pg_temp.at(21, '07:45'),
+       last_modified_by = pg_temp.staff('sales1')::text
+ WHERE id = pg_temp.sid('cover:sales1-cancelled');
+
+-- Leads from the public form (§10.3 channel B, §10.7): who sent it, what for, and how far Sales got.
+CREATE TEMP TABLE x_lead ON COMMIT DROP AS
+SELECT pg_temp.sid('lead:' || t.code) AS id, t.*
+  FROM (VALUES
+    ('L01', 'Công ty TNHH Cà Phê Muối Xứ Huế', '0401234561', 'Trần Thị Muối', 'Chủ quán', '0905112233', 'caphemuoi@khachhang.example', 'Thừa Thiên Huế', '{CUP}', '5.000 ly/tháng', 'Cần ly giấy 12oz in logo, giao Huế.', 'NEW', 0, NULL, NULL),
+    ('L02', 'Hộ kinh doanh Trà Sữa Mây', NULL, 'Nguyễn Văn Mây', NULL, '0977445566', NULL, 'Cần Thơ', '{CUP,BAG}', '2.000 ly/tháng', NULL, 'NEW', 1, NULL, NULL),
+    ('L03', 'Công ty CP Bánh Ngọt Sáng Sớm', '0401234578', 'Lê Thị Sớm', 'Trưởng phòng mua hàng', '0913556677', 'muahang@sangsom.example', 'TP. Hồ Chí Minh', '{BOX,BAG}', '10.000 hộp/tháng', 'Hộp bánh kem 2 cỡ, túi giấy quai xoắn.', 'NEW', 2, NULL, NULL),
+    ('L04', 'Công ty TNHH Cơm Văn Phòng 247', '0401234585', 'Phạm Quốc Cơm', 'Giám đốc', '0938778899', 'com247@khachhang.example', 'TP. Hồ Chí Minh', '{BOWL,BAG}', '20.000 tô/tháng', 'Tô giấy kraft có nắp.', 'ASSIGNED', 5, 'sales2', NULL),
+    ('L05', 'Công ty TNHH Nước Ép Xanh', '0401234592', 'Vũ Thị Xanh', 'Quản lý', '0946112244', 'nuocepxanh@khachhang.example', 'Bình Dương', '{CUP}', '8.000 ly/tháng', NULL, 'ASSIGNED', 3, 'sales3', NULL),
+    ('L06', 'Công ty CP Chuỗi Kem Tuyết', '0401234608', 'Đỗ Minh Tuyết', 'Giám đốc vận hành', '0961223344', 'kemtuyet@khachhang.example', 'Hà Nội', '{CUP,BOWL}', '15.000 ly/tháng', 'Ly kem 8oz và tô 350ml, 12 cửa hàng.', 'CONTACTED', 9, 'sales1', 'Đã gọi, hẹn gửi báo giá ly 8oz in 2 màu tuần sau.'),
+    ('L07', 'Hộ kinh doanh Xôi Gà Bà Tư', NULL, 'Ngô Thị Tư', NULL, '0987334455', 'xoigabatu@khachhang.example', 'Đồng Nai', '{BOX}', '3.000 hộp/tháng', NULL, 'CONTACTED', 12, 'sales2', 'Khách cần hộp giấy có lót chống thấm, đang hỏi giá mẫu.'),
+    ('L08', 'Công ty TNHH Trà Đào Phố Núi', '0319011203', 'Hà Thị Đào', 'Giám đốc', '0912664081', 'tradaophonui@khachhang.example', 'TP. Hà Nội', '{CUP}', '6.000 ly/tháng', 'Mở chuỗi 3 quán trà đào.', 'CONVERTED', 4, 'sales1', 'Đã gặp, khách đồng ý mở tài khoản.'),
+    ('L09', 'Công ty TNHH Quà Tặng ABC', '0401234615', 'Bùi Văn An', 'Nhân viên', '0909556677', 'quatangabc@khachhang.example', 'TP. Hồ Chí Minh', '{BAG}', '200 túi', 'Hỏi in 200 túi quà tặng sự kiện.', 'DISQUALIFIED', 15, 'sales3', 'Đã gọi tư vấn.'),
+    ('L10', 'test', NULL, 'test', NULL, '0900000000', NULL, NULL, '{}', NULL, 'test test', 'DISQUALIFIED', 6, NULL, NULL))
+  AS t (code, company, tax_code, contact, title, phone, email, province, interests, volume, note, status, days,
+        sales, contact_note);
+
+INSERT INTO customer.lead (id, company_name, tax_code, contact_name, contact_title, phone, email, province, interests,
+                           monthly_volume, note, consent_at, status, submitted_at, assigned_to, assigned_by,
+                           assigned_at, contacted_at, contact_note, converted_customer_id, converted_at,
+                           disqualified_reason, disqualified_by, disqualified_at, version, created_at, created_by)
+SELECT l.id, l.company, l.tax_code, l.contact, l.title, l.phone, l.email, l.province, l.interests::varchar(32)[],
+       l.volume, l.note, pg_temp.at(l.days, '08:40'), l.status, pg_temp.at(l.days, '08:40'),
+       pg_temp.staff(l.sales), CASE WHEN l.sales IS NOT NULL THEN pg_temp.staff('truongkd') END,
+       CASE WHEN l.sales IS NOT NULL THEN pg_temp.at(l.days, '10:00') END,
+       CASE WHEN l.contact_note IS NOT NULL THEN pg_temp.at(l.days - 1, '15:00') END, l.contact_note,
+       CASE WHEN l.status = 'CONVERTED' THEN pg_temp.sid('ox:customer:TDP') END,
+       CASE WHEN l.status = 'CONVERTED' THEN pg_temp.at(1, '10:00') END,
+       CASE l.code WHEN 'L09' THEN 'Chỉ cần 200 túi một lần, dưới số lượng tối thiểu của một đợt in.'
+                   WHEN 'L10' THEN 'Thông tin thử, không phải doanh nghiệp thật.' END,
+       CASE l.code WHEN 'L09' THEN pg_temp.staff('sales3') WHEN 'L10' THEN pg_temp.staff('truongkd') END,
+       CASE WHEN l.status = 'DISQUALIFIED' THEN pg_temp.at(l.days - 1, '16:00') END,
+       CASE l.status WHEN 'NEW' THEN 0 WHEN 'ASSIGNED' THEN 1 WHEN 'CONTACTED' THEN 2 WHEN 'CONVERTED' THEN 3
+                     ELSE CASE WHEN l.sales IS NULL THEN 1 ELSE 3 END END,
+       pg_temp.at(l.days, '08:40'), 'public-form'
+  FROM x_lead l;
+
+-- Each lead's history: the form, the assignment, the call, and how it ended; plus a repeat of the form (P5).
+INSERT INTO customer.lead_history (id, lead_id, from_status, to_status, from_user_id, to_user_id, note, changed_by,
+                                   changed_at, kind, version, created_at, created_by)
+SELECT pg_temp.sid('lead-history:' || l.code || ':' || h.step), l.id, h.from_status, h.to_status, h.from_user,
+       h.to_user, h.note, h.by, h.at, h.kind, 0, h.at, coalesce(h.by::text, 'public-form')
+  FROM x_lead l
+ CROSS JOIN LATERAL (VALUES
+    (0, NULL, 'NEW', NULL::uuid, NULL::uuid, NULL, NULL::uuid, pg_temp.at(l.days, '08:40'), 'CHANGE', TRUE),
+    (1, 'NEW', 'ASSIGNED', NULL, pg_temp.staff(l.sales), NULL, pg_temp.staff('truongkd'), pg_temp.at(l.days, '10:00'),
+        'CHANGE', l.sales IS NOT NULL),
+    (2, 'ASSIGNED', 'CONTACTED', pg_temp.staff(l.sales), pg_temp.staff(l.sales), l.contact_note, pg_temp.staff(l.sales),
+        pg_temp.at(l.days - 1, '15:00'), 'CHANGE', l.contact_note IS NOT NULL),
+    (3, 'CONTACTED', 'CONVERTED', pg_temp.staff(l.sales), pg_temp.staff(l.sales), NULL, pg_temp.staff(l.sales),
+        pg_temp.at(1, '10:00'), 'CHANGE', l.status = 'CONVERTED'),
+    (4, CASE WHEN l.contact_note IS NOT NULL THEN 'CONTACTED' WHEN l.sales IS NOT NULL THEN 'ASSIGNED' ELSE 'NEW' END,
+        'DISQUALIFIED', pg_temp.staff(l.sales), pg_temp.staff(l.sales),
+        CASE l.code WHEN 'L09' THEN 'Chỉ cần 200 túi một lần, dưới số lượng tối thiểu của một đợt in.'
+                    ELSE 'Thông tin thử, không phải doanh nghiệp thật.' END,
+        CASE l.code WHEN 'L09' THEN pg_temp.staff('sales3') ELSE pg_temp.staff('truongkd') END,
+        pg_temp.at(l.days - 1, '16:00'), 'CHANGE', l.status = 'DISQUALIFIED'),
+    (5, 'NEW', 'NEW', NULL, NULL, 'Gửi lại form: cần thêm ly nhựa PET 16oz, khoảng 3.000 ly/tháng.', NULL,
+        pg_temp.at(0, '07:50'), 'RESUBMITTED', l.code = 'L03'))
+    AS h (step, from_status, to_status, from_user, to_user, note, by, at, kind, applies)
+ WHERE h.applies;
+
+-- (the application commits here: the deferred checks run on what this step leaves)
+SET CONSTRAINTS ALL IMMEDIATE;
+SET CONSTRAINTS ALL DEFERRED;
 
 -- ---------------------------------------------------------------------------------------------
 -- The session's helpers go with it.
