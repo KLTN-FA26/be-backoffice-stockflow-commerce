@@ -835,6 +835,11 @@ stockflow:
       quantity-tolerance-percent: ${CONTRACT_QUANTITY_TOLERANCE_PERCENT:5}
       warranty-months: ${CONTRACT_WARRANTY_MONTHS:6}
       penalty-percent: ${CONTRACT_PENALTY_PERCENT:8}
+      # Days from sending a contract to the day the customer should have signed by (1 to 60); Sales may move the day while
+      # the contract is sent. Past it the contract shows "overdue to sign" and Sales is told once; nothing is cancelled.
+      sign-days: ${CONTRACT_SIGN_DAYS:7}
+      # When the nightly check of contracts past their signing deadline runs (Saigon time).
+      sign-deadline-cron: ${CONTRACT_SIGN_DEADLINE_CRON:0 15 1 * * *}
     production-order:
       # How long the links e-mailed to a producer - its production order slip and print files - work (4A-3). Every use
       # is checked again (the production order still open, the file still the approved one) and gets a presigned URL

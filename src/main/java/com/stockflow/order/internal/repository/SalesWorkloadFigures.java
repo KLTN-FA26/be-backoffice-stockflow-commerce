@@ -54,7 +54,7 @@ public class SalesWorkloadFigures {
                                 SELECT o.customer_id, 0, count(*), 0
                                   FROM ordering.sales_contract k
                                   JOIN ordering.customer_order o ON o.id = k.order_id
-                                 WHERE o.customer_id IN (:customers) AND k.status = 'SENT'
+                                 WHERE o.customer_id IN (:customers) AND k.status IN ('SENT', 'CUSTOMER_SIGNED')
                                  GROUP BY o.customer_id
                                 UNION ALL
                                 SELECT o.customer_id, 0, 0, count(*)

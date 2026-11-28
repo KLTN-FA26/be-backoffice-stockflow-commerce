@@ -32,7 +32,9 @@ class ContractCardsAdapter implements ContractCards {
     }
 
     private static Card card(SalesContracts.ContractView view) {
-        return new Card(view.id(), view.contractNumber(), view.orderId(), view.orderNumber(), view.status(),
+        // A draft that came back after the customer asked for changes reads to them as CHANGES_REQUESTED, as on the portal.
+        String status = "DRAFT".equals(view.status()) && view.revision() > 1 ? "CHANGES_REQUESTED" : view.status();
+        return new Card(view.id(), view.contractNumber(), view.orderId(), view.orderNumber(), status,
                 view.totals() == null ? null : view.totals().totalAmount(),
                 view.totals() == null ? null : view.totals().currency(), view.freeSampleRounds(),
                 view.paymentPlan() == null ? java.util.List.of() : view.paymentPlan().stream()

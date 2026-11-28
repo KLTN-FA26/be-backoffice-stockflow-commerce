@@ -3,6 +3,7 @@ package com.stockflow.order.internal.repository;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.order.internal.domain.ContractAgreement;
 import com.stockflow.order.internal.domain.ContractParty;
 import com.stockflow.order.internal.domain.DeliveryBatch;
 import com.stockflow.order.internal.domain.PaymentMilestone;
@@ -74,6 +75,7 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                     seller.name(), seller.taxCode(), seller.address(), seller.representative(),
                     seller.representativeTitle(), buyer.name(), buyer.taxCode(), buyer.address(),
                     buyer.representative(), buyer.representativeTitle(), contract.salesOwnerId());
+            entity.drawnUpBy(contract.drawnUpBy());
         } else if (entity.getVersion() != contract.version()) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, "Contract %s changed since it was read"
                     .formatted(contract.contractNumber()));
@@ -84,6 +86,10 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 contract.cancellationReason(), contract.completedAt());
         boolean wasWaiting = !created && entity.isCreditReviewPending();
         entity.applyLiquidated(contract.liquidatedAt());
+        entity.applyAgreement(contract.agreement(), contract.nonStandard());
+        entity.applySigning(contract.revision(), contract.signBy(), contract.customerSignedAt());
+        entity.applyTermsReview(contract.termsReview(), contract.termsReviewNote(), contract.termsReviewRequestedBy(),
+                contract.termsReviewRequestedAt(), contract.termsReviewedBy(), contract.termsReviewedAt());
         entity.agreeReturnWindow(contract.returnWindowDays());
         entity.creditReview(contract.creditReviewPending());
         SalesContractJpaEntity saved = jpa.saveAndFlush(entity);
@@ -235,6 +241,15 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 e.getCancelledAt(), e.getCancelledBy(), e.getCancellationReason(), e.getCompletedAt(),
                 e.getVersion()).restoreReturnWindow(e.getReturnWindowDays()).restoreLiquidated(e.getLiquidatedAt())
                 .restoreSalesOwner(e.getSalesOwnerId())
-                .restoreCreditReview(e.isCreditReviewPending());
+                .restoreCreditReview(e.isCreditReviewPending())
+                .restoreAgreement(new ContractAgreement(e.getSpecialTerms(), e.getPenaltyPercent(),
+                        e.getQuantityTolerancePercent(), e.getWarrantyMonths(),
+                        new ContractAgreement.SellerSigner(e.getSellerSignerName(), e.getSellerSignerTitle(),
+                                e.getSellerSignerAuthorizationRef()),
+                        new ContractAgreement.BuyerSigner(e.getBuyerSignerName(), e.getBuyerSignerTitle())),
+                        e.isNonStandardTerms())
+                .restoreSigning(e.getRevision(), e.getSignBy(), e.getCustomerSignedAt(), e.getDrawnUpBy())
+                .restoreTermsReview(e.getTermsReview(), e.getTermsReviewNote(), e.getTermsReviewRequestedBy(),
+                        e.getTermsReviewRequestedAt(), e.getTermsReviewedBy(), e.getTermsReviewedAt());
     }
 }

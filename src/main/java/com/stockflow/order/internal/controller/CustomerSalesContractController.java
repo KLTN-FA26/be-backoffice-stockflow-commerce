@@ -13,7 +13,11 @@ import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.internal.service.SalesContracts;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import com.stockflow.order.internal.controller.dto.SalesContractRequests;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -56,6 +60,38 @@ class CustomerSalesContractController {
                                               @RequestParam(name = "copy", required = false) String copy,
                                               @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(contracts.customerDocument(ownCustomerId(user), orderId, "sent".equalsIgnoreCase(copy)));
+    }
+
+    @GetMapping("/revisions")
+    @Operation(summary = "The revisions of the contract that were sent to the signed-in customer, with what they asked "
+            + "for after reading each; no sender is named")
+    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.READ, scope = DataScope.OWN)
+    public ApiResponse<java.util.List<SalesContracts.RevisionView>> revisions(@PathVariable UUID orderId,
+                                                                              @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(contracts.customerRevisions(ownCustomerId(user), orderId));
+    }
+
+    @GetMapping("/revisions/{revision}/document")
+    @Operation(summary = "A short-lived link to the PDF that revision was sent as")
+    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.READ, scope = DataScope.OWN)
+    public ApiResponse<DownloadLink> revisionDocument(@PathVariable UUID orderId, @PathVariable int revision,
+                                                      @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(contracts.customerRevisionDocument(ownCustomerId(user), orderId, revision));
+    }
+
+    @PostMapping("/change-request")
+    @Operation(summary = "Send the contract back for changes: what to change, 10 to 2000 characters. SENT -> DRAFT as the "
+            + "next revision (the sent PDF is kept as the revision's), and the salesperson who looks after the "
+            + "customer is told. 409 SALES_CONTRACT_STATUS_INVALID unless the contract is sent and not yet signed by "
+            + "the customer; 409 OPTIMISTIC_LOCK for a stale version. The answer is the contract as the portal shows it: "
+            + "status CHANGES_REQUESTED")
+    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.UPDATE, scope = DataScope.OWN)
+    public ApiResponse<SalesContracts.ContractView> requestChanges(@PathVariable UUID orderId,
+                                                                   @Valid @RequestBody
+                                                                   SalesContractRequests.ChangeRequest request,
+                                                                   @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(contracts.requestChanges(ownCustomerId(user), user.userId(), orderId, request.version(),
+                request.reason()));
     }
 
     private UUID ownCustomerId(CurrentUser user) {

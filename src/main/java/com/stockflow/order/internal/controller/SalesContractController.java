@@ -96,7 +96,9 @@ class SalesContractController {
 
     @PutMapping
     @Operation(summary = "Edit a draft contract as read: free sample rounds; a delivery schedule or payment plan sent "
-            + "replaces the old one whole, one left out is kept")
+            + "replaces the old one whole, one left out is kept; likewise the special terms (blank clears), the "
+            + "penalty / tolerance / warranty overrides and the two signers. Any edit takes an approval of the terms "
+            + "back (it is asked for again when the terms still deviate)")
     @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
     public ApiResponse<SalesContracts.ContractView> edit(@PathVariable UUID orderId,
                                                          @Valid @RequestBody SalesContractRequests.Draft request,
@@ -134,6 +136,86 @@ class SalesContractController {
                                                          @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(contracts.send(user, orderId, request.version()));
+    }
+
+    @PostMapping("/terms-review")
+    @Operation(summary = "Put a draft whose terms deviate from the standard ones (special terms, or a penalty, tolerance "
+            + "or warranty other than the configured) in front of a Sales Manager (QĐ-4). It stays a DRAFT, locked "
+            + "against edits, and is not sent until approved. 409 CONTRACT_TERMS_REVIEW_NOT_NEEDED for a standard "
+            + "contract; 409 CONTRACT_TERMS_REVIEW_PENDING when it waits already")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
+    public ApiResponse<SalesContracts.ContractView> submitForTermsReview(@PathVariable UUID orderId,
+                                                                         @Valid @RequestBody
+                                                                         SalesContractRequests.Version request,
+                                                                         @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.submitForTermsReview(user, orderId, request.version()));
+    }
+
+    @PostMapping("/terms-review/approval")
+    @Operation(summary = "A Sales Manager approves the terms as written (QĐ-4); the contract may now be sent. The note is "
+            + "optional. Editing the draft afterwards takes the approval back. 409 CONTRACT_TERMS_REVIEW_NOT_PENDING")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_TERMS, action = Action.APPROVE)
+    public ApiResponse<SalesContracts.ContractView> approveTerms(@PathVariable UUID orderId,
+                                                                 @Valid @RequestBody
+                                                                 SalesContractRequests.TermsDecision request,
+                                                                 @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.approveTerms(user, orderId, request.version(), request.note()));
+    }
+
+    @PostMapping("/terms-review/rejection")
+    @Operation(summary = "A Sales Manager rejects the terms, with the reason (required, at most 500 characters): the draft "
+            + "goes back to Sales to change and send for review again. 409 CONTRACT_TERMS_REVIEW_NOT_PENDING")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_TERMS, action = Action.APPROVE)
+    public ApiResponse<SalesContracts.ContractView> rejectTerms(@PathVariable UUID orderId,
+                                                                @Valid @RequestBody
+                                                                SalesContractRequests.TermsDecision request,
+                                                                @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.rejectTerms(user, orderId, request.version(), request.note()));
+    }
+
+    @PostMapping("/terms-review/withdrawal")
+    @Operation(summary = "Take a draft waiting for a Sales Manager back, to change it (QĐ-4): terms review NONE. 409 "
+            + "CONTRACT_TERMS_REVIEW_NOT_PENDING when it waits for nothing")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
+    public ApiResponse<SalesContracts.ContractView> withdrawTermsReview(@PathVariable UUID orderId,
+                                                                        @Valid @RequestBody
+                                                                        SalesContractRequests.Version request,
+                                                                        @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.withdrawTermsReview(user, orderId, request.version()));
+    }
+
+    @PutMapping("/sign-by")
+    @Operation(summary = "Move the day the customer should have signed by while the contract is SENT: today or later, at "
+            + "most 60 days ahead. 409 SALES_CONTRACT_STATUS_INVALID otherwise")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
+    public ApiResponse<SalesContracts.ContractView> extendSignBy(@PathVariable UUID orderId,
+                                                                 @Valid @RequestBody SalesContractRequests.SignBy request,
+                                                                 @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.extendSignBy(user, orderId, request.version(), request.signBy()));
+    }
+
+    @GetMapping("/revisions")
+    @Operation(summary = "The revisions of the contract that were sent, oldest first: when, by whom, what the customer "
+            + "asked for after reading it, and whether the PDF is there")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.READ)
+    public ApiResponse<List<SalesContracts.RevisionView>> revisions(@PathVariable UUID orderId,
+                                                                    @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.revisions(orderId));
+    }
+
+    @GetMapping("/revisions/{revision}/document")
+    @Operation(summary = "A short-lived link to the PDF the revision was sent as")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.READ)
+    public ApiResponse<DownloadLink> revisionDocument(@PathVariable UUID orderId, @PathVariable int revision,
+                                                      @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.revisionDocument(orderId, revision));
     }
 
     @PostMapping("/credit-review/withdrawal")
@@ -243,6 +325,21 @@ class SalesContractController {
                         .map(i -> i == null ? null : new SalesContracts.Installment(i.name(), i.milestone(),
                                 i.amount(), i.percent(), i.dueDays(), i.deliveryBatchSeq()))
                         .toList(),
-                request.returnWindowDays());
+                request.returnWindowDays(), agreement(request));
+    }
+
+    /** Null when the request says nothing of it, so an edit keeps what the contract has. */
+    private static SalesContracts.AgreementInput agreement(SalesContractRequests.Draft request) {
+        if (request.specialTerms() == null && request.penaltyPercent() == null
+                && request.quantityTolerancePercent() == null && request.warrantyMonths() == null
+                && request.sellerSigner() == null && request.buyerSigner() == null) {
+            return null;
+        }
+        return new SalesContracts.AgreementInput(request.specialTerms(), request.penaltyPercent(),
+                request.quantityTolerancePercent(), request.warrantyMonths(),
+                request.sellerSigner() == null ? null : new SalesContracts.SellerSigner(request.sellerSigner().name(),
+                        request.sellerSigner().title(), request.sellerSigner().authorizationRef()),
+                request.buyerSigner() == null ? null : new SalesContracts.BuyerSigner(request.buyerSigner().name(),
+                        request.buyerSigner().title()));
     }
 }

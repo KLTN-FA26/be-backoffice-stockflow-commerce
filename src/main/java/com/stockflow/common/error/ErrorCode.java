@@ -346,6 +346,23 @@ public enum ErrorCode {
     /** 15 BR-11, four eyes: whoever sent a contract for the credit review does not decide it. */
     CONTRACT_CREDIT_REVIEW_SELF("The credit of a contract is decided by someone other than whoever sent it for review",
             403),
+    /** QĐ-4: a draft that deviates from the standard terms is approved by a Sales Manager before it is sent. */
+    CONTRACT_TERMS_REVIEW_REQUIRED("This contract deviates from the standard terms; a Sales Manager approves it before it "
+            + "is sent", 409),
+    /** QĐ-4: a contract on the standard terms needs no approval of them. */
+    CONTRACT_TERMS_REVIEW_NOT_NEEDED("This contract has the standard terms; nobody has to approve them", 409),
+    /** QĐ-4: a contract waiting for a Sales Manager to approve its terms is neither edited nor sent; Sales withdraws it. */
+    CONTRACT_TERMS_REVIEW_PENDING("This contract is waiting for a Sales Manager to approve its terms; withdraw it to "
+            + "change it", 409),
+    /** QĐ-4: there is no terms review waiting on this contract to approve, reject or withdraw. */
+    CONTRACT_TERMS_REVIEW_NOT_PENDING("This contract is not waiting for a Sales Manager to approve its terms", 409),
+    /** E-signing: only a sent contract is signed by the customer. */
+    CONTRACT_NOT_SIGNABLE("This contract is not open for the customer to sign", 409),
+    /** E-signing: the customer cannot sign past the signing deadline; Sales extends it. */
+    CONTRACT_SIGN_DEADLINE_PASSED("The deadline to sign this contract has passed; ask Sales to extend it", 409),
+    /** QĐ-2, four eyes: whoever drew a contract up or sent it does not sign it for the company. */
+    CONTRACT_SIGNER_IS_AUTHOR("The company's signature is given by someone other than whoever drew up or sent the "
+            + "contract", 409),
     /** 4B-4 (14 BR-23): batches, windows and cartons; the field errors name each rule broken. */
     DELIVERY_SCHEDULE_INVALID("The delivery schedule breaks a rule of the contract", 409),
     /** 4B-4 (14 BR-13): installments adding up to the total with tax; the field errors name each rule broken. */
