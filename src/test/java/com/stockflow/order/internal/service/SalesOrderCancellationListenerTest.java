@@ -48,8 +48,11 @@ class SalesOrderCancellationListenerTest {
     private final ProductionOrderService service = mock(ProductionOrderService.class);
     private final ProductionOrderRepository productionOrders = mock(ProductionOrderRepository.class);
     private final OrderRepository orders = mock(OrderRepository.class);
+    private final com.stockflow.identity.api.IdentityService identities =
+            mock(com.stockflow.identity.api.IdentityService.class);
+    private final com.stockflow.notification.api.Inbox inbox = mock(com.stockflow.notification.api.Inbox.class);
     private final SalesOrderCancellationListener listener = new SalesOrderCancellationListener(service,
-            productionOrders, orders, mock(PlatformTransactionManager.class));
+            productionOrders, orders, mock(PlatformTransactionManager.class), identities, inbox);
 
     private static ProductionOrder production(ProductionOrderStatus status, long version) {
         return new ProductionOrder(UUID.randomUUID(), "PRD-20261109-%04d".formatted(version), ORDER, UUID.randomUUID(),
@@ -97,6 +100,31 @@ class SalesOrderCancellationListenerTest {
         lockOrder.verify(orders).findByIdForUpdate(new OrderId(ORDER));
         lockOrder.verify(productionOrders).findByIdForUpdate(draft.id());
         verify(orders, times(4)).findByIdForUpdate(new OrderId(ORDER));
+    }
+
+    @Test
+    @DisplayName("WF4-F4: a production order closed because its sales order was cancelled tells the coordinators in "
+            + "the app, once, with a link to it; one only cancelled, or closed by a rest-close, tells nobody")
+    void tellsCoordinatorsOfAClosing() {
+        ProductionOrder draft = production(ProductionOrderStatus.DRAFT, 1);
+        ProductionOrder printing = production(ProductionOrderStatus.IN_PRODUCTION, 2);
+        stored(draft, printing);
+        UUID coordinator = UUID.randomUUID();
+        when(identities.notificationRecipientsHolding(SalesOrderCancellationListener.TELLS_PRODUCERS, null))
+                .thenReturn(List.of(new com.stockflow.identity.api.StaffContact(coordinator, "c@example.vn")));
+
+        listener.on(cancelled(SALES, null));
+
+        var message = org.mockito.ArgumentCaptor.forClass(com.stockflow.notification.api.InboxMessage.class);
+        verify(inbox, times(1)).post(eq(List.of(coordinator)), message.capture());
+        assertThat(message.getValue().title()).contains(printing.code()).contains("đóng");
+        assertThat(message.getValue().body()).contains("SO-20261109-000046");
+        assertThat(message.getValue().link()).isEqualTo("/production/orders/" + printing.id());
+        assertThat(message.getValue().dedupeKey()).isEqualTo("production-order-closed-by-cancellation:" + printing.id());
+
+        org.mockito.Mockito.clearInvocations(inbox);
+        listener.on(closed(SALES));
+        verifyNoInteractions(inbox);
     }
 
     @Test
