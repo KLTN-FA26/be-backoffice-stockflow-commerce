@@ -3138,7 +3138,8 @@ class FtlDispatchIntegrationTest {
         // WF4-BE3-HOLD: the order is held at the removal and the station refuses its cartons until Sales decides.
         assertHeldForTheRemovedCarton(order);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/carton-labels", null)
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_STATE_CONFLICT"));
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_ORDER_ON_HOLD"))
+                .andExpect(jsonPath("$.details.holdReason").value("INVENTORY"));
         salesResolvesTheInventoryHold(order);
         CartonStationSupport.labelAll(this::packer, task);
 
@@ -3179,6 +3180,39 @@ class FtlDispatchIntegrationTest {
      * WF4-BE3-HOLD (owner, 2026-11-15): the removal of a carton at the check station puts the order on INVENTORY hold at
      * once, as a short pick report does; the check station refuses the order's cartons while it is held.
      */
+    @Test
+    @DisplayName("WF4-F2 (08 §4.2 step 4; owner decision 2026-11-28): Sales allowing partial shipment lifts the INVENTORY "
+            + "hold a carton removed at the check station put on the order - by itself, with a history entry - and the "
+            + "station then labels and completes in part; start and scan worked while it was held")
+    void allowingPartialShipmentLiftsTheRemovedCartonHold() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        allowPartial(order, false);
+        UUID task = picked(order);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        List<String> lpns = CartonStationSupport.pickedLpns(jdbc, task);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
+                "{\"note\":\"móp góc\"}").andExpect(status().isOk());
+        assertHeldForTheRemovedCarton(order);
+        // WF4-K2: a held order is still listed, with its reason, and its session says why labelling waits.
+        packer(get(BASE + "/tasks/" + task + "/packing-session"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.holdReason").value("INVENTORY"));
+
+        sales(put(ORDERS + "/" + order.orderId() + "/partial-shipment").contentType("application/json")
+                .content("{\"allowed\":true,\"note\":\"Khách đồng ý giao trước phần đã kiểm\"}"))
+                .andExpect(status().isOk());
+
+        // After the commit, in the listener's own transaction.
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(20)).untilAsserted(() ->
+                assertThat(orders.findById(order.orderId()).orElseThrow().status()).isNotEqualTo(OrderStatus.ON_HOLD));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_status_history WHERE order_id = ? "
+                + "AND reason LIKE 'HOLD_RESOLVED_INVENTORY%'", Long.class, order.orderId())).isEqualTo(1L);
+        CartonStationSupport.labelAll(this::packer, task);
+        JsonNode done = CartonStationSupport.completeOnly(this::packer, json, task,
+                "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}");
+        assertThat(done.path("shipmentId").asText()).isNotBlank();
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+    }
+
     private void assertHeldForTheRemovedCarton(OrderSummary order) throws Exception {
         OrderSummary held = orders.findById(order.orderId()).orElseThrow();
         assertThat(held.status()).as("held at the removal").isEqualTo(OrderStatus.ON_HOLD);
