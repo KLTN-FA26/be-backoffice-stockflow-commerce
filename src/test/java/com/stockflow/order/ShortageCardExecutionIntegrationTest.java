@@ -272,12 +272,17 @@ class ShortageCardExecutionIntegrationTest {
                 .containsEntry("new_window_end", java.sql.Date.valueOf(expected.plusDays(3)))
                 .containsEntry("reason_code", "SELLER_DELAY").containsEntry("evidence_shortage_card_id", cardId);
         assertThat(moved.get("evidence_file_key")).isNull();
-        assertThat((String) moved.get("note")).contains(cardId.toString()).contains("Khách đồng ý nhận sau");
+        String code = jdbc.queryForObject("SELECT code FROM ordering.shortage_card WHERE id = ?", String.class, cardId);
+        assertThat((String) moved.get("note")).as("UNH-CODE-1128: the card by its code, not its id").contains(code)
+                .doesNotContain(cardId.toString()).contains("Khách đồng ý nhận sau");
         DeliveryBatchService.Schedule schedule = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
                 () -> batches.schedule(held.orderId()));
         assertThat(schedule.batches().getFirst().windowStart()).isEqualTo(expected);
         assertThat(schedule.batches().getFirst().windowChanges()).singleElement()
-                .satisfies(c -> assertThat(c.evidenceShortageCardId()).isEqualTo(cardId));
+                .satisfies(c -> {
+                    assertThat(c.evidenceShortageCardId()).isEqualTo(cardId);
+                    assertThat(c.evidenceShortageCardCode()).isEqualTo(code);
+                });
         assertThat(card(cardId)).containsEntry("status", "EXECUTED");
     }
 

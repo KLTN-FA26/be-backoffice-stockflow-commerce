@@ -60,18 +60,18 @@ VALUES (md5('qa99x:contract')::uuid, 'HD-QA99X-1', md5('qa99x:o')::uuid, 'SIGNED
         CURRENT_DATE - 5, 'documents/s.pdf', 's.pdf');
 INSERT INTO ordering.delivery_batch (id, contract_id, seq, window_start, window_end)
 VALUES (md5('qa99x:b1')::uuid, md5('qa99x:contract')::uuid, 1, CURRENT_DATE + 3, CURRENT_DATE + 8);
-INSERT INTO ordering.shortage_card (id, order_id, delivery_batch_id, customer_id, status, options_offered,
+INSERT INTO ordering.shortage_card (id, code, order_id, delivery_batch_id, customer_id, status, options_offered,
                                     missing_cartons, amounts, expected_delivery_date, expected_date_source, sent_by,
                                     sent_at, chosen_option, chosen_by, chosen_at, ended_reason)
-VALUES (md5('qa99x:wait')::uuid, md5('qa99x:o')::uuid, md5('qa99x:b1')::uuid, 'c0000000-0000-4000-8000-000000000001',
+VALUES (md5('qa99x:wait')::uuid, 'TT-20990102-0001', md5('qa99x:o')::uuid, md5('qa99x:b1')::uuid, 'c0000000-0000-4000-8000-000000000001',
         'ANSWERED', ARRAY['WAIT_FOR_PRODUCTION', 'REDUCE_CARTONS'], 1, '[]'::jsonb, CURRENT_DATE + 20,
         'STANDARD_LEAD_TIME', md5('demo:user:editor')::uuid, NOW(), 'WAIT_FOR_PRODUCTION',
         md5('demo:user:editor')::uuid, NOW(), NULL),
-       (md5('qa99x:reduce')::uuid, md5('qa99x:o')::uuid, md5('qa99x:b1')::uuid, 'c0000000-0000-4000-8000-000000000001',
+       (md5('qa99x:reduce')::uuid, 'TT-20990102-0002', md5('qa99x:o')::uuid, md5('qa99x:b1')::uuid, 'c0000000-0000-4000-8000-000000000001',
         'EXPIRED', ARRAY['WAIT_FOR_PRODUCTION', 'REDUCE_CARTONS'], 1, '[]'::jsonb, CURRENT_DATE + 20,
         'STANDARD_LEAD_TIME', md5('demo:user:editor')::uuid, NOW(), 'REDUCE_CARTONS', md5('demo:user:editor')::uuid,
         NOW(), 'DECIDED_WITHOUT_CARD'),
-       (md5('qa99x:other')::uuid, md5('qa99x:o2')::uuid, md5('qa99x:b1')::uuid,
+       (md5('qa99x:other')::uuid, 'TT-20990102-0003', md5('qa99x:o2')::uuid, md5('qa99x:b1')::uuid,
         'c0000000-0000-4000-8000-000000000001', 'ANSWERED', ARRAY['WAIT_FOR_PRODUCTION'], 1, '[]'::jsonb,
         CURRENT_DATE + 20, 'STANDARD_LEAD_TIME', md5('demo:user:editor')::uuid, NOW(), 'WAIT_FOR_PRODUCTION',
         md5('demo:user:editor')::uuid, NOW(), NULL);

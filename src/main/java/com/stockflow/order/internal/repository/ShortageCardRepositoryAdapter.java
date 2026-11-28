@@ -37,18 +37,27 @@ class ShortageCardRepositoryAdapter implements ShortageCardRepository {
 
     private static final TypeReference<List<ShortageCards.Option>> OPTIONS = new TypeReference<>() { };
 
+    private static final java.time.format.DateTimeFormatter DAY = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd");
+
     private static final String COLUMNS = """
-            c.id, c.order_id, c.delivery_batch_id, c.customer_id, c.status, CAST(c.amounts AS TEXT),
+            c.id, c.code, c.order_id, c.delivery_batch_id, c.customer_id, c.status, CAST(c.amounts AS TEXT),
             c.expected_delivery_date, c.expected_date_source, c.sales_note, c.sent_by, c.sent_at, c.chosen_option,
             c.chosen_by, c.chosen_at, c.customer_note, c.execution_started_at, c.executed_by, c.executed_at,
             c.ended_reason, c.superseded_by, c.chat_message_id, c.version""";
 
     private final EntityManager entityManager;
     private final ObjectMapper json;
+    private final ShortageCardCodeSequence codes;
 
-    ShortageCardRepositoryAdapter(EntityManager entityManager, ObjectMapper json) {
+    ShortageCardRepositoryAdapter(EntityManager entityManager, ObjectMapper json, ShortageCardCodeSequence codes) {
         this.entityManager = entityManager;
         this.json = json;
+        this.codes = codes;
+    }
+
+    @Override
+    public String nextCode(LocalDate day) {
+        return "TT-%s-%04d".formatted(DAY.format(day), codes.nextFor(day));
     }
 
     @Override
@@ -99,13 +108,13 @@ class ShortageCardRepositoryAdapter implements ShortageCardRepository {
     private void insert(ShortageCard c) {
         String options = c.options().stream().map(o -> o.option().name()).collect(Collectors.joining(",", "{", "}"));
         entityManager.createNativeQuery("""
-                        INSERT INTO ordering.shortage_card (id, order_id, delivery_batch_id, customer_id, status,
+                        INSERT INTO ordering.shortage_card (id, code, order_id, delivery_batch_id, customer_id, status,
                             options_offered, missing_cartons, amounts, expected_delivery_date, expected_date_source,
                             sales_note, sent_by, sent_at)
-                        VALUES (:id, :order, :batch, :customer, :status, CAST(:options AS VARCHAR[]), :missing,
+                        VALUES (:id, :code, :order, :batch, :customer, :status, CAST(:options AS VARCHAR[]), :missing,
                                 CAST(:amounts AS JSONB), CAST(:expectedDate AS DATE), CAST(:expectedSource AS VARCHAR),
                                 CAST(:note AS VARCHAR), :sentBy, :sentAt)""")
-                .setParameter("id", c.id()).setParameter("order", c.orderId())
+                .setParameter("id", c.id()).setParameter("code", c.code()).setParameter("order", c.orderId())
                 .setParameter("batch", c.deliveryBatchId()).setParameter("customer", c.customerId())
                 .setParameter("status", c.status().name()).setParameter("options", options)
                 .setParameter("missing", c.missingCartons()).setParameter("amounts", write(c.options()))
@@ -189,14 +198,14 @@ class ShortageCardRepositoryAdapter implements ShortageCardRepository {
                     (UUID) l[2], (String) l[3], (String) l[4], ((Number) l[5]).intValue(), ((Number) l[6]).intValue(),
                     ((Number) l[7]).intValue(), ((Number) l[8]).intValue()));
         }
-        return rows.stream().map(r -> new ShortageCard((UUID) r[0], (UUID) r[1], (UUID) r[2], (UUID) r[3],
-                ShortageCardStatus.valueOf((String) r[4]), lines.getOrDefault((UUID) r[0], List.of()),
-                read((String) r[5]), date(r[6]),
-                r[7] == null ? null : ShortageCard.DateSource.valueOf((String) r[7]), (String) r[8], (UUID) r[9],
-                instant(r[10]), r[11] == null ? null : ShortageOption.valueOf((String) r[11]), (UUID) r[12],
-                instant(r[13]), (String) r[14], instant(r[15]), (UUID) r[16], instant(r[17]),
-                r[18] == null ? null : ShortageCardEnd.valueOf((String) r[18]), (UUID) r[19], (UUID) r[20],
-                ((Number) r[21]).longValue())).toList();
+        return rows.stream().map(r -> new ShortageCard((UUID) r[0], (String) r[1], (UUID) r[2], (UUID) r[3],
+                (UUID) r[4], ShortageCardStatus.valueOf((String) r[5]), lines.getOrDefault((UUID) r[0], List.of()),
+                read((String) r[6]), date(r[7]),
+                r[8] == null ? null : ShortageCard.DateSource.valueOf((String) r[8]), (String) r[9], (UUID) r[10],
+                instant(r[11]), r[12] == null ? null : ShortageOption.valueOf((String) r[12]), (UUID) r[13],
+                instant(r[14]), (String) r[15], instant(r[16]), (UUID) r[17], instant(r[18]),
+                r[19] == null ? null : ShortageCardEnd.valueOf((String) r[19]), (UUID) r[20], (UUID) r[21],
+                ((Number) r[22]).longValue())).toList();
     }
 
     private String write(List<ShortageCards.Option> options) {

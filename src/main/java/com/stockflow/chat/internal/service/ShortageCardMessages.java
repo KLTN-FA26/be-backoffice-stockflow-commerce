@@ -63,6 +63,7 @@ public class ShortageCardMessages {
     public ObjectNode payload(ShortageCards.Card card) {
         ObjectNode payload = json.createObjectNode();
         payload.put("cardId", card.cardId().toString());
+        payload.put("code", card.code());
         payload.put("orderId", card.orderId().toString());
         payload.put("orderNumber", card.orderNumber());
         payload.put("status", card.status().name());

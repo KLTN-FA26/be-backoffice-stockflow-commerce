@@ -17,12 +17,13 @@ import java.util.UUID;
  * A shortage choice card as the portal and the back office read it (kltn-docs 17 §4.14). Nothing internal: no LPN, bin,
  * hold reason or internal note. The same shape as the card's chat payload, so the three screens draw one thing.
  *
+ * @param code    the card's short code "TT-yyyyMMdd-NNNN" (UNH-CODE-1128), to show instead of its id
  * @param version the version a choice must name; a stale one is refused 409
  */
 @Schema(name = "ShortageCard")
-public record ShortageCardResponse(UUID cardId, UUID orderId, String orderNumber, ShortageCardStatus status,
-                                   long version, Batch batch, int missingCartons, List<Line> lines,
-                                   List<Option> options, String salesNote, Instant sentAt, Chosen chosen,
+public record ShortageCardResponse(UUID cardId, String code, UUID orderId, String orderNumber,
+                                   ShortageCardStatus status, long version, Batch batch, int missingCartons,
+                                   List<Line> lines, List<Option> options, String salesNote, Instant sentAt, Chosen chosen,
                                    Instant executedAt, boolean executionStarted, ShortageCardEnd endedReason) {
 
     /** The batch the card is about: its window in force; {@code moved} when Sales moved it since signing. */
@@ -44,7 +45,7 @@ public record ShortageCardResponse(UUID cardId, UUID orderId, String orderNumber
     }
 
     public static ShortageCardResponse of(ShortageCards.Card c) {
-        return new ShortageCardResponse(c.cardId(), c.orderId(), c.orderNumber(), c.status(), c.version(),
+        return new ShortageCardResponse(c.cardId(), c.code(), c.orderId(), c.orderNumber(), c.status(), c.version(),
                 new Batch(c.batch().seq(), c.batch().windowFrom(), c.batch().windowTo(), c.batch().moved()),
                 c.missingCartons(), c.lines().stream().map(l -> new Line(l.sku(), l.skuName(), l.batchCartons(),
                         l.availableCartons(), l.missingCartons(), l.unitsPerCarton())).toList(),

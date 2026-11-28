@@ -74,12 +74,14 @@ public class DeliveryBatchService {
      * One window move (BR-28), as the history shows it. {@code changedByName} is who moved it, by name (17 §5.2: the
      * history names the person - the staff's view; the customer's carries none). The evidence is one of a file
      * ({@code evidenceFileName}), a chat message ({@code evidenceMessageId}) and the shortage card whose wait option the
-     * customer chose ({@code evidenceShortageCardId}, 17 §4.14 step 58, D48 - shown as "Thẻ thiếu thùng").
+     * customer chose ({@code evidenceShortageCardId}, 17 §4.14 step 58, D48 - shown as "Thẻ thiếu thùng" with its code
+     * {@code evidenceShortageCardCode}, UNH-CODE-1128).
      */
     public record WindowChangeView(UUID id, LocalDate oldStart, LocalDate oldEnd, LocalDate newStart, LocalDate newEnd,
                                    WindowChangeReason reason, String note, String evidenceFileName,
-                                   UUID evidenceMessageId, UUID evidenceShortageCardId, UUID changedBy,
-                                   String changedByName, Instant changedAt) {
+                                   UUID evidenceMessageId, UUID evidenceShortageCardId,
+                                   String evidenceShortageCardCode, UUID changedBy, String changedByName,
+                                   Instant changedAt) {
     }
 
     /**
@@ -193,8 +195,9 @@ public class DeliveryBatchService {
         if (units > 0 && delivered >= units) {
             return BatchState.DELIVERED;
         }
+        // D52 (17 §4.14 step 58): a batch "Giảm số thùng" left with no carton is closed - it carries nothing any more.
         boolean closed = order.status() == OrderStatus.CANCELLED || order.status() == OrderStatus.CLOSED
-                || order.status() == OrderStatus.COMPLETED;
+                || order.status() == OrderStatus.COMPLETED || units == 0 && handedOver == 0;
         if (closed) {
             return BatchState.CLOSED;
         }
@@ -447,9 +450,8 @@ public class DeliveryBatchService {
         records.recordWindowChange(order.id().value(), new DeliveryBatchRecords.WindowChange(Identifiers.newId(),
                 batch.id(), oldStart, oldEnd, change.windowStart(), change.windowEnd(), change.reason(),
                 change.note().strip(), evidence == null ? null : evidence.key(),
-                evidence == null ? null : evidence.originalName(), change.evidenceMessageId(), shortageCardId,
-                user.userId(),
-                clock.instant()));
+                evidence == null ? null : evidence.originalName(), change.evidenceMessageId(), shortageCardId, null,
+                user.userId(), clock.instant()));
         log.info("Order {}: delivery batch {} moved from {}..{} to {}..{} ({})", order.orderNumber(), batch.seq(),
                 oldStart, oldEnd, change.windowStart(), change.windowEnd(), change.reason());
         // 17 §4.5: a draft production order of the batch takes the new default needed-by date (BR-26); one already
@@ -596,7 +598,8 @@ public class DeliveryBatchService {
 
     private static WindowChangeView view(DeliveryBatchRecords.WindowChange c, Map<UUID, String> movers) {
         return new WindowChangeView(c.id(), c.oldStart(), c.oldEnd(), c.newStart(), c.newEnd(), c.reason(), c.note(),
-                c.evidenceFileName(), c.evidenceMessageId(), c.evidenceShortageCardId(), c.changedBy(),
+                c.evidenceFileName(), c.evidenceMessageId(), c.evidenceShortageCardId(), c.evidenceShortageCardCode(),
+                c.changedBy(),
                 c.changedBy() == null ? null : movers.get(c.changedBy()), c.changedAt());
     }
 }

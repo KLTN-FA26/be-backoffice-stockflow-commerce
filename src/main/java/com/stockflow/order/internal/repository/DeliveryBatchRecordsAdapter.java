@@ -115,15 +115,17 @@ class DeliveryBatchRecordsAdapter implements DeliveryBatchRecords {
     public List<WindowChange> windowChangesOf(UUID orderId) {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT id, delivery_batch_id, old_window_start, old_window_end, new_window_start, new_window_end,
-                               reason_code, note, evidence_file_key, evidence_file_name, evidence_message_id,
-                               changed_by, changed_at, evidence_shortage_card_id
-                          FROM ordering.delivery_batch_window_change WHERE order_id = :order
-                         ORDER BY changed_at, id""")
+                        SELECT w.id, w.delivery_batch_id, w.old_window_start, w.old_window_end, w.new_window_start,
+                               w.new_window_end, w.reason_code, w.note, w.evidence_file_key, w.evidence_file_name,
+                               w.evidence_message_id, w.changed_by, w.changed_at, w.evidence_shortage_card_id, c.code
+                          FROM ordering.delivery_batch_window_change w
+                          LEFT JOIN ordering.shortage_card c ON c.id = w.evidence_shortage_card_id
+                         WHERE w.order_id = :order
+                         ORDER BY w.changed_at, w.id""")
                 .setParameter("order", orderId).getResultList();
         return rows.stream().map(r -> new WindowChange((UUID) r[0], (UUID) r[1], date(r[2]), date(r[3]), date(r[4]),
                 date(r[5]), WindowChangeReason.valueOf((String) r[6]), (String) r[7], (String) r[8], (String) r[9],
-                (UUID) r[10], (UUID) r[13], (UUID) r[11], instant(r[12]))).toList();
+                (UUID) r[10], (UUID) r[13], (String) r[14], (UUID) r[11], instant(r[12]))).toList();
     }
 
     @Override

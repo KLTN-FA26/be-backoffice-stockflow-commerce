@@ -110,7 +110,8 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 entityManager.refresh(saved);
             }
         }
-        return restore(saved, contract.schedule(), contract.plan());
+        return restore(saved, contract.signedSchedule(), contract.plan())
+                .restoreDroppedCartons(contract.droppedCartons());
     }
 
     @Override
@@ -130,7 +131,7 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
         Map<Integer, UUID> batchIds = new HashMap<>();
         List<MapSqlParameterSource> batches = new ArrayList<>();
         List<MapSqlParameterSource> lines = new ArrayList<>();
-        for (DeliveryBatch batch : contract.schedule()) {
+        for (DeliveryBatch batch : contract.signedSchedule()) {
             batchIds.put(batch.seq(), batch.id());
             batches.add(new MapSqlParameterSource()
                     .addValue("id", batch.id())
@@ -173,7 +174,7 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                 installments.toArray(MapSqlParameterSource[]::new));
     }
 
-    /** The contracts with their schedules and plans: three queries, whatever the number of contracts. */
+    /** The contracts with their schedules, plans and cartons dropped (D45): four queries, whatever their number. */
     private List<SalesContract> restore(List<SalesContractJpaEntity> entities) {
         if (entities.isEmpty()) {
             return List.of();
@@ -219,8 +220,26 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
                             row.getBigDecimal("percent"), new Money(row.getBigDecimal("amount"), Money.VND), due,
                             batch));
         });
+        // D45 (17 §4.14 step 58): the cartons "Giảm số thùng" dropped from the signed batches - the missing cartons of
+        // each EXECUTED card whose customer chose REDUCE_CARTONS. Only a signed contract has a released batch to drop
+        // from; a draft has none.
+        Map<UUID, Map<UUID, Integer>> dropped = new HashMap<>();
+        named.query("""
+                SELECT c.delivery_batch_id, l.order_line_id, SUM(l.missing_cartons) AS cartons
+                  FROM ordering.shortage_card c
+                  JOIN ordering.shortage_card_line l ON l.card_id = c.id
+                  JOIN ordering.delivery_batch b ON b.id = c.delivery_batch_id
+                 WHERE b.contract_id IN (:ids) AND c.status = 'EXECUTED' AND c.chosen_option = 'REDUCE_CARTONS'
+                 GROUP BY c.delivery_batch_id, l.order_line_id""", of, row -> {
+            dropped.computeIfAbsent(row.getObject("delivery_batch_id", UUID.class), k -> new HashMap<>())
+                    .put(row.getObject("order_line_id", UUID.class), row.getInt("cartons"));
+        });
         return entities.stream().map(entity -> restore(entity, batchesByContract.getOrDefault(entity.getId(),
-                List.of()), planByContract.getOrDefault(entity.getId(), List.of()))).toList();
+                List.of()), planByContract.getOrDefault(entity.getId(), List.of())).restoreDroppedCartons(
+                batchesByContract.getOrDefault(entity.getId(), List.of()).stream()
+                        .filter(batch -> dropped.containsKey(batch.id()))
+                        .collect(java.util.stream.Collectors.toMap(DeliveryBatch::id, batch -> dropped.get(batch.id())))))
+                .toList();
     }
 
     private static SalesContract restore(SalesContractJpaEntity e, List<DeliveryBatch> schedule,

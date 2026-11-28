@@ -8,6 +8,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -47,6 +48,8 @@ public final class SalesContract {
      */
     private Integer returnWindowDays;
     private List<DeliveryBatch> schedule;
+    /** D45: cartons dropped from the signed batches, per batch id and order line; the signed schedule keeps them. */
+    private Map<UUID, Map<UUID, Integer>> droppedCartons = Map.of();
     private List<PlannedInstallment> plan;
     private Instant sentAt;
     private UUID sentBy;
@@ -427,7 +430,37 @@ public final class SalesContract {
     public int freeSampleRounds() { return freeSampleRounds; }
     /** The complaint period agreed, in days from each delivery; null: the configured default. */
     public Integer returnWindowDays() { return returnWindowDays; }
-    public List<DeliveryBatch> schedule() { return schedule; }
+    /**
+     * The delivery schedule in force: the signed one less the cartons dropped from its batches by a "Giảm số thùng"
+     * carried out (kltn-docs 17 §4.14 step 58, D45, D52) - what every batch still carries and what release, holds,
+     * production orders, delay alerts and the schedule work by. A line with nothing left is gone from its batch; a batch
+     * with nothing left carries no line (D52: it is closed). The same as {@link #signedSchedule} for a contract nothing
+     * was dropped from, which is every draft.
+     */
+    public List<DeliveryBatch> schedule() {
+        if (droppedCartons.isEmpty()) {
+            return schedule;
+        }
+        return schedule.stream().map(batch -> batch.less(droppedCartons.getOrDefault(batch.id(), Map.of()))).toList();
+    }
+
+    /**
+     * The schedule as signed (14 BR-14): never changed, whatever was dropped since - what the contract, its paper and its
+     * terms show, and what a draft is written with.
+     */
+    public List<DeliveryBatch> signedSchedule() { return schedule; }
+
+    /**
+     * Restores the cartons dropped from the signed batches by "Giảm số thùng" carried out (D45): per batch id, per order
+     * line, the cartons. Read with the contract ({@code ordering.shortage_card} lines of EXECUTED reduce cards).
+     */
+    public SalesContract restoreDroppedCartons(Map<UUID, Map<UUID, Integer>> dropped) {
+        this.droppedCartons = dropped == null ? Map.of() : Map.copyOf(dropped);
+        return this;
+    }
+
+    /** Per batch id and order line, the cartons dropped from the signed schedule (D45); empty for none. */
+    public Map<UUID, Map<UUID, Integer>> droppedCartons() { return droppedCartons; }
     public List<PlannedInstallment> plan() { return plan; }
     public Instant sentAt() { return sentAt; }
     public UUID sentBy() { return sentBy; }

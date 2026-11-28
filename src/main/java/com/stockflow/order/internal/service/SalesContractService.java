@@ -225,7 +225,7 @@ class SalesContractService implements SalesContracts {
         contract.requireRevisable(order);
         requireVersion(contract, version);
         Draft given = draft == null ? new Draft(null, null, null) : draft;
-        List<DeliveryBatch> schedule = given.deliverySchedule() == null ? contract.schedule()
+        List<DeliveryBatch> schedule = given.deliverySchedule() == null ? contract.signedSchedule()
                 : ContractTerms.schedule(order, batches(given.deliverySchedule()));
         CreditTerms credit = customers.creditTerms(order.customerId());
         List<PlannedInstallment> plan = given.paymentPlan() == null
@@ -488,8 +488,8 @@ class SalesContractService implements SalesContracts {
         SalesContract contract = live(order);
         contract.requireRevisable(order);
         CreditTerms credit = customers.creditTerms(order.customerId());
-        List<PlannedInstallment> plan = ContractTerms.plan(order, contract.schedule().size(),
-                ContractTerms.suggestTied(order, contract.schedule(), contract.plan().stream()
+        List<PlannedInstallment> plan = ContractTerms.plan(order, contract.signedSchedule().size(),
+                ContractTerms.suggestTied(order, contract.signedSchedule(), contract.plan().stream()
                         .map(SalesContractService::entry).toList()),
                 creditApproved(credit), credit == null ? null : credit.creditTermDays());
         return new PlanSuggestion(contract.id(), contract.version(), order.total().amount(),
@@ -874,7 +874,7 @@ class SalesContractService implements SalesContracts {
     /** The signed plan as payment opens it: each row, and the delivery batch it is tied to. */
     private static com.stockflow.payment.api.ContractInstallments installmentsOf(Order order, SalesContract contract) {
         Map<Integer, UUID> batches = new HashMap<>();
-        contract.schedule().forEach(batch -> batches.put(batch.seq(), batch.id()));
+        contract.signedSchedule().forEach(batch -> batches.put(batch.seq(), batch.id()));
         return new com.stockflow.payment.api.ContractInstallments(contract.id(), contract.contractNumber(),
                 order.id().value(), order.orderNumber().value(), order.customerId(),
                 order.total().currency().getCurrencyCode(), contract.signedOn(), contract.signedAt(),
@@ -892,14 +892,14 @@ class SalesContractService implements SalesContracts {
     private ContractView view(SalesContract contract, Order order, CreditWarning warning) {
         Map<UUID, OrderLine> lines = new HashMap<>();
         order.lines().forEach(line -> lines.put(line.id(), line));
-        Map<Integer, Money> values = ContractTerms.batchValues(order, contract.schedule());
+        Map<Integer, Money> values = ContractTerms.batchValues(order, contract.signedSchedule());
         // R5-3: the design behind each SKU, for the whole schedule at once.
         Map<String, com.stockflow.design.api.SkuDesign> designs = skuDesigns.ofSkus(order.lines().stream()
                 .map(line -> line.sku().code()).distinct().toList());
         // What each SKU is called, for the whole schedule at once: a schedule line reads as more than a code.
         Map<String, LineNames.Names> names = lineNames.of(order.lines().stream().map(line -> line.sku().code())
                 .toList());
-        List<BatchView> schedule = contract.schedule().stream().map(batch -> new BatchView(batch.seq(),
+        List<BatchView> schedule = contract.signedSchedule().stream().map(batch -> new BatchView(batch.seq(),
                 batch.windowStart(), batch.windowEnd(), values.get(batch.seq()).amount(), batch.lines().stream()
                 .map(line -> {
                     OrderLine orderLine = lines.get(line.orderLineId());
@@ -952,7 +952,7 @@ class SalesContractService implements SalesContracts {
         }
         Map<UUID, com.stockflow.order.internal.domain.DeliveryBatchRecords.WindowChange> latest = new HashMap<>();
         batchRecords.windowChangesOf(contract.orderId()).forEach(change -> latest.put(change.batchId(), change));
-        for (DeliveryBatch batch : contract.schedule()) {
+        for (DeliveryBatch batch : contract.signedSchedule()) {
             var moved = latest.get(batch.id());
             if (moved != null && batch.windowStart() != null && (!batch.windowStart().equals(moved.newStart())
                     || !Objects.equals(batch.windowEnd(), moved.newEnd()))) {

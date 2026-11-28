@@ -10,9 +10,12 @@ import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.ShortageCards;
 import com.stockflow.order.api.ShortageOption;
+import com.stockflow.order.internal.domain.DeliveryBatch;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.SalesContract;
+import com.stockflow.order.internal.domain.SalesContractRepository;
 import com.stockflow.order.internal.domain.ShortageCard;
 import com.stockflow.order.internal.domain.ShortageCardRepository;
 import com.stockflow.order.spi.ShortPickLines;
@@ -26,7 +29,11 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.ResourceBundle;
 import java.util.UUID;
 
@@ -47,8 +54,14 @@ import java.util.UUID;
  *       ({@link ShortageCardService#remainderClosed}).</li>
  *   <li><b>Cancel</b>: the short lines are given up, then the staff cancellation with reason {@code OUT_OF_STOCK} and the
  *       fee as Sales agreed it (17 §4.8 step 30, fee rule unchanged). Card EXECUTED.</li>
+ *   <li><b>Reduce the cartons</b> ("Giảm số thùng", D45, D51, D52; BE-3): the short pick lines are given up, exactly the
+ *       missing cartons of the card's batch come off the order's lines and that batch (the schedule in force; the signed
+ *       contract keeps its cartons, no annex), the installments owe less by their value with VAT and no fee (15 §4.6
+ *       step 19) - surplus refundable - and the INVENTORY hold is lifted; the batch goes on with what it has. A batch left
+ *       with nothing is closed like a closure of the rest for that batch (D52): later batches are released as after a
+ *       batch handed over, the last one ends the order by the closure's rule, and the open production orders of that
+ *       batch are stopped as a closure stops them. Card EXECUTED.</li>
  * </ul>
- * "Reduce the cartons" is carried out elsewhere (BE-3).
  *
  * <p><b>Locks</b>, every step: the order's pick tasks first ({@link ShortPickLines#lockTasksOf}), then the order row, then
  * the card, then whatever the inner operation takes (SKU advisory locks, cartons) - pick before order, as a picker's
@@ -80,12 +93,15 @@ public class ShortageCardExecutionService {
     private final PartialShipments partialShipments;
     private final DeliveryBatchService batches;
     private final ObjectProvider<ShortPickLines> shortLines;
+    private final SalesContractRepository contracts;
+    private final OrderEventPublisher events;
     private final Clock clock;
 
     ShortageCardExecutionService(OrderRepository orders, ShortageCardRepository cards,
                                  ShortageCardService shortageCards, OrderServiceImpl orderService,
                                  PartialShipments partialShipments, DeliveryBatchService batches,
-                                 ObjectProvider<ShortPickLines> shortLines, Clock clock) {
+                                 ObjectProvider<ShortPickLines> shortLines, SalesContractRepository contracts,
+                                 OrderEventPublisher events, Clock clock) {
         this.orders = orders;
         this.cards = cards;
         this.shortageCards = shortageCards;
@@ -93,6 +109,8 @@ public class ShortageCardExecutionService {
         this.partialShipments = partialShipments;
         this.batches = batches;
         this.shortLines = shortLines;
+        this.contracts = contracts;
+        this.events = events;
         this.clock = clock;
     }
 
@@ -208,6 +226,65 @@ public class ShortageCardExecutionService {
         return shortageCards.card(cardId).orElseThrow();
     }
 
+    /**
+     * Reduce the cartons - "Giảm số thùng" (17 §4.14 step 58, D45, D51, D52; 15 §4.6 step 19): drop exactly the missing
+     * cartons of the card's batch, no annex, no fee. One transaction: a refusal of any step changes nothing.
+     *
+     * <ol>
+     *   <li>The cartons short now must be the card's: the customer agreed to drop those (step 57 - the card is the
+     *       evidence); short of more or fewer since, Sales send a new card (step 60) - refused
+     *       {@code SHORTAGE_CARD_STATE_CONFLICT}.</li>
+     *   <li>The short pick lines are given up, their holds released ({@link ShortPickLines#cancelShortLines}).</li>
+     *   <li>The order's lines lose those cartons and the installments owe less
+     *       ({@link OrderServiceImpl#dropShortCartons}); the batch carries fewer once the card is EXECUTED (the schedule
+     *       in force reads the card).</li>
+     *   <li>The INVENTORY hold is lifted; the order goes on with what it has - to labelling, or, the last batch emptied,
+     *       by its shipments (17 §4.8 step 33).</li>
+     *   <li>D52, a batch emptied with later ones still to come: the order waits between batches
+     *       ({@link OrderServiceImpl#batchEmptied}) and the next is released as usual; either way the open production
+     *       orders of that batch are stopped after commit ({@link ShortageBatchEmptied}).</li>
+     * </ol>
+     *
+     * @throws BusinessException {@code SHORTAGE_CARD_NOT_FOUND}, {@code SHORTAGE_CARD_STATE_CONFLICT},
+     *         {@code SHORTAGE_OPTION_NOT_AVAILABLE} (also: nothing would be left to deliver and nothing was ever handed
+     *         over - no rule of the docs ends an order so), or the inner operation's refusal - nothing changes
+     */
+    public ShortageCards.Card reduceCartons(UUID orderId, UUID cardId, Long version, String note, UUID by) {
+        Locked locked = lock(orderId, cardId, version, ShortageOption.REDUCE_CARTONS);
+        requireHeldForStock(locked.order());
+        ShortageCard card = locked.card();
+        requireSameShortage(orderId, card);
+        DeliveryBatch batch = contracts.findLiveByOrderId(orderId).map(SalesContract::schedule).orElse(List.of())
+                .stream().filter(b -> b.id().equals(card.deliveryBatchId())).findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.SHORTAGE_CARD_STATE_CONFLICT, ("Shortage card %s: "
+                        + "its batch is not in the order's schedule").formatted(card.code()))
+                        .localized("refusal.shortage.stateConflict"));
+        Map<UUID, Integer> units = new LinkedHashMap<>();
+        for (ShortageCard.Line line : card.lines()) {
+            if (batch.cartonsOf(line.orderLineId()) < line.missingCartons()) {
+                throw new BusinessException(ErrorCode.SHORTAGE_CARD_STATE_CONFLICT, ("Shortage card %s: batch %d "
+                        + "carries %d carton(s) of %s, not the %d missing").formatted(card.code(), batch.seq(),
+                        batch.cartonsOf(line.orderLineId()), line.sku(), line.missingCartons()))
+                        .localized("refusal.shortage.shortageChanged");
+            }
+            units.merge(line.orderLineId(), line.missingCartons() * line.unitsPerCarton(), Integer::sum);
+        }
+        int carried = batch.lines().stream().mapToInt(DeliveryBatch.Line::cartons).sum();
+        boolean emptied = carried == card.missingCartons();
+        String text = noteOf(card, note);
+        giveUpShortLines(orderId, by);
+        orderService.dropShortCartons(orderId, card.id(), card.deliveryBatchId(), units, emptied, text, by);
+        orderService.resolveHold(orderId, text, by, null);
+        ShortageCards.Card done = executed(card, orderId, by);
+        if (emptied) {
+            orderService.batchEmptied(orderId, text, by);
+            Order order = orders.findById(new OrderId(orderId)).orElseThrow();
+            events.publish(new ShortageBatchEmptied(orderId, order.orderNumber().value(), card.deliveryBatchId(),
+                    batch.seq(), card.code(), by));
+        }
+        return done;
+    }
+
     // ---- helpers ------------------------------------------------------------------------------------------------------
 
     private record Locked(Order order, ShortageCard card) {
@@ -258,6 +335,26 @@ public class ShortageCardExecutionService {
         }
     }
 
+    /**
+     * The cartons short now, per order line of the card's batch, are the card's (17 §4.14 steps 57, 60): what the customer
+     * agreed to is what is carried out. Read under the pick tasks' and the order's locks.
+     */
+    private void requireSameShortage(UUID orderId, ShortageCard card) {
+        ShortPickLines warehouse = shortLines.getIfAvailable();
+        if (warehouse == null) {
+            return;
+        }
+        Map<UUID, Integer> now = new HashMap<>();
+        warehouse.shortLinesOf(orderId).forEach(l -> now.merge(l.orderLineId(), l.missingCartons(), Integer::sum));
+        Map<UUID, Integer> carded = new HashMap<>();
+        card.lines().forEach(l -> carded.merge(l.orderLineId(), l.missingCartons(), Integer::sum));
+        if (!now.equals(carded)) {
+            throw new BusinessException(ErrorCode.SHORTAGE_CARD_STATE_CONFLICT, ("Shortage card %s shows %s carton(s) "
+                    + "missing per line, the warehouse is short of %s now - send a new card").formatted(card.code(),
+                    carded, now)).localized("refusal.shortage.shortageChanged");
+        }
+    }
+
     private void giveUpShortLines(UUID orderId, UUID by) {
         ShortPickLines warehouse = shortLines.getIfAvailable();
         if (warehouse != null) {
@@ -280,7 +377,7 @@ public class ShortageCardExecutionService {
      */
     static String noteOf(ShortageCard card, String salesNote) {
         ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
-        String note = texts.getString("shortage.execution.note").formatted(card.id());
+        String note = texts.getString("shortage.execution.note").formatted(card.code());
         String own = salesNote == null || salesNote.isBlank() ? null : salesNote.strip();
         return own == null ? note : note + ". " + own;
     }

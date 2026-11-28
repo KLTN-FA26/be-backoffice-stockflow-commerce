@@ -27,11 +27,14 @@ public interface DeliveryBatchRecords {
     /**
      * A window moved by Sales (BR-28): exactly one of the evidence file, the chat message and the shortage card whose
      * wait option the customer chose (17 §4.14 step 58, D48) is set.
+     *
+     * @param evidenceShortageCardCode that card's short code (UNH-CODE-1128), read with the change; null when written or
+     *                                 when the evidence is not a card
      */
     record WindowChange(UUID id, UUID batchId, LocalDate oldStart, LocalDate oldEnd, LocalDate newStart,
                         LocalDate newEnd, WindowChangeReason reason, String note, String evidenceFileKey,
-                        String evidenceFileName, UUID evidenceMessageId, UUID evidenceShortageCardId, UUID changedBy,
-                        Instant changedAt) {
+                        String evidenceFileName, UUID evidenceMessageId, UUID evidenceShortageCardId,
+                        String evidenceShortageCardCode, UUID changedBy, Instant changedAt) {
     }
 
     List<Hold> holdsOf(UUID orderId);
