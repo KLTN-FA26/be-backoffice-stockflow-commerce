@@ -30,7 +30,7 @@ instalments. It never prints a password or a token.
 | `--spare-cartons N` | Spare cartons per D23 SKU for the X01/X02 "top-up" demos (default `1`, `0` = none; `1` or `2` is enough). See "Spare cartons" below. |
 | `--d14-window-in-days N` | The D14 order's delivery window starts `N` days after the run date (default `1` = tomorrow). Run the script the day before the demo, or raise `N`. |
 | `--only carriers\|vehicles\|staging\|orders` | Run one part only (repeatable). `--only-order D14\|D23-A\|D23-B` narrows `orders`. |
-| `--actor ROLE=USERNAME` | Who acts in a role: `sales`, `accountant`, `coordinator`, `warehouse`, `admin` (default: `SF_DEMO_USER`). |
+| `--actor ROLE=USERNAME` | Who acts in a role: `sales`, `salesmanager`, `accountant`, `coordinator`, `warehouse`, `admin` (default: `SF_DEMO_USER`; `sales` defaults to each customer's own Sales owner, see Accounts). |
 | `--customer-user CODE=USERNAME` | The sign-in of a customer when it cannot be looked up (e.g. `caphemoc=kh.caphemoc`). |
 
 Environment: `SF_DEMO_USER`, `SF_DEMO_PASSWORD` (required). `SF_DEMO_PASSWORD_<USERNAME>` (upper case, other characters
@@ -80,7 +80,8 @@ cancelled by this script, never an order of the demo.
 
 The steps per order, each one only if the order is not past it yet:
 
-1. quote (Sales) -> sent -> **accepted by the customer's own login** (the API refuses staff here) -> converted to an order
+1. quote (the customer's Sales owner) -> sent (when its prices are below the threshold of 14 BR-10 or have no reference, the server holds it as
+   `QUOTE_PRICE_REVIEW_PENDING` and the Sales Manager approves the prices, `POST /quotes/{id}/price-approval`, which sends it) -> **accepted by the customer's own login** (the API refuses staff here) -> converted to an order
 2. contract drawn up (one delivery batch, payment plan) -> sent -> signed (a one-page PDF is attached as the signed file)
 3. payment receipt for the `ON_SIGNING` instalment (Accounting) -> order `CONFIRMED`
 4. shipping warehouse chosen (Sales) -> stock held there (none is free, so the cartons are short)
@@ -98,7 +99,12 @@ Note: the backoffice FE of 05/11 does not know `AWAITING_STOCK` and shows no Rel
 ## Accounts
 
 Used by the script (all seeded demo accounts; the standard seed gives them the same password): the account of
-`SF_DEMO_USER` for every staff role, and the customers' own accounts
+`SF_DEMO_USER` for every staff role except Sales, which is **the Sales owner of each customer** (looked up like the
+customers' accounts; `sales1` for caphemoc and trasuamay, `sales2` for banhmiviet in the local seed) so that the chat
+conversation about the quote and the contract belongs to the salesperson the customer sees as "Sales phụ trách" and who
+sends the payment card; a customer with no active owner falls back to `SF_DEMO_USER`. The price approval is made by
+`SF_DEMO_USER` (it must hold `sales-quote-price-approvals:APPROVE` and must not be the Sales account); pass
+`--actor salesmanager=truongkd` to make it the Sales Manager, and the customers' own accounts
 (`kh.caphemoc`, `kh.trasuamay`, `kh.banhmiviet`; looked up through `GET /identity/users/{id}`). The login endpoint is
 limited to 5 a minute per IP; the script waits when it hits the limit.
 
@@ -121,3 +127,13 @@ There is no separate *Dispatch Staff* role in the backend: load planning and han
 
 Against a local backend (`develop` df34c338, standard test seed, security on): first run creates everything (about 25 s),
 a second run makes 0 changes, a dry run lists 0 todo, and a run interrupted at the approval resumes from there.
+
+Again on 28/11 (`develop` 5ce4a59f, local stack): a quote priced outside the 14 BR-10 rule is held for review and the run
+now approves it (`SF_DEMO_USER` or `--actor salesmanager=truongkd`) instead of stopping at `QUOTE_PRICE_REVIEW_PENDING`;
+the quote, contract and payment card go to the customer's Sales owner, and a conversation left with another account
+(e.g. one opened before the customer had an owner) is handed over to them. Two orders that need the same SKU at the same
+time compete for the cartons of a production order (oldest order first, 17 sec. 4.2 step 3): when the new order is
+still short after its production order was received and put away, the script draws up another production order for the batch
+(the server fills it with exactly what the batch still lacks, 17 sec. 4.3 step 6; same producer choice, receipt at the shipping
+warehouse), receives it like the first one and continues; at most 3 extra ones per run, then the order is reported BLOCKED.
+It looks first, so a re-run does not draw another one while a production order is still to be received.
