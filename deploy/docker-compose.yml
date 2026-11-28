@@ -96,6 +96,11 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_POOL_MAX: ${DB_POOL_MAX:-10}
+      # Request threads, once requests run on platform threads (spring.threads.virtual.enabled false): Tomcat's
+      # default is 200, each with its own stack outside the heap, and this container has about 100 MB to spare.
+      # 50 is five times the database pool on a 2-core machine; a burst beyond it waits in Tomcat's accept queue
+      # instead of failing. Ignored while virtual threads are on.
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_THREADS_MAX:-50}
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       # The application validates its own tokens against the keys it publishes itself.
@@ -221,11 +226,17 @@ services:
       # the limit rather than the image's 75%: at 1.4 GB the remaining 25% is too little for
       # metaspace (Hibernate, Modulith and the AWS SDK load a lot of classes), the code cache and
       # thread stacks, and the container would be OOM-killed with the heap itself only half full.
+      # Flight Recorder runs all the time (about 1-2% CPU, a few tens of MB of native memory): the last 6 hours, at
+      # most 200 MB, so the next hang names the frame that blocked (jdk.VirtualThreadPinned, thread dumps, locks).
+      # Kept in /tmp, which the image's unprivileged user can always write: a path the JVM cannot write makes it
+      # refuse to start, and a rollback would inherit the same JAVA_OPTS. /tmp lives as long as the container, so
+      # read it before the container is recreated - deploy/README.md, "When the application hangs".
       JAVA_OPTS: >-
         -XX:MaxRAMPercentage=60.0
         -XX:MaxMetaspaceSize=256m
         -XX:ReservedCodeCacheSize=128m
         -XX:+ExitOnOutOfMemoryError
+        -XX:StartFlightRecording=name=continuous,settings=default,disk=true,maxage=6h,maxsize=200m,dumponexit=true,filename=/tmp/stockflow.jfr
         -Djava.security.egd=file:/dev/./urandom
         -Duser.timezone=UTC
     volumes:
