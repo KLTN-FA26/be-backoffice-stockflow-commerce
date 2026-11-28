@@ -167,6 +167,9 @@ public interface StockPackageRepository {
     /** When the carton came back opened on a return ({@link #markOpenedOnReturn}); empty when it never did. */
     Optional<Instant> returnOpenedAt(StockPackageId id);
 
+    /** {@link #returnOpenedAt} for many cartons in one query: those of them that came back opened, by id. */
+    Map<StockPackageId, Instant> returnOpenedAtOf(Collection<StockPackageId> ids);
+
     /** Whether the carton came back opened on a return ({@link #markOpenedOnReturn}). */
     boolean openedOnReturn(StockPackageId id);
 

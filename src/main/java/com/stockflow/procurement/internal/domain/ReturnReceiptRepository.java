@@ -34,6 +34,23 @@ public interface ReturnReceiptRepository {
     long unitsReceivedForReturn(UUID returnRequestId, String sku, UUID exceptLooseLine);
 
     /**
+     * Units of one SKU on one receipt of a return, cartons by their count and loose units together, as
+     * {@link #unitsReceivedForReturn} counts them.
+     */
+    record ReceiptUnits(UUID receiptId, GoodsReceiptStatus status, String sku, long units) {
+    }
+
+    /**
+     * Per receipt and SKU, the units on return request {@code returnRequestId}'s receipts not cancelled, receipt
+     * {@code exceptReceipt} left out (the one being shown, counted from the aggregate): one query for every SKU, what
+     * the receipt screen's progress and candidates are worked out from (WF-05 receiving progress).
+     */
+    java.util.List<ReceiptUnits> unitsOnOtherReceipts(UUID returnRequestId, UUID exceptReceipt);
+
+    /** The LPNs on this return request's CLOSED receipts: what of it came back so far. */
+    java.util.Set<String> lpnsReceivedForReturn(UUID returnRequestId);
+
+    /**
      * The draft receipt of this return request, if any ({@code uk_goods_receipts_return_request_draft}). A return may
      * come back in several parcels, each on a receipt of its own (WF-05 TH-3), one being counted at a time.
      */

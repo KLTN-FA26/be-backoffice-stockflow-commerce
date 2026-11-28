@@ -25,6 +25,7 @@ import com.stockflow.order.api.ReturnRequestLookup;
 import com.stockflow.order.api.ReturnRequestReference;
 import com.stockflow.procurement.internal.domain.GoodsReceiptRepository;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
+import com.stockflow.procurement.internal.domain.ReturnCartonEligibility;
 import com.stockflow.procurement.internal.domain.ReturnReceipt;
 import com.stockflow.procurement.internal.domain.ReturnReceiptRepository;
 import com.stockflow.procurement.internal.repository.GoodsReceiptPhotoJpaRepository;
@@ -144,9 +145,34 @@ public class ReturnReceiptService {
 
     /**
      * A carton the source carried (03 §4.2 step 11: what was scanned against what was shipped), {@code scanned} when
-     * it is on the receipt.
+     * it is on the receipt, {@code receivedEarlier} when it is on another confirmed receipt of the same shipment or
+     * return already - came back on an earlier trip or parcel, so not missing (WF-05 Q-11, TH-3).
      */
-    public record ExpectedCarton(String lpn, String sku, String lotNumber, int quantity, boolean scanned) {
+    public record ExpectedCarton(String lpn, String sku, String lotNumber, int quantity, boolean scanned,
+                                 boolean receivedEarlier) {
+    }
+
+    /**
+     * A return request's progress for one SKU it approved (WF-05 receiving progress): the return is received by units
+     * of a SKU, not by cartons - any of the source's cartons of that SKU may be the ones the customer sends back.
+     *
+     * @param confirmedReceivedQuantity units on the return's other CLOSED receipts: officially received
+     * @param currentReceiptQuantity    units on this receipt - counted on the draft, or confirmed on it once CLOSED; 0
+     *                                  when it is CANCELLED, whose units no longer take any of the approval
+     * @param remainingQuantity         what may still come back: the approval less the units on every receipt of the
+     *                                  return not cancelled, this one and any other draft included - the figure the scan
+     *                                  and the loose units are capped by; never below 0
+     */
+    public record ReturnProgress(String sku, int approvedQuantity, long confirmedReceivedQuantity,
+                                 long currentReceiptQuantity, long remainingQuantity) {
+    }
+
+    /**
+     * A carton of a return request's source as a candidate for its DRAFT receipt (WF-05 BE-22): whether it may come
+     * back and with how many units at most ({@code maxReceivableQuantity}). Advisory: the scan decides again.
+     */
+    public record CandidateCarton(String lpn, String sku, String lotNumber, int quantity, int maxReceivableQuantity,
+                                  ReturnCartonEligibility eligibility) {
     }
 
     /**
@@ -162,7 +188,8 @@ public class ReturnReceiptService {
                                     Instant closedAt, List<CartonView> cartons, List<ExpectedCarton> expectedCartons,
                                     long version, List<LooseLineView> looseLines,
                                     boolean managerConfirmationRequired, String receivedByName,
-                                    String confirmedByName, String warehouseCode, String warehouseName) {
+                                    String confirmedByName, String warehouseCode, String warehouseName,
+                                    List<ReturnProgress> returnProgress, List<CandidateCarton> candidateCartons) {
     }
 
     /**
@@ -337,22 +364,22 @@ public class ReturnReceiptService {
             }
             ReturnedCarton carton = cartonReturns.find(normal).orElseThrow(() -> new BusinessException(
                     ErrorCode.STOCK_PACKAGE_NOT_FOUND, "No stock package " + normal));
-            if (!"CONSUMED".equals(carton.status())) {
-                throw new BusinessException(ErrorCode.RETURN_CARTON_IN_WAREHOUSE, ("Carton %s is %s at %s; only a "
-                        + "carton that left the warehouse comes back").formatted(normal, carton.status(),
-                        carton.locationCode()), List.of(), Map.of("lpn", normal));
-            }
-            if (carton.returnOpenedAt() != null) {
-                // WF-05 Q-18: it came back opened before and stayed consumed - it is not taken back a second time.
-                throw new BusinessException(ErrorCode.RETURN_CARTON_IN_WAREHOUSE, ("Carton %s came back opened on an "
-                        + "earlier return receipt and was destroyed; it is not taken back again").formatted(normal),
-                        List.of(), Map.of("lpn", normal));
-            }
-            if (carton.customersGoods()) {
-                // WF-05 Q-4: its return refunded nothing - held for the customer here, or destroyed on their behalf.
-                throw new BusinessException(ErrorCode.RETURN_CARTON_IN_WAREHOUSE, ("Carton %s is the customer's, held "
-                        + "for them after a return that refunded nothing; it is not taken back on a receipt")
-                        .formatted(normal), List.of(), Map.of("lpn", normal));
+            // One rule with the screen's candidates (ReturnCartonEligibility), so what it offers is what is taken.
+            ReturnCartonEligibility refused = ReturnCartonEligibility.ofCarton(carton.status(),
+                    carton.returnOpenedAt(), carton.customersGoods());
+            if (refused != null) {
+                String why = switch (refused) {
+                    // WF-05 Q-18: it came back opened before and stayed consumed - it is not taken back a second time.
+                    case RETURNED_OPENED -> "Carton %s came back opened on an earlier return receipt and was destroyed; "
+                            .formatted(normal) + "it is not taken back again";
+                    // WF-05 Q-4: its return refunded nothing - held for the customer here, or destroyed on their behalf.
+                    case CUSTOMER_GOODS -> "Carton %s is the customer's, held for them after a return that refunded "
+                            .formatted(normal) + "nothing; it is not taken back on a receipt";
+                    default -> "Carton %s is %s at %s; only a carton that left the warehouse comes back"
+                            .formatted(normal, carton.status(), carton.locationCode());
+                };
+                throw new BusinessException(ErrorCode.RETURN_CARTON_IN_WAREHOUSE, why, List.of(),
+                        Map.of("lpn", normal, "reason", refused.name()));
             }
             if (receipt.returnRequestId() != null) {
                 requireClaimed(receipt, carton.sku(), normal,
@@ -734,19 +761,36 @@ public class ReturnReceiptService {
         String shipmentCode = null;
         List<ShippedCarton> expected;
         String rmaNumber = null;
+        Set<String> backEarlier;
+        List<ReturnProgress> progress = List.of();
+        List<CandidateCarton> candidates = List.of();
+        Set<String> scanned = receipt.cartons().stream().map(ReturnReceipt.Carton::lpn).collect(Collectors.toSet());
         if (receipt.shipmentId() != null) {
             Optional<ShippedCartons> shipment = shipments.ofShipment(receipt.shipmentId());
             shipmentCode = shipment.map(ShippedCartons::code).orElse(null);
             expected = shipment.map(ShippedCartons::cartons).orElse(List.of());
+            // WF-05 Q-11: a carrier's return may come back in several trips; a carton of an earlier trip is not missing.
+            backEarlier = receipts.lpnsReceivedForShipment(receipt.shipmentId());
         } else {
             Optional<ReturnRequestReference> request = returnRequests.find(receipt.returnRequestId());
             rmaNumber = request.map(ReturnRequestReference::rmaNumber).orElse(null);
+            List<ShippedCarton> source = requestCartons(request, receipt.orderId());
             // WF-05 BE-22: what to expect is the goods the return approved, not every carton of its shipment - the
             // screen listing them all invited taking another return's cartons.
-            expected = requestCartons(request, receipt.orderId()).stream()
+            expected = source.stream()
                     .filter(c -> request.map(r -> r.approvedOf(c.sku()) > 0).orElse(false)).toList();
+            backEarlier = receipts.lpnsReceivedForReturn(receipt.returnRequestId());
+            if (request.isPresent()) {
+                Map<String, long[]> units = unitsBySku(receipt);
+                progress = progressOf(receipt, request.get(), units);
+                if (receipt.status() == GoodsReceiptStatus.DRAFT) {
+                    candidates = candidatesOf(source, request.get(), units, receipt);
+                }
+            }
         }
-        Set<String> scanned = receipt.cartons().stream().map(ReturnReceipt.Carton::lpn).collect(Collectors.toSet());
+        // A carton on this receipt is "scanned", not "received earlier", even once this receipt is CLOSED.
+        Set<String> earlier = backEarlier.stream().map(StockPackageView::normalLpn)
+                .filter(lpn -> lpn != null && !scanned.contains(lpn)).collect(Collectors.toSet());
         // One read for every carton of the receipt (WF-05 Q-4): those whose stock-in this receipt's return reversed -
         // from the ledger, never from the carton's ownership now, which a later return of the same carton overwrites
         // (audit r3 RAD-5: the 01-VT of the first receipt would turn to "giữ hộ" when the carton was refused later).
@@ -776,13 +820,86 @@ public class ReturnReceiptService {
                         c.countedBy(), customers.contains(c.lpn()), nameIn(names, c.scannedBy()),
                         nameIn(names, c.countedBy()))).toList(),
                 expected.stream().map(c -> new ExpectedCarton(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
-                        scanned.contains(StockPackageView.normalLpn(c.lpn())))).toList(),
+                        scanned.contains(StockPackageView.normalLpn(c.lpn())),
+                        earlier.contains(StockPackageView.normalLpn(c.lpn())))).toList(),
                 receipt.version(),
                 receipt.looseLines().stream().map(l -> new LooseLineView(l.id(), l.sku(), l.lotNumber(), l.quantity(),
                         l.recordedBy(), l.photoId(), nameIn(names, l.recordedBy()))).toList(),
                 receipt.status() == GoodsReceiptStatus.DRAFT && receipt.needsManagerConfirmation(),
                 nameIn(names, receipt.receivedBy()), nameIn(names, receipt.confirmedBy()),
-                warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name());
+                warehouse == null ? null : warehouse.prefix(), warehouse == null ? null : warehouse.name(),
+                progress, candidates);
+    }
+
+    /**
+     * Per SKU of the return: {@code [0]} units on its other CLOSED receipts, {@code [1]} on its other drafts (none while
+     * this one is the draft: one at a time), {@code [2]} on this receipt - read from the aggregate, so a scan's view
+     * counts what it just wrote whatever was flushed. A CANCELLED receipt holds none: its units are given back.
+     */
+    private Map<String, long[]> unitsBySku(ReturnReceipt receipt) {
+        Map<String, long[]> units = new java.util.HashMap<>();
+        for (ReturnReceiptRepository.ReceiptUnits row : receipts.unitsOnOtherReceipts(receipt.returnRequestId(),
+                receipt.id())) {
+            units.computeIfAbsent(row.sku(), k -> new long[3])[row.status() == GoodsReceiptStatus.CLOSED ? 0 : 1]
+                    += row.units();
+        }
+        if (receipt.status() != GoodsReceiptStatus.CANCELLED) {
+            receipt.cartons().forEach(c -> units.computeIfAbsent(c.sku(), k -> new long[3])[2] += c.countedQuantity());
+            receipt.looseLines().forEach(l -> units.computeIfAbsent(l.sku(), k -> new long[3])[2] += l.quantity());
+        }
+        return units;
+    }
+
+    /** What the return approved, per SKU, and what of it is back, on this receipt and still to come. */
+    private static List<ReturnProgress> progressOf(ReturnReceipt receipt, ReturnRequestReference request,
+                                                   Map<String, long[]> units) {
+        return request.claimedLines().stream().filter(line -> line.approvedQuantity() > 0).map(line -> {
+            long[] of = units.getOrDefault(line.sku(), new long[3]);
+            return new ReturnProgress(line.sku(), line.approvedQuantity(), of[0], of[2],
+                    Math.max(0, line.approvedQuantity() - of[0] - of[1] - of[2]));
+        }).toList();
+    }
+
+    /**
+     * Every carton of the return's source, each classified as the scan would decide it now (WF-05 BE-22): the carton's
+     * state from inventory - every one in one read, not one per carton - and its SKU against the approval and what is
+     * back. One that does not fit sealed is offered as needing a count, never dropped for its label alone (Q-11:
+     * opened, it may hold what still fits).
+     */
+    private List<CandidateCarton> candidatesOf(List<ShippedCarton> source, ReturnRequestReference request,
+                                               Map<String, long[]> units, ReturnReceipt receipt) {
+        Map<String, ReturnedCarton> books = cartonReturns.findAll(source.stream().map(ShippedCarton::lpn).toList())
+                .stream().collect(Collectors.toMap(c -> StockPackageView.normalLpn(c.lpn()), c -> c, (a, b) -> a));
+        Map<String, CandidateCarton> byLpn = new java.util.LinkedHashMap<>();
+        for (ShippedCarton shipped : source) {
+            String lpn = StockPackageView.normalLpn(shipped.lpn());
+            if (lpn == null || byLpn.containsKey(lpn)) {
+                continue;
+            }
+            int approved = request.approvedOf(shipped.sku());
+            long[] of = units.getOrDefault(shipped.sku(), new long[3]);
+            long remaining = approved - of[0] - of[1] - of[2];
+            ReturnedCarton carton = books.get(lpn);
+            ReturnCartonEligibility eligibility;
+            Optional<ReturnReceipt.Carton> onReceipt = receipt.carton(lpn);
+            if (onReceipt.isPresent()) {
+                eligibility = ReturnCartonEligibility.ON_THIS_RECEIPT;
+            } else if (carton == null) {
+                eligibility = ReturnCartonEligibility.NOT_FOUND;
+            } else {
+                ReturnCartonEligibility state = ReturnCartonEligibility.ofCarton(carton.status(),
+                        carton.returnOpenedAt(), carton.customersGoods());
+                eligibility = state != null ? state
+                        : ReturnCartonEligibility.ofUnits(approved, remaining, carton.quantity());
+            }
+            int label = onReceipt.map(ReturnReceipt.Carton::quantity)
+                    .orElse(carton == null ? shipped.quantity() : carton.quantity());
+            // On the receipt already: a recount may raise its count by what is still to come, up to its label (L6).
+            int max = onReceipt.map(c -> (int) Math.min(label, c.countedQuantity() + Math.max(0, remaining)))
+                    .orElseGet(() -> ReturnCartonEligibility.maxReceivable(eligibility, remaining, label));
+            byLpn.put(lpn, new CandidateCarton(lpn, shipped.sku(), shipped.lotNumber(), label, max, eligibility));
+        }
+        return List.copyOf(byLpn.values());
     }
 
     private static String nameIn(Map<UUID, String> names, UUID userId) {

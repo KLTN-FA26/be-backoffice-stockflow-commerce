@@ -106,6 +106,26 @@ public class CartonReturnService implements CartonReturns {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<ReturnedCarton> findAll(Collection<String> lpns) {
+        List<String> normal = lpns.stream().map(StockPackageView::normalLpn).filter(java.util.Objects::nonNull)
+                .distinct().toList();
+        if (normal.isEmpty()) {
+            return List.of();
+        }
+        List<StockPackage> found = stockPackages.findByLpns(normal);
+        Map<StockPackageId, java.time.Instant> opened = stockPackages.returnOpenedAtOf(
+                found.stream().map(StockPackage::id).toList());
+        Map<String, ReturnedCartonOwnership.Ownership> owned = ownership.ofLpns(
+                found.stream().map(StockPackage::lpn).toList());
+        return found.stream().map(carton -> {
+            ReturnedCartonOwnership.Ownership whose = owned.get(carton.lpn());
+            return view(carton, carton.sku().code(), lotOf(carton), opened.get(carton.id()),
+                    whose == null ? null : whose.name());
+        }).toList();
+    }
+
+    @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "stock-package-return", resourceId = "#command.receiptId()",
             details = "{lpns: #command.lpns(), to: #command.locationCode()}")
     public List<ReturnedCarton> receive(ReceiveReturnedCartonsCommand command) {

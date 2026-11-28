@@ -27,6 +27,13 @@ public interface CartonReturns {
     Optional<ReturnedCarton> find(String lpn);
 
     /**
+     * {@link #find} for many LPNs at once, in a fixed number of queries whatever their count (WF-05: the return receipt
+     * screen classifies every carton of its source): each carton found, with whether it came back opened and its
+     * ownership; an LPN with no carton is absent. The return it last came back on is not read. A read, not a decision.
+     */
+    List<ReturnedCarton> findAll(Collection<String> lpns);
+
+    /**
      * Brings the cartons back into stock at the QUARANTINE area {@code command.locationCode()}: each CONSUMED →
      * IN_STOCK there, sealed, its row QUARANTINE with the carton's count, one RECEIPT ledger line per carton naming the
      * receipt ({@code GOODS_RECEIPT}) and the order. Joins the caller's transaction, so the receipt closes with the

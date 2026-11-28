@@ -26,6 +26,13 @@ interface ReturnReceiptJpaRepository extends BaseJpaRepository<ReturnReceiptJpaE
              where c.receipt.returnShipmentId = :id and c.receipt.status = :status""")
     List<String> lpnsOnShipmentReceipts(@Param("id") UUID shipmentId, @Param("status") GoodsReceiptStatus status);
 
+    /** The LPNs on this return request's receipts in {@code status}: what of the return came back so far. */
+    @Query("""
+            select c.lpn from ReturnReceiptCartonJpaEntity c
+             where c.receipt.returnRequestId = :id and c.receipt.status = :status""")
+    List<String> lpnsOnReturnRequestReceipts(@Param("id") UUID returnRequestId,
+                                             @Param("status") GoodsReceiptStatus status);
+
     /** {@code procurement.return_units_received}: units of the SKU back for the return on its receipts not cancelled. */
     @Query(value = "SELECT procurement.return_units_received(:returnId, :sku, NULL, :exceptLoose)", nativeQuery = true)
     long unitsReceivedForReturn(@Param("returnId") UUID returnRequestId, @Param("sku") String sku,
