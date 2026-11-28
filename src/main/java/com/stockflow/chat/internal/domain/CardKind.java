@@ -25,5 +25,7 @@ public enum CardKind {
     /** Where a production order stands (16 §4.5 step 14). */
     PRODUCTION_PROGRESS,
     /** The satisfaction survey sent when a conversation is resolved (16 §4.6 step 18). */
-    CSAT_SURVEY
+    CSAT_SURVEY,
+    /** An order held for missing cartons: the customer chooses one of the ways on (17 §4.14, 16 §4.7, BR-15). */
+    SHORTAGE_CHOICE
 }

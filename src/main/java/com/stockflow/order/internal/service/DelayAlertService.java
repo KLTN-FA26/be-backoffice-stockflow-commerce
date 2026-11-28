@@ -16,17 +16,13 @@ import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderRepository;
-import com.stockflow.order.internal.domain.Producer;
-import com.stockflow.order.internal.domain.ProducerRepository;
 import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderRepository;
-import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.domain.SalesContract;
 import com.stockflow.order.internal.domain.SalesContractRepository;
 import com.stockflow.order.internal.domain.ProductionScheduleQuery;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -116,29 +112,23 @@ public class DelayAlertService {
     private final ProductionOrderRepository productionOrders;
     private final ProductionOrderService productionOrderService;
     private final SalesContractRepository contracts;
-    private final ProducerRepository producers;
+    private final ProductionLeadTime leadTime;
     private final ApplicationEventPublisher events;
     private final Clock clock;
-    private final int defaultLeadDays;
 
     DelayAlertService(DelayAlertRepository alerts, ProductionScheduleQuery query, OrderRepository orders,
                       ProductionOrderRepository productionOrders, ProductionOrderService productionOrderService,
-                      SalesContractRepository contracts, ProducerRepository producers,
-                      ApplicationEventPublisher events, Clock clock,
-                      @Value("${stockflow.production-schedule.default-lead-days:14}") int defaultLeadDays) {
-        if (defaultLeadDays < 0) {
-            throw new IllegalArgumentException("stockflow.production-schedule.default-lead-days must not be negative");
-        }
+                      SalesContractRepository contracts, ProductionLeadTime leadTime,
+                      ApplicationEventPublisher events, Clock clock) {
         this.alerts = alerts;
         this.query = query;
         this.orders = orders;
         this.productionOrders = productionOrders;
         this.productionOrderService = productionOrderService;
         this.contracts = contracts;
-        this.producers = producers;
+        this.leadTime = leadTime;
         this.events = events;
         this.clock = clock;
-        this.defaultLeadDays = defaultLeadDays;
     }
 
     /** The business day now, in Vietnam: what "past the day" is counted against. */
@@ -186,7 +176,7 @@ public class DelayAlertService {
                         handedOver.contains(b.id())))
                 .toList();
         DelayAlertEvaluator.Facts facts = new DelayAlertEvaluator.Facts(productions, batches, shortageFollowed,
-                deliveryFollowed, leadDays(production));
+                deliveryFollowed, leadTime.leadDays(production));
         Set<DelayAlertEvaluator.Condition> holding = DelayAlertEvaluator.conditions(facts, today());
         Map<UUID, ProductionOrder> productionById = production.stream()
                 .collect(Collectors.toMap(ProductionOrder::id, p -> p));
@@ -254,18 +244,6 @@ public class DelayAlertService {
                     made != null ? made.receivingWarehouseId() : order.shippingWarehouseId(), due,
                     alert.type() == DelayAlertType.AT_RISK ? expected.get(made.id()) : null, alert.openedAt());
         }
-    }
-
-    /**
-     * BR-30, B44: PO_NEEDED counts with the standard lead time of the producer that makes for the order - the longest of
-     * those its production orders went to - and with the configured default (14 days) while it has none: no producer is
-     * chosen for a batch nothing was drawn up for yet.
-     */
-    private int leadDays(List<ProductionOrder> production) {
-        return production.stream().filter(p -> p.status() != ProductionOrderStatus.CANCELLED)
-                .map(ProductionOrder::producerId).distinct()
-                .map(producers::findById).flatMap(java.util.Optional::stream)
-                .mapToInt(Producer::standardLeadDays).max().orElse(defaultLeadDays);
     }
 
     /** Per carton line, the cartons handed over (and not come back) or closed: what of the line no batch owes. */

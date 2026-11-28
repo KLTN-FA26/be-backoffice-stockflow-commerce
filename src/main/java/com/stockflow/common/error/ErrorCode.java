@@ -424,6 +424,17 @@ public enum ErrorCode {
     SAMPLE_ROUND_NOT_FOUND("Print sample round not found", 404),
     /** 4A-4 (13 BR-13): a round takes one answer, on the storefront or through the chat card, and keeps it. */
     SAMPLE_ROUND_ANSWERED("This print sample round has been answered already", 409),
+    /**
+     * 17 §4.14 step 55: the shortage choice card cannot be sent now - the order is not held for a missing carton, nothing
+     * is short, or the batch has a live card already (the message names which).
+     */
+    SHORTAGE_CARD_NOT_SENDABLE("A shortage choice card cannot be sent for this order now", 409),
+    /** 17 §4.14: no such shortage card, or it is another customer's (answered as one that does not exist). */
+    SHORTAGE_CARD_NOT_FOUND("No such shortage choice card", 404),
+    /** 17 §5.6: the card was chosen on, replaced or ended meanwhile, or the version the caller saw is stale. */
+    SHORTAGE_CARD_STATE_CONFLICT("The shortage choice card has changed; reload it", 409),
+    /** 17 §4.14 step 56: the option was not among those the card offered. */
+    SHORTAGE_OPTION_NOT_AVAILABLE("That option is not offered on this card", 409),
     /** 4A-2: an INACTIVE producer takes no new production order. */
     PRODUCER_INACTIVE("This producer takes no new production order", 409),
     /** 4A-2 (17 BR-05): the print files changed since the design was approved. */

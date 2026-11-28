@@ -42,13 +42,16 @@ public class OrderOperations {
     private final ShippingAddressChanges addressChanges;
     private final OnBehalfLog onBehalf;
     private final com.stockflow.order.internal.repository.OrderOnBehalfActions entries;
+    /** The concrete service, for the one operation the {@link OrderService} interface does not carry (shortage cards). */
+    private final OrderServiceImpl orderService;
 
-    OrderOperations(ShippingWarehouseService shippingWarehouses, OrderService orders,
+    OrderOperations(ShippingWarehouseService shippingWarehouses, OrderService orders, OrderServiceImpl orderService,
                     OrderCompletionHolds completionHolds, CancellationRequestService cancellationRequests,
                     PartialShipments partialShipments, DeliveryFailureService deliveryFailures,
                     ShippingAddressChanges addressChanges, OnBehalfLog onBehalf,
                     com.stockflow.order.internal.repository.OrderOnBehalfActions entries) {
         this.entries = entries;
+        this.orderService = orderService;
         this.shippingWarehouses = shippingWarehouses;
         this.orders = orders;
         this.completionHolds = completionHolds;
@@ -89,7 +92,9 @@ public class OrderOperations {
 
     /** 17 §5: {@link OrderService#resolveHold}, by hand. */
     public OrderSummary resolveHold(UUID orderId, String note, UUID by) {
-        OrderSummary order = orders.resolveHold(orderId, note, by);
+        // Sales decide without the card (17 §4.14 step 59, D47): a shortage card still open ends for that reason.
+        OrderSummary order = orderService.resolveHold(orderId, note, by,
+                com.stockflow.order.api.ShortageCardEnd.DECIDED_WITHOUT_CARD);
         onBehalf.record(orderId, by, OnBehalfAction.RESOLVE_HOLD);
         return order;
     }

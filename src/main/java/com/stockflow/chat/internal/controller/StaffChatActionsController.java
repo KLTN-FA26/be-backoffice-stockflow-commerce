@@ -82,6 +82,22 @@ class StaffChatActionsController {
                 Boolean.TRUE.equals(request.reminder())));
     }
 
+    @PostMapping("/conversations/{conversationId}/cards/shortage")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Send the shortage choice card of one of the customer's orders (\"Đơn thiếu N thùng\"): the system "
+            + "draws it from the order held for a missing carton - the batch, the cartons short, the options with their "
+            + "money and date figures; Sales type only a note (16 BR-15, 17 §4.14). Needs the conversation in one's "
+            + "charge. replaceLive=true replaces the card still waiting for the same batch. 404 CHAT_CONTEXT_NOT_FOUND "
+            + "for another customer's order; 409 SHORTAGE_CARD_NOT_SENDABLE (not held for a missing carton, nothing "
+            + "short, a live card exists)")
+    @RequiresPermission(resource = ChatResources.CONVERSATIONS, action = Action.UPDATE)
+    public ApiResponse<ChatMessageView> shortageCard(@PathVariable UUID conversationId,
+                                                     @AuthenticatedUser CurrentUser user,
+                                                     @RequestBody ChatRequests.ShortageCard request) {
+        return ApiResponse.ok(cards.sendShortageCard(user, conversationId, request.orderId(), request.note(),
+                Boolean.TRUE.equals(request.replaceLive())));
+    }
+
     @PatchMapping("/conversations/{conversationId}/messages/{messageId}")
     @Operation(summary = "Correct one's own text or note within 5 minutes of sending it")
     @RequiresPermission(resource = ChatResources.CONVERSATIONS, action = Action.UPDATE)

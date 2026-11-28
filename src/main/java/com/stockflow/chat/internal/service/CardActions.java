@@ -17,6 +17,8 @@ import java.util.List;
  *   <li>SAMPLE_APPROVAL: the customer {@code APPROVE} or {@code REQUEST_REPRINT} (note required), while the round
  *       waits - never Sales (BR-10);</li>
  *   <li>CSAT_SURVEY: the customer {@code RATE} (1-5, comment);</li>
+ *   <li>SHORTAGE_CHOICE: the customer {@code CHOOSE} (option, note), while the card is sent and nobody has chosen -
+ *       never Sales, who carry the choice out on the order page (17 §4.14 steps 57-58, 16 BR-15);</li>
  *   <li>CONTRACT, PAYMENT_INFO, PAYMENT_REMINDER, INVOICE, ORDER_STATUS: none - they show, link and pay by transfer.</li>
  * </ul>
  */
@@ -28,6 +30,7 @@ public final class CardActions {
     public static final String APPROVE = "APPROVE";
     public static final String REQUEST_REPRINT = "REQUEST_REPRINT";
     public static final String RATE = "RATE";
+    public static final String CHOOSE = "CHOOSE";
 
     /** What each side may do on a card now. */
     public record Available(List<String> customer, List<String> staff) {
@@ -48,6 +51,8 @@ public final class CardActions {
             case SAMPLE_APPROVAL -> "WAITING".equals(payload.path("status").asText())
                     ? new Available(List.of(APPROVE, REQUEST_REPRINT), List.of()) : Available.NONE;
             case CSAT_SURVEY -> new Available(List.of(RATE), List.of());
+            case SHORTAGE_CHOICE -> "SENT".equals(payload.path("status").asText())
+                    ? new Available(List.of(CHOOSE), List.of()) : Available.NONE;
             default -> Available.NONE;
         };
     }
