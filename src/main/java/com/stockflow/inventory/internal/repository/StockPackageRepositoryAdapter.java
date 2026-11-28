@@ -368,6 +368,23 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     }
 
     @Override
+    public Map<StockPackageId, Instant> returnOpenedAtOf(java.util.Collection<StockPackageId> ids) {
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        List<?> rows = entityManager.createNativeQuery("""
+                        select id, return_opened_at from inventory.stock_package
+                         where id in (:ids) and return_opened_at is not null""")
+                .setParameter("ids", ids.stream().map(StockPackageId::value).toList()).getResultList();
+        Map<StockPackageId, Instant> opened = new java.util.HashMap<>();
+        for (Object row : rows) {
+            Object[] columns = (Object[]) row;
+            opened.put(new StockPackageId((java.util.UUID) columns[0]), instant(columns[1]));
+        }
+        return opened;
+    }
+
+    @Override
     public boolean openedOnReturn(StockPackageId id) {
         return !entityManager.createNativeQuery("""
                         select 1 from inventory.stock_package where id = :id and return_opened_at is not null""")

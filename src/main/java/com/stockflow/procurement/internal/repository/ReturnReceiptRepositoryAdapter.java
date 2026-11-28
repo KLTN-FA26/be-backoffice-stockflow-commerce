@@ -135,6 +135,35 @@ class ReturnReceiptRepositoryAdapter implements ReturnReceiptRepository, ReturnR
     }
 
     @Override
+    public List<ReceiptUnits> unitsOnOtherReceipts(UUID returnRequestId, UUID exceptReceipt) {
+        // The same rows procurement.return_units_received sums - cartons by counted_qty, loose lines by quantity, on
+        // receipts not cancelled - grouped, so the screen and the cap never count a different set.
+        List<?> rows = entityManager.createNativeQuery("""
+                        select g.id, g.status, x.sku, sum(x.units)
+                          from (select c.receipt_id, c.sku, c.counted_qty as units
+                                  from procurement.goods_receipt_return_cartons c
+                                union all
+                                select l.receipt_id, l.sku, l.quantity
+                                  from procurement.goods_receipt_return_loose_lines l) x
+                          join procurement.goods_receipts g on g.id = x.receipt_id
+                         where g.return_request_id = :returnId and g.status <> 'CANCELLED' and g.id <> :except
+                         group by g.id, g.status, x.sku""")
+                .setParameter("returnId", returnRequestId)
+                .setParameter("except", exceptReceipt == null ? new UUID(0L, 0L) : exceptReceipt)
+                .getResultList();
+        return rows.stream().map(row -> {
+            Object[] columns = (Object[]) row;
+            return new ReceiptUnits((UUID) columns[0], GoodsReceiptStatus.valueOf((String) columns[1]),
+                    (String) columns[2], ((Number) columns[3]).longValue());
+        }).toList();
+    }
+
+    @Override
+    public Set<String> lpnsReceivedForReturn(UUID returnRequestId) {
+        return new java.util.HashSet<>(jpa.lpnsOnReturnRequestReceipts(returnRequestId, GoodsReceiptStatus.CLOSED));
+    }
+
+    @Override
     public Optional<ReturnReceipt> findDraftForReturnRequest(UUID returnRequestId) {
         return jpa.findByReturnRequestInStatus(returnRequestId, GoodsReceiptStatus.DRAFT).stream().findFirst()
                 .flatMap(this::findById);
