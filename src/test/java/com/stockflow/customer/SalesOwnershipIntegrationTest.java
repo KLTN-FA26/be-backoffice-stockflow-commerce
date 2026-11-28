@@ -28,10 +28,9 @@ import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RecordedEvents;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.EntityManagerFactory;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
-import org.hibernate.SessionFactory;
-import org.hibernate.stat.Statistics;
+import org.hibernate.Session;
+import org.hibernate.SessionEventListener;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +51,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -79,7 +79,6 @@ class SalesOwnershipIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
-    @Autowired EntityManagerFactory entityManagerFactory;
     @Autowired RecordedEvents.Recorder recorded;
     @Autowired Clock clock;
 
@@ -197,26 +196,34 @@ class SalesOwnershipIntegrationTest {
     }
 
     @Test
-    @DisplayName("ResponsibleSales is batched: the same handful of statements for one customer as for twelve")
+    @DisplayName("ResponsibleSales is batched: as many statements for twenty-four customers as for twelve of the same "
+            + "mix, and no more than four")
     void oneBatchedReadWhateverTheNumberOfCustomers() {
         UUID owner = staff("SALES_STAFF");
         UUID covered = staff("SALES_STAFF");
         UUID standIn = staff("SALES_STAFF");
+        // The managers' read answers someone, so the fallback never goes on to read the System Admins (D6, case 25):
+        // the shared database holds whatever active managers earlier classes left, possibly none.
+        staff("SALES_MANAGER");
         covers.arrange(new StaffCoverService.ArrangeCover(covered, standIn, today(), today(), null), covered, false);
-        List<UUID> twelve = new ArrayList<>();
-        for (int i = 0; i < 4; i++) {
-            twelve.add(customerOwnedBy(owner));
-            twelve.add(customerOwnedBy(covered));
-            twelve.add(customer());
+        List<UUID> twentyFour = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            twentyFour.add(customerOwnedBy(owner));
+            twentyFour.add(customerOwnedBy(covered));
+            twentyFour.add(customer());
         }
+        List<UUID> twelve = twentyFour.subList(0, 12);
 
-        long one = statements(List.of(twelve.get(0)));
+        long one = statements(List.of(twentyFour.get(0)));
         long many = statements(twelve);
+        long twice = statements(twentyFour);
 
         assertThat(responsible.responsibleFor(twelve, today()).values()).extracting(Responsible::kind)
                 .contains(ResponsibleKind.OWNER, ResponsibleKind.COVER, ResponsibleKind.MANAGERS);
-        assertThat(many).as("customers, owners' accounts, covers, managers").isLessThanOrEqualTo(4);
-        assertThat(one).isLessThanOrEqualTo(many);
+        assertThat(twice).as("no statement per customer: twice the customers, the same statements").isEqualTo(many);
+        assertThat(many).as("the customers' owners, the owners' accounts, their covers, the managers")
+                .isLessThanOrEqualTo(4);
+        assertThat(one).as("one customer with a working owner reads no managers").isLessThanOrEqualTo(many);
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -749,22 +756,26 @@ class SalesOwnershipIntegrationTest {
         return BusinessCalendar.date(clock.instant());
     }
 
-    /** The least of a few runs: listeners on other threads add to the session factory's statistics. */
+    /**
+     * The statements one call prepares, counted on its own session only. The session factory's statistics are not
+     * used: they count every thread's statements, and the owner changes this test makes have the async listeners
+     * (chat's conversations following the owner, the event registry marking each publication complete) still running
+     * when the counting starts. Right after the setup a call that takes three statements counted six or seven; a
+     * slower runner kept that up through every run and failed the bound with five.
+     */
     private long statements(List<UUID> customers) {
-        Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
-        responsible.responsibleFor(customers, today());
-        long least = Long.MAX_VALUE;
-        statistics.setStatisticsEnabled(true);
-        try {
-            for (int run = 0; run < 5; run++) {
-                statistics.clear();
-                responsible.responsibleFor(customers, today());
-                least = Math.min(least, statistics.getPrepareStatementCount());
-            }
-        } finally {
-            statistics.setStatisticsEnabled(false);
-        }
-        return least;
+        return tx.execute(status -> {
+            AtomicLong prepared = new AtomicLong();
+            entityManager.unwrap(Session.class).addEventListeners(new SessionEventListener() {
+                @Override
+                public void jdbcPrepareStatementStart() {
+                    prepared.incrementAndGet();
+                }
+            });
+            responsible.responsibleFor(customers, today());
+            status.setRollbackOnly();
+            return prepared.get();
+        });
     }
 
     private static void refused(ErrorCode code, ThrowingCallable call) {
