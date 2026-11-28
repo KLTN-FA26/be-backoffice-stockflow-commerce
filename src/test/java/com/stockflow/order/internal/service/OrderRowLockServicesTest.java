@@ -54,7 +54,10 @@ class OrderRowLockServicesTest {
 
         private final OrderPartialShipmentDecisionJpaRepository decisions =
                 mock(OrderPartialShipmentDecisionJpaRepository.class);
-        private final PartialShipmentService service = new PartialShipmentService(repository, decisions, orders, clock);
+        private final org.springframework.context.ApplicationEventPublisher publisher =
+                mock(org.springframework.context.ApplicationEventPublisher.class);
+        private final PartialShipmentService service =
+                new PartialShipmentService(repository, decisions, orders, clock, publisher);
 
         @Test
         @DisplayName("allowing partial shipments saves the order and writes a decision row with the status it was in")
@@ -74,10 +77,15 @@ class OrderRowLockServicesTest {
             assertThat(row.getValue().getNote()).isEqualTo("customer agreed");
             assertThat(row.getValue().getDecidedBy()).isEqualTo(STAFF);
             assertThat(row.getValue().getDecidedAt()).isEqualTo(NOW);
+            ArgumentCaptor<com.stockflow.contracts.OrderPartialShipmentAllowed> event =
+                    ArgumentCaptor.forClass(com.stockflow.contracts.OrderPartialShipmentAllowed.class);
+            verify(publisher).publishEvent(event.capture());
+            assertThat(event.getValue().orderId()).isEqualTo(order.id().value());
+            assertThat(event.getValue().decidedBy()).isEqualTo(STAFF);
         }
 
         @Test
-        @DisplayName("the same decision again changes nothing: no save, no history row")
+        @DisplayName("the same decision again changes nothing: no save, no history row, no event")
         void theSameDecisionIsIdempotent() {
             Order order = locked(OrderFixtures.released());
 
@@ -85,6 +93,7 @@ class OrderRowLockServicesTest {
 
             verify(repository, never()).save(any());
             verify(decisions, never()).save(any());
+            verify(publisher, never()).publishEvent(any(Object.class));
         }
 
         @Test

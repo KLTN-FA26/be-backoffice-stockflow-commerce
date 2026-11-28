@@ -669,20 +669,57 @@ class PickListService implements PickLists {
 
     @Override
     public void holdForUnreplacedCarton(UUID taskId, UUID lineId, CurrentUser actor) {
-        holdForLackingCarton(taskId, lineId, actor, "Carton %s (%d x %s) removed at the check station: no whole carton "
-                + "in the warehouse to replace it", "Order {} held INVENTORY: removed carton {} has no replacement in "
-                + "stock");
+        holdForLackingCarton(taskId, lineId, actor, true, "Carton %s (%d x %s) removed at the check station: no "
+                + "whole carton in the warehouse to replace it", "Order {} held INVENTORY: removed carton {} has no "
+                + "replacement in stock");
     }
 
     @Override
     public void holdForRemovedCarton(UUID taskId, UUID lineId, CurrentUser actor) {
-        holdForLackingCarton(taskId, lineId, actor, "Carton %s (%d x %s) removed at the check station: the warehouse "
-                + "manager replaces it", "Order {} held INVENTORY: carton {} was removed at the check station");
+        holdForLackingCarton(taskId, lineId, actor, true, "Carton %s (%d x %s) removed at the check station: the "
+                + "warehouse manager replaces it", "Order {} held INVENTORY: carton {} was removed at the check station");
+    }
+
+    @Override
+    public boolean liftHoldForRemovedCartons(UUID orderId, UUID by) {
+        List<PickJpaEntity> tasks = picks.lockAllByOrderId(orderId).stream()
+                .filter(pick -> pick.getStatus() != PickStatus.CANCELLED).toList();
+        if (tasks.isEmpty()) {
+            return false;
+        }
+        orders.lockedStatus(orderId);
+        OrderSummary order = orders.findById(orderId).orElseThrow();
+        if (order.status() != com.stockflow.order.api.OrderStatus.ON_HOLD || order.lifecycle() == null
+                || order.lifecycle().holdReason() != com.stockflow.order.api.HoldReason.INVENTORY
+                || !order.lifecycle().allowPartialShipment()) {
+            return false;
+        }
+        boolean lackingRemoved = false;
+        for (PickJpaEntity pick : tasks) {
+            if (replacingCancelledShipment(pick)
+                    || toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())).hasShortLines()) {
+                return false;
+            }
+            lackingRemoved |= lacksRemovedCartons(pick);
+        }
+        if (!lackingRemoved) {
+            return false;
+        }
+        try {
+            orders.resolveHold(orderId, "Partial shipment allowed: the carton removed at the check station is no longer "
+                    + "waited for", by);
+        } catch (BusinessException e) {
+            // E.g. an installment on signing still unpaid: the hold stays for Sales to resolve by hand.
+            log.warn("Order {}: hold for a removed carton not lifted: {}", order.orderNumber(), e.getMessage());
+            return false;
+        }
+        log.info("Order {}: partial shipment allowed, hold for a removed carton lifted by {}", order.orderNumber(), by);
+        return true;
     }
 
     @Override
     public void holdForCancelledShipment(UUID taskId, UUID lineId, String shipmentCode, CurrentUser actor) {
-        holdForLackingCarton(taskId, lineId, actor, "Shipment " + shipmentCode.replace("%", "%%") + " cancelled before "
+        holdForLackingCarton(taskId, lineId, actor, false, "Shipment " + shipmentCode.replace("%", "%%") + " cancelled before "
                 + "dispatch: carton %s (%d x %s) is to be replaced by the warehouse manager",
                 "Order {} held INVENTORY: carton {} left a shipment cancelled before dispatch");
     }
@@ -691,13 +728,22 @@ class PickListService implements PickLists {
      * The order stops ({@code INVENTORY}) for a carton removed at the check station that no carton replaces yet, as the
      * order stops for a short pick report (07 §4.4 step 9, 11): Sales decides with the customer (17: wait for
      * production, agree fewer cartons, deliver in part and close the rest, or cancel). An order on hold already, a line
-     * whose carton was not removed, or one replaced since, changes nothing.
+     * whose carton was not removed, or one replaced since, changes nothing; neither does an order whose partial shipment
+     * Sales allowed already, for a carton removed at the check station ({@code removedAtStation}).
      */
-    private void holdForLackingCarton(UUID taskId, UUID lineId, CurrentUser actor, String noteFormat,
-                                      String logFormat) {
+    private void holdForLackingCarton(UUID taskId, UUID lineId, CurrentUser actor, boolean removedAtStation,
+                                      String noteFormat, String logFormat) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
+        if (removedAtStation && order.lifecycle() != null && order.lifecycle().allowPartialShipment()) {
+            // WF4-F2B (owner decision 2026-11-28): Sales already lets the order ship in parts, so a carton removed at the
+            // check station does not stop it - the removal is on the carton's own record (who, when, note) and in the
+            // audit log; labelling and a partial completion go on (08 §4.2 step 4).
+            log.info("Order {}: carton removed at the check station; partial shipment is allowed, the order is not held",
+                    pick.getOrderNumber());
+            return;
+        }
         if (!removedReplaceable(List.of(lineId)).contains(lineId)) {
             return;
         }

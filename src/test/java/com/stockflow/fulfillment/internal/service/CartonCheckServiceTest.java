@@ -149,8 +149,13 @@ class CartonCheckServiceTest {
     }
 
     private OrderSummary order(OrderStatus status, BigDecimal dueBeforeHandover) {
+        return order(status, dueBeforeHandover, null);
+    }
+
+    private OrderSummary order(OrderStatus status, BigDecimal dueBeforeHandover,
+                               com.stockflow.order.api.HoldReason holdReason) {
         var line = new OrderSummary.LineSummary(lineId, "SKU-A", 20, Money.vnd(10_000), Money.vnd(200_000), List.of());
-        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
+        var lifecycle = new OrderSummary.Lifecycle(holdReason, null, null, null, null, null, null, null, null,
                 new BigDecimal("200000"), dueBeforeHandover, List.of(),
                 List.of(), true);
         return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), status, Money.vnd(200_000), List.of(line), NOW,
@@ -210,11 +215,11 @@ class CartonCheckServiceTest {
         }
 
         @Test
-        @DisplayName("the order is no longer workable (cancelled while the picker waited): PACK_STATE_CONFLICT")
+        @DisplayName("the order is no longer workable (already PACKED, no replacement check): PACK_STATE_CONFLICT")
         void orderNotWorkable() {
             started();
             service.check(pick.getId(), "LPN-1", actor);
-            orderIs(order(OrderStatus.ON_HOLD, BigDecimal.ZERO));
+            orderIs(order(OrderStatus.PACKED, BigDecimal.ZERO));
 
             assertThat(refusal(() -> service.label(pick.getId(), null, actor)).errorCode())
                     .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
@@ -576,6 +581,109 @@ class CartonCheckServiceTest {
             var session = service.start(pick.getId(), actor);
 
             assertThat(session.skusWithoutCartonSpec()).containsExactly("SKU-A");
+        }
+    }
+
+    @Nested
+    @DisplayName("a held order at the station (WF4-K2, owner decision P5): only label and complete are refused")
+    class HeldOrder {
+
+        private void held(com.stockflow.order.api.HoldReason reason) {
+            orderIs(order(OrderStatus.ON_HOLD, BigDecimal.ZERO, reason));
+        }
+
+        @Test
+        @DisplayName("start and scan still work, whatever the hold reason; the session names the reason")
+        void startAndScanWork() {
+            for (var reason : List.of(com.stockflow.order.api.HoldReason.ADDRESS,
+                    com.stockflow.order.api.HoldReason.PAYMENT, com.stockflow.order.api.HoldReason.INVENTORY)) {
+                held(reason);
+                var session = service.start(pick.getId(), actor);
+                assertThat(session.holdReason()).isEqualTo(reason.name());
+                assertThat(service.check(pick.getId(), "LPN-1", actor).holdReason()).isEqualTo(reason.name());
+            }
+        }
+
+        @Test
+        @DisplayName("an order that is not held has no hold reason in its session")
+        void noReasonWhenNotHeld() {
+            assertThat(service.start(pick.getId(), actor).holdReason()).isNull();
+        }
+
+        @Test
+        @DisplayName("label is PACK_ORDER_ON_HOLD with the hold reason in the details; nothing is labelled or locked")
+        void labelIsRefused() {
+            started();
+            service.check(pick.getId(), "LPN-1", actor);
+            held(com.stockflow.order.api.HoldReason.ADDRESS);
+
+            var refused = refusal(() -> service.label(pick.getId(), null, actor));
+
+            assertThat(refused.errorCode()).isEqualTo(ErrorCode.PACK_ORDER_ON_HOLD);
+            assertThat(refused.details()).containsEntry("holdReason", "ADDRESS");
+            assertThat(check.carton("LPN-1").orElseThrow().status()).isEqualTo(PackageStatus.CHECKED);
+            verify(orders, never()).recordFirstLabel(any());
+        }
+
+        @Test
+        @DisplayName("complete is PACK_ORDER_ON_HOLD too, with the hold reason")
+        void completeIsRefused() {
+            started();
+            service.check(pick.getId(), "LPN-1", actor);
+            service.check(pick.getId(), "LPN-2", actor);
+            held(com.stockflow.order.api.HoldReason.PAYMENT);
+
+            var refused = refusal(() -> service.complete(pick.getId(), PackingCompletion.whole(), actor));
+
+            assertThat(refused.errorCode()).isEqualTo(ErrorCode.PACK_ORDER_ON_HOLD);
+            assertThat(refused.details()).containsEntry("holdReason", "PAYMENT");
+            verify(orders, never()).markPacked(any(), any());
+        }
+
+        @Test
+        @DisplayName("view, reprint and removing a damaged carton still work on a held order")
+        void otherOperationsStayOpen() {
+            started();
+            service.check(pick.getId(), "LPN-1", actor);
+            service.label(pick.getId(), List.of("LPN-1"), actor);
+            held(com.stockflow.order.api.HoldReason.CUSTOMER);
+
+            assertThat(service.session(pick.getId(), actor).holdReason()).isEqualTo("CUSTOMER");
+            assertThat(service.reprint(pick.getId(), "LPN-1", null, actor).cartons()).isNotEmpty();
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+            assertThat(check.carton("LPN-2").orElseThrow().status()).isEqualTo(PackageStatus.REMOVED);
+        }
+
+        @Test
+        @DisplayName("RTM-RTDCANCEL: the check reopened for replacement cartons of a cancelled shipment carries no hold "
+                + "reason (the station must not block) and labels although the order waits on the shortage hold")
+        void replacementCheckHasNoBlockingReason() {
+            ShipmentJpaEntity cancelled = mock(ShipmentJpaEntity.class);
+            when(cancelled.getPackId()).thenReturn(pack.getId());
+            when(cancelled.getStatus()).thenReturn(com.stockflow.fulfillment.internal.domain.ShipmentStatus.CANCELLED);
+            when(packs.findByPickIdIn(any())).thenReturn(List.of(pack));
+            when(shipments.findByPackIdIn(any())).thenReturn(List.of(cancelled));
+            held(com.stockflow.order.api.HoldReason.INVENTORY);
+
+            assertThat(service.start(pick.getId(), actor).holdReason()).isNull();
+            assertThat(service.check(pick.getId(), "LPN-1", actor).holdReason()).isNull();
+            service.label(pick.getId(), null, actor);
+
+            assertThat(check.carton("LPN-1").orElseThrow().status()).isEqualTo(PackageStatus.LABELED);
+        }
+
+        @Test
+        @DisplayName("once Sales resolves the hold the same session labels again")
+        void labelsAfterTheHoldIsResolved() {
+            started();
+            service.check(pick.getId(), "LPN-1", actor);
+            held(com.stockflow.order.api.HoldReason.ADDRESS);
+            refusal(() -> service.label(pick.getId(), null, actor));
+            orderIs(order(OrderStatus.PICKING, BigDecimal.ZERO));
+
+            service.label(pick.getId(), null, actor);
+
+            assertThat(check.carton("LPN-1").orElseThrow().status()).isEqualTo(PackageStatus.LABELED);
         }
     }
 

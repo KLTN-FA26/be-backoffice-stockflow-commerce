@@ -14,8 +14,10 @@ import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.entity.OrderPartialShipmentDecisionJpaEntity;
 import com.stockflow.order.internal.repository.OrderPartialShipmentDecisionJpaRepository;
+import com.stockflow.contracts.OrderPartialShipmentAllowed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,13 +36,15 @@ class PartialShipmentService implements PartialShipments {
     private final OrderPartialShipmentDecisionJpaRepository decisions;
     private final OrderService orders;
     private final Clock clock;
+    private final ApplicationEventPublisher publisher;
 
     PartialShipmentService(OrderRepository repository, OrderPartialShipmentDecisionJpaRepository decisions,
-                           OrderService orders, Clock clock) {
+                           OrderService orders, Clock clock, ApplicationEventPublisher publisher) {
         this.repository = repository;
         this.decisions = decisions;
         this.orders = orders;
         this.clock = clock;
+        this.publisher = publisher;
     }
 
     @Override
@@ -53,6 +57,11 @@ class PartialShipmentService implements PartialShipments {
             decisions.save(new OrderPartialShipmentDecisionJpaEntity(Identifiers.newId(), orderId, allowed,
                     order.status().name(), note, by, clock.instant()));
             log.info("Order {}: partial shipments {} by {}", order.orderNumber(), allowed ? "allowed" : "stopped", by);
+            if (allowed) {
+                // WF4-F2: fulfillment lifts a hold that only waited for this decision (a carton removed at the check station).
+                publisher.publishEvent(new OrderPartialShipmentAllowed(orderId, order.orderNumber().value(), by,
+                        clock.instant()));
+            }
         }
         return orders.findById(orderId).orElseThrow();
     }

@@ -104,7 +104,11 @@ class OrderFirstLabelTest {
     void heldOrderIsNotLabelled() {
         Order order = picking();
         order.putOnHold(com.stockflow.order.api.HoldReason.ADDRESS, "street number missing", STAFF, NOW);
-        assertThat(code(catchThrowable(() -> order.recordFirstLabel(NOW)))).isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
+        var refusal = catchThrowable(() -> order.recordFirstLabel(NOW));
+        assertThat(code(refusal)).isEqualTo(ErrorCode.PACK_ORDER_ON_HOLD);
+        // WF4-K2: the refusal names the reason, for the station to say why and who unblocks it
+        assertThat(((com.stockflow.common.error.BusinessException) refusal).details()).containsEntry("holdReason",
+                "ADDRESS");
         assertThat(order.firstLabeledAt()).isNull();
         assertThat(order.packedForGood()).isFalse();
 
@@ -159,7 +163,7 @@ class OrderFirstLabelTest {
         other.recordFirstLabel(NOW);
         other.putOnHold(com.stockflow.order.api.HoldReason.OTHER, "checking", STAFF, NOW.plusSeconds(90));
         assertThat(code(catchThrowable(() -> other.recordFirstLabel(NOW.plusSeconds(600)))))
-                .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
+                .isEqualTo(ErrorCode.PACK_ORDER_ON_HOLD);
     }
 
     @Test

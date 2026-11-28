@@ -108,11 +108,14 @@ public interface CartonChecks {
      * @param taskNumber   the task's human number {@code PK-yyyyMMdd-nnnn}
      * @param warehouseCode the code (prefix) of {@code warehouseId}; null only if the warehouse is unknown
      * @param warehouseName the name of {@code warehouseId}; null only if the warehouse is unknown
+     * @param holdReason   why the order is on hold ({@code HoldReason} name) - the row is shown, dimmed, with only
+     *                     start, scan, view, reprint and removing a damaged carton open (WF4-K2); null when not held, and for the
+     *                     check reopened for replacement cartons (RTM-RTDCANCEL), where label and complete are open
      */
     record QueueRow(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId, String status, Instant pickedAt,
                     String pickerName, UUID startedBy, String startedByName, Instant startedAt, int cartonCount,
                     int checkedCount, int labeledCount, int shipmentCount, String taskNumber, String warehouseCode,
-                    String warehouseName) { }
+                    String warehouseName, String holdReason) { }
 
     /**
      * One order line at the station, in units and cartons.
@@ -153,5 +156,5 @@ public interface CartonChecks {
     record Session(UUID taskId, UUID orderId, String orderNumber, UUID warehouseId, String status, UUID startedBy,
                    String startedByName, Instant startedAt, Instant completedAt, boolean orderLocked,
                    List<Line> lines, List<Carton> cartons, List<ShipmentSummary> shipments, PaymentDue paymentDue,
-                   List<String> skusWithoutCartonSpec) { }
+                   List<String> skusWithoutCartonSpec, String holdReason) { }
 }

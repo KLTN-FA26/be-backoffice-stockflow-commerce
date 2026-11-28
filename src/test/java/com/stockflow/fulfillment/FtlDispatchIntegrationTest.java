@@ -3138,7 +3138,8 @@ class FtlDispatchIntegrationTest {
         // WF4-BE3-HOLD: the order is held at the removal and the station refuses its cartons until Sales decides.
         assertHeldForTheRemovedCarton(order);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/carton-labels", null)
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_STATE_CONFLICT"));
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_ORDER_ON_HOLD"))
+                .andExpect(jsonPath("$.details.holdReason").value("INVENTORY"));
         salesResolvesTheInventoryHold(order);
         CartonStationSupport.labelAll(this::packer, task);
 
@@ -3179,6 +3180,45 @@ class FtlDispatchIntegrationTest {
      * WF4-BE3-HOLD (owner, 2026-11-15): the removal of a carton at the check station puts the order on INVENTORY hold at
      * once, as a short pick report does; the check station refuses the order's cartons while it is held.
      */
+    @Test
+    @DisplayName("WF4-F2 (08 §4.2 step 4; owner decision 2026-11-28): Sales allowing partial shipment lifts the INVENTORY "
+            + "hold a carton removed at the check station put on the order - by itself, with a history entry - and the "
+            + "station then labels and completes in part; start and scan worked while it was held")
+    void allowingPartialShipmentLiftsTheRemovedCartonHold() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        allowPartial(order, false);
+        UUID task = picked(order);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        List<String> lpns = CartonStationSupport.pickedLpns(jdbc, task);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
+                "{\"note\":\"móp góc\"}").andExpect(status().isOk());
+        assertHeldForTheRemovedCarton(order);
+        // WF4-K2: a held order is still listed, with its reason, and its session says why labelling waits.
+        packer(get(BASE + "/tasks/" + task + "/packing-session"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.holdReason").value("INVENTORY"));
+
+        sales(put(ORDERS + "/" + order.orderId() + "/partial-shipment").contentType("application/json")
+                .content("{\"allowed\":true,\"note\":\"Khách đồng ý giao trước phần đã kiểm\"}"))
+                .andExpect(status().isOk());
+
+        // After the commit, in the listener's own transaction.
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(20)).untilAsserted(() ->
+                assertThat(orders.findById(order.orderId()).orElseThrow().status()).isNotEqualTo(OrderStatus.ON_HOLD));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_status_history WHERE order_id = ? "
+                + "AND reason LIKE 'HOLD_RESOLVED_INVENTORY%'", Long.class, order.orderId())).isEqualTo(1L);
+        CartonStationSupport.labelAll(this::packer, task);
+        JsonNode done = CartonStationSupport.completeOnly(this::packer, json, task,
+                "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}");
+        assertThat(done.path("shipmentId").asText()).isNotBlank();
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+    }
+
+    /** WF4-F2B: partial shipment was allowed before the removal, so the order is not held and the station goes on. */
+    private void assertNotHeldForTheRemovedCarton(OrderSummary order) {
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("not held at the removal")
+                .isNotEqualTo(OrderStatus.ON_HOLD);
+    }
+
     private void assertHeldForTheRemovedCarton(OrderSummary order) throws Exception {
         OrderSummary held = orders.findById(order.orderId()).orElseThrow();
         assertThat(held.status()).as("held at the removal").isEqualTo(OrderStatus.ON_HOLD);
@@ -3264,7 +3304,7 @@ class FtlDispatchIntegrationTest {
         assertThat(batchHolds(order)).as("17 §5.5: the batch no longer counts the removed carton - it lacks it again")
                 .isEqualTo(1);
         assertLineCover(order, 1, 1);
-        salesResolvesTheInventoryHold(order);
+        assertNotHeldForTheRemovedCarton(order);
         CartonStationSupport.labelAll(this::packer, task);
         UUID part = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task,
                 "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}").path("shipmentId").asText());
@@ -3350,10 +3390,10 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
-    @DisplayName("BE-3 (07 §4.4 step 11): no whole carton to replace a removed one - 409 INSUFFICIENT_STOCK, the order "
-            + "held INVENTORY for Sales to decide, the batch short of it; stock arrives, the reallocation succeeds, the "
-            + "order resumes PARTIALLY_FULFILLED and the replacement ships: SHIPPED")
-    void removedCartonWithoutStockHoldsTheOrder() throws Exception {
+    @DisplayName("BE-3 (07 §4.4 step 11; WF4-F2B 2026-11-28): partial shipment is allowed, so a removed carton that "
+            + "no whole carton replaces (409 INSUFFICIENT_STOCK) does not hold the order - it stays PARTIALLY_FULFILLED, "
+            + "the batch short of it; stock arrives, the reallocation succeeds and the replacement ships: SHIPPED")
+    void removedCartonWithoutStockDoesNotHoldAPartialOrder() throws Exception {
         OrderSummary order = ftlOrder(2);
         Object[] x = removedAndPartShipped(order);
         UUID task = (UUID) x[0];
@@ -3362,21 +3402,18 @@ class FtlDispatchIntegrationTest {
 
         reallocate(task, removed).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INSUFFICIENT_STOCK"));
-        OrderSummary held = orders.findById(order.orderId()).orElseThrow();
-        assertThat(held.status()).isEqualTo(OrderStatus.ON_HOLD);
-        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(batchHolds(order)).as("nothing allocated; the batch still lacks the carton").isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick_line WHERE pick_id = ?", Integer.class,
                 task)).isEqualTo(2);
-        // Refused again: still held, once.
+        // Refused again: still not held.
         reallocate(task, removed).andExpect(status().isConflict());
-        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
 
-        // The goods arrive (a production order's receipt, say): the reallocation now replaces it, and the hold resolves.
+        // The goods arrive (a production order's receipt, say): the reallocation now replaces it.
         CustomerSkuRows.stock(jdbc, tx, cupOf(DemoData.CUSTOMER_ID).sku(), 2);
         assertThat(data(reallocate(task, removed).andExpect(status().isOk()))).hasSize(1);
-        assertThat(orders.findById(order.orderId()).orElseThrow().status())
-                .as("back where it was before the hold").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
 
         replacementShipped(order, task, damaged);
     }
@@ -3671,7 +3708,7 @@ class FtlDispatchIntegrationTest {
         List<String> lpns = CartonStationSupport.pickedLpns(jdbc, task);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
                 "{\"note\":\"móp góc\"}").andExpect(status().isOk());
-        salesResolvesTheInventoryHold(order);
+        assertNotHeldForTheRemovedCarton(order);
         CartonStationSupport.labelAll(this::packer, task);
         UUID shipment = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task,
                 "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}").path("shipmentId").asText());

@@ -13,7 +13,7 @@ class CartonCheckWebMapper {
         return new CartonCheckQueueRowResponse(row.taskId(), row.orderId(), row.orderNumber(), row.warehouseId(),
                 row.status(), row.pickedAt(), row.pickerName(), row.startedBy(), row.startedByName(), row.startedAt(),
                 row.cartonCount(), row.checkedCount(), row.labeledCount(), row.shipmentCount(), row.taskNumber(),
-                row.warehouseCode(), row.warehouseName());
+                row.warehouseCode(), row.warehouseName(), row.holdReason());
     }
 
     CartonCheckSessionResponse toResponse(CartonChecks.Session session) {
@@ -32,6 +32,6 @@ class CartonCheckWebMapper {
                         s.code(), s.status(), s.packageCount(), s.partial(), s.partialNote(), s.readyAt())).toList(),
                 session.paymentDue() == null ? null : new CartonCheckSessionResponse.PaymentDue(
                         session.paymentDue().amount(), session.paymentDue().currency()),
-                session.skusWithoutCartonSpec());
+                session.skusWithoutCartonSpec(), session.holdReason());
     }
 }
