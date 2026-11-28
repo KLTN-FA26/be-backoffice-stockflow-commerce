@@ -20,8 +20,8 @@ import java.util.regex.Pattern;
  * <table>
  *   <caption>The mapping</caption>
  *   <tr><th>Ahamove</th><th>Report</th><th>Carrier time</th></tr>
- *   <tr><td>{@code ACCEPTED} (sub-status BOARDED or ARRIVED too)</td><td>DRIVER_ASSIGNED: {@code supplier_name},
- *       {@code supplier_id} (the driver's phone)</td><td>{@code accept_time}, or {@code board_time} once
+ *   <tr><td>{@code ACCEPTED} (sub-status BOARDED or ARRIVED too)</td><td>DRIVER_ASSIGNED: {@code supplier_name};
+ *       {@code supplier_id} is an opaque carrier identifier, not a documented phone number</td><td>{@code accept_time}, or {@code board_time} once
  *       boarded</td></tr>
  *   <tr><td>{@code ASSIGNING} (after a driver gave it back)</td><td>DRIVER_RELEASED</td><td>the
  *       {@code accept_time} of the acceptance it undoes, when the order still carries it - a release older than the
@@ -44,8 +44,8 @@ import java.util.regex.Pattern;
  *   <tr><td>{@code IDLE}, anything else</td><td>OTHER</td><td>none</td></tr>
  * </table>
  * <p>Times are epoch seconds, a fraction allowed; 0 means not set. "None" is a report whose time the carrier does not
- * give: it is never judged older than another. The driver's name is cut to what the load holds; a phone longer than
- * that is dropped rather than cut.</p>
+ * give: it is never judged older than another. The driver's name is cut to what the load holds. Ahamove's documented
+ * callback has no confirmed driver-phone or vehicle-plate field; those can be recorded by warehouse staff.</p>
  *
  * <p>An order id is taken to end before its last {@code -<digits>} only for a drop-off's callback; Ahamove's ids are
  * letters and digits without a hyphen.</p>
@@ -54,7 +54,6 @@ final class AhamoveWebhookReader {
 
     private static final Pattern STOP_ID = Pattern.compile("^(.+)-(\\d{1,3})$");
     private static final int DRIVER_NAME_MAX = 120;
-    private static final int DRIVER_PHONE_MAX = 32;
 
     private AhamoveWebhookReader() {
     }
@@ -76,7 +75,7 @@ final class AhamoveWebhookReader {
         return switch (status == null ? "" : status) {
             case "ACCEPTED" -> new CarrierReport(CarrierEventKind.DRIVER_ASSIGNED, id, null, null,
                     "BOARDED".equals(sub) ? firstSet(body, "board_time", "accept_time") : time(body, "accept_time"),
-                    null, null, cut(text(body, "supplier_name"), DRIVER_NAME_MAX), phone(text(body, "supplier_id")),
+                    null, null, cut(text(body, "supplier_name"), DRIVER_NAME_MAX), null,
                     null);
             case "ASSIGNING" -> CarrierReport.of(CarrierEventKind.DRIVER_RELEASED, id, time(body, "accept_time"));
             case "IN PROCESS", "IN_PROCESS" -> "COMPLETING".equals(sub)
@@ -193,7 +192,4 @@ final class AhamoveWebhookReader {
         return value == null || value.length() <= max ? value : value.substring(0, max);
     }
 
-    private static String phone(String value) {
-        return value == null || value.length() > DRIVER_PHONE_MAX ? null : value;
-    }
 }

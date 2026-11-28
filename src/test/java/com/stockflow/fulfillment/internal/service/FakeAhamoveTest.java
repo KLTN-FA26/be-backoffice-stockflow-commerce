@@ -130,8 +130,8 @@ class FakeAhamoveTest {
     // ---- what it reports, read by the system's own reader
 
     @Test
-    @DisplayName("every step reads, by AhamoveWebhookReader, as the event 09 §4.5 maps it - the driver's name and "
-            + "phone on the acceptance, the drop-off by its number and shipment code, the failure's wording - and the "
+    @DisplayName("every step reads, by AhamoveWebhookReader, as the event 09 §4.5 maps it - the driver's name without "
+            + "an inferred phone on the acceptance, the drop-off by its number and shipment code, the failure's wording - and the "
             + "times only ever rise")
     void theCallbacksReadAsAhamovesDo() throws Exception {
         String order = place();
@@ -146,7 +146,9 @@ class FakeAhamoveTest {
         CarrierReport accepted = lastReport();
         assertThat(accepted.kind()).isEqualTo(CarrierEventKind.DRIVER_ASSIGNED);
         assertThat(accepted.driverName()).isEqualTo("Le Van Tai");
-        assertThat(accepted.driverPhone()).isEqualTo("0911222333");
+        assertThat(accepted.driverPhone()).isNull();
+        assertThat(lastBody().path("supplier_id").asText()).isEqualTo("STG-DRIVER");
+        assertThat(lastBody().toString()).doesNotContain("0911222333");
         times.add(accepted.reportedAt());
         // Ahamove's callback carries no plate; the fake keeps the one it was given on its own order.
         assertThat(lastBody().toString()).doesNotContain("51C-123.45");

@@ -18,7 +18,7 @@ public interface FakeAhamove {
     enum Step {
         /** The order looks for a driver (the first callback); after ACCEPT, the driver gives it back. */
         ASSIGNING,
-        /** A driver takes it: name and phone in the callback. */
+        /** A driver takes it: the callback carries the name and an opaque supplier identifier. */
         ACCEPT,
         /** The driver picks up at the warehouse (IN PROCESS). Only once the load has left the warehouse. */
         PICKUP,

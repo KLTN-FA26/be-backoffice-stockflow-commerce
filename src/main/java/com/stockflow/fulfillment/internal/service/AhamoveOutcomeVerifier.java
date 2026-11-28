@@ -17,8 +17,8 @@ import java.util.Optional;
  * {@code GET /v3/orders/{id}}, called with the carrier's own key, gives the same.
  *
  * <p><b>What is not asked back, and so rests on the header credential alone</b> (a risk accepted, WF-05 review F5):
- * journey milestones (picked up, on its way, returning) and the driver's name and phone - nothing an order, an invoice
- * or stock follows from, but the name and phone are what the warehouse reads when the vehicle arrives, so whoever holds
+ * journey milestones (picked up, on its way, returning) and the driver's name - nothing an order, an invoice
+ * or stock follows from, but the name is what the warehouse reads when the vehicle arrives, so whoever holds
  * the credential can put a wrong driver on a booked load; and, of a final outcome that is borne out, its time and the
  * wording of a failure. Those are limited by the time window, the allow-list and the credential's rotation.</p>
  *

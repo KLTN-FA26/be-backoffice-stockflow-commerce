@@ -8,7 +8,7 @@ public enum CarrierEventKind {
 
     /** The waybill number, and the vehicle and driver with it (a WEBHOOK_LOAD carrier, 09 §4.4 source 1). */
     WAYBILL(Level.LOAD),
-    /** A driver took the order (Ahamove {@code ACCEPTED}): the driver's name and phone go on the load. */
+    /** A driver took the order (Ahamove {@code ACCEPTED}): the driver's name goes on the load when supplied. */
     DRIVER_ASSIGNED(Level.LOAD),
     /** The driver gave the order back and the carrier looks for another (Ahamove {@code ACCEPTED → ASSIGNING}). */
     DRIVER_RELEASED(Level.LOAD),

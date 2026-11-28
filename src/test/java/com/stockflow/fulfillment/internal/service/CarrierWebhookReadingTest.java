@@ -32,7 +32,7 @@ class CarrierWebhookReadingTest {
     class Ahamove {
 
         @Test
-        @DisplayName("a driver taking the order: the driver's name and phone, at accept_time (or board_time once boarded)")
+        @DisplayName("a driver taking the order: name but no inferred phone, at accept_time (or board_time once boarded)")
         void accepted() throws Exception {
             CarrierReport plain = AhamoveWebhookReader.read(json("{\"_id\":\"24ABCD\",\"status\":\"ACCEPTED\","
                     + "\"sub_status\":\"\",\"accept_time\":1800000000.25,\"board_time\":0,\"supplier_name\":\" Tài \","
@@ -45,7 +45,7 @@ class CarrierWebhookReadingTest {
             assertThat(plain.stop()).isNull();
             assertThat(plain.reportedAt()).isEqualTo(Instant.ofEpochSecond(1_800_000_000L, 250_000_000L));
             assertThat(plain.driverName()).isEqualTo("Tài");
-            assertThat(plain.driverPhone()).isEqualTo("84901111111");
+            assertThat(plain.driverPhone()).isNull();
             assertThat(boarded.reportedAt()).isEqualTo(Instant.ofEpochSecond(1_800_000_500L));
         }
 

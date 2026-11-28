@@ -274,7 +274,7 @@ public interface Dispatching {
      */
     boolean carrierWaybill(UUID loadId, String waybill, String plate, String driver, String phone);
 
-    /** A driver took the carrier's order: name and phone on the load. */
+    /** A driver took the carrier's order: update the name and any verified phone the carrier supplied. */
     boolean carrierDriverAssigned(UUID loadId, String driver, String phone);
 
     /** The driver gave the carrier's order back: off the load. */
