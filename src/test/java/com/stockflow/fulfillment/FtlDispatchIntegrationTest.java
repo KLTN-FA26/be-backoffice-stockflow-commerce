@@ -1350,7 +1350,7 @@ class FtlDispatchIntegrationTest {
                 + "\"supplier_id\":\"84901111111\"", "");
         aha(code, accepted).andExpect(status().isOk()).andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế A");
-        assertThat(load(loadId).path("driverPhone").isNull()).isTrue();
+        assertThat(load(loadId).hasNonNull("driverPhone")).isFalse();
         assertThat(lastEvent(aha).path("payload").asText()).doesNotContain("aha-key-0123456789").contains("***");
         // The same callback again: recorded once.
         aha(code, accepted).andExpect(status().isOk()).andExpect(jsonPath("$.data.result").value("DUPLICATE"));
@@ -1361,7 +1361,7 @@ class FtlDispatchIntegrationTest {
         aha(code, ahamove("AHA-W1", "ACCEPTED", "", "\"accept_time\":1800000300,\"supplier_name\":\"Tài xế B\","
                 + "\"supplier_id\":\"84902222222\"", "")).andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế B");
-        assertThat(load(loadId).path("driverPhone").isNull()).isTrue();
+        assertThat(load(loadId).hasNonNull("driverPhone")).isFalse();
 
         // Picked up before the dispatcher signed: not applied, on the error list.
         aha(code, ahamove("AHA-W1", "IN PROCESS", "", "\"pickup_time\":1800000600", ""))
@@ -2655,7 +2655,7 @@ class FtlDispatchIntegrationTest {
         aha(code, ahamove("AHA-D1", "ACCEPTED", "", "\"accept_time\":1800000100,\"supplier_name\":\"Tài xế B\","
                 + "\"supplier_id\":\"84902222222\"", "")).andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế B");
-        assertThat(load(loadId).path("driverPhone").isNull()).isTrue();
+        assertThat(load(loadId).hasNonNull("driverPhone")).isFalse();
         aha(code, ahamove("AHA-D1", "ASSIGNING", "", "\"accept_time\":1800000200", ""))
                 .andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(load(loadId).hasNonNull("driverName")).isFalse();

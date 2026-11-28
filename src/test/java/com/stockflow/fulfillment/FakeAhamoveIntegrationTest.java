@@ -323,7 +323,7 @@ class FakeAhamoveIntegrationTest {
         assertThat(result(accepted)).isEqualTo("APPLIED");
         assertThat(accepted.path("order").path("status").asText()).isEqualTo("ACCEPTED");
         assertThat(load(loadId).path("driverName").asText()).isEqualTo("Le Van Tai");
-        assertThat(load(loadId).path("driverPhone").isNull()).isTrue();
+        assertThat(load(loadId).hasNonNull("driverPhone")).isFalse();
 
         // The vehicle has not left: the system will not take a pickup yet, and the fake puts the step back.
         JsonNode early = event(order, "PICKUP", "");
