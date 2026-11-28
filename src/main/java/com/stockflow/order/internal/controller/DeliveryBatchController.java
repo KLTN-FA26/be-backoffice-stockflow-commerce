@@ -26,6 +26,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -93,6 +94,18 @@ class DeliveryBatchController {
                                                        @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(batches.beginEvidenceUpload(user, orderId, batchId, request));
+    }
+
+    @GetMapping("/{orderId}/delivery-batches/{batchId}/window-change/evidence/messages")
+    @Operation(summary = "The customer's chat messages Sales may cite as consent to move this batch's window (17 "
+            + "BR-28): the customer's own words in their conversations about this order or about none, newest first - "
+            + "text and time, to be sent back as evidenceMessageId")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.UPDATE)
+    public ApiResponse<List<DeliveryBatchService.ConsentMessageView>> consentMessages(@PathVariable UUID orderId,
+                                                                                      @PathVariable UUID batchId,
+                                                                                      @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(batches.consentMessages(orderId, batchId));
     }
 
     @PostMapping("/{orderId}/delivery-batches/{batchId}/window-change")

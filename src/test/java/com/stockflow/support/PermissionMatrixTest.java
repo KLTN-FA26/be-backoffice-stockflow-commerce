@@ -990,6 +990,9 @@ class PermissionMatrixTest {
                 "GET /api/v1/orders/me/{orderId}/delivery-batches", "sales-orders:READ",
                 "POST /api/v1/orders/{orderId}/delivery-batches/{batchId}/window-change", "sales-contracts:UPDATE",
                 "POST /api/v1/orders/{orderId}/delivery-batches/{batchId}/window-change/evidence/uploads",
+                "sales-contracts:UPDATE",
+                // The picker of "the customer's chat message" as consent: whoever may move the window.
+                "GET /api/v1/orders/{orderId}/delivery-batches/{batchId}/window-change/evidence/messages",
                 "sales-contracts:UPDATE");
         expected.forEach((key, code) -> {
             assertThat(byKey).as(key).containsKey(key);
