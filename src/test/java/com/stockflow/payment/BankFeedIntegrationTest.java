@@ -314,6 +314,41 @@ class BankFeedIntegrationTest {
     }
 
     @Test
+    @DisplayName("audit bo-25: amount keeps the transfers of exactly that many dong, with the other filters")
+    void listFiltersByAmount() throws Exception {
+        // A sum no other test sends, so the rows found are this test's.
+        long amount = 1_000_000L + SEPAY_IDS.get() % 900_000L * 10L + 7L;
+        String ref = reference();
+        webhook(body(SEPAY_IDS.incrementAndGet(), ACCOUNT, amount, "CONG TY CK chuyen tien", ref))
+                .andExpect(status().isOk());
+        UUID id = (UUID) transactionOf(ref).get("id");
+
+        String found = asAccountant(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/api/v1/bank-transactions").param("amount", amount + ".00").param("size", "200"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        List<String> ids = com.jayway.jsonpath.JsonPath.read(found, "$.data.items[*].id");
+        List<Number> amounts = com.jayway.jsonpath.JsonPath.read(found, "$.data.items[*].amount");
+        assertThat(ids).contains(id.toString());
+        assertThat(amounts).as("only that amount").allSatisfy(a ->
+                assertThat(new BigDecimal(a.toString())).isEqualByComparingTo(BigDecimal.valueOf(amount)));
+
+        asAccountant(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/api/v1/bank-transactions").param("amount", String.valueOf(amount))
+                .param("status", "NEEDS_REVIEW").param("size", "200"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(id)).exists());
+        asAccountant(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/api/v1/bank-transactions").param("amount", String.valueOf(amount + 1)).param("size", "200"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(id)).doesNotExist());
+        asAccountant(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/api/v1/bank-transactions").param("amount", String.valueOf(amount))
+                .param("status", "IGNORED").param("size", "200"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(id)).doesNotExist());
+    }
+
+    @Test
     @DisplayName("content naming nothing waits for the Accountant, who assigns it: the receipt is theirs, the order "
             + "confirms")
     void unmatchedIsAssignedByTheAccountant() throws Exception {

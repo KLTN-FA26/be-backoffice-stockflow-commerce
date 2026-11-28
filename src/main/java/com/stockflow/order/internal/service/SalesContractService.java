@@ -108,6 +108,8 @@ class SalesContractService implements SalesContracts {
     private final ContractCreditReviews creditReviews;
     /** Tells accounting a contract waits for it, and Sales what accounting decided. */
     private final SalesFollowUpService followUps;
+    /** 14 BR-25, BR-26: who may work on a customer's contracts, and whose customer it is when one is drawn up. */
+    private final CustomerOwnership ownership;
 
     SalesContractService(OrderRepository orders, SalesContractRepository contracts, CustomerService customers,
                          CustomerLegalProfiles legalProfiles, CustomerPaymentSchedules paymentSchedules,
@@ -120,7 +122,9 @@ class SalesContractService implements SalesContracts {
                          com.stockflow.payment.api.CustomerInstallments installments,
                          SalesDocumentFacts shared,
                          com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords,
-                         LineNames lineNames, ContractCreditReviews creditReviews, SalesFollowUpService followUps) {
+                         LineNames lineNames, ContractCreditReviews creditReviews, SalesFollowUpService followUps,
+                         CustomerOwnership ownership) {
+        this.ownership = ownership;
         this.lineNames = lineNames;
         this.creditReviews = creditReviews;
         this.followUps = followUps;
@@ -152,6 +156,7 @@ class SalesContractService implements SalesContracts {
             details = "{orderId: #orderId}")
     public ContractView create(CurrentUser user, UUID orderId, Draft draft) {
         Order order = lockInScope(orderId);
+        ownership.requireMayActFor(user, order.customerId());
         if (contracts.findLiveByOrderId(orderId).isPresent()) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_EXISTS, ("Order %s already has a contract in force; "
                     + "cancel it to draw up another").formatted(order.orderNumber()))
@@ -177,7 +182,7 @@ class SalesContractService implements SalesContracts {
         String number = "HD-" + order.orderNumber().value().substring(3) + "-" + (contracts.countByOrderId(orderId) + 1);
         SalesContract contract = SalesContract.draft(Identifiers.newId(), number, order, sellerParty(),
                 buyerParty(buyer), given.freeSampleRounds() == null ? defaults.freeSampleRounds()
-                        : given.freeSampleRounds(), schedule, plan);
+                        : given.freeSampleRounds(), schedule, plan, ownership.ownerAtDrawingUp(order.customerId()));
         // Điều 318: the complaint period is written in the contract, the configured one unless agreed otherwise.
         contract.agreeReturnWindow(order, given.returnWindowDays() == null ? (int) returnPolicy.window().toDays()
                 : given.returnWindowDays());
@@ -214,6 +219,7 @@ class SalesContractService implements SalesContracts {
             details = "{orderId: #orderId}")
     public ContractView edit(CurrentUser user, UUID orderId, long version, Draft draft) {
         Order order = lockInScope(orderId);
+        ownership.requireMayActFor(user, order.customerId());
         SalesContract contract = live(order);
         // The state first (BR-14): a sent contract is not edited, whatever the schedule or plan sent with the edit.
         contract.requireRevisable(order);
@@ -254,6 +260,7 @@ class SalesContractService implements SalesContracts {
     public ContractView send(CurrentUser user, UUID orderId, long version) {
         SendStep first = tx.execute(status -> {
             Order order = lockInScope(orderId);
+            ownership.requireMayActFor(user, order.customerId());
             SalesContract contract = live(order, version);
             Instant now = clock.instant();
             contract.requireSendable(order, now);
@@ -276,6 +283,8 @@ class SalesContractService implements SalesContracts {
             StoredFile stored = prepared.single().file();
             return tx.execute(status -> {
                 Order order = lockInScope(orderId);
+                // Asked again under the lock: the customer may have moved to another salesperson while the PDF was drawn.
+                ownership.requireMayActFor(user, order.customerId());
                 SalesContract contract = live(order, version);
                 requireActiveCustomer(order);
                 requireCreditFor(order, contract);
@@ -366,7 +375,7 @@ class SalesContractService implements SalesContracts {
                 files.retainAfterCommit(stored.key(), RecordRetention.SALES_CONTRACT);
                 statusChanged(saved, order, sales, now);
                 followUps.contractCreditDecided(review.id(), order.id().value(), order.orderNumber().value(),
-                        saved.contractNumber(), sales, true);
+                        saved.contractNumber(), order.customerId(), sales, true);
                 log.info("Sales contract {} of order {}: credit approved by accounting, sent", saved.contractNumber(),
                         order.orderNumber());
                 return view(saved, order, creditWarning(order, saved));
@@ -388,7 +397,7 @@ class SalesContractService implements SalesContracts {
         SalesContract saved = contracts.save(contract);
         creditReviews.close(review.id(), ContractCreditReviews.Outcome.REJECTED, user.userId(), now, text);
         followUps.contractCreditDecided(review.id(), order.id().value(), order.orderNumber().value(),
-                saved.contractNumber(), review.submittedBy(), false);
+                saved.contractNumber(), order.customerId(), review.submittedBy(), false);
         log.info("Sales contract {} of order {}: credit refused by accounting, back to Sales", saved.contractNumber(),
                 order.orderNumber());
         return view(saved, order, draftWarning(order, saved));
@@ -399,6 +408,9 @@ class SalesContractService implements SalesContracts {
             details = "{orderId: #orderId}")
     public ContractView withdrawCreditReview(CurrentUser user, UUID orderId, long version) {
         Order order = lockInScope(orderId);
+        // 14 BR-25: withdrawing puts the contract back in Sales' hands, so it is the owner's step, as sending it was
+        // (a salesperson who lost the customer no longer pulls back what was sent for approval).
+        ownership.requireMayActFor(user, order.customerId());
         SalesContract contract = live(order, version);
         ContractCreditReviews.Review review = waitingReview(contract);
         contract.withdrawCreditReview();
@@ -544,6 +556,7 @@ class SalesContractService implements SalesContracts {
             details = "{orderId: #orderId, to: 'CANCELLED'}")
     public ContractView cancel(CurrentUser user, UUID orderId, long version, String reason) {
         Order order = lockInScope(orderId);
+        ownership.requireMayActFor(user, order.customerId());
         SalesContract contract = live(order, version);
         Instant now = clock.instant();
         contract.cancel(reason, now, user.userId());

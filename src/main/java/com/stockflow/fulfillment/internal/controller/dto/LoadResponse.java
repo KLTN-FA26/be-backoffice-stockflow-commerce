@@ -33,6 +33,7 @@ import java.util.UUID;
  * @param loadingStartedByName the display name of {@code loadingStartedBy}; null before loading started or if unknown
  * @param bookedByName         the display name of {@code bookedBy}; null while not booked or if unknown
  * @param warehouseCode        the code (prefix) of {@code warehouseId}; null only if the warehouse can no longer be read
+ * @param driverReleasedAt     last applied carrier report that the driver gave the trip back; null otherwise
  */
 public record LoadResponse(UUID loadId, String code, UUID warehouseId, String warehouseName, String status,
                            UUID carrierId,
@@ -51,7 +52,8 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String wa
                            String waybillNo, String carrierConnectionType,
                            @JsonInclude(JsonInclude.Include.NON_NULL) CarrierBooking carrierBooking,
                            @JsonInclude(JsonInclude.Include.NON_EMPTY) List<HandoverWarning> handoverWarnings,
-                           String loadingStartedByName, String bookedByName, String warehouseCode) {
+                           String loadingStartedByName, String bookedByName, String warehouseCode,
+                           @JsonInclude(JsonInclude.Include.NON_NULL) Instant driverReleasedAt) {
 
     /**
      * 4B-8 (kltn-docs 08 BR-11, 09 BR-18): an order on the vehicle whose goods may not leave yet, answered when loading

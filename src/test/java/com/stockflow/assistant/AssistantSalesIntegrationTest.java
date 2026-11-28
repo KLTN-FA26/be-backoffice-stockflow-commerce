@@ -226,7 +226,11 @@ class AssistantSalesIntegrationTest {
         CustomerSkuRows.Issued cups = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 10);
         ConfirmedOrders.Signed sold = new ConfirmedOrders(context).signed(DemoData.CUSTOMER_ID,
                 ConfirmedOrders.Line.cartons(cups, 2, 10_000));
-        CurrentUser salesUser = salesUser();
+        // Strict mode (14 BR-25): the demo customer's own salesperson drafts its quote.
+        UUID ownerId = jdbc.queryForObject("SELECT sales_owner_id FROM customer.customer WHERE id = ?", UUID.class,
+                DemoData.CUSTOMER_ID);
+        CurrentUser salesUser = new CurrentUser(ownerId, "sales-" + ownerId, Set.of(Role.SALES_STAFF), Set.of(),
+                DataScope.ALL, Set.of(), Set.of());
         Quotes.Line line = new Quotes.Line(cups.sku(), 3, List.of(new Quotes.Tier(1, new BigDecimal("8000"))));
         Quotes.Draft draft = new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), "Prices exclude VAT",
                 List.of(line));
@@ -244,9 +248,9 @@ class AssistantSalesIntegrationTest {
         assertThat(new BigDecimal(JsonPath.read(body, "$.data.lines[0].lastSoldUnitPrice").toString()))
                 .isEqualByComparingTo("10000");
         assertThat(JsonPath.<List<String>>read(body, "$.data.lines[0].flags")).contains("BELOW_LAST_SOLD");
-        assertThat(JsonPath.<Object>read(body, "$.data.credit"))
-                .as("the seeded Sales Manager does not hold customer-credit-profiles:READ: null, never zeros")
-                .isNull();
+        assertThat(JsonPath.<Object>read(body, "$.data.credit.outstanding"))
+                .as("the Sales Manager reads customers' credit (V20270127000500)")
+                .isNotNull();
 
         http.asRole(Role.SYSTEM_ADMIN, staff("SYSTEM_ADMIN"), get(BASE + "/quotes/" + quote.id() + "/price-review"))
                 .andExpect(status().isOk())
@@ -307,12 +311,6 @@ class AssistantSalesIntegrationTest {
                 INSERT INTO identity.user_role (id, user_id, role_id, version, created_at)
                 SELECT gen_random_uuid(), ?, id, 0, NOW() FROM identity.app_role WHERE code = ?""", user, role));
         return user;
-    }
-
-    private CurrentUser salesUser() {
-        UUID id = staff("SALES_STAFF");
-        return new CurrentUser(id, "sales-" + id, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL, Set.of(),
-                Set.of());
     }
 
     private void script(String text) {

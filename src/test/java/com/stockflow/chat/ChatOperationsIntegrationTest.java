@@ -41,7 +41,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Package 3's operations of the chat over HTTP with the real security chain and database (kltn-docs 16 §4.1, §5, BR-07,
- * BR-08, BR-09): routing to the customer's last agent, the first-response alert once, auto-close and the reopen window,
+ * BR-08, BR-09): routing to the customer's Sales owner, the first-response alert once, auto-close and the reopen window,
  * masking before storing, the edit window, saved replies with variables, the staff's search, the offline customer's
  * notice and the badges; internal notes reach none of the customer's answers (TC-F13-03).
  */
@@ -81,10 +81,11 @@ class ChatOperationsIntegrationTest {
     }
 
     @Test
-    @DisplayName("16 §4.1 step 2: no document owner - the Sales who served the customer last; nobody - the queue")
-    void routesToTheLastAgentThenTheQueue() throws Exception {
+    @DisplayName("16 §4.1 step 2 (2026-11-28, BR-12, BR-13): no Sales owner - the queue; the Sales who claims it is "
+            + "her owner and gets the next one; an owner who no longer answers customers - the queue")
+    void routesToTheOwnerThenTheQueue() throws Exception {
         UUID first = open("Lan dau");
-        assertThat(statusOf(first)).as("nobody served her yet: the queue").isEqualTo("QUEUED");
+        assertThat(statusOf(first)).as("nobody looks after her yet: the queue").isEqualTo("QUEUED");
         staff(Role.SALES_STAFF, otherSales, post(STAFF + "/" + first + "/claim")).andExpect(status().isOk());
         reply(otherSales, first, "Chao chi").andExpect(status().isCreated());
         move(otherSales, first, "RESOLVED");
@@ -92,7 +93,7 @@ class ChatOperationsIntegrationTest {
         UUID second = open("Lan hai");
         assertThat(statusOf(second)).isEqualTo("ASSIGNED");
         assertThat(jdbc.queryForObject("SELECT assigned_agent_id FROM chat.conversation WHERE id = ?", UUID.class,
-                second)).as("the agent who looked after her last").isEqualTo(otherSales);
+                second)).as("her owner since the claim").isEqualTo(otherSales);
 
         reply(otherSales, second, "Em day").andExpect(status().isCreated());
         move(otherSales, second, "RESOLVED");
@@ -174,7 +175,7 @@ class ChatOperationsIntegrationTest {
                 .andExpect(jsonPath("$.data.resolutionDueAt").doesNotExist())
                 .andExpect(jsonPath("$.data.resolutionOverdue").value(false));
 
-        UUID resolved = open("Hoi nhanh");   // routed to the Sales who looked after her last (16 §4.1 step 2.2)
+        UUID resolved = open("Hoi nhanh");   // routed to her owner: the Sales who claimed her first one (16 BR-13)
         reply(sales, resolved, "Da xong").andExpect(status().isCreated());
         move(sales, resolved, "RESOLVED");
         tx.executeWithoutResult(s -> jdbc.update("UPDATE chat.conversation SET resolution_due_at = NOW() -"

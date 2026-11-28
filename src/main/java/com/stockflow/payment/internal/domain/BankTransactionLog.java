@@ -45,8 +45,12 @@ public interface BankTransactionLog {
     /** RECEIVED transfers kept before {@code before}: left by a failure, for the catch-up to handle again. */
     List<UUID> stranded(Instant before);
 
-    /** Transfers in {@code statuses} (all when empty), newest first. */
-    Page search(Collection<BankTransactionStatus> statuses, Instant from, Instant to, int page, int size);
+    /**
+     * Transfers in {@code statuses} (all when empty), newest first; {@code amount}, when given, keeps the transfers of
+     * exactly that much (audit bo-25: the Accountant finds a transfer by the sum the customer says they sent).
+     */
+    Page search(Collection<BankTransactionStatus> statuses, Instant from, Instant to, java.math.BigDecimal amount,
+                int page, int size);
 
     /**
      * The installments whose contract is one of {@code contractNumbers} and whose seq is {@code seq}: what a transfer's

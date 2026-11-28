@@ -1,5 +1,7 @@
 package com.stockflow.order.internal.controller.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
@@ -18,10 +20,16 @@ import java.util.UUID;
  *                      the customer's copy while that order is still a DRAFT (its contract not yet sent, 17 §5.2)
  * @param priceReviewPending 14 BR-10: the draft waits for the Sales Manager to approve its prices; false on the
  *                      customer's copy
+ * @param convertedOrderStatus the status of that order now (an {@code OrderStatus} name), so the list tells an order
+ *                      under way from one cancelled without opening it; null exactly when {@code convertedOrderNumber} is
  */
 public record QuoteRowResponse(UUID id, String quoteNumber, UUID customerId, String status, int revision,
                                Instant validUntil, Instant sentAt, UUID convertedOrderId,
                                Instant createdAt, long version, BigDecimal total, Integer lineCount,
                                String firstItemName, String customerName, String customerCode,
-                               String convertedOrderNumber, boolean priceReviewPending) {
+                               String convertedOrderNumber, boolean priceReviewPending,
+                               @Schema(example = "CONFIRMED", description = "The status of the order the quote became "
+                                       + "(an order status name: DRAFT, PENDING_PAYMENT, CONFIRMED, ...); null when "
+                                       + "convertedOrderNumber is null. Parse tolerantly: more may come")
+                               String convertedOrderStatus) {
 }

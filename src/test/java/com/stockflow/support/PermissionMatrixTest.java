@@ -86,6 +86,14 @@ class PermissionMatrixTest {
                     + "token, no id taken from the request)"),
             Map.entry("GET /api/v1/customers/me/legal-profile", "R5-10: the caller's own legal profile, read-only (the "
                     + "customer resolved from the token; no id is taken from the request)"),
+            Map.entry("GET /api/v1/customers/me/sales-owner", "sales-owner plan 10.5: the caller's own salesperson, a "
+                    + "name only (the customer resolved from the token; no id is taken from the request)"),
+            Map.entry("GET /api/v1/customers/me/sales-options", "sales-owner plan 10.5 / D11: the names of the active "
+                    + "salespeople the caller may ask for, its own owner left out (no customer data, no id taken)"),
+            Map.entry("POST /api/v1/customers/me/sales-owner-change-requests", "sales-owner plan 10.5: a request for "
+                    + "the caller's own customer, resolved from the token; the body names no customer"),
+            Map.entry("GET /api/v1/customers/me/sales-owner-change-requests", "sales-owner plan 10.5: the caller's own "
+                    + "customer's requests, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)"),
             Map.entry("POST /api/v1/designs/mine", "starts a design for the caller's own customer (resolved from the "
                     + "token; no customer id is taken from the request)"),
@@ -111,6 +119,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/notifications/me/unread-count", "the caller's own unread count (recipient_id = the token's subject)"),
             Map.entry("POST /api/v1/notifications/me/read-all", "marks only the caller's own inbox read (recipient_id = the token's subject)"),
             Map.entry("GET /api/v1/quotes", "portal list: the caller's own customer's quotes, sent ones only (SCRUM-448)"),
+            Map.entry("GET /api/v1/quotes/status-counts",
+                    "counts of that same list: the caller's own customer's quotes, whatever customerId is sent"),
             Map.entry("GET /api/v1/catalog/products/availability",
                     "stock indicator of the caller's own ACTIVE customer's own SKUs, the customer taken from the token "
                             + "(SCRUM-429, 5-3)"),
@@ -141,6 +151,9 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/bank-transactions/webhooks/{provider}",
                     "public: the bank feed's webhook (SePay); its HMAC signature or API key is the authorisation (permitAll for POST, credit plan part C)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
+            Map.entry("POST /api/v1/public/leads", "public: the open-a-business-account form (sales-owner plan 10.7); "
+                    + "rate-limited per address, a honeypot, one answer for every outcome; it reads nobody's data "
+                    + "(permitAll for POST)"),
             Map.entry("GET /api/v1/production-order-files/{id}/slip",
                     "public: a producer's link to its production order slip; the HMAC-signed, time-limited link is the "
                             + "authorisation, checked again on use with the order still open (permitAll for GET, 4A-3)"),
@@ -758,6 +771,11 @@ class PermissionMatrixTest {
     }
 
     Object value(Class<?> type, String name, Handler h) {
+        // A batched read over many customers (GET /orders/sales-contacts) binds its ids before any guard runs: "x" would
+        // be a 400 from binding and prove nothing, so it is asked about the victim, as a single customerId is.
+        if (java.util.Collection.class.isAssignableFrom(type) && name.equals("customerIds")) {
+            return victimCustomer.toString();
+        }
         if (type == UUID.class || type == String.class) {
             UUID v = switch (name) {
                 case "customerId" -> victimCustomer;

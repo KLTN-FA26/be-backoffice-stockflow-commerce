@@ -117,7 +117,8 @@ class BankTransactionLogAdapter implements BankTransactionLog {
     }
 
     @Override
-    public Page search(Collection<BankTransactionStatus> statuses, Instant from, Instant to, int page, int size) {
+    public Page search(Collection<BankTransactionStatus> statuses, Instant from, Instant to,
+                       java.math.BigDecimal amount, int page, int size) {
         Specification<BankTransactionJpaEntity> spec = (root, query, cb) -> {
             List<Predicate> all = new ArrayList<>();
             if (statuses != null && !statuses.isEmpty()) {
@@ -128,6 +129,10 @@ class BankTransactionLogAdapter implements BankTransactionLog {
             }
             if (to != null) {
                 all.add(cb.lessThan(root.get("transactionAt"), to));
+            }
+            if (amount != null) {
+                // numeric = numeric: 660000 finds the transfer kept as 660000.0000.
+                all.add(cb.equal(root.get("amount"), amount));
             }
             return cb.and(all.toArray(Predicate[]::new));
         };

@@ -43,6 +43,25 @@ class PaymentServiceImpl implements PaymentService {
                 overdue.amount(), overdue.oldestDueDate());
     }
 
+    /** {@link #creditPosition} of many customers: one statement, and a zero position for whoever owes nothing. */
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, CreditPosition> creditPositions(java.util.Collection<UUID> customerIds) {
+        if (customerIds == null || customerIds.isEmpty()) {
+            return java.util.Map.of();
+        }
+        java.util.List<UUID> ids = customerIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        var owing = installmentBook.owing(ids, installments.today());
+        java.util.Map<UUID, CreditPosition> positions = new java.util.HashMap<>();
+        for (UUID id : ids) {
+            var owed = owing.getOrDefault(id, com.stockflow.payment.internal.domain.InstallmentBook.Owing.NOTHING);
+            var overdue = owed.overdue();
+            positions.put(id, new CreditPosition(owed.afterDeliveryUnpaid(), overdue.amount().signum() > 0,
+                    overdue.amount(), overdue.oldestDueDate()));
+        }
+        return positions;
+    }
+
     @Override
     public void openInstallments(com.stockflow.payment.api.ContractInstallments contract) {
         installments.open(contract);
@@ -59,6 +78,13 @@ class PaymentServiceImpl implements PaymentService {
     public java.util.Map<UUID, com.stockflow.payment.api.InstallmentStanding> installmentStandings(
             java.util.Collection<UUID> orderIds) {
         return installments.standings(orderIds);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, com.stockflow.payment.api.OrderPaymentAmounts> paymentAmounts(
+            java.util.Collection<UUID> orderIds) {
+        return installments.amounts(orderIds);
     }
 
     @Override

@@ -450,6 +450,9 @@ class DispatchLoadTest {
         assertThat(wrong.getMessage()).contains("vehicle 2").contains("LD-20261022-0002");
         assertThat(((BusinessException) wrong).fieldErrors()).extracting(f -> f.field() + "=" + f.message())
                 .contains("vehicleSeq=2", "loadCode=LD-20261022-0002");
+        assertThat(((BusinessException) wrong).details()).containsEntry("planCode", "LP-1")
+                .containsEntry("vehicleSeq", 2).containsEntry("loadCode", "LD-20261022-0002")
+                .containsEntry("packageStatus", "SEALED");
         assertThat(code(() -> load.scan(UUID.randomUUID(), placed(theirs, shipment,
                 new DispatchLoad.Placement(false, null, null, null)), DISPATCHER, NOW)))
                 .isEqualTo(ErrorCode.PACKAGE_NOT_IN_LOAD);

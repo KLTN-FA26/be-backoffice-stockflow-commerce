@@ -63,7 +63,7 @@ class CustomerDesignController {
 
     record StartRequest(@NotNull UUID productId, @NotBlank @Size(max = 64) String sku,
                         @NotBlank @Size(max = 50) String templateCode, @NotBlank @Size(max = 200) String name,
-                        @NotNull UUID projectId) {
+                        UUID projectId) {
     }
 
     record RenameRequest(@PositiveOrZero long version, @NotBlank @Size(max = 200) String name) {
@@ -77,8 +77,8 @@ class CustomerDesignController {
     }
 
     @PostMapping("/mine")
-    @Operation(summary = "Start a design on a variant's template, in one of the caller's open projects with room; "
-            + "the customer and owner are the caller")
+    @Operation(summary = "Start a design on a variant's template, in one of the caller's open projects with room if "
+            + "one is named (a project is optional, kltn-docs 12 BR-17); the customer and owner are the caller")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.CREATE)
     public ResponseEntity<ApiResponse<DesignDraftResponse>> start(@Valid @RequestBody StartRequest request,
                                                                   @AuthenticatedUser CurrentUser user) {

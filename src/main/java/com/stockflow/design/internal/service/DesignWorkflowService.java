@@ -162,6 +162,7 @@ public class DesignWorkflowService {
                 .getId();
         DesignProjectJpaEntity project = projects.lockForCopy(id, projectId, actor, source.getCustomerId());
         customerDesigns.requireRoomForDraft(source.getCustomerId());
+        projects.requireStillInNoProject(id, project);
         var draft = new DesignDraftJpaEntity(com.stockflow.common.id.Identifiers.newId(), source.getCustomerId(),
                 source.getProductId(), source.getName(), source.getSpec(), DesignStatus.DRAFT);
         draft.ownedBy(source.getOwnerUserId());

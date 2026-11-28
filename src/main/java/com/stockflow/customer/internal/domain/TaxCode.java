@@ -31,6 +31,18 @@ public final class TaxCode {
     private TaxCode() {
     }
 
+    /**
+     * The organisation a canonical tax code belongs to: its 10 digits, for an organisation's code (10) or one of its
+     * dependent units (10-3, Thông tư 86/2024/TT-BTC art. 5); null for a household business's 12 digits, which has no
+     * branches. Review finding P4: a branch is the same company, so it is the same salesperson's to take.
+     */
+    public static String root(String canonical) {
+        if (canonical == null || !canonical.matches("\\d{10}(-\\d{3})?")) {
+            return null;
+        }
+        return canonical.substring(0, 10);
+    }
+
     /** @throws IllegalArgumentException for anything that is not 10, 10-3 or 12 digits */
     public static String normalise(String raw) {
         if (raw == null || raw.isBlank()) throw new IllegalArgumentException("taxCode is required");

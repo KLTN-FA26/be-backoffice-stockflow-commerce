@@ -60,6 +60,37 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     }
 
     @Override
+    public java.util.Map<UUID, com.stockflow.customer.internal.domain.SalesOwner> salesOwners(
+            java.util.Collection<UUID> customerIds) {
+        java.util.Set<UUID> ids = customerIds == null ? java.util.Set.of() : customerIds.stream()
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        if (ids.isEmpty()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<UUID, com.stockflow.customer.internal.domain.SalesOwner> owners = new HashMap<>();
+        for (Object[] row : customers.findSalesOwners(ids)) {
+            owners.put((UUID) row[0], new com.stockflow.customer.internal.domain.SalesOwner((UUID) row[1],
+                    (com.stockflow.customer.api.SalesOwnerState) row[2], (java.time.Instant) row[3]));
+        }
+        return owners;
+    }
+
+    @Override
+    public java.util.List<UUID> idsOwnedBy(UUID userId, com.stockflow.customer.api.SalesOwnerState state) {
+        return userId == null ? java.util.List.of() : customers.findIdsOwnedBy(userId, state);
+    }
+
+    @Override
+    public java.util.List<UUID> idsWithTaxCodeRoot(String root) {
+        return root == null ? java.util.List.of() : customers.findIdsWithTaxCodeRoot(root, root + "-%");
+    }
+
+    @Override
+    public long countOwnedBy(UUID userId) {
+        return userId == null ? 0 : customers.countOwnedBy(userId);
+    }
+
+    @Override
     public Optional<Customer> findById(UUID id) {
         return customers.findById(id).map(this::withAddresses);
     }
@@ -82,6 +113,11 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
     @Override
     public boolean isTaxCodeTaken(String taxCode, UUID exceptCustomerId) {
         return customers.existsTaxCode(taxCode, exceptCustomerId);
+    }
+
+    @Override
+    public Optional<UUID> idByTaxCode(String taxCode) {
+        return taxCode == null ? Optional.empty() : customers.findIdByTaxCode(taxCode);
     }
 
     @Override
@@ -140,6 +176,13 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
 
     @Override
     public Page<CustomerSummary> search(String search, String status, UUID segmentId, Pageable pageable) {
+        return search(search, status, segmentId, null, null, false, pageable);
+    }
+
+    @Override
+    public Page<CustomerSummary> search(String search, String status, UUID segmentId, UUID salesOwnerId,
+                                        com.stockflow.customer.api.SalesOwnerState salesOwnerState,
+                                        boolean taxCodeMissing, Pageable pageable) {
         Specification<CustomerJpaEntity> specification = Specification
                 .<CustomerJpaEntity>where(Specs.contains("fullName", search))
                 .or(Specs.contains("email", search))
@@ -149,6 +192,15 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
                 .or(taxCodeIs(search));
         if (segmentId != null) {
             specification = specification.and(Specs.eq("segmentId", segmentId));
+        }
+        if (salesOwnerId != null) {
+            specification = specification.and(Specs.eq("salesOwnerId", salesOwnerId));
+        }
+        if (salesOwnerState != null) {
+            specification = specification.and(Specs.eq("salesOwnerState", salesOwnerState));
+        }
+        if (taxCodeMissing) {
+            specification = specification.and((root, query, cb) -> cb.isNull(root.get("taxCode")));
         }
         if (status != null && !status.isBlank()) {
             try {

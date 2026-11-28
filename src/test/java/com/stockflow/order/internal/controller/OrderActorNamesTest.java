@@ -56,7 +56,8 @@ class OrderActorNamesTest {
         when(identities.displayNames(any())).thenReturn(Map.of(heldBy, "Nguyen Sales"));
 
         CompletionHoldResponse hold = new OrderCompletionHoldController(holds, mock(OrderWarehouseVisibility.class),
-                identities).current(orderId, sales).data();
+                identities, mock(com.stockflow.order.internal.service.OrderOperations.class)).current(orderId, sales)
+                .data();
 
         assertThat(hold.heldByName()).isEqualTo("Nguyen Sales");
         assertThat(hold.releasedByName()).isNull();
@@ -82,7 +83,8 @@ class OrderActorNamesTest {
                 new WarehouseView(warehouseId, "HCM", "Kho HCM", "Somewhere", true)));
 
         List<DeliveryFailureCaseResponse> cases = new DeliveryFailureController(failures,
-                mock(OrderWarehouseVisibility.class), identities, customers, warehouses).list(null, 50, sales).data();
+                mock(OrderWarehouseVisibility.class), identities, customers, warehouses,
+                mock(com.stockflow.order.internal.service.OrderOperations.class)).list(null, 50, sales).data();
 
         assertThat(cases).hasSize(2).allSatisfy(c -> {
             assertThat(c.customerName()).isEqualTo("Cong ty A");

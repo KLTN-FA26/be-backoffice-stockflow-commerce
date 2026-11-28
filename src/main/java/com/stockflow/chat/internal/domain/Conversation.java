@@ -37,6 +37,9 @@ public final class Conversation extends AggregateRoot {
     /** {@code chat.conversation.csat_comment}. */
     public static final int MAX_CSAT_COMMENT = 2000;
 
+    /** The log's note on a conversation put back in the queue (BR-S08). A stored note, like every log note: English. */
+    public static final String REQUEUED_NOTE = "The agent's account was locked or disabled: back to the queue";
+
     /**
      * When a customer asking at a moment is due their first answer and the resolution of what they asked (BR-09),
      * worked out by the caller in business hours. Either may be null: that clock does not start.
@@ -56,7 +59,7 @@ public final class Conversation extends AggregateRoot {
                            Instant autoClosedAt, Instant closedAt, Instant reopenUntil,
                            Instant lastCustomerMessageAt, Instant lastMessageAt, long lastMessageSeq,
                            Integer csatScore, String csatComment, Instant csatSubmittedAt, UUID continuedFromId,
-                           UUID mergedIntoId, Instant createdAt, long version) {
+                           UUID mergedIntoId, Instant requeuedAt, Instant createdAt, long version) {
     }
 
     private final UUID id;
@@ -91,6 +94,7 @@ public final class Conversation extends AggregateRoot {
     private String csatComment;
     private Instant csatSubmittedAt;
     private UUID mergedIntoId;
+    private Instant requeuedAt;
     private final List<LogEntry> log = new ArrayList<>();
 
     private Conversation(Snapshot s) {
@@ -124,6 +128,7 @@ public final class Conversation extends AggregateRoot {
         this.csatSubmittedAt = s.csatSubmittedAt();
         this.continuedFromId = s.continuedFromId();
         this.mergedIntoId = s.mergedIntoId();
+        this.requeuedAt = s.requeuedAt();
         this.createdAt = s.createdAt();
         this.version = s.version();
     }
@@ -174,7 +179,7 @@ public final class Conversation extends AggregateRoot {
         Conversation c = new Conversation(new Snapshot(id, customerId, orderId, title, ConversationStatus.NEW,
                 opener.type(), opener.userId(), null, null, now, due.firstResponse(), null, null, due.resolution(),
                 null, null, null, null, null, null, null, null, null, null, 0, null, null, null, continuedFromId, null,
-                now, 0));
+                null, now, 0));
         c.record(continuedFromId == null ? ConversationEventType.OPENED : ConversationEventType.CONTINUED, opener, now,
                 null, null, null, continuedFromId == null ? null : "{\"continuedFrom\":\"" + continuedFromId + "\"}");
         return c;
@@ -198,14 +203,20 @@ public final class Conversation extends AggregateRoot {
 
     /**
      * An agent takes a conversation nobody has (16 §4.1 step 2: "agent rảnh"). A new or queued one becomes ASSIGNED; a
-     * reopened one that lost its agent keeps its status.
+     * reopened one that lost its agent keeps its status. Taking one that is already the caller's changes nothing: a
+     * retried claim, or one that lost the race to the owner change it caused (BR-S05: the claimer's other conversations
+     * of the customer follow them after commit).
      *
-     * @throws BusinessException {@code CHAT_ALREADY_ASSIGNED} when someone has it; {@code CHAT_CONVERSATION_ENDED} for
-     *                           a closed one
+     * @return whether the conversation was taken now; false when it was the caller's already
+     * @throws BusinessException {@code CHAT_ALREADY_ASSIGNED} when someone else has it; {@code CHAT_CONVERSATION_ENDED}
+     *                           for a closed one
      */
-    public void claim(Actor agent, Instant now) {
+    public boolean claim(Actor agent, Instant now) {
         requireStaff(agent);
         requireNotClosed();
+        if (agent.userId().equals(assignedAgentId)) {
+            return false;
+        }
         if (assignedAgentId != null) {
             throw new BusinessException(ErrorCode.CHAT_ALREADY_ASSIGNED);
         }
@@ -214,7 +225,93 @@ public final class Conversation extends AggregateRoot {
             move(ConversationStatus.ASSIGNED, agent, now, null);
         }
         record(ConversationEventType.CLAIMED, agent, now, null, agent.userId(), null, null);
+        return true;
     }
+
+    /**
+     * The customer's Sales owner changed (BR-S06, 16 BR-14): the system hands the conversation to the new owner, with
+     * the change written on its log line. It keeps its status (16 §5: only the agent changes); a queued one is ASSIGNED,
+     * since a conversation with an agent is never in the queue. Not done to an ended one, nor to one that is already
+     * the owner's.
+     *
+     * @param note       why, for the log line (the change's reason); may be null
+     * @param detailJson what the log line keeps besides (the change's owners and reason); may be null
+     * @return whether it moved
+     */
+    public boolean followOwner(UUID ownerId, String note, String detailJson, Instant now) {
+        Objects.requireNonNull(ownerId, "ownerId");
+        if (status.isEnded() || ownerId.equals(assignedAgentId)) {
+            return false;
+        }
+        UUID previous = assignedAgentId;
+        giveTo(ownerId, now);
+        if (status == ConversationStatus.NEW || status == ConversationStatus.QUEUED) {
+            move(ConversationStatus.ASSIGNED, Actor.system(), now, null);
+        }
+        record(previous == null ? ConversationEventType.ASSIGNED : ConversationEventType.TRANSFERRED, Actor.system(),
+                now, null, ownerId, note, detailJson);
+        return true;
+    }
+
+    /**
+     * The account of the agent on it was locked or disabled (BR-S08, 16 BR-14): an open conversation goes back to the
+     * queue whatever its state, flagged so it is shown first ({@link #requeuedAt}), with its contexts, notes and log -
+     * they are the conversation's. Whoever takes it next clears the flag. Nothing happens to an ended conversation (it
+     * has nobody to wait for) nor to one that is not {@code agentId}'s: a redelivered event finds nothing left to do.
+     *
+     * @return whether it went back to the queue
+     */
+    public boolean requeueFrom(UUID agentId, Instant now) {
+        if (agentId == null || !agentId.equals(assignedAgentId) || status.isEnded()) {
+            return false;
+        }
+        assignedAgentId = null;
+        assignedAt = null;
+        requeuedAt = now;
+        move(ConversationStatus.QUEUED, Actor.system(), now, REQUEUED_NOTE);
+        record(ConversationEventType.QUEUED, Actor.system(), now, null, null, REQUEUED_NOTE,
+                "{\"previousAgent\":\"" + agentId + "\",\"reason\":\"AGENT_DEACTIVATED\"}");
+        return true;
+    }
+
+    /**
+     * The customer reopened the conversation (16 §5): it goes back to whoever looks after the customer now, not to
+     * whoever had it when it ended. An ended conversation is left out when the owner changes ({@link #followOwner})
+     * and when its agent's account stops working ({@link #requeueFrom}), so the agent it kept may be someone who no
+     * longer looks after the customer - a former owner after a transfer - or nobody at all - a locked account. Done by
+     * the system, after the reopening is stored (the database judges one move at a time):
+     * <ul>
+     *   <li>the customer's acting salesperson (owner or cover, who answers customers) gets it, keeping REOPENED;</li>
+     *   <li>with none, an agent who no longer answers customers gives it back to the queue, flagged first as
+     *       {@link #requeueFrom} does (BR-S08);</li>
+     *   <li>with none, an agent who still answers keeps it: the customer has nobody else (a manager who served a
+     *       customer without an owner, say), and the queue would take it from the one person who knows it.</li>
+     * </ul>
+     *
+     * @param actingAgent    the customer's acting salesperson who answers customers; null when there is none
+     * @param agentAnswers   whether the agent on it still answers customers
+     * @return whether it changed hands
+     */
+    public boolean rerouteOnReopen(UUID actingAgent, boolean agentAnswers, Instant now) {
+        if (status != ConversationStatus.REOPENED) {
+            return false;
+        }
+        UUID previous = assignedAgentId;
+        if (actingAgent != null) {
+            if (actingAgent.equals(previous)) {
+                return false;
+            }
+            giveTo(actingAgent, now);
+            record(previous == null ? ConversationEventType.ASSIGNED : ConversationEventType.TRANSFERRED,
+                    Actor.system(), now, null, actingAgent, REOPEN_REROUTED_NOTE, previous == null ? null
+                            : "{\"previousAgent\":\"" + previous + "\",\"reason\":\"REOPENED\"}");
+            return true;
+        }
+        return previous != null && !agentAnswers && requeueFrom(previous, now);
+    }
+
+    /** The log's note on a reopened conversation handed to whoever looks after the customer now. English, stored. */
+    public static final String REOPEN_REROUTED_NOTE = "Reopened: handed to whoever looks after the customer now";
 
     /**
      * Hands the conversation to {@code agentId}: a supervisor assigns one nobody has (16 §2), the agent in charge or a
@@ -594,7 +691,7 @@ public final class Conversation extends AggregateRoot {
                 assignedAt, statusChangedAt, firstResponseDueAt, firstRespondedAt, firstResponseAlertedAt,
                 resolutionDueAt, resolutionAlertedAt, escalationReason, escalatedToId, resolvedAt, resolvedBy,
                 autoClosedAt, closedAt, reopenUntil, lastCustomerMessageAt, lastMessageAt, lastMessageSeq, csatScore,
-                csatComment, csatSubmittedAt, continuedFromId, mergedIntoId, createdAt, version);
+                csatComment, csatSubmittedAt, continuedFromId, mergedIntoId, requeuedAt, createdAt, version);
     }
 
     private void move(ConversationStatus target, Actor by, Instant now, String note) {
@@ -627,9 +724,11 @@ public final class Conversation extends AggregateRoot {
         }
     }
 
+    /** Someone has the conversation now: the queue's flag (BR-S08) means nothing any more. */
     private void giveTo(UUID agentId, Instant now) {
         assignedAgentId = agentId;
         assignedAt = now;
+        requeuedAt = null;
     }
 
     private long next(Instant now) {
@@ -696,6 +795,8 @@ public final class Conversation extends AggregateRoot {
     public long lastMessageSeq() { return lastMessageSeq; }
     public Instant lastMessageAt() { return lastMessageAt; }
     public UUID continuedFromId() { return continuedFromId; }
+    /** When it went back to the queue because its agent's account stopped working (BR-S08); null otherwise. */
+    public Instant requeuedAt() { return requeuedAt; }
     public Instant createdAt() { return createdAt; }
     public long version() { return version; }
 }

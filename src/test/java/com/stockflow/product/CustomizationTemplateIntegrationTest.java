@@ -525,6 +525,30 @@ class CustomizationTemplateIntegrationTest {
 
     }
 
+    /**
+     * WF4 UX audit S08-2 (BE#479): a cup band stored the way the demo seeds write it, {@code {"type":
+     * "annular-sector"}} with no numbers, is read as the cup model computes it: the storefront gets the same answer it
+     * got before the numbers were taken out, not a 400.
+     */
+    @Test
+    void aCupBandStoredWithNoNumbersStillOpensTheStudio() throws Exception {
+        JsonNode created = data(createWithFile(cup("CUP12-BODY", 2, null)).andExpect(status().isCreated()));
+        activate(created.get("templateId").asText(), created.get("version").asLong())
+                .andExpect(status().isOk());
+        String slug = publish(productId, sku);
+        JsonNode complete = data(mvc.perform(get("/api/v1/catalog/products/" + slug + "/customization"))
+                .andExpect(status().isOk())).get("templates").get(0).get("printAreas").get(0).get("shape");
+        assertThat(complete.get("innerRadiusMm").asDouble()).isPositive();
+
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.print_areas SET shape_json = "
+                + "'{\"type\": \"annular-sector\"}'::jsonb WHERE template_id = ?::uuid",
+                created.get("templateId").asText()));
+
+        JsonNode stripped = data(mvc.perform(get("/api/v1/catalog/products/" + slug + "/customization"))
+                .andExpect(status().isOk())).get("templates").get(0).get("printAreas").get(0).get("shape");
+        assertThat(stripped).isEqualTo(complete);
+    }
+
     /** Publishes a product straight in the source, as the catalogue search tests do, and returns its listing's slug. */
     private String publish(UUID product, String variantSku) {
         tx.executeWithoutResult(s -> {

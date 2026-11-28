@@ -326,8 +326,10 @@ class SalesContractIntegrationTest {
 
         assertThat(jdbc.queryForObject("SELECT status::text FROM ordering.sales_contract WHERE id = ?", String.class,
                 sent.id())).isEqualTo("CANCELLED");
+        // The registry keeps one row per listener (chat's card, customer's SalesContactListener since 2026-11-28):
+        // one announcement is one distinct event, however many listen to it.
         assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM event_publication
+                SELECT count(DISTINCT serialized_event) FROM event_publication
                 WHERE event_type LIKE '%SalesContractStatusChanged' AND serialized_event LIKE ?
                   AND serialized_event LIKE '%CANCELLED%'""", Long.class, "%" + sent.id() + "%"))
                 .as("one announcement of the cancelled contract").isEqualTo(1);

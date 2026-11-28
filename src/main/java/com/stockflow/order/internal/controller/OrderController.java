@@ -72,6 +72,13 @@ import java.util.UUID;
         actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.EXPORT})
 class OrderController {
 
+    /**
+     * The payment module's installments resource. Its permission decides whether a reader of the order list also reads
+     * what each order paid and owes (audit bo-17): the warehouse manager and the production coordinator read orders but
+     * not installments, and the list must not hand them what {@code GET /api/v1/installments/orders/{orderId}} refuses.
+     */
+    static final String PAYMENT_INSTALLMENTS = "payment-installments";
+
     private final OrderService orderService;
     private final CustomerService customerService;
     private final CustomerOrders customerOrders;
@@ -83,6 +90,9 @@ class OrderController {
     private final com.stockflow.order.internal.service.OrderSources sources;
     private final com.stockflow.order.internal.service.OrderSettlementService settlements;
     private final com.stockflow.warehouse.api.WarehouseService warehouses;
+    private final com.stockflow.payment.api.PaymentService payments;
+    /** 17 BR-32: staff cancellations and closures, recorded as done on the owner's behalf; the "làm hộ" history. */
+    private final com.stockflow.order.internal.service.OrderOperations operations;
 
     OrderController(OrderService orderService, CustomerService customerService,
                     CustomerOrders customerOrders,
@@ -92,7 +102,11 @@ class OrderController {
                     com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility,
                     com.stockflow.order.internal.service.OrderSources sources,
                     com.stockflow.order.internal.service.OrderSettlementService settlements,
-                    com.stockflow.warehouse.api.WarehouseService warehouses) {
+                    com.stockflow.warehouse.api.WarehouseService warehouses,
+                    com.stockflow.payment.api.PaymentService payments,
+                    com.stockflow.order.internal.service.OrderOperations operations) {
+        this.operations = operations;
+        this.payments = payments;
         this.warehouses = warehouses;
         this.sources = sources;
         this.settlements = settlements;
@@ -161,7 +175,7 @@ class OrderController {
             CancelOrderCommand command = request != null && request.reasonCode() != null
                     ? new CancelOrderCommand(request.reasonCode(), request.note(), null, user.userId())
                     : CancelOrderCommand.fromText(reason == null ? "CUSTOMER_REQUEST" : reason, user.userId());
-            var order = orderService.cancel(orderId, command);
+            var order = operations.cancel(orderId, command);
             return org.springframework.http.ResponseEntity.ok(ApiResponse.ok(new CancellationResultResponse(
                     CancellationOutcome.Result.CANCELLED.name(), null, OrderWebMapper.toResponse(order))));
         }
@@ -208,7 +222,7 @@ class OrderController {
         } else {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "reasonCode is required");
         }
-        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.cancel(orderId, command)));
+        return ApiResponse.ok(OrderWebMapper.toResponse(operations.cancel(orderId, command)));
     }
 
     /**
@@ -228,7 +242,7 @@ class OrderController {
                                                      @Valid @RequestBody CloseRemainderRequest request,
                                                      @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.closeRemainder(orderId, request.reasonCode(),
+        return ApiResponse.ok(OrderWebMapper.toResponse(operations.closeRemainder(orderId, request.reasonCode(),
                 request.note(), OrderWebMapper.toFee(request.agreedFee()), user.userId())));
     }
 
@@ -238,6 +252,11 @@ class OrderController {
      * to warehouses - the warehouse manager, since team plan 5-7 - lists only the orders shipping from or released to
      * their warehouses ({@code OrderWarehouseVisibility}), none when assigned none.
      * Parameters follow FE #12: {@code search}, {@code status} repeated, {@code sort=field,dir}.
+     *
+     * <p>Audit bo-17: each row carries what the order paid, still owes and owes past its due day, read for the whole
+     * page in one batch from the payment module - the list would otherwise call the order's installments once per row.
+     * Only for a caller who reads installments ({@link #PAYMENT_INSTALLMENTS}); null for anyone else, and for an order
+     * with no installments yet.</p>
      */
     @GetMapping
     @Operation(summary = "List orders for the back office: search, status, customer, placed date, sort")
@@ -264,8 +283,12 @@ class OrderController {
         // And one for their warehouses.
         var sites = warehouses.findWarehouses(found.items().stream().map(OrderSummary::warehouseId)
                 .filter(java.util.Objects::nonNull).distinct().toList());
-        return ApiResponse.ok(found.map(order -> OrderWebMapper.withWarehouse(OrderWebMapper.toResponse(order,
-                OrderWebMapper.labelOf(labels, order.customerId())), sites)));
+        // And one for what they paid and owe, for a caller who may read it.
+        var money = user.can(PAYMENT_INSTALLMENTS, Action.READ)
+                ? payments.paymentAmounts(found.items().stream().map(OrderSummary::orderId).toList())
+                : java.util.Map.<UUID, com.stockflow.payment.api.OrderPaymentAmounts>of();
+        return ApiResponse.ok(found.map(order -> OrderWebMapper.withPayment(OrderWebMapper.withWarehouse(
+                OrderWebMapper.toResponse(order, OrderWebMapper.labelOf(labels, order.customerId())), sites), money)));
     }
 
     @GetMapping("/{orderId}/history")
@@ -300,12 +323,17 @@ class OrderController {
         // WF04 G2: and so are Sales' changes of the delivery address (ADDRESS_CHANGE), before the first label.
         List<com.stockflow.order.internal.service.ShippingAddressChanges.Change> addresses =
                 addressChanges.changes(orderId);
+        // 17 BR-32: and so is the work someone did for the customer's owner (ON_BEHALF, "làm hộ").
+        List<com.stockflow.order.internal.service.OrderOperations.OnBehalfEntry> onBehalf =
+                operations.onBehalfHistory(orderId);
         java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.of(
                         changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
                         decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy),
                         closures.stream().map(com.stockflow.order.api.RemainderClosure::closedBy),
                         addresses.stream().map(com.stockflow.order.internal.service.ShippingAddressChanges.Change::changedBy),
-                        voids.stream().map(com.stockflow.order.internal.service.OrderSettlementService.RefundVoid::voidedBy))
+                        voids.stream().map(com.stockflow.order.internal.service.OrderSettlementService.RefundVoid::voidedBy),
+                        onBehalf.stream().flatMap(entry -> java.util.stream.Stream.of(entry.actorId(),
+                                entry.actingForUserId())))
                 .flatMap(stream -> stream)
                 .filter(java.util.Objects::nonNull).distinct().toList());
         // Listed first so that a closure and the status change it caused, stamped alike, read closure first.
@@ -325,7 +353,10 @@ class OrderController {
                         change.changedAt(), change.changedBy(), names.get(change.changedBy()))),
                 voids.stream().map(voided -> OrderStatusChangeResponse.refundVoided(voided.reason(),
                         voided.voidedAt(), voided.voidedBy(),
-                        voided.voidedBy() == null ? null : names.get(voided.voidedBy()))))
+                        voided.voidedBy() == null ? null : names.get(voided.voidedBy()))),
+                onBehalf.stream().map(entry -> OrderStatusChangeResponse.onBehalf(entry.action(), entry.actedAt(),
+                        entry.actorId(), names.get(entry.actorId()), entry.actingForUserId(),
+                        entry.actingForUserId() == null ? null : names.get(entry.actingForUserId()))))
                 .flatMap(stream -> stream)
                 .sorted(java.util.Comparator.comparing(OrderStatusChangeResponse::occurredAt))
                 .toList());

@@ -41,11 +41,14 @@ class CustomerController {
 
     private final CustomerService customers;
     private final com.stockflow.customer.internal.service.CustomerLegalProfileService legalProfiles;
+    private final com.stockflow.customer.internal.service.SalesOwnerViews owners;
 
     CustomerController(CustomerService customers,
-                       com.stockflow.customer.internal.service.CustomerLegalProfileService legalProfiles) {
+                       com.stockflow.customer.internal.service.CustomerLegalProfileService legalProfiles,
+                       com.stockflow.customer.internal.service.SalesOwnerViews owners) {
         this.customers = customers;
         this.legalProfiles = legalProfiles;
+        this.owners = owners;
     }
 
     @GetMapping("/me")
@@ -116,11 +119,32 @@ class CustomerController {
             @RequestParam(name = "q", required = false) String search,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String sort,
-            @RequestParam(required = false) UUID segmentId) {
+            @RequestParam(required = false) UUID segmentId,
+            @RequestParam(required = false) UUID salesOwnerId,
+            @RequestParam(required = false) Boolean mine,
+            @RequestParam(required = false) String salesOwnerState,
+            @RequestParam(required = false) Boolean taxCodeMissing) {
         requireStaff(user);
+        // Sales-owner plan BR-S11: "my customers" is the caller's own; the contract's other filters as given.
         var query = new ListCustomersQuery(page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
-                search, status, sort, segmentId);
-        return ApiResponse.ok(customers.list(query).map(CustomerWebMapper::toMaskedResponse));
+                search, status, sort, segmentId, Boolean.TRUE.equals(mine) ? user.userId() : salesOwnerId,
+                ownerState(salesOwnerState), taxCodeMissing);
+        var found = customers.list(query);
+        var columns = owners.columns(found.items().stream()
+                .map(com.stockflow.customer.api.CustomerSummary::customerId).toList());
+        return ApiResponse.ok(found.map(summary -> CustomerWebMapper.toMaskedResponse(summary,
+                columns.get(summary.customerId()))));
+    }
+
+    private static com.stockflow.customer.api.SalesOwnerState ownerState(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return com.stockflow.customer.api.SalesOwnerState.valueOf(value.strip());
+        } catch (IllegalArgumentException unknown) {
+            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown sales owner state " + value);
+        }
     }
 
     @GetMapping("/{customerId}")
@@ -128,7 +152,10 @@ class CustomerController {
     public ApiResponse<CustomerResponse> findOne(@PathVariable UUID customerId,
                                                  @AuthenticatedUser CurrentUser user) {
         requireStaff(user);
-        return customers.findById(customerId).map(CustomerWebMapper::toResponse).map(ApiResponse::ok)
+        return customers.findById(customerId)
+                .map(summary -> CustomerWebMapper.toResponse(summary, owners.columns(List.of(customerId))
+                        .get(customerId)))
+                .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
     }
 

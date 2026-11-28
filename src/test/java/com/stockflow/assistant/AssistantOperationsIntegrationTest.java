@@ -172,6 +172,8 @@ class AssistantOperationsIntegrationTest {
         CustomerSkuRows.Issued sku = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 50);
         UUID orderId = orders.draft(DemoData.CUSTOMER_ID, List.of(ConfirmedOrders.Line.cartons(sku, 2, 1_000)));
         orders.legalProfile(DemoData.CUSTOMER_ID);
+        // Strict mode (14 BR-25): the fixture's salesperson draws the contract up as the customer's owner.
+        orders.ownCustomer(DemoData.CUSTOMER_ID);
         UUID line = jdbc.queryForObject("select id from ordering.order_line where order_id = ?", UUID.class,
                 orderId);
         LocalDate today = LocalDate.now(VIETNAM);

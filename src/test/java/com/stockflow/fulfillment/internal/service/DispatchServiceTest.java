@@ -84,9 +84,11 @@ class DispatchServiceTest {
     private final LeftBehindParcels leftBehind = mock(LeftBehindParcels.class);
     private final com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository waybillChanges =
             mock(com.stockflow.fulfillment.internal.repository.WaybillChangeJpaRepository.class);
+    private final com.stockflow.fulfillment.internal.repository.CarrierEventJpaRepository carrierEvents =
+            mock(com.stockflow.fulfillment.internal.repository.CarrierEventJpaRepository.class);
     private final DispatchService service = new DispatchService(loads, members, loaded, store, numbers, shipments, locks,
             packages, packageLines, picks, carriers, timeline, context, orders, warehouses, identities, planVehicles,
-            leftBehind, new Waybills(loads, waybillChanges, mock(jakarta.persistence.EntityManager.class, org.mockito.Mockito.RETURNS_DEEP_STUBS)), waybillChanges, mock(com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository.class),
+            leftBehind, new Waybills(loads, waybillChanges, mock(jakarta.persistence.EntityManager.class, org.mockito.Mockito.RETURNS_DEEP_STUBS)), waybillChanges, mock(com.stockflow.fulfillment.internal.repository.CarrierBookingJpaRepository.class), carrierEvents,
             mock(VehicleRelayout.class), org.springframework.transaction.support.TransactionOperations.withoutTransaction(),
             Clock.fixed(NOW, ZoneOffset.UTC));
 
@@ -232,7 +234,18 @@ class DispatchServiceTest {
             assertThat(parcels).extracting(Dispatching.LoadParcel::labelCode, Dispatching.LoadParcel::lpn)
                     .containsExactlyInAnyOrder(
                             org.assertj.core.groups.Tuple.tuple("PKG-1", "LPN-20261117-000008"),
-                            org.assertj.core.groups.Tuple.tuple("PKG-2", null));
+                    org.assertj.core.groups.Tuple.tuple("PKG-2", null));
+        }
+
+        @Test
+        @DisplayName("the load detail exposes the last applied driver release to every trip viewer")
+        void detailCarriesDriverRelease() {
+            ghn.connect("API_BOOKING", true, null, null, null, null, null, null, null, java.util.Map.of());
+            load.carrierReleasedDriver();
+            header.apply(load.snapshot());
+            when(carrierEvents.lastDriverReleasedAt(load.id())).thenReturn(NOW.minusSeconds(120));
+
+            assertThat(service.get(load.id()).driverReleasedAt()).isEqualTo(NOW.minusSeconds(120));
         }
     }
 
@@ -282,6 +295,33 @@ class DispatchServiceTest {
         }
 
         @Test
+        @DisplayName("an LPN of a carton still at Carton Check reports its real status")
+        void unlabeledLpn() {
+            PackageJpaEntity carton = PackageJpaEntity.carton(UUID.randomUUID(), UUID.randomUUID(), 1,
+                    "SO-1-C1", UUID.randomUUID(), "LPN-1");
+            when(packages.findUnlabeledByLpn("LPN-1")).thenReturn(List.of(carton));
+
+            var thrown = refusal(() -> service.scan(load.id(), UUID.randomUUID(), "LPN-1", actor));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PACKAGE_NOT_READY);
+            assertThat(thrown.details()).containsEntry("packageStatus", "TO_CHECK");
+        }
+
+        @Test
+        @DisplayName("an LPN of an unlabeled carton in another warehouse stays unknown")
+        void unlabeledLpnOutsideScope() {
+            PackageJpaEntity carton = PackageJpaEntity.carton(UUID.randomUUID(), UUID.randomUUID(), 1,
+                    "SO-1-C1", UUID.randomUUID(), "LPN-1");
+            when(packages.findUnlabeledByLpn("LPN-1")).thenReturn(List.of(carton));
+            when(picks.warehouseOfPack(carton.getPackId())).thenReturn(Optional.of(OTHER_WAREHOUSE));
+
+            WithCurrentUser.run(FulfillmentFixtures.userOf(WAREHOUSE), DataScope.WAREHOUSE, () -> {
+                var thrown = refusal(() -> service.scan(load.id(), UUID.randomUUID(), "LPN-1", actor));
+                assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PACKAGE_NOT_FOUND);
+            });
+        }
+
+        @Test
         @DisplayName("a parcel already loaded on another load is PACKAGE_ALREADY_LOADED, naming it")
         void alreadyOnAnotherLoad() {
             UUID otherId = UUID.randomUUID();
@@ -296,6 +336,9 @@ class DispatchServiceTest {
 
             assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PACKAGE_ALREADY_LOADED);
             assertThat(thrown.getMessage()).contains("LD-OTHER");
+            assertThat(thrown.details()).containsEntry("loadCode", "LD-OTHER")
+                    .containsEntry("shipmentCode", row.getCode())
+                    .containsEntry("shipmentStatus", "READY_TO_DISPATCH");
         }
 
         @Test

@@ -11,8 +11,9 @@ import java.util.UUID;
  *
  * @param number            the document's own number (quote, order, contract number; production order code)
  * @param status            the order module's name of its status, e.g. {@code SENT}, {@code CONFIRMED}
- * @param responsibleUserId the Sales account that answers for it - who sent the quote or contract, or the quote an
- *                          order or production order came from; null when none is known
+ * @param responsibleUserId the Sales account that answers for it: whoever looks after its customer today, the owner or
+ *                          the owner's cover (sales-owner plan 2026-11-28, 18 BR-20) - not who sent it; null when the
+ *                          customer has no active owner
  * @param amount            the order's total; null for the other kinds, whose amounts are per line or per instalment
  * @param currency          the currency of {@code amount}; null with it
  */

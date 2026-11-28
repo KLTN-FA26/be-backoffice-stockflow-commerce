@@ -20,12 +20,14 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.identity.api.SalesStaff;
 import com.stockflow.payment.api.PaymentService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +64,8 @@ public class StaffChatService {
     private final ChatMessageRepository messages;
     private final CannedResponses canned;
     private final PaymentService payments;
+    private final ChatOwnership ownership;
+    private final SalesStaff salesStaff;
     private final Clock clock;
 
     public StaffChatService(ChatCallers callers, ConversationRepository conversations, ConversationWriter writer,
@@ -69,7 +73,9 @@ public class StaffChatService {
                             ChatPresence presence, ChatViews views, CustomerService customers,
                             ChatBroadcaster broadcaster, ChatProperties properties, ChatCards cards,
                             ChatMessageRepository messages, CannedResponses canned, PaymentService payments,
-                            Clock clock) {
+                            ChatOwnership ownership, SalesStaff salesStaff, Clock clock) {
+        this.ownership = ownership;
+        this.salesStaff = salesStaff;
         this.cards = cards;
         this.messages = messages;
         this.canned = canned;
@@ -112,8 +118,11 @@ public class StaffChatService {
     }
 
     /**
-     * Sales open a conversation with a customer themselves (16 §4.1 step 1), about a document of that customer
-     * (BR-02), and have it: it is assigned to the opener when they answer customers.
+     * Staff open a conversation with a customer themselves (16 §4.1 step 1), about a document of that customer
+     * (BR-02). Strict mode (16 BR-12, sales-owner plan BR-S12): the customer's owner, their cover today, a manager or a
+     * chat supervisor - anyone when the customer has no active owner; another salesperson is refused
+     * {@code CUSTOMER_OWNED_BY_OTHER_SALES}. The owner or cover who opens it has it; opened by a manager it goes to
+     * whoever acts for the customer, one customer one contact ({@link ChatOwnership#agentForOpening}).
      */
     public ChatConversationView open(CurrentUser user, UUID customerId, String subject, ContextRef about,
                                      String text, String clientMessageId) {
@@ -121,9 +130,9 @@ public class StaffChatService {
         if (customerId == null || customers.findById(customerId).isEmpty()) {
             throw new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND);
         }
+        UUID assignTo = ownership.agentForOpening(staff, customerId);
         List<ContextResolver.Resolved> resolved = about == null ? List.of()
                 : List.of(contexts.requireOwnedBy(about, customerId, false));
-        UUID assignTo = agents.answersCustomers(staff.userId()) ? staff.userId() : null;
         Conversation c = writer.open(customerId, subject, staff, resolved, assignTo, null);
         if (text != null && !text.isBlank()) {
             reply(c, staff, text, clientMessageId, null);
@@ -196,13 +205,20 @@ public class StaffChatService {
         return view;
     }
 
-    /** The caller takes a conversation nobody has (16 §4.1 step 2). */
+    /**
+     * The caller takes a conversation nobody has (16 §4.1 step 2). A salesperson who takes one of a customer with no
+     * active owner becomes the owner (16 BR-13, BR-S05); one of a customer another salesperson owns is refused
+     * {@code CUSTOMER_UNASSIGNED_CLAIM_ONLY} (case 18) - see {@link ChatOwnership#claimed}. Taking one that is the
+     * caller's already changes nothing.
+     */
     public ChatConversationView claim(CurrentUser user, UUID conversationId) {
         Actor staff = callers.staff(user);
         Conversation c = writer.lock(conversationId);
         UUID before = c.assignedAgentId();
-        c.claim(staff, clock.instant());
-        writer.save(c, before);
+        if (c.claim(staff, clock.instant())) {
+            ownership.claimed(staff, c);
+            writer.save(c, before);
+        }
         return views.detail(c, user.userId(), staff);
     }
 
@@ -297,6 +313,25 @@ public class StaffChatService {
         return ids.stream().map(id -> new ChatAgentView(id, names.get(id), presence.isOnline(id)))
                 .sorted(Comparator.comparing(ChatAgentView::online).reversed()
                         .thenComparing(agent -> agent.name() == null ? "" : agent.name()))
+                .toList();
+    }
+
+    /**
+     * The managers' board (sales-owner plan §10.4): every active salesperson, and anyone else who still has an open
+     * conversation, with how many open conversations they have and how many of them are overdue (BR-09). The counts are
+     * one grouped statement; the busiest first.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAgentLoadView> workload(CurrentUser user) {
+        callers.staff(user);
+        Map<UUID, ChatAgentLoadView> rows = new LinkedHashMap<>();
+        salesStaff.activeSalesAgents().forEach(agent -> rows.put(agent.userId(),
+                new ChatAgentLoadView(agent.userId(), 0, 0)));
+        conversations.openLoad(clock.instant()).forEach(load -> rows.put(load.agentId(),
+                new ChatAgentLoadView(load.agentId(), load.open(), load.overdue())));
+        return rows.values().stream()
+                .sorted(Comparator.comparingLong(ChatAgentLoadView::openConversations).reversed()
+                        .thenComparing(row -> row.userId().toString()))
                 .toList();
     }
 

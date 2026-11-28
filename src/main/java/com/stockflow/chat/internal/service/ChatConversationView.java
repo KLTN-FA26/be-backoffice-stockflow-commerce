@@ -40,6 +40,9 @@ import java.util.UUID;
  * @param canClaim            whether the staff caller may take it now (nobody has it); null as {@code canReply}
  * @param canAssign           whether the staff caller may hand it to someone ({@code POST .../assignment}): a chat
  *                            supervisor, or the agent in charge their own; null as {@code canReply}
+ * @param priority            whether it is back in the queue because its agent's account was locked or disabled
+ *                            (BR-S08, 16 BR-14): shown first in the queue; false once someone has it, and always for a
+ *                            customer
  */
 public record ChatConversationView(UUID id, UUID customerId, String customerName, String subject,
                                    ConversationStatus status, Set<ConversationStatus> nextStatuses,
@@ -52,7 +55,7 @@ public record ChatConversationView(UUID id, UUID customerId, String customerName
                                    List<ChatReadMarkerView> readMarkers, boolean withinBusinessHours,
                                    Instant expectedResponseAt, Instant resolvedAt, boolean canRate, Integer csatScore,
                                    String csatComment, Instant csatSubmittedAt, Boolean canReply, Boolean canClaim,
-                                   Boolean canAssign) {
+                                   Boolean canAssign, boolean priority) {
 
     /**
      * A document the conversation is about.
