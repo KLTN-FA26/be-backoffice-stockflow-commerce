@@ -25,11 +25,13 @@ public interface LoadPlans {
      * (null when it holds none or several): the line the dispatcher ticks as filler cargo (RTM-LPGROUP). {@code fill}:
      * filler cargo of a PRIORITY_FILL plan. {@code productName}: what the SKU(s) of {@code partName} are called (the
      * variant name, joined by " + " as the SKUs are); null when the parcel holds no order line or a name is unknown.
+     * {@code lpn}: the carton's LPN (kltn-docs 08 BR-02), the code the screens and the loading sheet show first;
+     * {@code labelCode} stays as the small secondary code (null if none).
      */
     record ParcelView(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String partName,
                       int lengthMm, int widthMm, int heightMm, BigDecimal weightKg, boolean rotatable,
                       Integer vehicleSeq, String unplacedReason, UUID orderLineId, boolean fill,
-                      String productName) { }
+                      String productName, String lpn) { }
 
     /**
      * A full-truckload shipment waiting for dispatch with the parcels no live plan holds (LP-5: chosen whole).
