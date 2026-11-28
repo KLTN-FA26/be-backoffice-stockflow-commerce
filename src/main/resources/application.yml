@@ -194,10 +194,18 @@ spring:
       pool:
         size: 4                       # the reservation sweeper and the nightly jobs share this
 
+  # Requests run on platform threads (Tomcat's pool), not virtual ones. On Java 21 a virtual thread inside a
+  # synchronized block pins its carrier, and the VPS has 2 cores, so 2-3 carriers. On 2026-11-28 three requests
+  # built Jackson serializers at once: each pinned a carrier inside Jackson's synchronized SerializerCache, one
+  # waited on a lock of Kotlin reflection (jackson-module-kotlin, brought by the Anthropic SDK) held by a fourth
+  # virtual thread that could never be mounted again - a deadlock; 445 requests queued and the API hung for two
+  # hours. JDK 24 (JEP 491) stops synchronized from pinning; until the runtime moves there, keep this off.
+  # The test profile has always run with it off, so production now runs the configuration ~5,000 tests cover,
+  # and the task.execution / task.scheduling pools above apply (virtual threads made Boot ignore them).
+  # The assistant and the storage transfers still use virtual threads they create themselves.
   threads:
     virtual:
-      enabled: true                   # Java 21 virtual threads: request handling is IO-bound, and
-                                      # this removes the platform-thread ceiling under load
+      enabled: false
 
   jackson:
     default-property-inclusion: non_null
