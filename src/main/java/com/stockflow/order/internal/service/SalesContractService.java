@@ -121,6 +121,7 @@ class SalesContractService implements SalesContracts {
     private final SalesContractRevisions revisions;
     private final SalesContractList contractList;
     private final com.stockflow.identity.api.IdentityService identity;
+    private final ContractEvidence evidence;
     /** Days from sending to the day the customer should have signed by (contract e-signing plan). */
     private final int signDays;
 
@@ -138,6 +139,7 @@ class SalesContractService implements SalesContracts {
                          LineNames lineNames, ContractCreditReviews creditReviews, SalesFollowUpService followUps,
                          CustomerOwnership ownership, SalesContractRevisions revisions,
                          SalesContractList contractList, com.stockflow.identity.api.IdentityService identity,
+                         ContractEvidence evidence,
                          @org.springframework.beans.factory.annotation.Value("${stockflow.order.contract.sign-days:7}")
                          int signDays) {
         if (signDays < 1 || signDays > SalesContract.MAX_SIGN_DAYS_AHEAD) {
@@ -147,6 +149,7 @@ class SalesContractService implements SalesContracts {
         this.revisions = revisions;
         this.contractList = contractList;
         this.identity = identity;
+        this.evidence = evidence;
         this.signDays = signDays;
         this.ownership = ownership;
         this.lineNames = lineNames;
@@ -725,12 +728,12 @@ class SalesContractService implements SalesContracts {
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "sales-contract", resourceId = "#result?.id()",
             details = "{orderId: #orderId, to: 'CUSTOMER_SIGNED'}")
-    public ContractView customerSigned(UUID customerId, UUID userId, UUID orderId, long version) {
+    public ContractView customerSigned(UUID customerId, UUID userId, UUID orderId, long version, Instant signedAt) {
         Order order = orders.findByIdForUpdate(new OrderId(orderId)).filter(o -> o.customerId().equals(customerId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
         SalesContract contract = portalContract(order);
         requireVersion(contract, version);
-        Instant now = clock.instant();
+        Instant now = signedAt == null ? clock.instant() : signedAt;
         contract.customerSigned(now);
         SalesContract saved = contracts.save(contract);
         statusChanged(saved, order, userId, now);
@@ -743,10 +746,10 @@ class SalesContractService implements SalesContracts {
     @Auditable(action = AuditAction.APPROVE, resourceType = "sales-contract", resourceId = "#result?.id()",
             details = "{orderId: #orderId, to: 'SIGNED', by: 'COMPANY'}")
     public ContractView companySigned(CurrentUser user, UUID orderId, long version, String signedFileKey,
-                                      String signedFileName) {
+                                      String signedFileName, Instant signedAt) {
         Order order = lockForAccounting(orderId);
         SalesContract contract = live(order, version);
-        Instant now = clock.instant();
+        Instant now = signedAt == null ? clock.instant() : signedAt;
         LocalDate today = LocalDate.ofInstant(now, VIETNAM);
         // The state first: a contract the customer has not signed answers that, not who may sign it.
         contract.requireCompanySignable(today, now);
@@ -759,6 +762,51 @@ class SalesContractService implements SalesContracts {
         log.info("Sales contract {} of order {} signed by the company; the order is {}", saved.contractNumber(),
                 order.orderNumber(), order.status());
         return view(saved, order, null);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public SigningFacts customerSigningFacts(UUID customerId, UUID orderId, Long version, boolean requireSignable) {
+        Order order = customersOrder(customerId, orderId);
+        SalesContract contract = portalContract(order);
+        if (contract.status() == SalesContractStatus.DRAFT) {
+            // The next revision after a change request: the customer has nothing to sign until it is sent again.
+            throw new BusinessException(ErrorCode.CONTRACT_NOT_SIGNABLE, "Contract %s is a draft"
+                    .formatted(contract.contractNumber())).localized("refusal.contract.notSignable",
+                    contract.contractNumber(), contract.status());
+        }
+        if (version != null) {
+            requireVersion(contract, version);
+        }
+        if (requireSignable) {
+            contract.requireCustomerSignable(today());
+        }
+        return signingFacts(contract, order);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public SigningFacts companySigningFacts(CurrentUser user, UUID orderId, Long version) {
+        Order order = readOrder(orderId);
+        SalesContract contract = live(order);
+        if (version != null) {
+            requireVersion(contract, version);
+        }
+        Instant now = clock.instant();
+        // The state first: a contract the customer has not signed answers that, not who may sign it.
+        contract.requireCompanySignable(LocalDate.ofInstant(now, VIETNAM), now);
+        contract.requireNotAuthor(user.userId());
+        return signingFacts(contract, order);
+    }
+
+    private static SigningFacts signingFacts(SalesContract contract, Order order) {
+        ContractEvidence.Signer sellerSigner = ContractEvidence.sellerSigner(contract);
+        ContractEvidence.Signer buyerSigner = ContractEvidence.buyerSigner(contract);
+        return new SigningFacts(contract.id(), contract.contractNumber(), contract.orderId(),
+                order.orderNumber().value(), order.customerId(), contract.revision(), contract.version(),
+                contract.status().name(), contract.sentDocumentKey(), contract.signBy(), contract.seller().name(),
+                contract.buyer().name(), sellerSigner.name(), sellerSigner.title(), buyerSigner.name(),
+                buyerSigner.title());
     }
 
     @Override
@@ -866,16 +914,26 @@ class SalesContractService implements SalesContracts {
                 return earlier.get();
             }
         }
-        tx.executeWithoutResult(status -> live(readOrder(orderId), version).requireSignable(signedOn,
-                clock.instant()));
+        String sentKey = tx.execute(status -> {
+            SalesContract contract = live(readOrder(orderId), version);
+            contract.requireSignable(signedOn, clock.instant());
+            return contract.sentDocumentKey();
+        });
         try (PreparedFiles prepared = signedFile.prepare(FileCategory.DOCUMENT, files, staged)) {
             StoredFile stored = prepared.single().file();
+            // What the file is, found outside any transaction (a signed PDF takes a while to check): a digital
+            // signature is verified, a scan is accepted as one. Never a reason to refuse what staff recorded.
+            byte[] signed = evidence.read(stored.key());
+            byte[] sent = sentKey == null ? null : evidence.read(sentKey);
+            ContractEvidence.Inspected inspected = evidence.inspect(signed, sent);
             return tx.execute(status -> {
                 Order order = lockInScope(orderId);
                 SalesContract contract = live(order, version);
                 Instant now = clock.instant();
                 contract.sign(signedOn, stored.key(), stored.originalName(), now, user.userId());
                 SalesContract saved = contracts.save(contract);
+                evidence.recordStaffSigned(saved, user.userId(), stored.key(), prepared.single().sha256(), inspected,
+                        now, sent == null ? prepared.single().sha256() : ContractEvidence.sha256Hex(sent));
                 placeSigned(order, saved, user.userId(), now);
                 prepared.adopt();
                 files.retainAfterCommit(stored.key(), RecordRetention.SALES_CONTRACT);
@@ -963,8 +1021,31 @@ class SalesContractService implements SalesContracts {
                 full.overdueToSign(), reopened ? null : full.specialTerms(), reopened ? null : full.penaltyPercent(),
                 reopened ? null : full.quantityTolerancePercent(), reopened ? null : full.warrantyMonths(),
                 reopened ? null : full.sellerSigner(), reopened ? null : full.buyerSigner(), null, false, "NONE", null,
-                full.customerSignedAt(), full.canSign(), full.canRequestChanges(), full.customerSignature(),
-                full.companySignature(), full.verificationCode());
+                full.customerSignedAt(), full.canSign(), full.canRequestChanges(),
+                portalCustomerSignature(full.customerSignature()), portalCompanySignature(full.companySignature()),
+                inForce(contract) ? full.verificationCode() : null);
+    }
+
+    /** Signed by both sides: the code printed on the certificate page is the customer's to have only then. */
+    private static boolean inForce(SalesContract contract) {
+        return switch (contract.status()) {
+            case SIGNED, COMPLETED, LIQUIDATED -> true;
+            default -> false;
+        };
+    }
+
+    /** The customer's own signature as the portal shows it: the address it came from is the back office's. */
+    static CustomerSignatureView portalCustomerSignature(CustomerSignatureView signature) {
+        return signature == null ? null : new CustomerSignatureView(signature.method(), signature.signerName(),
+                signature.signerTitle(), signature.email(), signature.signedAt(), null, signature.otpVerified(),
+                signature.inspection());
+    }
+
+    /** The company's signature as the portal shows it: which account in the back office pressed the button is not theirs. */
+    static CompanySignatureView portalCompanySignature(CompanySignatureView signature) {
+        return signature == null ? null : new CompanySignatureView(signature.method(), signature.signerName(),
+                signature.signerTitle(), signature.signedAt(), null, signature.certificateSubject(),
+                signature.certificateIssuer(), signature.testCertificate(), signature.inspection());
     }
 
     @Override
@@ -1285,6 +1366,7 @@ class SalesContractService implements SalesContracts {
                 .map(i -> installmentView(i, dues.get(i.seq()))).toList();
         boolean overdue = contract.overdueToSign(today());
         ContractAgreement agreement = contract.agreement();
+        SignatureView signature = evidence.view(contract.id(), contract.revision(), true);
         return new ContractView(contract.id(), contract.contractNumber(), contract.orderId(),
                 order.orderNumber().value(), contract.status().name(), party(contract.seller()),
                 party(contract.buyer()), contract.freeSampleRounds(), new Totals(order.netTotal().amount(),
@@ -1307,7 +1389,8 @@ class SalesContractService implements SalesContracts {
                         contract.termsReviewRequestedBy(), contract.termsReviewRequestedAt(),
                         contract.termsReviewedBy(), contract.termsReviewedAt()),
                 contract.customerSignedAt(), contract.status() == SalesContractStatus.SENT && !overdue,
-                contract.status() == SalesContractStatus.SENT, null, null, null);
+                contract.status() == SalesContractStatus.SENT, signature.customer(), signature.company(),
+                signature.verificationCode());
     }
 
     private static CreditReviewView creditReviewView(ContractCreditReviews.Review review) {

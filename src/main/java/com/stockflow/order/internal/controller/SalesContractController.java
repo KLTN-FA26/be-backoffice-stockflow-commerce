@@ -16,9 +16,12 @@ import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.storage.UploadSlot;
 import com.stockflow.common.storage.UploadSlotRequest;
 import com.stockflow.order.internal.controller.dto.SalesContractRequests;
+import com.stockflow.common.ratelimit.RateLimit;
+import com.stockflow.order.internal.service.ContractSigning;
 import com.stockflow.order.internal.service.SalesContracts;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -55,9 +58,11 @@ import java.util.UUID;
 class SalesContractController {
 
     private final SalesContracts contracts;
+    private final ContractSigning signing;
 
-    SalesContractController(SalesContracts contracts) {
+    SalesContractController(SalesContracts contracts, ContractSigning signing) {
         this.contracts = contracts;
+        this.signing = signing;
     }
 
     @GetMapping
@@ -273,6 +278,74 @@ class SalesContractController {
         }
     }
 
+    @GetMapping("/signatures")
+    @Operation(summary = "Who signed the contract's current revision and how: the customer (code, uploaded file or "
+            + "recorded by staff; the address it came from) and the company (the system's certificate, an uploaded file "
+            + "or recorded by staff), with what inspecting each file found, the SHA-256 and the verification code")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.READ)
+    public ApiResponse<SalesContracts.SignatureView> signatures(@PathVariable UUID orderId,
+                                                                @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(signing.signatures(orderId));
+    }
+
+    @GetMapping("/company-signature/identity")
+    @Operation(summary = "The certificate the company signs with, for the dialog that asks the signer to confirm: "
+            + "subject, issuer, serial, validity, and testCertificate while it is the system's own self-issued one")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_SIGNATURES, action = Action.APPROVE)
+    public ApiResponse<ContractSigning.CompanyCertificate> companyCertificate(@AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(signing.companyCertificate());
+    }
+
+    @PostMapping("/company-signature")
+    @Operation(summary = "Sign for the company with the system's certificate: CUSTOMER_SIGNED -> SIGNED today, the "
+            + "contract in force and its order placed as when staff record a signed file. The signer is the contract's own "
+            + "seller signer unless signerName / signerTitle say otherwise. 409 CONTRACT_SIGNER_IS_AUTHOR for the account "
+            + "that drew the contract up or sent it (four eyes); 409 SALES_CONTRACT_STATUS_INVALID unless the customer "
+            + "has signed")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_SIGNATURES, action = Action.APPROVE)
+    @RateLimit(limit = 10, perSeconds = 60, key = RateLimit.Key.USER, bucket = "contract-company-sign")
+    public ApiResponse<SalesContracts.ContractView> companySign(@PathVariable UUID orderId,
+                                                                @Valid @RequestBody
+                                                                SalesContractRequests.CompanySign request,
+                                                                @AuthenticatedUser CurrentUser user,
+                                                                HttpServletRequest http) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(signing.companySign(user, orderId, request.version(), request.signerName(),
+                request.signerTitle(), origin(http)));
+    }
+
+    @GetMapping("/company-signature/document")
+    @Operation(summary = "A short-lived link to the PDF to sign outside the system: the sent contract followed by its "
+            + "certificate page, made once and kept so the signed file that comes back is held against exactly it")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_SIGNATURES, action = Action.APPROVE)
+    public ApiResponse<DownloadLink> companyDocument(@PathVariable UUID orderId, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(signing.companyDocumentToSign(user, orderId));
+    }
+
+    @PostMapping(path = "/company-signature/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Sign for the company with the file that came back from signing the document outside "
+            + "(multipart: file, version, optional signerName / signerTitle): a digital signature that holds, over the "
+            + "whole of exactly that PDF. 422 CONTRACT_SIGNED_FILE_REJECTED (details.reason) for anything else, a scan "
+            + "included")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACT_SIGNATURES, action = Action.APPROVE)
+    @RateLimit(limit = 5, perSeconds = 60, key = RateLimit.Key.USER, bucket = "contract-company-sign-upload")
+    public ApiResponse<SalesContracts.ContractView> companySignWithFile(@PathVariable UUID orderId,
+                                                                        @RequestPart("file") MultipartFile file,
+                                                                        @RequestParam long version,
+                                                                        @RequestParam(required = false)
+                                                                        String signerName,
+                                                                        @RequestParam(required = false)
+                                                                        String signerTitle,
+                                                                        @AuthenticatedUser CurrentUser user,
+                                                                        HttpServletRequest http) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(signing.companySignWithFile(user, orderId, version, signerName, signerTitle,
+                SignedFileUploads.name(file), SignedFileUploads.read(file), origin(http)));
+    }
+
     @PostMapping("/cancellation")
     @Operation(summary = "Cancel a draft or sent contract with a reason (14 §4.3 step 16); the order may get a new one. "
             + "A signed contract is never cancelled here")
@@ -309,6 +382,10 @@ class SalesContractController {
     public ApiResponse<DownloadLink> signedFile(@PathVariable UUID orderId, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(contracts.signedFile(orderId));
+    }
+
+    private static ContractSigning.Origin origin(HttpServletRequest request) {
+        return new ContractSigning.Origin(request.getRemoteAddr(), request.getHeader("User-Agent"));
     }
 
     private static SalesContracts.Draft draft(SalesContractRequests.Draft request) {

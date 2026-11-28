@@ -2,6 +2,7 @@ package com.stockflow.order.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
 import com.stockflow.contracts.ContractChangeRequested;
+import com.stockflow.contracts.ContractCustomerSigned;
 import com.stockflow.contracts.ContractSignDeadlinePassed;
 import com.stockflow.contracts.ContractTermsReviewDecided;
 import com.stockflow.contracts.ContractTermsReviewRequested;
@@ -29,6 +30,8 @@ import java.util.UUID;
  *   <li>the customer asked for changes, and a sent contract passed its signing deadline: whoever looks after the order's
  *       customer today - the owner, the owner's cover, or with no active owner the Sales Managers, the notice marked
  *       "cần phân công" ({@link SalesRecipients}); never every salesperson;</li>
+ *   <li>the customer signed: whoever looks after the customer, and the holders of {@value #SIGNS_FOR_COMPANY}, who sign
+ *       next for the company;</li>
  *   <li>a draft's terms wait for a Sales Manager: the holders of {@value #APPROVES_TERMS}, whoever asked excepted, who may
  *       not be the one deciding their own request;</li>
  *   <li>the terms were approved or rejected: the account that asked, and whoever looks after the customer when that is
@@ -44,6 +47,7 @@ class ContractNotices {
     private static final Logger log = LoggerFactory.getLogger(ContractNotices.class);
 
     static final String APPROVES_TERMS = "sales-contract-terms:APPROVE";
+    static final String SIGNS_FOR_COMPANY = "sales-contract-signatures:APPROVE";
     private static final String CATEGORY = SalesFollowUpService.CATEGORY;
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
@@ -66,6 +70,31 @@ class ContractNotices {
                         event.orderNumber(), event.revision(), event.revision() + 1),
                 event.orderId(), "contract-change-requested:%s:%d".formatted(event.contractId(), event.revision()),
                 null);
+    }
+
+    @ApplicationModuleListener
+    public void on(ContractCustomerSigned event) {
+        ResourceBundle texts = texts();
+        tellSales(event.customerId(), event.contractNumber(), InboxSeverity.INFO, texts,
+                texts.getString("inbox.sales.contract.customerSigned.title").formatted(event.contractNumber()),
+                texts.getString("inbox.sales.contract.customerSigned.body").formatted(event.contractNumber(),
+                        event.orderNumber()),
+                event.orderId(), "contract-customer-signed:%s:%d".formatted(event.contractId(), event.revision()),
+                null);
+        // The company's signers by what they may do, not by a role's name; whoever the Sales notice went to is told once.
+        List<UUID> signers = identities.notificationRecipientsHolding(SIGNS_FOR_COMPANY, null).stream()
+                .map(StaffContact::userId).distinct().toList();
+        if (signers.isEmpty()) {
+            log.warn("Contract {} waits for the company's signature and nobody holds {} - nobody was told",
+                    LogSafe.text(event.contractNumber()), SIGNS_FOR_COMPANY);
+            return;
+        }
+        inbox.post(signers, new InboxMessage(CATEGORY, InboxSeverity.WARN,
+                texts.getString("inbox.sales.contract.companySignRequested.title").formatted(event.contractNumber()),
+                texts.getString("inbox.sales.contract.companySignRequested.body").formatted(event.contractNumber(),
+                        event.orderNumber()),
+                link(event.orderId()), "SALES_CONTRACT", event.contractId().toString(),
+                "contract-company-sign-requested:%s:%d".formatted(event.contractId(), event.revision())));
     }
 
     @ApplicationModuleListener

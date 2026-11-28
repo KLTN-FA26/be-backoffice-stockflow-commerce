@@ -91,4 +91,16 @@ public final class SalesContractRequests {
      * approval keeps, or the reason a refusal gives Sales.
      */
     public record CreditDecision(@NotNull Long version, @NotBlank @Size(max = 500) String note) { }
+
+    /**
+     * The customer signs with the code mailed to them: the version read, the six digits, who they are as a signer and
+     * that they agree to sign electronically (QĐ-3).
+     */
+    public record CustomerSign(@NotNull Long version, @NotBlank @jakarta.validation.constraints.Pattern(
+            regexp = "\\d{6}") String otp, @NotBlank @Size(max = 200) String signerName,
+                               @NotBlank @Size(max = 200) String signerTitle, @NotNull Boolean consent) { }
+
+    /** The company's signer signs: the version read, and who signs when it is not the contract's own seller signer. */
+    public record CompanySign(@NotNull Long version, @Size(max = 200) String signerName,
+                              @Size(max = 200) String signerTitle) { }
 }

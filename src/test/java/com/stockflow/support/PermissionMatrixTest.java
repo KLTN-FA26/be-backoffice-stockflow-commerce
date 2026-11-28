@@ -154,6 +154,12 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/public/leads", "public: the open-a-business-account form (sales-owner plan 10.7); "
                     + "rate-limited per address, a honeypot, one answer for every outcome; it reads nobody's data "
                     + "(permitAll for POST)"),
+            Map.entry("GET /api/v1/public/contract-verifications/{code}", "public: the page behind the QR code on a "
+                    + "signed contract's certificate page; the unguessable verification code is the authorisation, the "
+                    + "answer carries no amount and no person, rate-limited per address (permitAll for GET)"),
+            Map.entry("POST /api/v1/public/contract-verifications/{code}/check", "public: whether a file is the signed "
+                    + "contract behind the code; the code is the authorisation, rate-limited per address (permitAll "
+                    + "for POST)"),
             Map.entry("GET /api/v1/production-order-files/{id}/slip",
                     "public: a producer's link to its production order slip; the HMAC-signed, time-limited link is the "
                             + "authorisation, checked again on use with the order still open (permitAll for GET, 4A-3)"),
@@ -608,6 +614,10 @@ class PermissionMatrixTest {
                 // Contract e-signing plan: a well-formed change request, so only the owner check refuses another's contract.
                 Map.entry("POST /api/v1/orders/me/{orderId}/contract/change-request",
                         "{\"version\":0,\"reason\":\"Please split the goods in two deliveries\"}"),
+                // Likewise a well-formed signature: another customer's contract is refused by the owner check, not the body.
+                Map.entry("POST /api/v1/orders/me/{orderId}/contract/sign",
+                        "{\"version\":0,\"otp\":\"123456\",\"signerName\":\"Mallory\",\"signerTitle\":\"Director\","
+                                + "\"consent\":true}"),
                 Map.entry("PUT /api/v1/customers/{customerId}/addresses/{addressId}", address),
                 Map.entry("PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}"),
                 Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),

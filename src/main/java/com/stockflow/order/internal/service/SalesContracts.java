@@ -199,6 +199,34 @@ public interface SalesContracts {
     record PlanSuggestion(UUID contractId, long version, BigDecimal totalAmount, List<InstallmentView> paymentPlan) { }
 
     /**
+     * What inspecting a signed file found (the plan's "Signature view"). {@code kind} is DIGITAL or SCAN; a file this
+     * could not read is never stored, so UNREADABLE does not appear here.
+     *
+     * @param reason the first thing wrong, a {@code SignedPdfInspector.Reasons} code; null when nothing is
+     */
+    record InspectionView(String kind, boolean valid, boolean coversWholeDocument, boolean matchesSentDocument,
+                          boolean chainChecked, List<InspectedSigner> signers, String reason) { }
+
+    record InspectedSigner(String subject, String issuer, String serial, Instant notBefore, Instant notAfter,
+                           Instant signedAt) { }
+
+    /**
+     * How the customer signed. {@code ip} is the back office's only: the portal shows the customer their own signature
+     * without it.
+     */
+    record CustomerSignatureView(String method, String signerName, String signerTitle, String email, Instant signedAt,
+                                 String ip, boolean otpVerified, InspectionView inspection) { }
+
+    /** How the company signed; {@code byName} is the account that did it. */
+    record CompanySignatureView(String method, String signerName, String signerTitle, Instant signedAt, String byName,
+                                String certificateSubject, String certificateIssuer, boolean testCertificate,
+                                InspectionView inspection) { }
+
+    /** Both signatures of the contract's current revision, with the SHA-256 of what each side signed and the code. */
+    record SignatureView(CustomerSignatureView customer, CompanySignatureView company, String documentSha256,
+                         String verificationCode) { }
+
+    /**
      * @param creditWarning    what the plan's part paid after delivery would ask of the customer's credit, when it does
      *                         not fit (15 BR-10, BR-11): shown on a DRAFT contract - read, drawn up or edited - so Sales
      *                         decide before sending, as 14 §4.3 step 13 has it (change the plan, or send it to wait for
@@ -245,8 +273,20 @@ public interface SalesContracts {
                         Integer quantityTolerancePercent, Integer warrantyMonths, SellerSigner sellerSigner,
                         BuyerSigner buyerSigner, StandardTermsView standardTerms, boolean nonStandardTerms,
                         String termsReview, TermsReviewView termsReviewDetail, Instant customerSignedAt,
-                        boolean canSign, boolean canRequestChanges, Object customerSignature,
-                        Object companySignature, String verificationCode) {
+                        boolean canSign, boolean canRequestChanges, CustomerSignatureView customerSignature,
+                        CompanySignatureView companySignature, String verificationCode) {
+
+        /** The same contract with the evidence of its signatures filled in: the signing steps know it only after the state changed. */
+        public ContractView withSignatures(CustomerSignatureView customer, CompanySignatureView company, String code) {
+            return new ContractView(
+                    id, contractNumber, orderId, orderNumber, status, seller, buyer, freeSampleRounds, totals,
+                    deliverySchedule, paymentPlan, sentAt, sentBy, signedOn, signedFileName, signedAt, signedBy,
+                    cancelledAt, cancelledBy, cancellationReason, completedAt, version, creditWarning,
+                    returnWindowDays, appendixAvailable, creditReview, latestCreditReview, revision, signBy,
+                    overdueToSign, specialTerms, penaltyPercent, quantityTolerancePercent, warrantyMonths,
+                    sellerSigner, buyerSigner, standardTerms, nonStandardTerms, termsReview, termsReviewDetail,
+                    customerSignedAt, canSign, canRequestChanges, customer, company, code);
+        }
 
         /** Before the contract's content and signing were looked at: a view drawn for a paper, or a test. */
         public ContractView(UUID id, String contractNumber, UUID orderId, String orderNumber, String status,
@@ -452,11 +492,44 @@ public interface SalesContracts {
      * order, or a contract not sent, is 404.
      *
      * @param version the version the customer read
+     * @param signedAt when they signed - the time the evidence carries - or null for now; never after now
      * @return the contract as the portal shows it
      * @throws com.stockflow.common.error.BusinessException {@code CONTRACT_NOT_SIGNABLE};
      *         {@code CONTRACT_SIGN_DEADLINE_PASSED}; {@code OPTIMISTIC_LOCK}
      */
-    ContractView customerSigned(UUID customerId, UUID userId, UUID orderId, long version);
+    ContractView customerSigned(UUID customerId, UUID userId, UUID orderId, long version, Instant signedAt);
+
+    /**
+     * What the signing machinery reads of a contract, read-only: the contract's identity and revision, the PDF that was
+     * sent, who drew it up and sent it, and the signers it names (the seller's and buyer's own, else the legal
+     * representatives).
+     */
+    record SigningFacts(UUID contractId, String contractNumber, UUID orderId, String orderNumber, UUID customerId,
+                        int revision, long version, String status, String sentDocumentKey, LocalDate signBy,
+                        String sellerName, String buyerName, String sellerSignerName, String sellerSignerTitle,
+                        String buyerSignerName, String buyerSignerTitle) { }
+
+    /**
+     * The facts of the signed-in customer's own contract for one of their signing steps. Someone else's order, or a
+     * contract not sent, is 404.
+     *
+     * @param version         the version the customer read; null to skip the check
+     * @param requireSignable refuse a contract the customer may not sign now: not sent, or past its signing deadline
+     * @throws com.stockflow.common.error.BusinessException {@code CONTRACT_NOT_SIGNABLE},
+     *         {@code CONTRACT_SIGN_DEADLINE_PASSED}, {@code OPTIMISTIC_LOCK}
+     */
+    SigningFacts customerSigningFacts(UUID customerId, UUID orderId, Long version, boolean requireSignable);
+
+    /**
+     * The facts of any customer's contract for the company's signing steps, whatever the caller's data scope (the signer
+     * is a manager, as {@link #companySigned}): the customer has signed, and the caller is not the account that drew it
+     * up or sent it.
+     *
+     * @param version the version the signer read; null to skip the check
+     * @throws com.stockflow.common.error.BusinessException {@code SALES_CONTRACT_STATUS_INVALID},
+     *         {@code CONTRACT_SIGNER_IS_AUTHOR}, {@code OPTIMISTIC_LOCK}
+     */
+    SigningFacts companySigningFacts(CurrentUser user, UUID orderId, Long version);
 
     /**
      * The seam of the signing machinery, company side: the authorised signer signed after the customer, so
@@ -466,12 +539,14 @@ public interface SalesContracts {
      * waiting for the installment on signing, or held. Joins the caller's transaction. Any customer's contract: the
      * company's signer is a manager, not the customer's salesperson.
      *
+     * @param signedAt when the signature was made - the time the certificate page and the PDF signature carry - or null
+     *                 for now; never after now
      * @throws com.stockflow.common.error.BusinessException {@code SALES_CONTRACT_STATUS_INVALID} unless the customer signed;
      *         {@code CONTRACT_SIGNER_IS_AUTHOR} for the account that drew the contract up or sent it;
      *         {@code OPTIMISTIC_LOCK}
      */
     ContractView companySigned(CurrentUser user, UUID orderId, long version, String signedFileKey,
-                               String signedFileName);
+                               String signedFileName, Instant signedAt);
 
     /** Where the browser uploads the signed file (FileCategory.DOCUMENT); the contract is sent. */
     UploadSlot beginSignedFileUpload(CurrentUser user, UUID orderId, UploadSlotRequest request);

@@ -126,6 +126,17 @@ class SalesContractRepositoryAdapter implements SalesContractRepository {
         }
         Set<String> kept = new HashSet<>(jpa.sentDocumentKeysIn(keys));
         kept.addAll(jpa.signedFileKeysIn(keys));
+        // The PDF handed to the company's signer to sign outside, and the files of the evidence (a customer's uploaded
+        // signed file, the company's signed file): kept while a row names them.
+        MapSqlParameterSource in = new MapSqlParameterSource("keys", keys);
+        kept.addAll(named.queryForList("SELECT outside_document_key FROM ordering.sales_contract "
+                + "WHERE outside_document_key IN (:keys)", in, String.class));
+        kept.addAll(named.queryForList("SELECT outside_page_key FROM ordering.sales_contract "
+                + "WHERE outside_page_key IN (:keys)", in, String.class));
+        kept.addAll(named.queryForList("SELECT file_key FROM ordering.sales_contract_signature "
+                + "WHERE file_key IN (:keys)", in, String.class));
+        kept.addAll(named.queryForList("SELECT certificate_page_key FROM ordering.sales_contract_signature "
+                + "WHERE certificate_page_key IN (:keys)", in, String.class));
         return kept;
     }
 

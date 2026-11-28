@@ -1445,6 +1445,13 @@ public enum ErrorCode {
     CONTRACT_OTP_INVALID("The confirmation code is not correct", 422),
     /** There is no live code to check: none was asked for, it timed out, or its five tries are used up. */
     CONTRACT_OTP_EXPIRED("The confirmation code has expired or can no longer be used", 422),
+    /**
+     * A signed file sent as the contract's signature was refused: not a PDF this can read, or digitally signed in a way
+     * that does not hold (the signature is broken, it does not cover the whole file, or it is over a different document
+     * than the one that was sent). {@code details.reason} names why, one of {@code SignedPdfInspector.Reasons}. A scan
+     * with no digital signature is never refused for that.
+     */
+    CONTRACT_SIGNED_FILE_REJECTED("The signed file cannot be accepted as the signed contract", 422),
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),

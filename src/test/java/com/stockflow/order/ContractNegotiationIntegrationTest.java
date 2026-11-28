@@ -447,7 +447,7 @@ class ContractNegotiationIntegrationTest {
         assertThat(overdue.canSign()).as("overdue: Sales extend it first").isFalse();
         assertThat(overdue.canRequestChanges()).as("asking for changes is still the customer's right").isTrue();
         assertThat(as(sales, () -> contracts.get(onTimeOrder)).overdueToSign()).isFalse();
-        assertThatThrownBy(() -> contracts.customerSigned(buyer.customerId(), customerUser(), orderId, overdue.version()))
+        assertThatThrownBy(() -> contracts.customerSigned(buyer.customerId(), customerUser(), orderId, overdue.version(), null))
                 .extracting(ContractNegotiationIntegrationTest::code).isEqualTo(ErrorCode.CONTRACT_SIGN_DEADLINE_PASSED);
         SalesContracts.ContractSummary summary = contracts.summary();
         assertThat(summary.overdueToSign()).isGreaterThanOrEqualTo(1);
@@ -476,7 +476,7 @@ class ContractNegotiationIntegrationTest {
         assertThat(extended.overdueToSign()).isFalse();
         assertThat(extended.canSign()).isTrue();
         assertThat(extended.status()).isEqualTo("SENT");
-        assertThat(contracts.customerSigned(buyer.customerId(), customerUser(), orderId, extended.version()).status())
+        assertThat(contracts.customerSigned(buyer.customerId(), customerUser(), orderId, extended.version(), null).status())
                 .as("signed once Sales extended the deadline").isEqualTo("CUSTOMER_SIGNED");
         assertThat(stillOpen.status()).isEqualTo("SENT");
     }
@@ -486,7 +486,7 @@ class ContractNegotiationIntegrationTest {
     /** The customer signs through the seam the signing machinery uses. */
     private void customerSigns(Buyer buyer, UUID orderId) {
         long version = as(sales, () -> contracts.get(orderId)).version();
-        contracts.customerSigned(buyer.customerId(), customerUser(), orderId, version);
+        contracts.customerSigned(buyer.customerId(), customerUser(), orderId, version, null);
     }
 
     @Test
@@ -506,10 +506,10 @@ class ContractNegotiationIntegrationTest {
         assertThat(waiting.signedAt()).isNull();
         assertThat(waiting.canSign()).isFalse();
         assertThat(waiting.canRequestChanges()).isFalse();
-        assertThatThrownBy(() -> contracts.customerSigned(buyer.customerId(), customerUser(), orderId, waiting.version()))
+        assertThatThrownBy(() -> contracts.customerSigned(buyer.customerId(), customerUser(), orderId, waiting.version(), null))
                 .as("twice").extracting(ContractNegotiationIntegrationTest::code)
                 .isEqualTo(ErrorCode.CONTRACT_NOT_SIGNABLE);
-        assertThatThrownBy(() -> contracts.customerSigned(UUID.randomUUID(), customerUser(), orderId, waiting.version()))
+        assertThatThrownBy(() -> contracts.customerSigned(UUID.randomUUID(), customerUser(), orderId, waiting.version(), null))
                 .as("someone else's order").extracting(ContractNegotiationIntegrationTest::code)
                 .isEqualTo(ErrorCode.NOT_FOUND);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.installment i JOIN ordering.sales_contract c ON "
@@ -547,20 +547,20 @@ class ContractNegotiationIntegrationTest {
                 String.class, sent.id());
 
         assertThatThrownBy(() -> as(manager, () -> contracts.companySigned(manager, orderId, sent.version(), signedFile,
-                "hd-signed.pdf"))).as("the customer has not signed").extracting(ContractNegotiationIntegrationTest::code)
+                "hd-signed.pdf", null))).as("the customer has not signed").extracting(ContractNegotiationIntegrationTest::code)
                 .isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
         customerSigns(buyer, orderId);
         long version = as(sales, () -> contracts.get(orderId)).version();
         assertThatThrownBy(() -> as(sales, () -> contracts.companySigned(sales, orderId, version, signedFile,
-                "hd-signed.pdf"))).as("whoever sent it").extracting(ContractNegotiationIntegrationTest::code)
+                "hd-signed.pdf", null))).as("whoever sent it").extracting(ContractNegotiationIntegrationTest::code)
                 .isEqualTo(ErrorCode.CONTRACT_SIGNER_IS_AUTHOR);
         assertThatThrownBy(() -> as(manager, () -> contracts.companySigned(manager, orderId, version + 9, signedFile,
-                "hd-signed.pdf"))).extracting(ContractNegotiationIntegrationTest::code)
+                "hd-signed.pdf", null))).extracting(ContractNegotiationIntegrationTest::code)
                 .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         assertThat(status(orderId)).isEqualTo(OrderStatus.PENDING_CONTRACT);
 
         SalesContracts.ContractView signed = as(manager, () -> contracts.companySigned(manager, orderId, version,
-                signedFile, "hd-signed.pdf"));
+                signedFile, "hd-signed.pdf", null));
 
         assertThat(signed.status()).isEqualTo("SIGNED");
         assertThat(signed.signedBy()).isEqualTo(manager.userId());
@@ -572,7 +572,7 @@ class ContractNegotiationIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.installment WHERE contract_id = ?", Long.class,
                 sent.id())).as("the installments opened").isEqualTo(1);
         assertThatThrownBy(() -> as(manager, () -> contracts.companySigned(manager, orderId, signed.version(),
-                signedFile, "hd-signed.pdf"))).as("once").extracting(ContractNegotiationIntegrationTest::code)
+                signedFile, "hd-signed.pdf", null))).as("once").extracting(ContractNegotiationIntegrationTest::code)
                 .isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
     }
 
