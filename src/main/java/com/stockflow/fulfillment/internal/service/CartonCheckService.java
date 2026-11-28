@@ -32,6 +32,7 @@ import com.stockflow.order.api.OrderHoldState;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.api.ShortageCardEnd;
 import com.stockflow.payment.api.InstallmentStanding;
 import com.stockflow.payment.api.PaymentService;
 import com.stockflow.warehouse.api.WarehouseService;
@@ -427,7 +428,7 @@ class CartonCheckService implements CartonChecks {
             // checked in full - requireWorkable let only that INVENTORY hold through - so the hold is resolved and the
             // order goes back to the status it was held from (PACKED), then on with the packing as ever.
             orders.resolveHold(ctx.order().orderId(), ("Replacement cartons of the shipment cancelled before dispatch "
-                    + "checked and labelled"), actor.userId());
+                    + "checked and labelled"), actor.userId(), ShortageCardEnd.REALLOCATED);
         }
         OrderSummary after = completion.partial()
                 ? orders.markPartlyPacked(ctx.order().orderId(), actor.userId())

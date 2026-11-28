@@ -154,6 +154,12 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/public/leads", "public: the open-a-business-account form (sales-owner plan 10.7); "
                     + "rate-limited per address, a honeypot, one answer for every outcome; it reads nobody's data "
                     + "(permitAll for POST)"),
+            Map.entry("GET /api/v1/public/contract-verifications/{code}", "public: the page behind the QR code on a "
+                    + "signed contract's certificate page; the unguessable verification code is the authorisation, the "
+                    + "answer carries no amount and no person, rate-limited per address (permitAll for GET)"),
+            Map.entry("POST /api/v1/public/contract-verifications/{code}/check", "public: whether a file is the signed "
+                    + "contract behind the code; the code is the authorisation, rate-limited per address (permitAll "
+                    + "for POST)"),
             Map.entry("GET /api/v1/production-order-files/{id}/slip",
                     "public: a producer's link to its production order slip; the HMAC-signed, time-limited link is the "
                             + "authorisation, checked again on use with the order still open (permitAll for GET, 4A-3)"),
@@ -518,6 +524,10 @@ class PermissionMatrixTest {
             // V20261230000200 (kltn-docs 14 BR-10, 2026-11-26): the prices of a quote held for approval are the Sales
             // Manager's to approve or reject - not Sales', who sent it, nor the customer's.
             Map.entry("sales-quote-price-approvals:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // V20270129000110 (contract e-signing plan, 2026-11-28, QĐ-4 and QĐ-2): a Sales Manager approves the terms of
+            // a contract that deviates from the standard ones, and signs for the company - Sales, who draw it up, do not.
+            Map.entry("sales-contract-terms:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("sales-contract-signatures:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("catalog-storefront:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             // V20261209000100 (permission review 2026-11-20, A1; kltn-docs 00 §2.1): running the system is the System
             // Admin's; the Sales Manager kept the actuator only because it reached it before the permission existed.
@@ -601,6 +611,13 @@ class PermissionMatrixTest {
                  "sha256":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}""";
         return Map.ofEntries(
                 Map.entry("POST /api/v1/customers/{customerId}/addresses", address),
+                // Contract e-signing plan: a well-formed change request, so only the owner check refuses another's contract.
+                Map.entry("POST /api/v1/orders/me/{orderId}/contract/change-request",
+                        "{\"version\":0,\"reason\":\"Please split the goods in two deliveries\"}"),
+                // Likewise a well-formed signature: another customer's contract is refused by the owner check, not the body.
+                Map.entry("POST /api/v1/orders/me/{orderId}/contract/sign",
+                        "{\"version\":0,\"otp\":\"123456\",\"signerName\":\"Mallory\",\"signerTitle\":\"Director\","
+                                + "\"consent\":true}"),
                 Map.entry("PUT /api/v1/customers/{customerId}/addresses/{addressId}", address),
                 Map.entry("PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}"),
                 Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),
@@ -1037,6 +1054,52 @@ class PermissionMatrixTest {
                 .contains(PermissionCode.parse("sales-order-releases:UPDATE"),
                         PermissionCode.parse("sales-order-delivery-batches:READ"))
                 .doesNotContain(PermissionCode.parse("sales-contracts:READ"), PermissionCode.parse("sales-contracts:UPDATE"));
+    }
+
+    /**
+     * Contract e-signing plan (2026-11-28), the contract's content and negotiation: Sales put a draft in front of a
+     * manager, take it back and move the signing deadline ({@code sales-contracts:UPDATE}); only the Sales Manager
+     * decides the terms ({@code sales-contract-terms:APPROVE}), which Sales do not hold; the revisions and the contract
+     * page read as the contract does; the customer asks for changes to their own order's contract
+     * ({@code sales-orders:UPDATE} OWN, as they cancel it) and reads its revisions ({@code sales-orders:READ} OWN).
+     */
+    @Test
+    void theContractNegotiationEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = new java.util.LinkedHashMap<>();
+        expected.put("POST /api/v1/orders/{orderId}/contract/terms-review", "sales-contracts:UPDATE");
+        expected.put("POST /api/v1/orders/{orderId}/contract/terms-review/approval", "sales-contract-terms:APPROVE");
+        expected.put("POST /api/v1/orders/{orderId}/contract/terms-review/rejection", "sales-contract-terms:APPROVE");
+        expected.put("POST /api/v1/orders/{orderId}/contract/terms-review/withdrawal", "sales-contracts:UPDATE");
+        expected.put("PUT /api/v1/orders/{orderId}/contract/sign-by", "sales-contracts:UPDATE");
+        expected.put("GET /api/v1/orders/{orderId}/contract/revisions", "sales-contracts:READ");
+        expected.put("GET /api/v1/orders/{orderId}/contract/revisions/{revision}/document", "sales-contracts:READ");
+        expected.put("GET /api/v1/sales-contracts", "sales-contracts:READ");
+        expected.put("GET /api/v1/sales-contracts/summary", "sales-contracts:READ");
+        expected.put("POST /api/v1/orders/me/{orderId}/contract/change-request", "sales-orders:UPDATE");
+        expected.put("GET /api/v1/orders/me/{orderId}/contract/revisions", "sales-orders:READ");
+        expected.put("GET /api/v1/orders/me/{orderId}/contract/revisions/{revision}/document", "sales-orders:READ");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+        });
+        assertThat(byKey.get("POST /api/v1/orders/me/{orderId}/contract/change-request").rp().scope())
+                .isEqualTo(DataScope.OWN);
+        assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
+                .contains(PermissionCode.parse("sales-contracts:UPDATE"))
+                .doesNotContain(PermissionCode.parse("sales-contract-terms:APPROVE"),
+                        PermissionCode.parse("sales-contract-signatures:APPROVE"));
+        assertThat(roles.resolve(List.of(Role.SALES_MANAGER.authority())).permissions())
+                .contains(PermissionCode.parse("sales-contract-terms:APPROVE"),
+                        PermissionCode.parse("sales-contract-signatures:APPROVE"),
+                        PermissionCode.parse("sales-contracts:READ"))
+                .doesNotContain(PermissionCode.parse("sales-contracts:UPDATE"));
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
+                .doesNotContain(PermissionCode.parse("sales-contract-terms:APPROVE"),
+                        PermissionCode.parse("sales-contracts:READ"));
     }
 
     /**

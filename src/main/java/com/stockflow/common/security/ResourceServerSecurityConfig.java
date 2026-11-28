@@ -221,6 +221,11 @@ public class ResourceServerSecurityConfig {
                         // customer yet has no account. Rate-limited per address, a honeypot field, and one answer for
                         // every outcome, checked by the endpoint. POST only.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/leads").permitAll()
+                        // The page behind the QR code on a signed contract's certificate page: whoever holds the
+                        // unguessable code may look the contract up and check a file against it; no account. Rate-limited
+                        // per address, and the same 404 for every code that is not one.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/public/contract-verifications/*").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/contract-verifications/*/check").permitAll()
                         // The mail provider's delivery reports (SCRUM-352): it cannot hold a token, so its Svix
                         // signature is the credential, checked by the endpoint. POST only.
                         .requestMatchers(HttpMethod.POST, "/api/v1/notifications/webhooks/resend").permitAll()

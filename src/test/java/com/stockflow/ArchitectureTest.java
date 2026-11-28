@@ -311,13 +311,17 @@ class ArchitectureTest {
      * <p>One exception, by name: {@code CertificateValidity}, because the JDK's X.509 API
      * ({@code X509Certificate.getNotBefore/getNotAfter}) answers only with {@code Date} and has no
      * {@code java.time} form. That class turns them into {@code Instant}s where it reads them and
-     * hands nothing else a {@code Date}; checking an e-invoice's signing certificate needs it.
+     * hands nothing else a {@code Date}; checking an e-invoice's signing certificate needs it. The second, by the same
+     * reasoning: {@code CertificateDates} in the contract signing package, where BouncyCastle's certificate builder and
+     * CMS signing-time attribute, like the JDK's certificate, speak {@code Date} only.
      */
     @Test
     void onlyJavaTimeIsUsed() {
         ArchRule rule = noClasses()
                 .that().doNotHaveFullyQualifiedName(
                         "com.stockflow.invoicing.internal.service.CertificateValidity")
+                .and().doNotHaveFullyQualifiedName(
+                        "com.stockflow.order.internal.service.signing.CertificateDates")
                 .should().dependOnClassesThat()
                 .haveFullyQualifiedName("java.util.Date")
                 .because("java.time is the only date API used here");

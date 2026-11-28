@@ -178,6 +178,59 @@ class SalesContractDocumentTest {
                 "Hợp đồng bị huỷ bỏ và Bên A hoàn lại toàn bộ số tiền đã nhận", "ĐIỀU 6.");
     }
 
+    /** The same contract with what Sales agreed beyond the standard terms. */
+    private static SalesContractDocument.Facts withAgreement(String specialTerms, Integer penalty, Integer tolerance,
+                                                             Integer warranty, SalesContracts.SellerSigner seller,
+                                                             SalesContracts.BuyerSigner buyer) {
+        SalesContractDocument.Facts base = facts();
+        SalesContracts.ContractView v = base.contract();
+        SalesContracts.ContractView view = new SalesContracts.ContractView(v.id(), v.contractNumber(), v.orderId(),
+                v.orderNumber(), v.status(), v.seller(), v.buyer(), v.freeSampleRounds(), v.totals(),
+                v.deliverySchedule(), v.paymentPlan(), v.sentAt(), v.sentBy(), v.signedOn(), v.signedFileName(),
+                v.signedAt(), v.signedBy(), v.cancelledAt(), v.cancelledBy(), v.cancellationReason(),
+                v.completedAt(), v.version(), v.creditWarning(), v.returnWindowDays(), v.appendixAvailable(),
+                v.creditReview(), v.latestCreditReview(), 1, null, false, specialTerms, penalty, tolerance, warranty,
+                seller, buyer, null, false, "NONE", null, null, false, false, null, null, null);
+        return new SalesContractDocument.Facts(view, base.order(), base.dated(), base.head(), base.names(),
+                base.issued());
+    }
+
+    @Test
+    @DisplayName("the contract's own terms replace the configured ones; special terms are a clause of their own before "
+            + "the validity clause, one numbered point for each paragraph; the electronic-signing clause is quoted")
+    void agreementIsPrinted() throws IOException {
+        byte[] pdf = SalesDocumentSamples.keep("contract-with-agreement", document.render(withAgreement(
+                "Bên A thay thế miễn phí thùng hàng bị hỏng khi vận chuyển trong 30 ngày.\n\nBên B được hoãn thanh "
+                        + "toán đợt cuối tối đa 7 ngày một lần trong hợp đồng.", 3, 10, 12,
+                new SalesContracts.SellerSigner("Lê Thị Cẩm", "Phó giám đốc", "12/UQ-2026"),
+                new SalesContracts.BuyerSigner("Đỗ Văn Dũng", "Chủ doanh nghiệp"))));
+        String text = SalesDocumentSamples.text(pdf);
+
+        assertThat(text).containsSubsequence("ĐIỀU 2. CHẤT LƯỢNG", "±10%", "ĐIỀU 7. KHIẾU NẠI",
+                        "trong thời hạn 12 tháng", "ĐIỀU 9. PHẠT VI PHẠM", "chịu phạt 3% giá trị phần nghĩa vụ",
+                        "ĐIỀU 12. THỎA THUẬN KHÁC", "12.1. Bên A thay thế miễn phí thùng hàng bị hỏng",
+                        "12.2. Bên B được hoãn thanh toán đợt cuối", "ĐIỀU 13. HIỆU LỰC HỢP ĐỒNG", "lập thành 02 bản",
+                        "13.5.", "bằng phương tiện điện tử trên cổng khách hàng",
+                        "chữ ký điện tử của mỗi Bên có giá trị như chữ ký trên văn bản giấy",
+                        "ĐẠI DIỆN BÊN A", "PHÓ GIÁM ĐỐC", "(Theo giấy uỷ quyền số 12/UQ-2026; ký, ghi rõ họ tên, đóng dấu)",
+                        "Lê Thị Cẩm", "ĐẠI DIỆN BÊN B", "CHỦ DOANH NGHIỆP", "Đỗ Văn Dũng")
+                .doesNotContain("chịu phạt 8%", "±5%", "trong thời hạn 6 tháng");
+    }
+
+    @Test
+    @DisplayName("without special terms there is no such clause and the validity clause is still the twelfth; the signers "
+            + "default to the legal representatives; the electronic-signing clause is always there")
+    void noAgreementNoClause() throws IOException {
+        String text = SalesDocumentSamples.text(document.render(facts()));
+        assertThat(text).doesNotContain("THỎA THUẬN KHÁC", "uỷ quyền số")
+                .containsSubsequence("ĐIỀU 11. GIẢI QUYẾT TRANH CHẤP", "ĐIỀU 12. HIỆU LỰC HỢP ĐỒNG",
+                        "bằng phương tiện điện tử trên cổng khách hàng", "Trần Quốc An", "Trần Văn Bình");
+        // Standard terms written down are the same paper as none.
+        String written = SalesDocumentSamples.text(document.render(withAgreement(null, 8, 5, 6, null, null)));
+        assertThat(written).contains("chịu phạt 8% giá trị phần nghĩa vụ", "±5%", "trong thời hạn 6 tháng")
+                .doesNotContain("THỎA THUẬN KHÁC");
+    }
+
     @Test
     @DisplayName("the penalty a contract prints cannot pass the 8% of Luật Thương mại Điều 301; the other terms have "
             + "their bounds too")

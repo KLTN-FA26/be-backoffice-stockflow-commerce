@@ -820,8 +820,30 @@ class Order:
                           f"Hop dong {self.contract_number}")
         upd("ordering.sales_contract", self.contract, status="SENT", sent_at=when, sent_by=U[self.sales],
             sent_document_key=doc["key"])
+        # What revision 1 was sent as, as SalesContractService.send keeps it (contract e-signing plan, 2026-11-28).
+        ins("ordering.sales_contract_revision", when, contract_id=self.contract, revision=1,
+            sent_document_key=doc["key"], sent_at=when, sent_by=U[self.sales])
+        self.sent_document = doc
         self.contract_status = "SENT"
         self.move("PENDING_CONTRACT", when, U[self.sales], f"Đã gửi hợp đồng {self.contract_number}")
+
+    def customer_signs_with_code(self, when, signer, title):
+        """The customer signs on the portal with the one-time code mailed to them (contract e-signing): SENT ->
+        CUSTOMER_SIGNED, the code used up, and the evidence of the signature - who, how, when, from where, over the
+        SHA-256 of the PDF that was sent. The order keeps waiting for the company's signature (PENDING_CONTRACT)."""
+        email = f"{self.cust}@khachhang.example"
+        ins("ordering.contract_sign_otp", when - timedelta(minutes=3), id=uid("sign-otp:" + self.key),
+            contract_id=self.contract, revision=1, customer_user_id=self.c["user"], email=email,
+            code_hash=hashlib.sha256(("seed-otp:" + self.key).encode()).hexdigest(),
+            expires_at=when + timedelta(minutes=7), attempts=1, consumed_at=when, ip="203.0.113.25")
+        upd("ordering.sales_contract", self.contract, status="CUSTOMER_SIGNED", customer_signed_at=when)
+        ins("ordering.sales_contract_signature", when, id=uid("signature:customer:" + self.key),
+            contract_id=self.contract, revision=1, party="CUSTOMER", method="OTP", signer_name=signer,
+            signer_title=title, email=email, account_user_id=self.c["user"], signed_at=when, ip="203.0.113.25",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            document_sha256=self.sent_document["checksum"])
+        self.contract_status = "CUSTOMER_SIGNED"
+        commit()
 
     def sign(self, when):
         scan = stored_file("documents", uid("contract-scan:" + self.key), "application/pdf", when,
@@ -1973,6 +1995,13 @@ o = Order("S2", "trasuamay", [(TSM_TUI, 10, 2900), (TSM_PET22, 6, 1350)], T(11, 
 o.draw_up(T(11, 7, 9), [(date(2026, 12, 5), date(2026, 12, 9), [10, 6])],
           [("Đặt cọc khi ký", "ON_SIGNING", 30, 7, None), ("Thanh toán sau giao hàng", "AFTER_DELIVERY", 70, 30, 1)])
 o.send(T(11, 7, 14))
+
+# ---- signed by the customer with the code mailed to them, waiting for the company's signature
+o = Order("S20", "kemtuoi", [(KTH_LY8, 10, 380)], T(11, 5, 10), "HAN")
+o.draw_up(T(11, 5, 14), [(date(2026, 12, 8), date(2026, 12, 12), [10])],
+          [("Đặt cọc khi ký", "ON_SIGNING", 30, 7, None), ("Thanh toán sau giao hàng", "AFTER_DELIVERY", 70, 30, 1)])
+o.send(T(11, 6, 9))
+o.customer_signs_with_code(T(11, 7, 16), "Đỗ Minh Kem", "Giám đốc")
 
 # ---- converted from its quote, the contract still a draft
 o = Order("S1", "kemtuoi", [(KTH_LY8, 12, 380)], T(11, 8, 10), "HAN")

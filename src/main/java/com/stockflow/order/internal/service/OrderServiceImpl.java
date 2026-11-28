@@ -1247,15 +1247,18 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /**
      * {@inheritDoc}
      *
-     * <p>Called by fulfillment when the warehouse manager's reallocation replaced the missing carton, so a live shortage
-     * card ends as {@code REALLOCATED}: nothing is short any more (17 §4.14 step 60). Sales lifting the hold by hand
-     * go through {@link #resolveHold(UUID, String, UUID, com.stockflow.order.api.ShortageCardEnd)}.</p>
+     * <p>The hold was lifted by a path that did not replace the missing carton (for example Sales allowing a partial
+     * shipment after a carton was removed at the check station), so a live shortage card ends as
+     * {@code HOLD_RESOLVED_ELSEWHERE}, not {@code REALLOCATED}: the customer is not told that the order is complete
+     * (17 §4.14 step 60). Fulfillment's reallocation passes {@code REALLOCATED} through
+     * {@link #resolveHold(UUID, String, UUID, com.stockflow.order.api.ShortageCardEnd)}; Sales lifting the hold by hand
+     * go through the order operations with {@code DECIDED_WITHOUT_CARD}.</p>
      */
     @Override
     @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
             resourceType = "order", resourceId = "#orderId")
     public OrderSummary resolveHold(UUID orderId, String note, UUID by) {
-        return resolveHold(orderId, note, by, com.stockflow.order.api.ShortageCardEnd.REALLOCATED);
+        return resolveHold(orderId, note, by, com.stockflow.order.api.ShortageCardEnd.HOLD_RESOLVED_ELSEWHERE);
     }
 
     /**
@@ -1263,6 +1266,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      * Sales lifting it by hand (D47), {@code REALLOCATED} for the warehouse's reallocation. {@code null} leaves the cards
      * as they are - for the operation that carries a card's own choice out.
      */
+    @Override
     @com.stockflow.common.audit.Auditable(action = com.stockflow.common.audit.AuditAction.TRANSITION,
             resourceType = "order", resourceId = "#orderId")
     public OrderSummary resolveHold(UUID orderId, String note, UUID by,
