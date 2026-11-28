@@ -113,8 +113,8 @@ class DesignProjectIntegrationTest {
         manager = tx.execute(s -> ReferenceRows.user(entityManager));
         as(manager, Set.of());
         String code = "PRJ-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
-        productId = products.create(new CreateProductCommand(code, "Ly giấy 12oz", "Paper cup 12oz", null, null,
-                "Ly", null, null, TaxClass.STANDARD, List.of())).productId();
+        productId = products.create(new CreateProductCommand(code, "Ly giấy 12oz", null, null,
+                "Ly", null, TaxClass.STANDARD, List.of())).productId();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.products SET status = 'APPROVED', submitted_by = ?, submitted_at = NOW(), "
                     + "approved_by = ?, approved_at = NOW() WHERE id = ?", ReferenceRows.user(entityManager),
@@ -195,16 +195,10 @@ class DesignProjectIntegrationTest {
 
     /**
      * A draft started in {@code inProject}, its logo placed at {@code u}, its three files rendered. {@code null} is a
-     * design in no project: one started before every design had to be in one (BR-23.2), which the table still holds -
-     * started in {@link #project}, then taken out of it, as such a design never was in one.
+     * design in no project, as a project is optional (kltn-docs 12 BR-17).
      */
     private String draft(String inProject, double u) throws Exception {
-        String design = data(start(inProject == null ? project : inProject, null).andExpect(status().isCreated()))
-                .get("id").asText();
-        if (inProject == null) {
-            tx.executeWithoutResult(s -> jdbc.update("UPDATE design.design_draft SET project_id = NULL "
-                    + "WHERE id = ?::uuid", design));
-        }
+        String design = data(start(inProject, null).andExpect(status().isCreated())).get("id").asText();
         String logo = data(mvc.perform(multipart("/api/v1/designs/" + design + "/assets")
                 .file(new MockMultipartFile("file", "logo.png", "image/png", png(1200, 1200))))
                 .andExpect(status().isCreated())).get("assetId").asText();
@@ -378,27 +372,29 @@ class DesignProjectIntegrationTest {
     }
 
     /**
-     * BR-23.2 (T1): a design is started in a project or not at all. The refusal is a settled answer, so a retry with
-     * the same Idempotency-Key is told the same from the stored response, and nothing was written either time.
+     * BR-17 (T1): a project is optional. A design started without one is written as a stand-alone draft: no project, no
+     * project decision in its history, and it counts against the draft limit as any design does. Nothing about the
+     * request is refused.
      */
     @Test
-    void aDesignIsNotStartedWithoutAProject() throws Exception {
+    void aDesignStartedWithoutAProjectStandsAlone() throws Exception {
         long designs = designsOfTheCustomer();
         long drafts = draftsOfTheCustomer();
-        String key = UUID.randomUUID().toString();
-        start(null, key).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("projectId"))
-                .andExpect(jsonPath("$.fieldErrors[0].code").value("NotNull"));
-        start(null, key).andExpect(status().isBadRequest())
-                .andExpect(header().string("Idempotency-Replayed", "true"))
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("projectId"));
-        assertThat(designsOfTheCustomer()).isEqualTo(designs);
-        assertThat(draftsOfTheCustomer()).isEqualTo(drafts);
+        JsonNode started = data(start(null, UUID.randomUUID().toString()).andExpect(status().isCreated()));
+        String design = started.get("id").asText();
+        assertThat(started.path("projectId").isNull() || started.path("projectId").isMissingNode()).isTrue();
+        assertThat(projectOf(design)).isNull();
+        assertThat(decisionsOf(design)).contains("CREATED").doesNotContain("ADDED_TO_PROJECT");
+        assertThat(designsOfTheCustomer()).isEqualTo(designs + 1);
+        assertThat(draftsOfTheCustomer()).isEqualTo(drafts + 1);
+        // It goes on as any design does: it can be renamed, and joins a project later when its owner adds it.
+        mvc.perform(get("/api/v1/designs/" + design)).andExpect(status().isOk());
+        move(design, project).andExpect(status().isOk());
+        assertThat(projectOf(design)).isEqualTo(project);
     }
 
     /**
-     * BR-23.2 (T2): only one of the caller's open projects with room takes a new design. A closed or a full project is
+     * A project that is named takes a new design only when it is one of the caller's open projects with room (T2). A closed or a full project is
      * a 409 that a retry with the same key runs again (it may be answered otherwise once there is room); another
      * customer's project does not exist for the caller, a 404 the retry is told again. No design is written.
      */
@@ -499,8 +495,8 @@ class DesignProjectIntegrationTest {
 
     /**
      * BR-23.3 (T6b): a revision of a design staff started - no template of its own - is written into a project as any
-     * revision is: the source's own, or the one the caller names. A source in no project, started before every design
-     * had to be in one, has none to lend: the caller must name one.
+     * revision is: the source's own, or the one the caller names. A source in no project (a project is optional,
+     * BR-17) has none to lend: the revision stands alone as its source does, unless the caller names one.
      */
     @Test
     void aRevisionOfADesignStaffStartedIsWrittenIntoAProjectToo() throws Exception {
@@ -511,11 +507,10 @@ class DesignProjectIntegrationTest {
 
         String alone = approvedByStaff(null);
         long designs = designsOfTheCustomer();
-        mvc.perform(post("/api/v1/designs/" + alone + "/revisions")).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("projectId"))
-                .andExpect(jsonPath("$.fieldErrors[0].code").value("NotNull"));
-        assertThat(designsOfTheCustomer()).isEqualTo(designs);
+        String standalone = data(mvc.perform(post("/api/v1/designs/" + alone + "/revisions"))
+                .andExpect(status().isOk())).get("id").asText();
+        assertThat(projectOf(standalone)).isNull();
+        assertThat(designsOfTheCustomer()).isEqualTo(designs + 1);
         String other = newProject("Quán B");
         String named = data(mvc.perform(post("/api/v1/designs/" + alone + "/revisions")
                 .contentType(MediaType.APPLICATION_JSON).content("{\"projectId\":\"" + other + "\"}"))

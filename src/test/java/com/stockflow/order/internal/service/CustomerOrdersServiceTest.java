@@ -51,11 +51,12 @@ class CustomerOrdersServiceTest {
             mock(com.stockflow.order.internal.domain.OrderRepository.class);
     private final ReturnAllowances allowances = mock(ReturnAllowances.class);
     private final LineNames lineNames = mock(LineNames.class);
+    private final com.stockflow.design.api.SkuDesigns skuDesigns = mock(com.stockflow.design.api.SkuDesigns.class);
     private final com.stockflow.order.internal.repository.DeliveredAndReturnedUnits deliveredAndReturned =
             mock(com.stockflow.order.internal.repository.DeliveredAndReturnedUnits.class);
     private final CustomerOrdersService service = new CustomerOrdersService(search, orders, creditChecks, requests,
             orderRepository, allowances, deliveredAndReturned, java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC),
-            lineNames);
+            lineNames, skuDesigns);
 
     private CustomerOrders.Query query(LocalDate from, LocalDate to) {
         return new CustomerOrders.Query(0, 20, List.of(OrderStatus.CONFIRMED), "SO-1", from, to, null);
@@ -113,6 +114,9 @@ class CustomerOrdersServiceTest {
             UUID id = order.id().value();
             when(search.search(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(row)));
             when(search.lineCounts(List.of(id))).thenReturn(Map.of(id, 2));
+            when(search.firstLineSkus(List.of(id))).thenReturn(Map.of(id, "CUST-SKU-1"));
+            when(skuDesigns.ofSkus(List.of("CUST-SKU-1"))).thenReturn(Map.of("CUST-SKU-1",
+                    new com.stockflow.design.api.SkuDesign("CUST-SKU-1", UUID.randomUUID(), "Ly in logo", null)));
             when(requests.latestStatuses(List.of(id))).thenReturn(Map.of(id, CancellationRequestStatus.PENDING));
 
             PageResponse<CustomerOrders.Card> page = service.myOrders(order.customerId(), query(null, null));
@@ -125,7 +129,25 @@ class CustomerOrdersServiceTest {
                 assertThat(card.lineCount()).isEqualTo(2);
                 assertThat(card.deliveryState()).isEqualTo(CustomerOrders.DeliveryState.NOT_SHIPPED);
                 assertThat(card.cancellationRequestStatus()).isEqualTo("PENDING");
+                assertThat(card.firstItemName()).as("the first line's design, as a quote row names it")
+                        .isEqualTo("Ly in logo");
             });
+        }
+
+        @Test
+        @DisplayName("a first line whose SKU was made to no design is named by its SKU")
+        void firstItemWithoutDesign() {
+            Order order = OrderFixtures.released();
+            OrderSummary row = OrderFixtures.summaryOf(order);
+            UUID id = order.id().value();
+            when(search.search(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(row)));
+            when(search.firstLineSkus(List.of(id))).thenReturn(Map.of(id, "PLAIN-SKU"));
+            when(skuDesigns.ofSkus(any())).thenReturn(Map.of());
+
+            PageResponse<CustomerOrders.Card> page = service.myOrders(order.customerId(), query(null, null));
+
+            assertThat(page.items()).singleElement()
+                    .satisfies(card -> assertThat(card.firstItemName()).isEqualTo("PLAIN-SKU"));
         }
 
         @Test
@@ -142,6 +164,7 @@ class CustomerOrdersServiceTest {
             assertThat(page.items()).singleElement().satisfies(card -> {
                 assertThat(card.cancellationRequestStatus()).isNull();
                 assertThat(card.lineCount()).isZero();
+                assertThat(card.firstItemName()).as("no line: no first item").isNull();
             });
         }
     }

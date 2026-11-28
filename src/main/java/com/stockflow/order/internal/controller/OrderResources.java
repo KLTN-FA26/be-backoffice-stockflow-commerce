@@ -25,6 +25,12 @@ public final class OrderResources {
     public static final String HOLDS = "sales-order-holds";
 
     /**
+     * The customer module's resource, declared there ({@code SalesWorkloadResourceDeclaration}, V20270128000140): the
+     * Sales Managers' workload board, served by this module because most of its figures are orders' documents.
+     */
+    public static final String SALES_WORKLOAD = "sales-workload";
+
+    /**
      * Reading an order's delivery schedule (17 §4.5, BR-29): the batches, the window in force, what is held and released.
      * Its own resource, not {@code sales-contracts:READ}, which opens the contract itself: the warehouse manager releases
      * batch by batch and must see the schedule without seeing the contract (WF4 BE-13). Held by everyone who read the

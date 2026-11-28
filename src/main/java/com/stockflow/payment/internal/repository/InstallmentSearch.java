@@ -34,23 +34,36 @@ public interface InstallmentSearch {
      *
      * <p>{@code unannounced} true keeps the installments whose overdue was not announced for their current due date
      * (WF-05 BE-49: {@code overdue_announced_for} is not {@code due_date}) - the overdue scan's reading.</p>
+     *
+     * <p>{@code search}, the term the accountant typed (audit bo-27), widens {@code customerIds}: an installment of one
+     * of those customers, or one whose contract number or order number contains the term (case aside), is kept. The
+     * customers matching the term are read through {@code customer :: api} before (this schema is not JOINed,
+     * ADR-0007), so the number half is what this query adds. With no {@code customerIds} the term alone filters; null
+     * or blank is no search.</p>
+     *
+     * <p>{@code outstanding} keeps the installments that still owe exactly that amount (audit bo-26: the installments
+     * a bank transfer of that amount could pay) - what {@link Installment#outstanding} answers and the list shows: the
+     * amount less what was paid and taken off, zero once cancelled. Compared as numbers, so {@code 660000} matches
+     * {@code 660000.0000}.</p>
      */
     record InstallmentFilter(UUID customerId, UUID orderId, InstallmentStatus status, InstallmentMilestone milestone,
                              LocalDate dueBefore, Boolean reached, Boolean overdue, LocalDate overdueOn,
                              LocalDate dueFrom, java.util.Collection<UUID> customerIds, Boolean owing,
-                             Boolean unannounced, String searchTerm) {
+                             Boolean unannounced, String search, BigDecimal outstanding) {
 
         public InstallmentFilter {
             overdueOn = overdue == null ? null : java.util.Objects.requireNonNull(overdueOn, "overdueOn");
             customerIds = customerIds == null ? null : java.util.List.copyOf(customerIds);
+            search = search == null || search.isBlank() ? null : search.strip();
         }
 
+        /** Without the accountant's number search or the outstanding amount. */
         public InstallmentFilter(UUID customerId, UUID orderId, InstallmentStatus status,
                                  InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
                                  Boolean overdue, LocalDate overdueOn, LocalDate dueFrom,
                                  java.util.Collection<UUID> customerIds, Boolean owing, Boolean unannounced) {
-            this(customerId, orderId, status, milestone, dueBefore, reached, overdue, overdueOn, dueFrom,
-                    customerIds, owing, unannounced, null);
+            this(customerId, orderId, status, milestone, dueBefore, reached, overdue, overdueOn, dueFrom, customerIds,
+                    owing, unannounced, null, null);
         }
 
         /** Without the overdue scan's reading. */

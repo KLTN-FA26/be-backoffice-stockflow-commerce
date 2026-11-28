@@ -8,6 +8,8 @@ import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.StaffContact;
 import com.stockflow.notification.api.Inbox;
 import com.stockflow.notification.api.InboxMessage;
+import com.stockflow.notification.api.SalesAudiences;
+import com.stockflow.notification.api.SalesAudiences.SalesAudience;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -29,7 +31,8 @@ import static org.mockito.Mockito.when;
 /**
  * WF-05 BE-24 (audit R-9): staff are told what a return leaves them to do - a refund to propose, a parcel that differs
  * from what was approved, a carrier's return with cartons missing, returned cartons waiting in quarantine - each once,
- * to the people who may act on it, in the words of the {@code _vi} bundle.
+ * to the people who may act on it, in the words of the {@code _vi} bundle. On Sales' side, since 2026-11-28, whoever
+ * looks after the customer (17 §4.10, 00 §6): the owner or the cover, else the Sales Managers marked "cần phân công".
  */
 class ReturnStaffNotificationListenerTest {
 
@@ -38,8 +41,17 @@ class ReturnStaffNotificationListenerTest {
     private final IdentityService identity = mock(IdentityService.class);
     private final Inbox inbox = mock(Inbox.class);
     private final NotificationSender sender = mock(NotificationSender.class);
+    private final SalesAudiences audiences = mock(SalesAudiences.class);
     private final ReturnStaffNotificationListener listener = new ReturnStaffNotificationListener(sender,
-            new StaffDirectory(identity), new StaffNotices(inbox));
+            new StaffDirectory(identity), new SalesNotices(audiences, new StaffDirectory(identity),
+            mock(com.stockflow.identity.api.SalesStaff.class)), new StaffNotices(inbox));
+
+    private void looksAfterEveryCustomer(UUID who, String email, boolean needsAssignment) {
+        when(audiences.ofCustomer(any())).thenReturn(java.util.Optional.of(new SalesAudience(List.of(who),
+                needsAssignment)));
+        when(identity.user(who)).thenReturn(new com.stockflow.identity.api.StaffUser(who, "u", email, "Name", "ACTIVE",
+                List.of(), List.of(), false, null, null, null, null, null, 0));
+    }
 
     private final UUID sales = UUID.randomUUID();
     private final UUID returnId = UUID.randomUUID();
@@ -51,10 +63,9 @@ class ReturnStaffNotificationListenerTest {
     }
 
     @Test
-    @DisplayName("a return waits for its refund: whoever proposes refunds is told, keyed by return and moment, by mail too")
+    @DisplayName("a return waits for its refund: the customer's owner is told, keyed by return and moment, by mail too")
     void awaitingProposal() {
-        when(identity.notificationRecipientsHolding("sales-rma-resolutions:UPDATE", null))
-                .thenReturn(List.of(new StaffContact(sales, "sales@example.com")));
+        looksAfterEveryCustomer(sales, "sales@example.com", false);
         when(inbox.post(any(), any())).thenReturn(1);
 
         listener.on(new ReturnAwaitingRefund(returnId, "RMA-20261123-0001", UUID.randomUUID(), "SO-0042",
@@ -68,13 +79,26 @@ class ReturnStaffNotificationListenerTest {
         assertThat(message.dedupeKey()).isEqualTo("return-awaiting-proposal:" + returnId + ":" + AT.toEpochMilli());
         verify(sender).sendStaffNotice(eq(List.of("sales@example.com")), eq(message),
                 eq("staff_return_awaiting_proposal"));
+        verify(identity, never()).notificationRecipientsHolding(eq("sales-rma-resolutions:UPDATE"), any());
+    }
+
+    @Test
+    @DisplayName("§10.2: a return of a customer with no active owner reaches the Sales Managers, marked 'cần phân công'")
+    void awaitingProposalWithNoOwner() {
+        UUID manager = UUID.randomUUID();
+        looksAfterEveryCustomer(manager, "manager@example.com", true);
+        when(inbox.post(any(), any())).thenReturn(1);
+
+        listener.on(new ReturnAwaitingRefund(returnId, "RMA-20261123-0001", UUID.randomUUID(), "SO-0042",
+                UUID.randomUUID(), "GOODS_COMPLETE", AT));
+
+        assertThat(posted(List.of(manager)).body()).contains("Cần phân công");
     }
 
     @Test
     @DisplayName("a parcel with a discrepancy is reported to Sales with its receipt; one without is not")
     void discrepancy() {
-        when(identity.notificationRecipientsHolding("sales-rma-resolutions:UPDATE", null))
-                .thenReturn(List.of(new StaffContact(sales, null)));
+        looksAfterEveryCustomer(sales, null, false);
         when(inbox.post(any(), any())).thenReturn(1);
         ReturnReceived clean = new ReturnReceived(returnId, "RMA-1", UUID.randomUUID(), "SO-1", UUID.randomUUID(),
                 "HCM-QC01", List.of(), false, UUID.randomUUID(), AT, 1, "RECEIVED", "GR-RET-0001");

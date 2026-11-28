@@ -213,6 +213,36 @@ class CreditRequestIntegrationTest {
     }
 
     @Test
+    @DisplayName("audit bo-28: a back-office row carries the customer's credit limit now, read for the page; none "
+            + "without credit, never for the portal")
+    void rowsCarryTheCurrentLimit() throws Exception {
+        customers.saveCreditTerms(new SaveCreditTermsCommand(customer, new BigDecimal("250000000"), 30,
+                "set before the request", accountant, null));
+        String withCredit = id(fileBySales(customer, "300000000"));
+        String withoutCredit = id(fileBySales(otherCustomer, "100000000"));
+
+        String rows = call(Role.ACCOUNTANT, accountant, get("/api/v1/credit-requests")
+                .param("customerId", customer.toString()), status().isOk());
+        List<Number> limits = JsonPath.read(rows, "$.data.items[?(@.id == '%s')].currentCreditLimit"
+                .formatted(withCredit));
+        assertThat(limits).singleElement().satisfies(limit ->
+                assertThat(new BigDecimal(limit.toString())).isEqualByComparingTo("250000000"));
+        String others = call(Role.ACCOUNTANT, accountant, get("/api/v1/credit-requests")
+                .param("customerId", otherCustomer.toString()), status().isOk());
+        assertThat((List<Object>) JsonPath.read(others, "$.data.items[?(@.id == '%s')]".formatted(withoutCredit)))
+                .hasSize(1);
+        assertThat(absent(others, "$.data.items[0].currentCreditLimit")).as("no credit, no limit").isTrue();
+
+        String detail = call(Role.ACCOUNTANT, accountant, get("/api/v1/credit-requests/" + withCredit),
+                status().isOk());
+        assertThat(new BigDecimal(JsonPath.read(detail, "$.data.currentCreditLimit").toString()))
+                .as("the detail says the same as its row").isEqualByComparingTo("250000000");
+
+        String mine = call(Role.CUSTOMER, portalUser, get("/api/v1/credit-requests/mine"), status().isOk());
+        assertThat(absent(mine, "$.data.items[0].currentCreditLimit")).as("the portal's rows leave it out").isTrue();
+    }
+
+    @Test
     @DisplayName("Sales ask for the customer; the accountant rejects with a reason and the credit is unchanged")
     void rejected() throws Exception {
         String filed = fileBySales(customer, "300000000");

@@ -37,7 +37,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Images of a variant (decision D5): upload, describe, publish (four-eyes), withdraw, delete. A
+ * Images of a variant (decision D5): upload, describe, publish (by anyone allowed, ADR-0012), withdraw, delete. A
  * variant holds at most 20 images, so the list is returned whole.
  */
 @RestController
@@ -102,7 +102,7 @@ class ProductMediaController {
     }
 
     @PostMapping("/publication")
-    @Operation(summary = "Publish images to the storefront; the publisher must not be the uploader")
+    @Operation(summary = "Publish images to the storefront; the uploader may publish their own")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.APPROVE)
     public ApiResponse<List<MediaResponse>> publish(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                     @Valid @RequestBody PublishMediaRequest request,

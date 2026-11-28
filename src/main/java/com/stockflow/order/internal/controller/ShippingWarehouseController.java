@@ -51,8 +51,12 @@ class ShippingWarehouseController {
 
     private final ShippingWarehouseService shippingWarehouses;
     private final OrderWarehouseVisibility visibility;
+    /** 17 BR-32: the choice, recorded as done on the owner's behalf when someone else makes it. */
+    private final com.stockflow.order.internal.service.OrderOperations operations;
 
-    ShippingWarehouseController(ShippingWarehouseService shippingWarehouses, OrderWarehouseVisibility visibility) {
+    ShippingWarehouseController(ShippingWarehouseService shippingWarehouses, OrderWarehouseVisibility visibility,
+                                com.stockflow.order.internal.service.OrderOperations operations) {
+        this.operations = operations;
         this.shippingWarehouses = shippingWarehouses;
         this.visibility = visibility;
     }
@@ -90,7 +94,7 @@ class ShippingWarehouseController {
                                                                 @Valid @RequestBody ChooseRequest request,
                                                                 @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(shippingWarehouses.choose(orderId, request.warehouseId(), user.userId()));
+        return ApiResponse.ok(operations.chooseShippingWarehouse(orderId, request.warehouseId(), user.userId()));
     }
 
     @GetMapping("/{orderId}/stock-coverage")

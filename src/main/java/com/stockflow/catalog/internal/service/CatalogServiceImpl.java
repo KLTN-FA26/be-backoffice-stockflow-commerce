@@ -2,11 +2,10 @@ package com.stockflow.catalog.internal.service;
 
 import com.stockflow.catalog.api.CatalogService;
 import com.stockflow.catalog.api.PriceSchedule;
-
+import com.stockflow.product.api.CustomerSkus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -14,24 +13,33 @@ import java.util.UUID;
  * quote line starts from (13 BR-04, 2026-11-26), and the tiers the back office shows. Nothing here is priced for checkout or locked for one - the customer does not place
  * orders (kltn-docs 14 BR-01, BR-02; team plan 5-2); a quote takes its own locks
  * ({@code ProductService.lockedPurchasability}).
+ *
+ * <p>A schedule says what its tiers count ({@link PriceSchedule.Measure}) by the rule the customer-prices screen uses
+ * ({@code CustomerPriceService}): cartons when the SKU is this customer's own, units otherwise. The quote never needed
+ * it - it accepts only the customer's own SKUs - but a reader of the bare numbers, the assistant, took "10.000 ly" for
+ * 10,000 cartons.</p>
  */
 @Service
 @Transactional(readOnly = true)
 class CatalogServiceImpl implements CatalogService {
 
     private final PriceResolver resolver;
+    private final CustomerSkus customerSkus;
     private final com.stockflow.catalog.internal.domain.StandardPriceRepository standardPrices;
 
-    CatalogServiceImpl(PriceResolver resolver,
+    CatalogServiceImpl(PriceResolver resolver, CustomerSkus customerSkus,
                        com.stockflow.catalog.internal.domain.StandardPriceRepository standardPrices) {
         this.resolver = resolver;
+        this.customerSkus = customerSkus;
         this.standardPrices = standardPrices;
     }
 
     @Override
     @Transactional(readOnly = true)
     public java.util.Optional<PriceSchedule> customerPrice(UUID customerId, String sku) {
-        return resolver.own(resolver.customer(customerId), sku);
+        return resolver.own(resolver.customer(customerId), sku).map(schedule -> schedule.measuredIn(
+                customerSkus.ownerOf(schedule.sku()).map(customerId::equals).orElse(false)
+                        ? PriceSchedule.Measure.CARTON : PriceSchedule.Measure.UNIT));
     }
 
     @Override
@@ -43,6 +51,6 @@ class CatalogServiceImpl implements CatalogService {
         return standardPrices.find(sku.strip().toUpperCase(java.util.Locale.ROOT)).map(price -> new PriceSchedule(
                 price.sku(), price.moq(), price.tiers().stream().map(tier -> new PriceSchedule.Tier(tier.minQuantity(),
                         new com.stockflow.common.domain.Money(tier.unitPrice(),
-                                com.stockflow.common.domain.Money.VND))).toList()));
+                                com.stockflow.common.domain.Money.VND))).toList(), PriceSchedule.Measure.CARTON));
     }
 }

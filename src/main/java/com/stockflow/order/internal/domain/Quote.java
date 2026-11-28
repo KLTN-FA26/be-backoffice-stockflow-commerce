@@ -192,6 +192,12 @@ public final class Quote {
     private Instant convertedAt;
     /** 14 BR-10: a draft waiting for the Sales Manager to approve its prices (ck_quote_price_review: only a DRAFT). */
     private boolean priceReviewPending;
+    /**
+     * 14 BR-26: the customer's Sales owner when the quote was drawn up - what sales per salesperson are counted by. Set
+     * once, at drafting, and never changed (tg_quote_sales_owner_fixed): moving the customer to another salesperson
+     * leaves it as it was. Null when the customer had no owner. Not who is told anything: that is the owner of today.
+     */
+    private UUID salesOwnerId;
 
     private Quote(UUID id, String quoteNumber, UUID requestId, UUID customerId, QuoteStatus status, int revision,
                   Offer offer) {
@@ -211,8 +217,16 @@ public final class Quote {
     }
 
     public static Quote draft(UUID id, String quoteNumber, UUID requestId, UUID customerId, Offer offer) {
+        return draft(id, quoteNumber, requestId, customerId, offer, null);
+    }
+
+    /** A new draft, with the customer's Sales owner of this moment (14 BR-26); null when it has none. */
+    public static Quote draft(UUID id, String quoteNumber, UUID requestId, UUID customerId, Offer offer,
+                              UUID salesOwnerId) {
         offer.requireMoq();
-        return new Quote(id, quoteNumber, requestId, customerId, QuoteStatus.DRAFT, 1, offer);
+        Quote quote = new Quote(id, quoteNumber, requestId, customerId, QuoteStatus.DRAFT, 1, offer);
+        quote.salesOwnerId = salesOwnerId;
+        return quote;
     }
 
     /** Rehydration from the rows: no transition is replayed. */
@@ -229,6 +243,17 @@ public final class Quote {
                                 int revision, Offer offer, Instant sentAt, UUID sentBy, Instant respondedAt,
                                 UUID respondedBy, String customerFeedback, String cancellationReason,
                                 UUID convertedOrderId, Instant convertedAt, boolean priceReviewPending) {
+        return restore(id, quoteNumber, requestId, customerId, status, revision, offer, sentAt, sentBy, respondedAt,
+                respondedBy, customerFeedback, cancellationReason, convertedOrderId, convertedAt, priceReviewPending,
+                null);
+    }
+
+    /** Rehydration from the rows, with the Sales owner recorded when it was drawn up (14 BR-26). */
+    public static Quote restore(UUID id, String quoteNumber, UUID requestId, UUID customerId, QuoteStatus status,
+                                int revision, Offer offer, Instant sentAt, UUID sentBy, Instant respondedAt,
+                                UUID respondedBy, String customerFeedback, String cancellationReason,
+                                UUID convertedOrderId, Instant convertedAt, boolean priceReviewPending,
+                                UUID salesOwnerId) {
         if (priceReviewPending && status != QuoteStatus.DRAFT) {
             throw new IllegalArgumentException("Only a draft waits for its prices to be approved");
         }
@@ -242,6 +267,7 @@ public final class Quote {
         quote.cancellationReason = cancellationReason;
         quote.convertedOrderId = convertedOrderId;
         quote.convertedAt = convertedAt;
+        quote.salesOwnerId = salesOwnerId;
         return quote;
     }
 
@@ -540,6 +566,8 @@ public final class Quote {
         return status == QuoteStatus.DRAFT && sentAt != null;
     }
     public UUID sentBy() { return sentBy; }
+    /** 14 BR-26: the customer's Sales owner when the quote was drawn up; null when it had none. */
+    public UUID salesOwnerId() { return salesOwnerId; }
     public Instant respondedAt() { return respondedAt; }
     public UUID respondedBy() { return respondedBy; }
     public String customerFeedback() { return customerFeedback; }

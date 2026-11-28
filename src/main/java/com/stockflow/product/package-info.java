@@ -5,7 +5,7 @@
  *
  * <p><b>May depend on:</b> inventory, to validate and synchronously apply SKU control settings, and to answer its
  * {@code inventory :: spi} question of what each SKU is called, for the carton label.
- * Identity resolves media audit usernames for the four-eyes check. Plus {@code common} and {@code
+ * Identity resolves staff names for display. Plus {@code common} and {@code
  * contracts}, which are available to every module.
  *
  * <p>The module has two packages and the split is the whole point:
@@ -18,5 +18,5 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(
-        allowedDependencies = {"inventory :: api", "inventory :: spi", "identity :: api"})
+        allowedDependencies = {"inventory :: api", "inventory :: spi", "identity :: api", "customer :: api"})
 package com.stockflow.product;

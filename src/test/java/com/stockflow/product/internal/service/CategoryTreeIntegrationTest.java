@@ -78,7 +78,7 @@ class CategoryTreeIntegrationTest {
         CategoryView d = create("D", null);
         var brand = taxonomy.createBrand("BR-" + suffix, "Brand", null);
         var product = products.create(new com.stockflow.product.api.CreateProductCommand("FX-" + suffix, "Fixture",
-                "Fixture", brand.id(), c.id(), null, null, null, com.stockflow.product.api.TaxClass.STANDARD, null));
+                brand.id(), c.id(), null, null, com.stockflow.product.api.TaxClass.STANDARD, null));
 
         CategoryView moved = taxonomy.moveCategory(b.id(), d.id());
 

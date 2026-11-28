@@ -426,6 +426,17 @@ public class PaymentReceiptService {
     }
 
     /**
+     * The installments the lines of {@code page} paid, by id, in one read for the whole page (audit bo-24): what lets
+     * each line of the list name its contract, order and installment, never one read per line.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, Installment> installmentsOf(java.util.Collection<PaymentReceipt> page) {
+        List<UUID> ids = page.stream().flatMap(r -> r.lines().stream()).map(PaymentReceipt.Line::installmentId)
+                .distinct().toList();
+        return book.findAll(ids).stream().collect(java.util.stream.Collectors.toMap(Installment::id, i -> i));
+    }
+
+    /**
      * The receipt, the installments it pays, and whether it may be voided now ({@link ReceiptDetail#voidBlockedBy}) -
      * read without the orders' locks: what the back office shows before a click, which the void reads again under
      * them.

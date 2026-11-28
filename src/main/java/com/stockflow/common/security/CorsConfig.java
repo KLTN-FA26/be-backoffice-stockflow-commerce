@@ -36,8 +36,10 @@ public class CorsConfig {
         // Patterns, never "*" together with credentials - CorsProperties refuses that at startup.
         config.setAllowedOriginPatterns(properties.allowedOriginPatterns());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        // MCP-Protocol-Version: an MCP client in a browser page (an allowed origin) sends it on every request after
+        // initialize; without it here the browser's preflight fails and so does the client.
         config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Idempotency-Key",
-                "X-Correlation-Id", "Accept-Language"));
+                "X-Correlation-Id", "Accept-Language", "MCP-Protocol-Version"));
         // Without exposing these, browser JavaScript cannot read them - so a client could not show
         // the correlation id on an error page, nor back off correctly on a 429.
         config.setExposedHeaders(List.of("X-Correlation-Id", "X-RateLimit-Limit",

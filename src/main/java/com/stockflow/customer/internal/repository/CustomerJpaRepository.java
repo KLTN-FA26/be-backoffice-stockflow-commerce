@@ -28,6 +28,26 @@ interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
     @org.springframework.data.jpa.repository.Query(
             "select c.id, c.fullName, c.taxCode from CustomerJpaEntity c where c.id in :ids")
     java.util.List<Object[]> findLabels(@Param("ids") java.util.Collection<UUID> ids);
+    /** {@code [id, salesOwnerId, salesOwnerState, salesOwnerSince]} of each of these customers, in one query. */
+    @org.springframework.data.jpa.repository.Query("select c.id, c.salesOwnerId, c.salesOwnerState, c.salesOwnerSince "
+            + "from CustomerJpaEntity c where c.id in :ids")
+    java.util.List<Object[]> findSalesOwners(@Param("ids") java.util.Collection<UUID> ids);
+
+    @org.springframework.data.jpa.repository.Query("select c.id from CustomerJpaEntity c "
+            + "where c.salesOwnerId = :userId and c.salesOwnerState = :state order by c.id")
+    java.util.List<UUID> findIdsOwnedBy(@Param("userId") UUID userId,
+                                        @Param("state") com.stockflow.customer.api.SalesOwnerState state);
+
+    /** The organisation {@code root} and its dependent units ({@code root-NNN}), in id order. */
+    @org.springframework.data.jpa.repository.Query("select c.id from CustomerJpaEntity c "
+            + "where c.taxCode = :root or c.taxCode like :branches order by c.id")
+    java.util.List<UUID> findIdsWithTaxCodeRoot(@Param("root") String root, @Param("branches") String branches);
+
+    /** The customers assigned to {@code userId} or waiting for an owner after they left. */
+    @org.springframework.data.jpa.repository.Query("select count(c) from CustomerJpaEntity c "
+            + "where c.salesOwnerId = :userId "
+            + "and c.salesOwnerState <> com.stockflow.customer.api.SalesOwnerState.UNASSIGNED")
+    long countOwnedBy(@Param("userId") UUID userId);
     Optional<CustomerJpaEntity> findByUserId(UUID userId);
     Optional<CustomerJpaEntity> findByEmailIgnoreCase(String email);
 
@@ -42,6 +62,9 @@ interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
               and (:exceptId is null or c.id <> :exceptId)
             """)
     boolean existsTaxCode(@Param("taxCode") String taxCode, @Param("exceptId") UUID exceptId);
+
+    @Query("select c.id from CustomerJpaEntity c where c.taxCode = :taxCode")
+    Optional<UUID> findIdByTaxCode(@Param("taxCode") String taxCode);
 
     /** {@code [segmentId, count]} for every group that holds a customer. */
     @Query("select c.segmentId, count(c) from CustomerJpaEntity c where c.segmentId is not null group by c.segmentId")

@@ -66,11 +66,14 @@ class CustomerOrdersService implements CustomerOrders {
     private final DeliveredAndReturnedUnits deliveredAndReturned;
     private final Clock clock;
     private final LineNames lineNames;
+    private final com.stockflow.design.api.SkuDesigns skuDesigns;
 
     CustomerOrdersService(OrderSearchRepository search, OrderService orders, CreditChecks creditChecks,
                           com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
                           OrderRepository orderRepository, ReturnAllowances returnAllowances,
-                          DeliveredAndReturnedUnits deliveredAndReturned, Clock clock, LineNames lineNames) {
+                          DeliveredAndReturnedUnits deliveredAndReturned, Clock clock, LineNames lineNames,
+                          com.stockflow.design.api.SkuDesigns skuDesigns) {
+        this.skuDesigns = skuDesigns;
         this.lineNames = lineNames;
         this.cancellationRequests = cancellationRequests;
         this.orderRepository = orderRepository;
@@ -99,6 +102,7 @@ class CustomerOrdersService implements CustomerOrders {
         var page = search.search(criteria, Pages.of(query.page(), query.size(), SORT.parse(query.sort())));
         List<UUID> ids = page.getContent().stream().map(OrderSummary::orderId).toList();
         Map<UUID, Integer> lineCounts = search.lineCounts(ids);
+        Map<UUID, String> firstItems = firstItemNames(search.firstLineSkus(ids));
         // A row carries no shipments: whether a partly fulfilled order has handed anything over is asked for those only.
         Set<UUID> handedOver = search.withShipments(page.getContent().stream()
                 .filter(row -> row.status() == OrderStatus.PARTIALLY_FULFILLED).map(OrderSummary::orderId).toList());
@@ -116,8 +120,27 @@ class CustomerOrdersService implements CustomerOrders {
                     row.total().currency().getCurrencyCode(), row.placedAt(),
                     lineCounts.getOrDefault(row.orderId(), 0),
                     rowDeliveryState(row.status(), row.lifecycle(), handedOver.contains(row.orderId()), kept),
-                    requests.containsKey(row.orderId()) ? requests.get(row.orderId()).name() : null);
+                    requests.containsKey(row.orderId()) ? requests.get(row.orderId()).name() : null,
+                    firstItems.get(row.orderId()));
         });
+    }
+
+    /**
+     * Each order's first item named as a quote row names it ({@code QuoteService} summaries): the design its SKU was made
+     * to, else the SKU. One read of the designs for the whole page, whatever its size.
+     */
+    private Map<UUID, String> firstItemNames(Map<UUID, String> firstSkus) {
+        if (firstSkus.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, com.stockflow.design.api.SkuDesign> designs = skuDesigns.ofSkus(firstSkus.values().stream()
+                .distinct().toList());
+        Map<UUID, String> names = new java.util.HashMap<>();
+        firstSkus.forEach((orderId, sku) -> {
+            com.stockflow.design.api.SkuDesign design = designs.get(sku);
+            names.put(orderId, design != null && design.name() != null ? design.name() : sku);
+        });
+        return names;
     }
 
     @Override

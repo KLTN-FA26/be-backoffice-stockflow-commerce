@@ -15,6 +15,8 @@ import java.util.UUID;
  *
  * @param files  the documents kept with it; null on a list row
  * @param review what the accountant weighs it on (plan §4.4), read now; null on a list row and for a portal customer
+ * @param currentCreditLimit the customer's credit limit now, beside the limit asked (audit bo-28) - on the back office's
+ *               list rows and detail alike; null without credit and for a portal customer
  */
 @Schema(description = "A credit request")
 public record CreditRequestResponse(
@@ -44,7 +46,9 @@ public record CreditRequestResponse(
         @Schema(description = "The accountant's note; the reason of a rejection") String decisionNote,
         long version,
         List<File> files,
-        Review review
+        Review review,
+        @Schema(description = "The customer's credit limit now (back office only); null while they have no credit")
+        BigDecimal currentCreditLimit
 ) {
 
     /** A document kept with the request; the bytes from {@code GET .../files/{fileId}/download-url}. */

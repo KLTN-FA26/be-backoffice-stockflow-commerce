@@ -1,5 +1,8 @@
 package com.stockflow.order.internal.repository;
 
+import com.stockflow.common.domain.BusinessCalendar;
+import com.stockflow.customer.api.Responsible;
+import com.stockflow.customer.api.ResponsibleSales;
 import com.stockflow.order.api.CustomerDocument;
 import com.stockflow.order.api.CustomerDocuments;
 import org.springframework.jdbc.core.RowMapper;
@@ -8,6 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -17,8 +21,11 @@ import java.util.UUID;
  * The order module's answer to {@link CustomerDocuments}: one statement per question, straight from its own tables, so
  * a module asking "whose is this quote" does not load the quote aggregate and its lines to learn one column.
  *
- * <p>The Sales account that answers for an order or a production order is the one who sent the quote the order came
- * from: an order has no salesperson column of its own, and the quote is where Sales put their name.</p>
+ * <p>The Sales account that answers for any of them is whoever looks after the document's <b>customer</b> today -
+ * {@code customer :: api}'s {@link ResponsibleSales}, the owner or the owner's cover (sales-owner plan 2026-11-28; 00
+ * §6, 18 BR-20) - not who sent the document: one customer has one contact, whoever sent its quote or contract. A
+ * customer with no active owner has none ({@code responsibleUserId} null): its managers are no document's salesperson.
+ * Asked once per answer, whatever the number of documents in it.</p>
  */
 @Component
 class CustomerDocumentsAdapter implements CustomerDocuments {
@@ -26,7 +33,7 @@ class CustomerDocumentsAdapter implements CustomerDocuments {
     private static final int MAX_LIMIT = 50;
 
     private static final String QUOTES = """
-            SELECT q.id, q.customer_id, q.quote_number AS number, q.status, q.sent_by AS responsible,
+            SELECT q.id, q.customer_id, q.quote_number AS number, q.status,
                    NULL::numeric AS amount, NULL AS currency, q.created_at
               FROM ordering.quote q""";
     /**
@@ -37,36 +44,36 @@ class CustomerDocumentsAdapter implements CustomerDocuments {
             SELECT q.id, q.customer_id, q.quote_number AS number,
                    CASE WHEN q.status = 'DRAFT' AND q.sent_at IS NOT NULL THEN 'CHANGES_REQUESTED' ELSE q.status END
                        AS status,
-                   q.sent_by AS responsible, NULL::numeric AS amount, NULL AS currency, q.created_at
+                   NULL::numeric AS amount, NULL AS currency, q.created_at
               FROM ordering.quote q""";
     private static final String ORDERS = """
             SELECT o.id, o.customer_id, o.order_number AS number, o.status,
-                   (SELECT q.sent_by FROM ordering.quote q WHERE q.converted_order_id = o.id
-                     ORDER BY q.converted_at DESC NULLS LAST LIMIT 1) AS responsible,
                    o.total_amount AS amount, o.currency, o.created_at
               FROM ordering.customer_order o""";
     private static final String CONTRACTS = """
-            SELECT k.id, o.customer_id, k.contract_number AS number, k.status, k.sent_by AS responsible,
+            SELECT k.id, o.customer_id, k.contract_number AS number, k.status,
                    NULL::numeric AS amount, NULL AS currency, k.created_at
               FROM ordering.sales_contract k JOIN ordering.customer_order o ON o.id = k.order_id""";
     private static final String PRODUCTION_ORDERS = """
             SELECT p.id, p.customer_id, p.code AS number, p.status,
-                   (SELECT q.sent_by FROM ordering.quote q WHERE q.converted_order_id = p.sales_order_id
-                     ORDER BY q.converted_at DESC NULLS LAST LIMIT 1) AS responsible,
                    NULL::numeric AS amount, NULL AS currency, p.created_at
               FROM ordering.production_order p""";
 
     private static final RowMapper<CustomerDocument> ROW = (rs, n) -> {
         Timestamp created = rs.getTimestamp("created_at");
         return new CustomerDocument(rs.getObject("id", UUID.class), rs.getObject("customer_id", UUID.class),
-                rs.getString("number"), rs.getString("status"), rs.getObject("responsible", UUID.class),
+                rs.getString("number"), rs.getString("status"), null,
                 rs.getBigDecimal("amount"), rs.getString("currency"), created == null ? null : created.toInstant());
     };
 
     private final NamedParameterJdbcTemplate jdbc;
+    private final ResponsibleSales responsible;
+    private final Clock clock;
 
-    CustomerDocumentsAdapter(NamedParameterJdbcTemplate jdbc) {
+    CustomerDocumentsAdapter(NamedParameterJdbcTemplate jdbc, ResponsibleSales responsible, Clock clock) {
         this.jdbc = jdbc;
+        this.responsible = responsible;
+        this.clock = clock;
     }
 
     @Override
@@ -127,18 +134,70 @@ class CustomerDocumentsAdapter implements CustomerDocuments {
                 customerId, limit);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, UUID> contractSalespeople(java.util.Collection<UUID> contractIds) {
+        if (contractIds == null || contractIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, UUID> customerOf = new java.util.HashMap<>();
+        jdbc.query("""
+                SELECT k.id, o.customer_id
+                  FROM ordering.sales_contract k JOIN ordering.customer_order o ON o.id = k.order_id
+                 WHERE k.id IN (:ids)""",
+                Map.of("ids", java.util.Set.copyOf(contractIds)),
+                rs -> {
+                    customerOf.put(rs.getObject("id", UUID.class), rs.getObject("customer_id", UUID.class));
+                });
+        Map<UUID, UUID> acting = actingUsers(customerOf.values());
+        Map<UUID, UUID> found = new java.util.HashMap<>();
+        customerOf.forEach((contract, customer) -> {
+            UUID sales = acting.get(customer);
+            if (sales != null) {
+                found.put(contract, sales);
+            }
+        });
+        return found;
+    }
+
+    /** Who acts for each customer today - the owner or the cover; customers with no active owner are left out. */
+    private Map<UUID, UUID> actingUsers(java.util.Collection<UUID> customerIds) {
+        if (customerIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, UUID> acting = new java.util.HashMap<>();
+        for (Responsible who : responsible.responsibleFor(java.util.Set.copyOf(customerIds),
+                BusinessCalendar.date(clock.instant())).values()) {
+            if (who.actingUserId() != null) {
+                acting.put(who.customerId(), who.actingUserId());
+            }
+        }
+        return acting;
+    }
+
+    /** The documents with the Sales account that answers for their customer today. */
+    private List<CustomerDocument> withResponsible(List<CustomerDocument> documents) {
+        if (documents.isEmpty()) {
+            return documents;
+        }
+        Map<UUID, UUID> acting = actingUsers(documents.stream().map(CustomerDocument::customerId)
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet()));
+        return documents.stream().map(d -> new CustomerDocument(d.id(), d.customerId(), d.number(), d.status(),
+                acting.get(d.customerId()), d.amount(), d.currency(), d.createdAt())).toList();
+    }
+
     private Optional<CustomerDocument> one(String sql, UUID id) {
         if (id == null) {
             return Optional.empty();
         }
-        return jdbc.query(sql, Map.of("id", id), ROW).stream().findFirst();
+        return withResponsible(jdbc.query(sql, Map.of("id", id), ROW)).stream().findFirst();
     }
 
     private List<CustomerDocument> recent(String sql, UUID customerId, int limit) {
         if (customerId == null) {
             return List.of();
         }
-        return jdbc.query(sql + " LIMIT :limit", Map.of("customer", customerId,
-                "limit", Math.max(1, Math.min(limit, MAX_LIMIT))), ROW);
+        return withResponsible(jdbc.query(sql + " LIMIT :limit", Map.of("customer", customerId,
+                "limit", Math.max(1, Math.min(limit, MAX_LIMIT))), ROW));
     }
 }

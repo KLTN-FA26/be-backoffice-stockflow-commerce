@@ -8,6 +8,11 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
+import com.stockflow.contracts.SalesOwnerChangeReason;
+import com.stockflow.customer.api.AssignSalesOwnerCommand;
+import com.stockflow.customer.api.CustomerSalesOwner;
+import com.stockflow.customer.api.SalesOwnerState;
+import com.stockflow.customer.api.SalesOwnership;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -156,14 +161,38 @@ public final class ConfirmedOrders {
         return bean(TransactionTemplate.class);
     }
 
-    /** The Sales user who draws up and signs; created once per fixture. */
+    /**
+     * The Sales user who draws up and signs; created once per fixture. A plain salesperson - SALES_STAFF and nothing
+     * else - so strict mode (kltn-docs 14 BR-25, 2026-11-28) is exercised as Sales meet it: the fixture makes it the
+     * owner of each customer it draws a contract for ({@link #ownCustomer}), as a manager would assign one. It was a
+     * Sales Manager too once, whom strict mode never blocks: every test hid the rule, and each class left one more
+     * active manager in the shared database for the "tell the managers" fallback to find.
+     */
     public CurrentUser sales() {
         if (sales == null) {
             UUID id = tx().execute(s -> ReferenceRows.user(bean(EntityManager.class)));
+            tx().executeWithoutResult(s -> jdbc().update("INSERT INTO identity.user_role (id, user_id, role_id, "
+                    + "version, created_at) SELECT gen_random_uuid(), ?, id, 0, NOW() FROM identity.app_role "
+                    + "WHERE code = 'SALES_STAFF'", id));
             sales = new CurrentUser(id, "sales-" + id, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL, Set.of(),
                     Set.of());
         }
         return sales;
+    }
+
+    /**
+     * Makes {@link #sales()} the customer's Sales owner, through {@code customer :: api} as a manager assigns one
+     * (reason OTHER, nobody told), unless it is already. Called before every contract the fixture draws up; a test that
+     * wants another owner sets it after, or draws its contract as that owner.
+     */
+    public void ownCustomer(UUID customerId) {
+        SalesOwnership ownership = bean(SalesOwnership.class);
+        CustomerSalesOwner current = ownership.ownerOf(customerId).orElseThrow();
+        if (current.state() == SalesOwnerState.ASSIGNED && sales().userId().equals(current.salesOwnerId())) {
+            return;
+        }
+        tx().executeWithoutResult(s -> ownership.assign(new AssignSalesOwnerCommand(customerId, sales().userId(),
+                SalesOwnerChangeReason.OTHER, "the test fixture's salesperson", false, current.version(), null)));
     }
 
     /** The accountant who records the receipts; created once per fixture. */
@@ -262,6 +291,7 @@ public final class ConfirmedOrders {
      */
     public SalesContracts.ContractView send(UUID orderId, List<SalesContracts.Installment> plan, int batches) {
         legalProfile(customerOf(orderId));
+        ownCustomer(customerOf(orderId));
         SalesContracts contracts = bean(SalesContracts.class);
         List<Map<String, Object>> lines = jdbc().queryForList(
                 "SELECT id, cartons FROM ordering.order_line WHERE order_id = ? ORDER BY id", orderId);

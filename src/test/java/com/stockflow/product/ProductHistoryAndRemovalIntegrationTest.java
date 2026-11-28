@@ -198,11 +198,11 @@ class ProductHistoryAndRemovalIntegrationTest {
         UUID id = created.productId();
         UUID defaultId = defaultVariant(id);
 
-        ProductSummary renamed = products.update(new UpdateProductCommand(id, created.version(), "Ly giấy mới", "Fixture " + suffix,
-                tax.brandId(), tax.categoryId(), "Mô tả ngắn", null, null, TaxClass.STANDARD));
+        ProductSummary renamed = products.update(new UpdateProductCommand(id, created.version(), "Ly giấy mới",
+                tax.brandId(), tax.categoryId(), "Mô tả ngắn", null, TaxClass.STANDARD));
         // Nothing changed, nothing recorded.
-        products.update(new UpdateProductCommand(id, renamed.version(), "Ly giấy mới", "Fixture " + suffix, tax.brandId(),
-                tax.categoryId(), "Mô tả ngắn", null, null, TaxClass.STANDARD));
+        products.update(new UpdateProductCommand(id, renamed.version(), "Ly giấy mới", tax.brandId(),
+                tax.categoryId(), "Mô tả ngắn", null, TaxClass.STANDARD));
 
         var extra = variants.add(id, new NewVariant("FX-" + suffix + "-16", "16oz", null, null));
         variants.update(id, extra.id(), new NewVariant(extra.sku(), "16oz renamed", null, null));
@@ -481,7 +481,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         ProductSummary suspended = products.suspend(id, "recall", approved.version());
 
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> products.update(new UpdateProductCommand(id,
-                suspended.version(), "x", "x", tax.brandId(), tax.categoryId(), null, null, null, TaxClass.STANDARD))))
+                suspended.version(), "x", tax.brandId(), tax.categoryId(), null, null, TaxClass.STANDARD))))
                 .errorCode()).isEqualTo(ErrorCode.INVALID_PRODUCT_STATUS_TRANSITION);
         var draftVariant = variants.add(id, new NewVariant("FX-" + suffix + "-S", "S", null, null));
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> variants.activate(id, draftVariant.id()))).errorCode())
@@ -559,6 +559,67 @@ class ProductHistoryAndRemovalIntegrationTest {
                 .containsEntry(onSale.sku(), Purchasability.PRODUCT_INACTIVE);
     }
 
+    @Test
+    @DisplayName("a customer's SKU on a blocked blank is SOURCE_VARIANT_NOT_ACTIVE, sells again with the blank, and a "
+            + "blocked SKU on an active blank stays VARIANT_NOT_ACTIVE")
+    void aCustomersSkuFollowsItsBlank() {
+        ProductSummary active = ProductFixtures.approved(products, tax, suffix + "V", editor, approver);
+        UUID blank = defaultVariant(active.productId());
+        Drawn onSale = customerSkuOn(active.productId(), blank);
+        Drawn stopped = customerSkuOn(active.productId(), blank);
+        customerSkuLifecycle.block(stopped.id());
+
+        variants.block(active.productId(), blank);
+        assertThat(products.purchasability(List.of(onSale.sku(), stopped.sku()))).containsOnly(
+                Map.entry(onSale.sku(), Purchasability.SOURCE_VARIANT_NOT_ACTIVE),
+                // The SKU's own status is told first: Sales sees that it was stopped, not only its blank.
+                Map.entry(stopped.sku(), Purchasability.VARIANT_NOT_ACTIVE));
+        assertThat(jdbc.queryForObject("select status from product.customer_skus where id = ?", String.class,
+                onSale.id())).as("blocking the blank does not touch its customers' SKUs").isEqualTo("ACTIVE");
+
+        variants.activate(active.productId(), blank);
+        assertThat(products.purchasability(List.of(onSale.sku(), stopped.sku()))).containsOnly(
+                Map.entry(onSale.sku(), Purchasability.PURCHASABLE),
+                Map.entry(stopped.sku(), Purchasability.VARIANT_NOT_ACTIVE));
+    }
+
+    @Test
+    @DisplayName("blocking a blank waits for a quote that is relying on its customers' SKUs being purchasable")
+    void blockingABlankWaitsForALockedPurchasabilityRead() throws Exception {
+        ProductSummary active = ProductFixtures.approved(products, tax, suffix + "W", editor, approver);
+        UUID blank = defaultVariant(active.productId());
+        Drawn drawn = customerSkuOn(active.productId(), blank);
+        var held = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            // A conversion: the product read FOR SHARE, kept until its transaction ends.
+            var quote = pool.submit(() -> tx.execute(s -> {
+                Purchasability verdict = products.lockedPurchasability(List.of(drawn.sku())).get(drawn.sku());
+                held.countDown();
+                try {
+                    release.await(30, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return verdict;
+            }));
+            assertThat(held.await(30, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            var block = pool.submit(() -> variants.block(active.productId(), blank));
+            Thread.sleep(1_000);
+            assertThat(block.isDone()).as("the block waits for the product row the quote holds").isFalse();
+
+            release.countDown();
+            assertThat(quote.get(30, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo(Purchasability.PURCHASABLE);
+            block.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+        assertThat(products.purchasability(List.of(drawn.sku())))
+                .containsEntry(drawn.sku(), Purchasability.SOURCE_VARIANT_NOT_ACTIVE);
+    }
+
     // ------------------------------------------------------------------ delete
 
     @Test
@@ -590,8 +651,8 @@ class ProductHistoryAndRemovalIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.product_categories WHERE product_id = ?", Long.class, id)).isZero();
         keys.forEach(key -> assertThat(stored(key)).as(key).isFalse());
         // The product's code and SKU can be used again.
-        ProductSummary again = products.create(new com.stockflow.product.api.CreateProductCommand(created.code(), "Again", "Again",
-                tax.brandId(), tax.categoryId(), null, null, null, TaxClass.STANDARD, null));
+        ProductSummary again = products.create(new com.stockflow.product.api.CreateProductCommand(created.code(), "Again",
+                tax.brandId(), tax.categoryId(), null, null, TaxClass.STANDARD, null));
         assertThat(again.status()).isEqualTo(ProductStatus.DRAFT);
     }
 

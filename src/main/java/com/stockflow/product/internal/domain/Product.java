@@ -26,12 +26,14 @@ import java.util.regex.Pattern;
  * (WBS 3.1.8.1) adds {@code discontinue()}, the terminal edge, and SCRUM-461 adds the reason it
  * needs, {@code suspend()}/{@code resume()} (kltn-docs 01 §5.1 "Inactive"), the brand a submission
  * needs, and the version check an edit quotes — all following {@link ProductStatus#canTransitionTo}'s
- * table. {@link #updateDetails} guards on {@code DRAFT}. SCRUM-87 requires the English name and the tax
- * class of every new or edited draft, and of every submission.</p>
+ * table. {@link #updateDetails} guards on {@code DRAFT}. SCRUM-87 requires the tax class of every new or
+ * edited draft, and of every submission. The product is described in Vietnamese only: the English name and
+ * description it once carried were dropped (owner decision 2026-11-27, V20270106000200).</p>
  *
  * <p>What is deliberately <b>not</b> on the product (the PIM model, docs 01): logistics — weight,
- * dimensions, package — belong to the inventory item of each SKU (BR-08), and images
- * belong to a variant (decision D5). The product's selling SKUs are its variants, created with the
+ * dimensions, package — belong to the inventory item of each SKU (BR-08), and the gallery
+ * images belong to a variant (decision D5). The product's one image of its own, its storefront card's (ADR-0012),
+ * is kept on its row by {@code ProductImageService}, outside this aggregate and its version. The product's selling SKUs are its variants, created with the
  * product: one default variant whose SKU is the product code, or, for a product created with variant
  * axes, every combination of its options, SKUs by the code rule and the first one the default.
  * Publication (status
@@ -56,12 +58,10 @@ public final class Product extends AggregateRoot {
     private final String code;
 
     private String name;
-    private String nameEn;
     private UUID brandId;
     private UUID categoryId;
     private String shortDescription;
     private String description;
-    private String descriptionEn;
     private TaxClass taxClass;
     private ProductKind kind;
     private ProductStatus status;
@@ -78,8 +78,8 @@ public final class Product extends AggregateRoot {
     private Instant suspendedAt;
     private String suspendReason;
 
-    public Product(ProductId id, String code, String name, String nameEn, UUID brandId, UUID categoryId,
-                   String shortDescription, String description, String descriptionEn, TaxClass taxClass,
+    public Product(ProductId id, String code, String name, UUID brandId, UUID categoryId,
+                   String shortDescription, String description, TaxClass taxClass,
                    ProductKind kind, ProductStatus status, long version,
                    UUID submittedBy, Instant submittedAt, UUID approvedBy, Instant approvedAt,
                    boolean selfApproved, String rejectionReason, Instant discontinuedAt, String discontinueReason,
@@ -87,12 +87,10 @@ public final class Product extends AggregateRoot {
         this.id = Objects.requireNonNull(id, "id");
         this.code = requireCode(code);
         this.name = requireNonBlank(name, "name");
-        this.nameEn = nameEn;
         this.brandId = brandId;
         this.categoryId = categoryId;
         this.shortDescription = shortDescription;
         this.description = description;
-        this.descriptionEn = descriptionEn;
         this.taxClass = taxClass;
         this.kind = requireCustomizable(kind);
         this.status = Objects.requireNonNull(status, "status");
@@ -110,15 +108,14 @@ public final class Product extends AggregateRoot {
     }
 
     /**
-     * A new product master row, always born {@link ProductStatus#DRAFT}. The English name and the tax
-     * class are required here, as the request requires them; the constructor still accepts a row without
-     * them, because legacy rows are loaded through it.
+     * A new product master row, always born {@link ProductStatus#DRAFT}. The tax class is required here,
+     * as the request requires it; the constructor still accepts a row without one, because legacy rows are
+     * loaded through it.
      */
-    public static Product draft(String code, String name, String nameEn, UUID brandId, UUID categoryId,
-                                String shortDescription, String description, String descriptionEn,
-                                TaxClass taxClass) {
-        return new Product(ProductId.newId(), code, name, requireNonBlank(nameEn, "nameEn"), brandId, categoryId,
-                shortDescription, description, descriptionEn, requireTaxClass(taxClass), ProductKind.CUSTOMIZABLE,
+    public static Product draft(String code, String name, UUID brandId, UUID categoryId,
+                                String shortDescription, String description, TaxClass taxClass) {
+        return new Product(ProductId.newId(), code, name, brandId, categoryId,
+                shortDescription, description, requireTaxClass(taxClass), ProductKind.CUSTOMIZABLE,
                 ProductStatus.DRAFT,
                 0L, null, null, null, null, false, null, null, null, null, null);
     }
@@ -132,29 +129,23 @@ public final class Product extends AggregateRoot {
      * product/PM decide whether an edit should reset the workflow or is allowed to pass through.
      * The selling content (slug, SEO) is edited through the catalog and is not affected.</p>
      */
-    public List<String> updateDetails(String name, String nameEn, UUID brandId, UUID categoryId,
-                                      String shortDescription, String description, String descriptionEn,
-                                      TaxClass taxClass) {
+    public List<String> updateDetails(String name, UUID brandId, UUID categoryId,
+                                      String shortDescription, String description, TaxClass taxClass) {
         requireStatus(ProductStatus.DRAFT, "edited");
         String newName = requireNonBlank(name, "name");
-        String newNameEn = requireNonBlank(nameEn, "nameEn");
         TaxClass newTaxClass = requireTaxClass(taxClass);
         List<String> changed = new ArrayList<>();
         if (!Objects.equals(this.name, newName)) changed.add("name");
-        if (!Objects.equals(this.nameEn, newNameEn)) changed.add("nameEn");
         if (!Objects.equals(this.brandId, brandId)) changed.add("brandId");
         if (!Objects.equals(this.categoryId, categoryId)) changed.add("categoryId");
         if (!Objects.equals(this.shortDescription, shortDescription)) changed.add("shortDescription");
         if (!Objects.equals(this.description, description)) changed.add("description");
-        if (!Objects.equals(this.descriptionEn, descriptionEn)) changed.add("descriptionEn");
         if (this.taxClass != newTaxClass) changed.add("taxClass");
         this.name = newName;
-        this.nameEn = newNameEn;
         this.brandId = brandId;
         this.categoryId = categoryId;
         this.shortDescription = shortDescription;
         this.description = description;
-        this.descriptionEn = descriptionEn;
         this.taxClass = newTaxClass;
         return List.copyOf(changed);
     }
@@ -202,10 +193,9 @@ public final class Product extends AggregateRoot {
      * {@code ck_products_brand_on_submit} says it again. A DRAFT may be saved without one. The product
      * always has at least one variant — it is created with its default one.
      *
-     * <p>The English name and the tax class (SCRUM-87) are required by {@link #draft} and
-     * {@link #updateDetails}, so only a row written some other way — the legacy bridge, carried rows —
-     * reaches this point without them; it is refused with one field error per missing detail, after the
-     * category and brand refusals. The database's statement of the same rule,
+     * <p>The tax class (SCRUM-87) is required by {@link #draft} and {@link #updateDetails}, so only a row
+     * written some other way — the legacy bridge, carried rows — reaches this point without one; it is
+     * refused with a field error, after the category and brand refusals. The database's statement of the same rule,
      * {@code ck_products_details_on_submit}, is requested in
      * {@code docs/business-design/db-design/SCRUM-73-schema-change-request.md}.</p>
      *
@@ -239,8 +229,8 @@ public final class Product extends AggregateRoot {
      * is flagged {@link #selfApproved()}, which is what lets {@code ck_products_approver_not_submitter} stand aside
      * for exactly that case.
      *
-     * <p>The English name and the tax class are checked again (SCRUM-87): a row that was already waiting
-     * for approval before {@link #submit} required them would otherwise be approved without them, until
+     * <p>The tax class is checked again (SCRUM-87): a row that was already waiting for approval before
+     * {@link #submit} required it would otherwise be approved without one, until
      * {@code ck_products_details_on_submit} is in the database. The approver rejects it back to DRAFT.</p>
      */
     public void approve(UUID approverId, boolean mayApproveOwn, Instant now) {
@@ -386,31 +376,22 @@ public final class Product extends AggregateRoot {
         return taxClass;
     }
 
-    /** Refused with one field error per detail the product still lacks, in the order the form shows them. */
+    /** Refused with a field error when the product still lacks its tax class. */
     private void requireDetails() {
-        String code = ErrorCode.PRODUCT_DETAILS_REQUIRED.name();
-        List<FieldError> missing = new ArrayList<>();
-        if (nameEn == null || nameEn.isBlank()) {
-            missing.add(new FieldError("nameEn", "An English name is required before submitting for approval", code));
-        }
         if (taxClass == null) {
-            missing.add(new FieldError("taxClass", "A tax class is required before submitting for approval", code));
-        }
-        if (!missing.isEmpty()) {
-            throw new BusinessException(ErrorCode.PRODUCT_DETAILS_REQUIRED,
-                    "An English name and a tax class are required before submitting for approval", missing);
+            String message = "A tax class is required before submitting for approval";
+            throw new BusinessException(ErrorCode.PRODUCT_DETAILS_REQUIRED, message,
+                    List.of(new FieldError("taxClass", message, ErrorCode.PRODUCT_DETAILS_REQUIRED.name())));
         }
     }
 
     public ProductId id() { return id; }
     public String code() { return code; }
     public String name() { return name; }
-    public String nameEn() { return nameEn; }
     public UUID brandId() { return brandId; }
     public UUID categoryId() { return categoryId; }
     public String shortDescription() { return shortDescription; }
     public String description() { return description; }
-    public String descriptionEn() { return descriptionEn; }
     public TaxClass taxClass() { return taxClass; }
     public ProductKind kind() { return kind; }
     public ProductStatus status() { return status; }

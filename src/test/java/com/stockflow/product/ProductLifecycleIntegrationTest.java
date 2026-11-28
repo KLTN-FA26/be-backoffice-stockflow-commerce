@@ -147,8 +147,8 @@ class ProductLifecycleIntegrationTest {
 
     private String createBody(String code, UUID brand, UUID category) {
         return """
-                {"code":"%s","name":"Product %s","nameEn":"Product %s","taxClass":"STANDARD"%s%s}"""
-                .formatted(code, code, code, brand == null ? "" : ",\"brandId\":\"" + brand + "\"",
+                {"code":"%s","name":"Product %s","taxClass":"STANDARD"%s%s}"""
+                .formatted(code, code, brand == null ? "" : ",\"brandId\":\"" + brand + "\"",
                         category == null ? "" : ",\"categoryId\":\"" + category + "\"");
     }
 
@@ -199,7 +199,7 @@ class ProductLifecycleIntegrationTest {
                 + "AND change_type = 'SUBMITTED'", Long.class, id)).isZero();
 
         String update = """
-                {"name":"Product","nameEn":"Product","taxClass":"STANDARD","brandId":"%s","categoryId":"%s","version":%d}"""
+                {"name":"Product","taxClass":"STANDARD","brandId":"%s","categoryId":"%s","version":%d}"""
                 .formatted(tax.brandId(), tax.categoryId(), created.path("version").asLong());
         send("PUT", editor(), "/api/v1/products/" + id, update).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.brandId").value(tax.brandId().toString()));
@@ -250,13 +250,13 @@ class ProductLifecycleIntegrationTest {
         ProductSummary draft = draftProduct();
         String path = "/api/v1/products/" + draft.productId();
         String withoutVersion = """
-                {"name":"Renamed","nameEn":"Renamed","taxClass":"STANDARD","brandId":"%s","categoryId":"%s"}"""
+                {"name":"Renamed","taxClass":"STANDARD","brandId":"%s","categoryId":"%s"}"""
                 .formatted(tax.brandId(), tax.categoryId());
         assertRefused(send("PUT", editor(), path, withoutVersion), 400, "VALIDATION_FAILED");
         send("PUT", editor(), path, withoutVersion).andExpect(jsonPath("$.fieldErrors[0].field").value("version"));
 
         String update = """
-                {"name":"Renamed","nameEn":"Renamed","taxClass":"STANDARD","brandId":"%s","categoryId":"%s","version":%d}""";
+                {"name":"Renamed","taxClass":"STANDARD","brandId":"%s","categoryId":"%s","version":%d}""";
         JsonNode first = data(send("PUT", editor(), path, update.formatted(tax.brandId(), tax.categoryId(), draft.version()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.name").value("Renamed")));
         assertThat(first.path("version").asLong()).isGreaterThan(draft.version());

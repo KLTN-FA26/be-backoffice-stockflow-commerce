@@ -130,6 +130,7 @@ public class ProductVariantService {
     private final AttributeRepository attributes;
     private final ProductChangeLogRepository history;
     private final com.stockflow.product.internal.repository.CustomerSkuJpaRepository customerSkus;
+    private final RichTextPolicy richText;
     private final Clock clock;
 
     public ProductVariantService(ProductRepository products, VariantJpaRepository variants,
@@ -137,7 +138,8 @@ public class ProductVariantService {
                                  ProductAttributeSetRepository attributeSets, AttributeRepository attributes,
                                  ProductChangeLogRepository history,
                                  com.stockflow.product.internal.repository.CustomerSkuJpaRepository customerSkus,
-                                 Clock clock) {
+                                 RichTextPolicy richText, Clock clock) {
+        this.richText = richText;
         this.customerSkus = customerSkus;
         this.products = products;
         this.variants = variants;
@@ -151,7 +153,7 @@ public class ProductVariantService {
     /** {@code rotatable}: whether a carton of the variant may be turned (owner decision Q9). */
     public record VariantView(UUID id, UUID productId, String sku, String name, VariantStatus status,
                               boolean defaultVariant, String attributeSignature, int position, Instant obsoletedAt,
-                              long version, List<VariantOption> options, boolean rotatable) {
+                              long version, List<VariantOption> options, boolean rotatable, String description) {
     }
 
     /** The option a variant takes on one axis, with the dictionary's code and label. */
@@ -232,6 +234,22 @@ public class ProductVariantService {
         customerSkus.flush();
     }
 
+
+    /**
+     * The product's ACTIVE variants - the ones a customer is shown - in display order, each with its options: one query
+     * for the variants and one for all their options, whatever their number (the storefront page, ADR-0013).
+     */
+    @Transactional(readOnly = true)
+    public List<VariantView> active(UUID productId) {
+        Catalog catalog = catalog(requireProduct(productId));
+        List<VariantJpaEntity> active = variants.findByProductIdOrderByPositionAscIdAsc(productId).stream()
+                .filter(v -> v.getStatus() == VariantStatus.ACTIVE).toList();
+        Map<UUID, List<VariantAttributeValueJpaEntity>> optionRows = active.isEmpty() ? Map.of()
+                : variantOptions.findByVariantIdIn(active.stream().map(VariantJpaEntity::getId).toList()).stream()
+                .collect(Collectors.groupingBy(VariantAttributeValueJpaEntity::getVariantId));
+        return active.stream()
+                .map(v -> view(v, catalog.optionsOf(optionRows.getOrDefault(v.getId(), List.of())))).toList();
+    }
 
     @Transactional(readOnly = true)
     public PageResponse<VariantView> list(UUID productId, int page, int size) {
@@ -518,6 +536,25 @@ public class ProductVariantService {
         return viewWithOptions(variant, catalog(product));
     }
 
+    /**
+     * The variant's own description (ADR-0013): the back office editor's HTML, cleaned by {@link RichTextPolicy}
+     * before it is stored. Null or an empty editor removes it, and the storefront then shows the product's. Allowed
+     * in any variant status while the product takes changes: a description is selling copy, not a SKU's identity.
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "product-variant", resourceId = "#variantId")
+    public VariantView describe(UUID productId, UUID variantId, String html) {
+        Product product = requireChangeable(productId);
+        var variant = requireVariant(productId, variantId);
+        String description = richText.clean(html, "description");
+        if (!java.util.Objects.equals(description, variant.getDescription())) {
+            variant.describe(description);
+            variants.saveAndFlush(variant);
+            history.record(productId, ProductChangeType.VARIANT_UPDATED, variantId, null, null, null,
+                    List.of("description"));
+        }
+        return viewWithOptions(variant, catalog(product));
+    }
+
     public VariantJpaEntity requireVariant(UUID productId, UUID variantId) {
         return variants.findByIdAndProductId(variantId, productId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.VARIANT_NOT_FOUND,
@@ -677,7 +714,7 @@ public class ProductVariantService {
     static VariantView view(VariantJpaEntity v, List<VariantOption> options) {
         return new VariantView(v.getId(), v.getProductId(), v.getSku(), v.getName(), v.getStatus(),
                 v.isDefaultVariant(), v.getAttributeSignature(), v.getPosition(), v.getObsoletedAt(), v.getVersion(),
-                options, v.isRotatable());
+                options, v.isRotatable(), v.getDescription());
     }
 
     private Catalog catalog(Product product) {

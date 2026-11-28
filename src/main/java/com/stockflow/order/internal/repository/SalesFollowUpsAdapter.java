@@ -27,10 +27,10 @@ class SalesFollowUpsAdapter implements SalesFollowUps {
     @SuppressWarnings("unchecked")
     public List<UnsignedContract> unsignedSince(Instant sentBy, int limit) {
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT c.id, c.contract_number, c.order_id, o.order_number, c.sent_by, c.sent_at
+                        SELECT c.id, c.contract_number, c.order_id, o.order_number, o.customer_id, c.sent_at
                           FROM ordering.sales_contract c
                           JOIN ordering.customer_order o ON o.id = c.order_id
-                         WHERE c.status = 'SENT' AND c.sent_at <= :cutoff AND c.sent_by IS NOT NULL
+                         WHERE c.status = 'SENT' AND c.sent_at <= :cutoff
                          ORDER BY c.sent_at DESC, c.id
                          LIMIT :limit""")
                 .setParameter("cutoff", sentBy)
@@ -44,12 +44,10 @@ class SalesFollowUpsAdapter implements SalesFollowUps {
     @SuppressWarnings("unchecked")
     public List<UnpaidOrder> unpaidSince(Instant signedBy, int limit) {
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT o.id, o.order_number, c.id, c.contract_number, COALESCE(c.sent_by, c.signed_by),
-                               o.contract_signed_at
+                        SELECT o.id, o.order_number, c.id, c.contract_number, o.customer_id, o.contract_signed_at
                           FROM ordering.customer_order o
                           JOIN ordering.sales_contract c ON c.order_id = o.id AND c.status = 'SIGNED'
                          WHERE o.status = 'PENDING_PAYMENT' AND o.contract_signed_at <= :cutoff
-                           AND COALESCE(c.sent_by, c.signed_by) IS NOT NULL
                          ORDER BY o.contract_signed_at DESC, o.id
                          LIMIT :limit""")
                 .setParameter("cutoff", signedBy)
@@ -58,14 +56,6 @@ class SalesFollowUpsAdapter implements SalesFollowUps {
         return rows.stream().map(r -> new UnpaidOrder((UUID) r[0], (String) r[1], (UUID) r[2], (String) r[3],
                 (UUID) r[4], instant(r[5]))).toList();
     }
-
-    /** Who handles an order: the sender of its signed contract, or who recorded it signed. */
-    private static final String SALES_OF_ORDER = """
-            LEFT JOIN LATERAL (SELECT COALESCE(c.sent_by, c.signed_by) AS sales_user_id
-                                 FROM ordering.sales_contract c
-                                WHERE c.order_id = o.id AND c.status = 'SIGNED'
-                                ORDER BY c.signed_at DESC NULLS LAST
-                                LIMIT 1) s ON TRUE""";
 
     @Override
     public List<WaitingOrder> heldFor(String reason, int limit) {
@@ -81,7 +71,7 @@ class SalesFollowUpsAdapter implements SalesFollowUps {
     @SuppressWarnings("unchecked")
     private List<WaitingOrder> held(String reason, String holdFilter, String note, int limit) {
         var query = entityManager.createNativeQuery("""
-                        SELECT o.id, o.order_number, s.sales_user_id,
+                        SELECT o.id, o.order_number, o.customer_id,
                                COALESCE(h.raised_at, o.contract_signed_at, o.placed_at) AS since
                           FROM ordering.customer_order o
                           LEFT JOIN LATERAL (SELECT h.raised_at, h.note FROM ordering.order_hold h
@@ -89,8 +79,6 @@ class SalesFollowUpsAdapter implements SalesFollowUps {
                                                 AND h.resolved_at IS NULL
                                               ORDER BY h.raised_at DESC
                                               LIMIT 1) h ON TRUE
-                        """ + SALES_OF_ORDER + """
-
                          WHERE o.status = 'ON_HOLD' AND o.hold_reason = :reason""" + holdFilter + """
 
                          ORDER BY since DESC, o.id
@@ -108,10 +96,8 @@ class SalesFollowUpsAdapter implements SalesFollowUps {
     @SuppressWarnings("unchecked")
     public List<WaitingOrder> confirmedWithoutWarehouse(int limit) {
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT o.id, o.order_number, s.sales_user_id, o.contract_signed_at
+                        SELECT o.id, o.order_number, o.customer_id, o.contract_signed_at
                           FROM ordering.customer_order o
-                        """ + SALES_OF_ORDER + """
-
                          WHERE o.status = 'CONFIRMED' AND o.contract_signed_at IS NOT NULL
                            AND o.shipping_warehouse_id IS NULL
                          ORDER BY o.contract_signed_at DESC, o.id

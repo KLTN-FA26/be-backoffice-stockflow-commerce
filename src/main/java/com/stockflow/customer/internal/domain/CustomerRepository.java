@@ -14,4 +14,25 @@ public interface CustomerRepository extends AggregateRepository<Customer, UUID> 
     /** Whether a PENDING_ACTIVATION or ACTIVE customer other than {@code exceptCustomerId} has this code. */
     /** BR-01 (decided 16/10/2026): another customer holds this normalised tax code, in any status. */
     boolean isTaxCodeTaken(String taxCode, UUID exceptCustomerId);
+
+    /** The customer holding this normalised tax code, in any status (the code is unique). */
+    Optional<UUID> idByTaxCode(String taxCode);
+
+    /**
+     * The stored Sales owner of each of these customers that exists, in one query without loading the customers
+     * (ResponsibleSales asks for a page of them at once). Unknown ids are left out.
+     */
+    java.util.Map<UUID, SalesOwner> salesOwners(java.util.Collection<UUID> customerIds);
+
+    /** The ids of the customers whose stored owner is {@code userId} in {@code state}, in id order. */
+    java.util.List<UUID> idsOwnedBy(UUID userId, com.stockflow.customer.api.SalesOwnerState state);
+
+    /**
+     * The customers whose tax code has this 10-digit root - the organisation itself and its dependent units - in id
+     * order (finding P4).
+     */
+    java.util.List<UUID> idsWithTaxCodeRoot(String root);
+
+    /** How many customers are {@code userId}'s: assigned to them, or waiting for an owner after they left. */
+    long countOwnedBy(UUID userId);
 }

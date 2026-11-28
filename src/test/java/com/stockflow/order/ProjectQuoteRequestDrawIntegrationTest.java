@@ -68,6 +68,7 @@ class ProjectQuoteRequestDrawIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ObjectMapper json;
+    @Autowired org.springframework.context.ApplicationContext context;
 
     private SecuredMvc http;
     private StaffFixtures people;
@@ -85,6 +86,8 @@ class ProjectQuoteRequestDrawIntegrationTest {
         customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         tx.executeWithoutResult(s -> jdbc.update("UPDATE customer.customer SET user_id = ? WHERE id = ?", account,
                 customer));
+        // 14 §4.1 step 1 (2026-11-28): a request reaches the customer's owner, no longer every salesperson.
+        new com.stockflow.support.SalesOwners(context).own(customer, sales);
         wanted = LocalDate.now(VIETNAM).plusDays(30);
     }
 

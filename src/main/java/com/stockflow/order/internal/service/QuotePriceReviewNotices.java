@@ -19,7 +19,10 @@ import java.util.UUID;
 /**
  * Tells people about a quote's prices waiting for approval (kltn-docs 14 BR-10 as changed on 2026-11-26), in the in-app
  * inbox, after the step commits: the holders of {@value #APPROVES_PRICES} when a quote starts waiting - whoever asked
- * excepted, who may not decide it - and the Sales account that asked when it is approved or rejected.
+ * excepted, who may not decide it - and the Sales account that asked when it is approved or rejected, with whoever
+ * looks after the quote's customer today when that is someone else - a customer moved while the quote waited (00 §6,
+ * 14 §4.4 step 20, plan case 26; {@link SalesRecipients}), marked "cần phân công" when it has no active owner. The
+ * one who decided is not told of their own decision.
  *
  * <p>Who hears follows the role matrix as it is edited, not a role name in code. The inbox is idempotent per recipient
  * and key, so a replayed event posts nothing new. Replaces {@code QuoteDiscountAlerts} (decision D-1, 2026-11-25), which
@@ -34,10 +37,15 @@ class QuotePriceReviewNotices {
 
     private final IdentityService identities;
     private final Inbox inbox;
+    private final SalesRecipients recipients;
+    private final com.stockflow.order.api.CustomerDocuments documents;
 
-    QuotePriceReviewNotices(IdentityService identities, Inbox inbox) {
+    QuotePriceReviewNotices(IdentityService identities, Inbox inbox, SalesRecipients recipients,
+                            com.stockflow.order.api.CustomerDocuments documents) {
         this.identities = identities;
         this.inbox = inbox;
+        this.recipients = recipients;
+        this.documents = documents;
     }
 
     @ApplicationModuleListener
@@ -67,12 +75,25 @@ class QuotePriceReviewNotices {
         String key = approved ? "approved" : "rejected";
         String body = texts.getString("inbox.quote.priceReview." + key + ".body").formatted(event.quoteNumber(),
                 event.revision(), event.reason() == null ? "" : event.reason());
-        inbox.post(List.of(event.submittedBy()), new InboxMessage("QUOTE",
+        InboxMessage message = new InboxMessage("QUOTE",
                 approved ? InboxSeverity.INFO : InboxSeverity.WARN,
                 texts.getString("inbox.quote.priceReview." + key + ".title").formatted(event.quoteNumber()),
                 body.length() > InboxMessage.BODY_MAX ? body.substring(0, InboxMessage.BODY_MAX) : body,
                 link(event.quoteId()), "QUOTE", event.quoteId().toString(),
-                "quote-price-review:%s:%s".formatted(event.reviewId(), key)));
+                "quote-price-review:%s:%s".formatted(event.reviewId(), key));
+        inbox.post(List.of(event.submittedBy()), message);
+        UUID customerId = documents.quote(event.quoteId()).map(com.stockflow.order.api.CustomerDocument::customerId)
+                .orElse(null);
+        SalesRecipients.Recipients others = recipients.chooser().of(customerId);
+        List<UUID> also = others.userIds().stream()
+                .filter(id -> !id.equals(event.submittedBy()) && !id.equals(event.decidedBy())).toList();
+        if (!also.isEmpty()) {
+            String marked = others.needsAssignment()
+                    ? message.body() + "\n" + texts.getString("inbox.sales.needs-assignment") : message.body();
+            inbox.post(also, new InboxMessage(message.category(), message.severity(), message.title(),
+                    marked.length() > InboxMessage.BODY_MAX ? marked.substring(0, InboxMessage.BODY_MAX) : marked,
+                    message.link(), message.sourceType(), message.sourceId(), message.dedupeKey()));
+        }
     }
 
     private static String link(UUID quoteId) {

@@ -21,6 +21,7 @@ import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RecordedEvents;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.SalesOwners;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -88,6 +89,7 @@ class QuoteIntegrationTest {
     @Autowired CustomerPriceService prices;
     @Autowired com.stockflow.order.internal.service.OrderReleases releases;
     @Autowired com.stockflow.order.internal.service.SalesContracts contracts;
+    @Autowired org.springframework.context.ApplicationContext context;
     /** Sales notices are captured, never sent: no SMTP server is reached from a test. */
     @MockitoBean JavaMailSenderImpl mail;   // the concrete type: the actuator's mail health check needs it
 
@@ -104,6 +106,10 @@ class QuoteIntegrationTest {
         sales = staff(Role.SALES_STAFF);
         UUID portalUser = tx.execute(s -> ReferenceRows.user(entityManager));
         customerId = customerWithPortal(portalUser);
+        // The customer's owner hears what the customer does (00 §6 as changed on 2026-11-28): the test's salesperson.
+        SalesOwners owners = new SalesOwners(context);
+        owners.grant(sales.userId(), "SALES_STAFF");
+        owners.own(customerId, sales.userId());
         // The orders converted here hold the customer's own SKU: this test's own, with stock in HCM.
         sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, PER_CARTON).sku();
         CustomerSkuRows.stock(jdbc, tx, sku, 1000);
@@ -453,8 +459,9 @@ class QuoteIntegrationTest {
     }
 
     @Test
-    @DisplayName("N1: the Sales account of a quote is disabled - the customer's answer goes to the active Sales team to take over")
-    void aDisabledSalesAccountHandsTheCustomerToTheActiveSalesTeam() throws Exception {
+    @DisplayName("D6, case 8 (replaces N1): the owner's account is disabled - the customer's answer goes to the Sales "
+            + "Managers, marked 'cần phân công', never to the other salespeople")
+    void aDisabledOwnerHandsTheCustomerToTheManagers() throws Exception {
         Quotes.QuoteView sent = sentQuote();
         CurrentUser colleague = staff(Role.SALES_STAFF);
         tx.executeWithoutResult(s -> {
@@ -471,10 +478,11 @@ class QuoteIntegrationTest {
         });
         String disabled = emailOf(sales);
         verify(mail, timeout(15_000).atLeastOnce()).send(argThat((SimpleMailMessage m) -> m.getTo() != null
-                && java.util.Arrays.asList(m.getTo()).contains(emailOf(colleague))
                 && !java.util.Arrays.asList(m.getTo()).contains(disabled)
-                && m.getSubject().startsWith("[Cần tiếp nhận]") && m.getText().contains(sent.quoteNumber())));
-        // Telling the team changes no access: the colleague answers nothing for the customer.
+                && m.getSubject().startsWith("[Cần phân công]") && m.getText().contains(sent.quoteNumber())));
+        verify(mail, org.mockito.Mockito.never()).send(argThat((SimpleMailMessage m) -> m.getTo() != null
+                && java.util.Arrays.asList(m.getTo()).contains(emailOf(colleague))));
+        // Telling the managers changes no access: the colleague answers nothing for the customer.
         assertThatThrownBy(() -> quotes.accept(colleague, sent.id(), new Quotes.Acceptance(sent.version(), Map.of())))
                 .isInstanceOf(BusinessException.class);
     }
@@ -733,6 +741,53 @@ class QuoteIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
                 fresh.sku())).isEqualTo(item);
         assertThat(itemsOf(neverOrdered.sku())).as("a SKU no order named has no item").isZero();
+    }
+
+    @Test
+    @DisplayName("a blocked blank stops its customers' SKUs at send, accept and convert (SOURCE_VARIANT_NOT_ACTIVE); "
+            + "activated again they sell, the SKU never touched")
+    void aBlockedBlankStopsItsCustomersSkusAtEveryStep() {
+        CustomerSkuRows.Issued issued = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, PER_CARTON);
+        Instant validUntil = Instant.now().plus(Duration.ofDays(7));
+        List<Quotes.Line> lines = List.of(new Quotes.Line(issued.sku(), 3,
+                List.of(new Quotes.Tier(2, new BigDecimal("3000")))));
+        Quotes.QuoteView drafted = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
+                new Quotes.Draft(validUntil, null, lines, null, List.of())));
+
+        blank(issued, "BLOCKED");
+        assertBlankRefused(() -> quotes.send(sales, drafted.id(), drafted.version()));
+        blank(issued, "ACTIVE");
+        Quotes.QuoteView sent = quotes.send(sales, drafted.id(), drafted.version());
+
+        blank(issued, "BLOCKED");
+        long seen = quotes.get(portal, sent.id()).version();
+        assertBlankRefused(() -> quotes.accept(portal, sent.id(), new Quotes.Acceptance(seen, Map.of())));
+        blank(issued, "ACTIVE");
+        Quotes.QuoteView accepted = quotes.accept(portal, sent.id(), new Quotes.Acceptance(
+                quotes.get(portal, sent.id()).version(), Map.of()));
+
+        blank(issued, "BLOCKED");
+        assertBlankRefused(() -> quotes.convert(sales, accepted.id(),
+                new Quotes.Conversion(accepted.version(), null, null)));
+        blank(issued, "ACTIVE");
+        assertThat(quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
+                .convertedOrder().orderId()).isNotNull();
+        assertThat(jdbc.queryForObject("SELECT status FROM product.customer_skus WHERE sku = ?", String.class,
+                issued.sku())).as("blocking the blank never touched the customer's SKU").isEqualTo("ACTIVE");
+    }
+
+    /** The status of the catalogue variant {@code issued} is drawn on, as blocking or activating it leaves it. */
+    private void blank(CustomerSkuRows.Issued issued, String status) {
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE product.variants SET status = ? WHERE id = ?", status,
+                issued.sourceVariantId()));
+    }
+
+    private static void assertBlankRefused(org.assertj.core.api.ThrowableAssert.ThrowingCallable step) {
+        assertThatThrownBy(step).isInstanceOfSatisfying(BusinessException.class, e -> {
+            assertThat(e.errorCode()).isEqualTo(ErrorCode.SKU_NOT_SELLABLE);
+            assertThat(e.fieldErrors()).extracting(com.stockflow.common.api.FieldError::code)
+                    .containsExactly("SOURCE_VARIANT_NOT_ACTIVE");
+        });
     }
 
     /** Drafted (its plate fee priced), sent, accepted as offered and converted: the DRAFT order of {@code sku}. */

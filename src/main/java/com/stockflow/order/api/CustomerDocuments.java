@@ -41,4 +41,13 @@ public interface CustomerDocuments {
 
     /** The customer's production orders, the newest first, at most {@code limit}. */
     List<CustomerDocument> recentProductionOrders(UUID customerId, int limit);
+
+    /**
+     * The Sales account that answers for each of these sales contracts: whoever looks after the contract's customer
+     * today, the owner or the owner's cover (sales-owner plan 2026-11-28, 15 BR-22) - no longer who sent it. What a
+     * module that lists installments shows as the salesperson to chase the money with (the assistant's collections
+     * list); a handful of statements for the lot. A contract of a customer with no active owner, or unknown, is
+     * absent.
+     */
+    java.util.Map<UUID, UUID> contractSalespeople(java.util.Collection<UUID> contractIds);
 }

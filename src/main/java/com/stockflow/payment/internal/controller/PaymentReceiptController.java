@@ -11,6 +11,7 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
+import com.stockflow.customer.api.CustomerSearch;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.payment.api.LoadingLoadLookup;
 import com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse;
@@ -60,17 +61,23 @@ class PaymentReceiptController {
 
     private static final String RECEIVED_FROM = "First day the money was received, inclusive, ISO date";
     private static final String RECEIVED_TO = "Last day the money was received, inclusive, ISO date";
+    private static final String SEARCH = "A part of the customer's name or tax code (case and accents aside), or of the "
+            + "contract number or the order number of an installment a line paid (case aside); reference stays the "
+            + "exact statement reference. 400 VALIDATION_FAILED when it matches more than 1,000 customers";
 
     private final PaymentReceiptService receipts;
     private final PaymentReceiptExportService exports;
     private final CustomerService customers;
     private final LoadingLoadLookup loadingLoads;
+    private final CustomerSearch customerSearch;
     private final com.stockflow.identity.api.IdentityService identities;
 
     PaymentReceiptController(PaymentReceiptService receipts, PaymentReceiptExportService exports,
-                             CustomerService customers, com.stockflow.identity.api.IdentityService identities,
+                             CustomerService customers, CustomerSearch customerSearch,
+                             com.stockflow.identity.api.IdentityService identities,
                              LoadingLoadLookup loadingLoads) {
         this.identities = identities;
+        this.customerSearch = customerSearch;
         this.receipts = receipts;
         this.exports = exports;
         this.customers = customers;
@@ -92,8 +99,8 @@ class PaymentReceiptController {
     }
 
     @GetMapping
-    @Operation(summary = "Payment receipts, latest first; filter by customer, status, statement reference and the "
-            + "days the money was received",
+    @Operation(summary = "Payment receipts, latest first; filter by customer, status, statement reference, a search "
+            + "box and the days the money was received; each line names the installment it paid",
             description = "receivedFrom / receivedTo are ISO dates, both inclusive, on the day received (received_on); "
                     + "400 VALIDATION_FAILED when receivedFrom is after receivedTo.")
     @RequiresPermission(resource = PaymentResources.RECEIPTS, action = Action.READ, scope = DataScope.ALL)
@@ -101,6 +108,7 @@ class PaymentReceiptController {
             @RequestParam(required = false) UUID customerId,
             @RequestParam(required = false) PaymentReceiptStatus status,
             @RequestParam(required = false) String reference,
+            @Parameter(description = SEARCH) @RequestParam(required = false) String search,
             @Parameter(description = RECEIVED_FROM) @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate receivedFrom,
             @Parameter(description = RECEIVED_TO) @RequestParam(required = false)
@@ -110,12 +118,13 @@ class PaymentReceiptController {
             @RequestParam(required = false) String sort,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        var found = receipts.receipts(new ReceiptFilter(customerId, status, reference, receivedFrom, receivedTo),
+        var found = receipts.receipts(filter(customerId, status, reference, search, receivedFrom, receivedTo),
                 page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
-        // One query for the names of the whole page - not one per row.
+        // One query each for the names and the installments of the whole page - not one per row.
         var labels = customers.labels(found.items().stream().map(r -> r.customerId()).toList());
         var names = namesOf(found.items());
-        return ApiResponse.ok(found.map(r -> PaymentWebMapper.toResponse(r, null, labels, names, null, null)));
+        var paid = receipts.installmentsOf(found.items());
+        return ApiResponse.ok(found.map(r -> PaymentWebMapper.toResponse(r, paid, labels, names, null, null)));
     }
 
     @GetMapping("/summary")
@@ -127,13 +136,14 @@ class PaymentReceiptController {
             @RequestParam(required = false) UUID customerId,
             @RequestParam(required = false) PaymentReceiptStatus status,
             @RequestParam(required = false) String reference,
+            @Parameter(description = SEARCH) @RequestParam(required = false) String search,
             @Parameter(description = RECEIVED_FROM) @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate receivedFrom,
             @Parameter(description = RECEIVED_TO) @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate receivedTo,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        var summary = exports.summary(new ReceiptFilter(customerId, status, reference, receivedFrom, receivedTo));
+        var summary = exports.summary(filter(customerId, status, reference, search, receivedFrom, receivedTo));
         return ApiResponse.ok(new PaymentReceiptSummaryResponse(summary.count(), summary.totalAmount(),
                 summary.currency(), summary.byCurrency().stream().map(total ->
                         new PaymentReceiptSummaryResponse.CurrencyTotal(total.currency(), total.count(),
@@ -153,13 +163,14 @@ class PaymentReceiptController {
             @RequestParam(required = false) UUID customerId,
             @RequestParam(required = false) PaymentReceiptStatus status,
             @RequestParam(required = false) String reference,
+            @Parameter(description = SEARCH) @RequestParam(required = false) String search,
             @Parameter(description = RECEIVED_FROM) @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate receivedFrom,
             @Parameter(description = RECEIVED_TO) @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate receivedTo,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ExportResponses.xlsx(exports.export(new ReceiptFilter(customerId, status, reference, receivedFrom,
+        return ExportResponses.xlsx(exports.export(filter(customerId, status, reference, search, receivedFrom,
                 receivedTo)));
     }
 
@@ -186,6 +197,13 @@ class PaymentReceiptController {
         var detail = receipts.voidReceipt(new PaymentReceiptService.VoidReceiptCommand(receiptId, request.reason(),
                 request.holdOrders(), user.userId()));
         return ApiResponse.ok(toResponse(detail));
+    }
+
+    /** The list's filter, the search box's customers read once ({@link CustomerSearchTerms}). */
+    private ReceiptFilter filter(UUID customerId, PaymentReceiptStatus status, String reference, String search,
+                                 LocalDate receivedFrom, LocalDate receivedTo) {
+        return new ReceiptFilter(customerId, status, reference, receivedFrom, receivedTo, search,
+                CustomerSearchTerms.idsMatching(customerSearch, search));
     }
 
     private java.util.Map<UUID, com.stockflow.customer.api.CustomerLabel> labelOf(PaymentReceipt receipt) {

@@ -3,6 +3,7 @@ package com.stockflow.chat.internal.controller;
 import com.stockflow.chat.internal.controller.dto.ChatRequests;
 import com.stockflow.chat.internal.domain.ContextKind;
 import com.stockflow.chat.internal.domain.ConversationStatus;
+import com.stockflow.chat.internal.service.ChatAgentLoadView;
 import com.stockflow.chat.internal.service.ChatAgentView;
 import com.stockflow.chat.internal.service.ChatAttachmentService;
 import com.stockflow.chat.internal.service.ChatConversationView;
@@ -97,8 +98,10 @@ class StaffChatController {
 
     @PostMapping("/conversations")
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Open a conversation with a customer (optionally about a document of theirs), assigned to the "
-            + "caller; optionally with a first message")
+    @Operation(summary = "Open a conversation with a customer (optionally about a document of theirs); optionally with "
+            + "a first message. The customer's owner, cover, a manager or a chat supervisor (anyone for a customer "
+            + "with no active owner): else 409 CUSTOMER_OWNED_BY_OTHER_SALES, details.salesOwnerName (16 BR-12). "
+            + "It goes to the owner or cover acting today, else the caller")
     @RequiresPermission(resource = ChatResources.CONVERSATIONS, action = Action.CREATE)
     public ApiResponse<ChatConversationView> open(@AuthenticatedUser CurrentUser user,
                                                   @RequestBody ChatRequests.StaffOpenConversation request) {
@@ -185,7 +188,9 @@ class StaffChatController {
     }
 
     @PostMapping("/conversations/{conversationId}/claim")
-    @Operation(summary = "Take a conversation nobody has; 409 CHAT_ALREADY_ASSIGNED when someone does")
+    @Operation(summary = "Take a conversation nobody has; 409 CHAT_ALREADY_ASSIGNED when someone else does. A "
+            + "salesperson who takes one of a customer with no active Sales owner becomes the owner (16 BR-13); of a "
+            + "customer another salesperson owns: 409 CUSTOMER_UNASSIGNED_CLAIM_ONLY, details.salesOwnerName")
     @RequiresPermission(resource = ChatResources.CONVERSATIONS, action = Action.UPDATE)
     public ApiResponse<ChatConversationView> claim(@PathVariable UUID conversationId,
                                                    @AuthenticatedUser CurrentUser user) {
@@ -237,6 +242,15 @@ class StaffChatController {
     @RequiresPermission(resource = ChatResources.CONVERSATIONS, action = Action.READ)
     public ApiResponse<List<ChatAgentView>> agents(@AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(chat.agents(user));
+    }
+
+    @GetMapping("/agents/workload")
+    @Operation(summary = "The managers' assignment board (sales-owner plan §10.4): per active salesperson, and anyone "
+            + "else with an open conversation, how many open conversations and how many of them overdue (16 BR-09); "
+            + "the busiest first")
+    @RequiresPermission(resource = ChatResources.SALES_WORKLOAD, action = Action.READ)
+    public ApiResponse<List<ChatAgentLoadView>> workload(@AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(chat.workload(user));
     }
 
     @GetMapping("/staff")

@@ -11,8 +11,6 @@ import com.stockflow.chat.internal.domain.ChatMessage;
 import com.stockflow.chat.internal.domain.ChatMessageRepository;
 import com.stockflow.chat.internal.domain.ContextKind;
 import com.stockflow.chat.internal.domain.ContextRef;
-import com.stockflow.chat.internal.domain.Conversation;
-import com.stockflow.chat.internal.domain.ConversationRepository;
 import com.stockflow.chat.internal.domain.MessageKind;
 import com.stockflow.chat.internal.domain.SenderType;
 import com.stockflow.chat.internal.domain.Visibility;
@@ -38,7 +36,6 @@ import java.time.LocalDate;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,8 +49,9 @@ import static org.mockito.Mockito.when;
 
 /**
  * The cards with no action of their own - the contract (16 §4.3 step 8) and the invoice (§4.6 step 15) - follow their
- * documents; and routing in the order of 16 §4.1 step 2. The chat's own writing ({@link ChatCards}) and the documents'
- * modules are stood in for.
+ * documents. The chat's own writing ({@link ChatCards}) and the documents' modules are stood in for. Routing, which
+ * this class tested when it followed the document's Sales, is {@link SalesRouterTest}'s since the Sales owner
+ * (2026-11-28).
  */
 class DocumentCardsTest {
 
@@ -77,7 +75,7 @@ class DocumentCardsTest {
         documents = new DocumentCards(cards, messages, contexts, quoteRequests, quotes,
                 contracts, mock(SampleRoundCards.class), installments, payments, einvoices, json);
         when(contexts.find(any())).thenAnswer(call -> Optional.of(new ContextResolver.Resolved(call.getArgument(0),
-                customer, "X", "ANY", null)));
+                customer, "X", "ANY")));
         when(cards.post(any())).thenReturn(new PostedCard(UUID.randomUUID(), UUID.randomUUID(), 1));
         when(cards.readPayload(any())).thenAnswer(call -> json.readTree((String) call.getArgument(0)));
     }
@@ -166,33 +164,9 @@ class DocumentCardsTest {
                 "ISSUED", order, "SO-1", "1", "C26TAA", 1, LocalDate.now(), "VND", BigDecimal.ONE, BigDecimal.ZERO,
                 BigDecimal.ONE, false, false)));
         when(contexts.find(any())).thenAnswer(call -> Optional.of(new ContextResolver.Resolved(call.getArgument(0),
-                UUID.randomUUID(), "X", "ANY", null)));
+                UUID.randomUUID(), "X", "ANY")));
         documents.einvoiceIssued(new EInvoiceIssued(invoice, "INV-2", order, "SO-1", null, customer, Instant.now()));
         verify(cards, never()).post(any());
-    }
-
-    @Test
-    @DisplayName("16 §4.1 step 2: the document's Sales, else the customer's last agent still answering, else the queue")
-    void routingOrder() {
-        AgentDirectory agents = mock(AgentDirectory.class);
-        ConversationRepository conversations = mock(ConversationRepository.class);
-        SalesRouter router = new SalesRouter(agents, conversations);
-        UUID owner = UUID.randomUUID();
-        UUID last = UUID.randomUUID();
-        UUID gone = UUID.randomUUID();
-        Conversation c = Conversation.open(UUID.randomUUID(), customer, null, null, Actor.customer(UUID.randomUUID()),
-                null, Instant.now(), java.time.Duration.ofMinutes(15));
-        ContextResolver.Resolved quote = new ContextResolver.Resolved(new ContextRef(ContextKind.QUOTE,
-                UUID.randomUUID()), customer, "QT-1", "SENT", owner);
-        when(conversations.recentAgentsOf(customer, c.id(), 5)).thenReturn(List.of(gone, last));
-
-        when(agents.agents()).thenReturn(Set.of(owner, last));
-        assertThat(router.agentFor(c, List.of(quote))).contains(owner);
-        when(agents.agents()).thenReturn(Set.of(last));
-        assertThat(router.agentFor(c, List.of(quote))).as("the owner left: the last agent").contains(last);
-        assertThat(router.agentFor(c, List.of())).contains(last);
-        when(agents.agents()).thenReturn(Set.of());
-        assertThat(router.agentFor(c, List.of(quote))).as("nobody: the queue").isEmpty();
     }
 
     private CustomerInstallments.Transfer transfer(UUID installment, String status, String outstanding) {

@@ -86,6 +86,14 @@ class PermissionMatrixTest {
                     + "token, no id taken from the request)"),
             Map.entry("GET /api/v1/customers/me/legal-profile", "R5-10: the caller's own legal profile, read-only (the "
                     + "customer resolved from the token; no id is taken from the request)"),
+            Map.entry("GET /api/v1/customers/me/sales-owner", "sales-owner plan 10.5: the caller's own salesperson, a "
+                    + "name only (the customer resolved from the token; no id is taken from the request)"),
+            Map.entry("GET /api/v1/customers/me/sales-options", "sales-owner plan 10.5 / D11: the names of the active "
+                    + "salespeople the caller may ask for, its own owner left out (no customer data, no id taken)"),
+            Map.entry("POST /api/v1/customers/me/sales-owner-change-requests", "sales-owner plan 10.5: a request for "
+                    + "the caller's own customer, resolved from the token; the body names no customer"),
+            Map.entry("GET /api/v1/customers/me/sales-owner-change-requests", "sales-owner plan 10.5: the caller's own "
+                    + "customer's requests, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/designs", "list filtered to designs the caller owns (owner predicate in the query)"),
             Map.entry("POST /api/v1/designs/mine", "starts a design for the caller's own customer (resolved from the "
                     + "token; no customer id is taken from the request)"),
@@ -111,6 +119,8 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/notifications/me/unread-count", "the caller's own unread count (recipient_id = the token's subject)"),
             Map.entry("POST /api/v1/notifications/me/read-all", "marks only the caller's own inbox read (recipient_id = the token's subject)"),
             Map.entry("GET /api/v1/quotes", "portal list: the caller's own customer's quotes, sent ones only (SCRUM-448)"),
+            Map.entry("GET /api/v1/quotes/status-counts",
+                    "counts of that same list: the caller's own customer's quotes, whatever customerId is sent"),
             Map.entry("GET /api/v1/catalog/products/availability",
                     "stock indicator of the caller's own ACTIVE customer's own SKUs, the customer taken from the token "
                             + "(SCRUM-429, 5-3)"),
@@ -141,6 +151,9 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/bank-transactions/webhooks/{provider}",
                     "public: the bank feed's webhook (SePay); its HMAC signature or API key is the authorisation (permitAll for POST, credit plan part C)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
+            Map.entry("POST /api/v1/public/leads", "public: the open-a-business-account form (sales-owner plan 10.7); "
+                    + "rate-limited per address, a honeypot, one answer for every outcome; it reads nobody's data "
+                    + "(permitAll for POST)"),
             Map.entry("GET /api/v1/production-order-files/{id}/slip",
                     "public: a producer's link to its production order slip; the HMAC-signed, time-limited link is the "
                             + "authorisation, checked again on use with the order still open (permitAll for GET, 4A-3)"),
@@ -314,7 +327,17 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/credit-requests/{id}/rejection", "customer-credit-requests:APPROVE"),
             Map.entry("POST /api/v1/credit-requests/{id}/withdrawal", "customer-credit-requests:CREATE"),
             // Was sales-orders:READ + back office; its own code so ACCREAD does not open the queue.
-            Map.entry("GET /api/v1/orders/cancellation-requests", "sales-order-cancellations:READ"));
+            Map.entry("GET /api/v1/orders/cancellation-requests", "sales-order-cancellations:READ"),
+            // Contract §4.1, §5 (V20270120001300): born permission-guarded; listed so the guards cannot drift. The
+            // explanation of an error code reveals no data, so the panel's permission is enough; the review of other
+            // people's answers and the usage counts have resources of their own.
+            Map.entry("GET /api/v1/assistant/error-explanations/{errorCode}", "assistant-conversations:READ"),
+            Map.entry("GET /api/v1/assistant/feedback", "assistant-feedback:READ"),
+            Map.entry("GET /api/v1/assistant/usage", "assistant-usage:READ"),
+            // Contract 3.3 (review 27/11): a draft to a producer is the Production Coordinator's, as sending and
+            // following up a production order are (production-orders:UPDATE); reading the follow-ups is not enough.
+            Map.entry("POST /api/v1/assistant/production-follow-ups/{productionOrderId}/message-draft",
+                    "production-orders:UPDATE"));
 
     /**
      * Who holds each permission that replaced a role list, as seeded: exactly the roles the list let through, which
@@ -562,7 +585,11 @@ class PermissionMatrixTest {
                     Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             // BE3-B (V20261127000100, kltn-docs 00 §2.5): the audit trail names people - the System Admin alone reads it.
             Map.entry("platform-audit-logs:READ", Set.of(Role.SYSTEM_ADMIN)),
-            Map.entry("platform-audit-logs:VIEW_PAGE", Set.of(Role.SYSTEM_ADMIN)));
+            Map.entry("platform-audit-logs:VIEW_PAGE", Set.of(Role.SYSTEM_ADMIN)),
+            // AQ-16, contract §5 (V20270120001300): other people's questions are the System Admin's alone; the usage
+            // counts, which name nobody, the Sales Manager's too.
+            Map.entry("assistant-feedback:READ", Set.of(Role.SYSTEM_ADMIN)),
+            Map.entry("assistant-usage:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -744,6 +771,11 @@ class PermissionMatrixTest {
     }
 
     Object value(Class<?> type, String name, Handler h) {
+        // A batched read over many customers (GET /orders/sales-contacts) binds its ids before any guard runs: "x" would
+        // be a 400 from binding and prove nothing, so it is asked about the victim, as a single customerId is.
+        if (java.util.Collection.class.isAssignableFrom(type) && name.equals("customerIds")) {
+            return victimCustomer.toString();
+        }
         if (type == UUID.class || type == String.class) {
             UUID v = switch (name) {
                 case "customerId" -> victimCustomer;

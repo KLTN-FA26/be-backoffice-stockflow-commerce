@@ -73,7 +73,7 @@ class QuoteServiceTransitionsTest {
             catalog, events, products, customerSkus,
             mock(com.stockflow.order.internal.domain.TaxRates.class), production,
             mock(com.stockflow.design.api.SkuDesigns.class), mock(com.stockflow.identity.api.IdentityService.class),
-            new LineNames(products, customerSkus), priceReviews, BigDecimal.TEN);
+            new LineNames(products, customerSkus), priceReviews, BigDecimal.TEN, mock(CustomerOwnership.class));
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();

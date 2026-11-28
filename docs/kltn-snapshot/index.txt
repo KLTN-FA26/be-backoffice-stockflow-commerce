@@ -1,0 +1,17 @@
+# The documents the assistant indexes; written by tools/sync_kltn_docs.py
+glossary
+01-product-creation
+03-receipt
+05-putaway
+06-warehouse-map-slotting
+07-picking
+08-packing
+09-shipping
+11-intra-warehouse-transfer
+20-inventory-control
+13-catalog
+14-cart-and-order
+15-payment
+17-order-management
+18-customer-information
+21-e-invoice

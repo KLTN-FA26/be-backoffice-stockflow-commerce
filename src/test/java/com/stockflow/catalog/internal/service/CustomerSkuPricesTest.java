@@ -71,4 +71,18 @@ class CustomerSkuPricesTest {
         });
         assertThat(resolver.own(summary, UNPRICED)).isEmpty();
     }
+
+    @Test
+    @DisplayName("the published price says what its tiers count, as the customer-prices screen does: cartons of the "
+            + "customer's own SKU, units of a price kept on a stock variant")
+    void thePublishedPriceSaysItsMeasure() {
+        CatalogServiceImpl catalog = new CatalogServiceImpl(resolver, customerSkus,
+                mock(com.stockflow.catalog.internal.domain.StandardPriceRepository.class));
+
+        assertThat(catalog.customerPrice(customer, OWN).map(PriceSchedule::measure))
+                .contains(PriceSchedule.Measure.CARTON);
+        assertThat(catalog.customerPrice(customer, STOCK).map(PriceSchedule::measure))
+                .contains(PriceSchedule.Measure.UNIT);
+        assertThat(catalog.customerPrice(customer, UNPRICED)).isEmpty();
+    }
 }
