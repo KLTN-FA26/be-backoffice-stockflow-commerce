@@ -110,7 +110,8 @@ public class CustomerDesignService {
 
     /**
      * What a customer starts a design from: a product, one of its variants and that variant's template, a name, and the
-     * design project to start it in (§4.1 step 3). Every new design belongs to a project (BR-23.2).
+     * design project to start it in, if any (§4.1 step 3). A project is optional (kltn-docs 12 BR-17): a design
+     * started without one is a stand-alone design and goes through the whole flow all the same.
      */
     public record StartDesign(UUID productId, String sku, String templateCode, String name, UUID projectId) {
     }
@@ -124,14 +125,12 @@ public class CustomerDesignService {
      * CUSTOMIZABLE product, drawn on the variant's active template, owned by them and stored with the empty layout
      * the studio starts from. A customer holds at most {@value CustomerDesignRules#MAX_DRAFTS} drafts (B37).
      *
-     * <p>It is started in one of the caller's open projects with room (BR-23.2): the project is checked and locked
-     * before the draft limit and before anything is written, so a refused start leaves nothing behind.</p>
+     * <p>With a {@code projectId} it is started in that project, which must be one of the caller's open projects with
+     * room: the project is checked and locked before the draft limit and before anything is written, so a refused
+     * start leaves nothing behind. Without one the design stands alone (BR-17).</p>
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "design")
     public DesignWorkflowService.DraftView start(UUID actor, StartDesign command) {
-        if (command.projectId() == null) {
-            throw invalid("projectId", "projectId names the design project to start the design in", "NotNull");
-        }
         CustomerSummary customer = activeCustomerOf(actor);
         requireDesignable(command.productId());
         PrintConfig template = printConfigs.activeOfProduct(command.productId()).stream()
@@ -139,7 +138,8 @@ public class CustomerDesignService {
                 .findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND,
                         "This variant has no active template " + command.templateCode()));
-        DesignProjectJpaEntity project = projects.lockForNewDesign(command.projectId(), actor, customer.customerId());
+        DesignProjectJpaEntity project = command.projectId() == null ? null
+                : projects.lockForNewDesign(command.projectId(), actor, customer.customerId());
         requireRoomForDraft(customer.customerId());
 
         var draft = new DesignDraftJpaEntity(Identifiers.newId(), customer.customerId(), command.productId(),
@@ -314,6 +314,7 @@ public class CustomerDesignService {
                         "The variant or its template can no longer be designed on; start a new design"));
         DesignProjectJpaEntity project = projects.lockForCopy(sourceId, projectId, actor, customer.customerId());
         requireRoomForDraft(customer.customerId());
+        projects.requireStillInNoProject(sourceId, project);
 
         var draft = new DesignDraftJpaEntity(Identifiers.newId(), source.getCustomerId(), source.getProductId(),
                 source.getName(), source.getSpec(), DesignStatus.DRAFT);
@@ -385,6 +386,7 @@ public class CustomerDesignService {
         PrintConfig template = cloneTarget(source.getProductId(), targetSku, templateCode);
         DesignProjectJpaEntity project = projects.lockForCopy(sourceId, projectId, actor, customer.customerId());
         requireRoomForDraft(customer.customerId());
+        projects.requireStillInNoProject(sourceId, project);
 
         String problem = DesignDocumentRules.problem(document,
                 frame(template, assets.idsOf(sourceId).stream().map(UUID::toString).toList()));
