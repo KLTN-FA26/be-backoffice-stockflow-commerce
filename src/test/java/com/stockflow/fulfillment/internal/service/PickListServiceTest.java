@@ -741,6 +741,18 @@ class PickListServiceTest {
         }
 
         @Test
+        @DisplayName("WF4-F2B: partial shipment already allowed - a carton removed at the station does not hold the "
+                + "order, at the removal or after a reallocation found no stock")
+        void noHoldWhenPartialShipmentIsAlreadyAllowed() {
+            orderIs(OrderStatus.PICKING, null, true);
+
+            service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
+            service.holdForUnreplacedCarton(task.getId(), removed.getId(), actor);
+
+            verify(orders, never()).putOnHold(any(), any(), any(), any());
+        }
+
+        @Test
         @DisplayName("WF4-F2: Sales allows partial shipment while the order is held only for the removed carton: the "
                 + "hold is resolved, with a note, by the one who allowed it")
         void partialShipmentLiftsTheHold() {
