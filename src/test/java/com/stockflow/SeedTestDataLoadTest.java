@@ -238,8 +238,10 @@ class SeedTestDataLoadTest {
     }
 
     private static void documentsInEveryState(Connection db) throws Exception {
+        // Two orders wait PENDING_CONTRACT: one whose contract is SENT, one the customer signed (CUSTOMER_SIGNED), which
+        // waits for the company's signature.
         assertThat(byStatus(db, "ordering.customer_order")).containsExactlyInAnyOrderEntriesOf(Map.ofEntries(
-                Map.entry("DRAFT", 1L), Map.entry("PENDING_CONTRACT", 1L), Map.entry("PENDING_PAYMENT", 1L),
+                Map.entry("DRAFT", 1L), Map.entry("PENDING_CONTRACT", 2L), Map.entry("PENDING_PAYMENT", 1L),
                 Map.entry("CONFIRMED", 1L), Map.entry("AWAITING_STOCK", 3L), Map.entry("READY_TO_FULFILL", 1L),
                 Map.entry("PICKING", 1L), Map.entry("PACKED", 1L), Map.entry("SHIPPED", 2L), Map.entry("DELIVERED", 1L),
                 Map.entry("DELIVERY_FAILED", 1L), Map.entry("RETURN_REQUESTED", 1L), Map.entry("RETURNED", 1L),
