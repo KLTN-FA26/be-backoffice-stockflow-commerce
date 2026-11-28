@@ -14,10 +14,8 @@ import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredMvc;
+import com.stockflow.support.ThreadStatements;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.EntityManagerFactory;
-import org.hibernate.SessionFactory;
-import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -60,7 +58,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({PostgresContainer.class, RedisContainer.class})
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.upload-inspection.enabled=false",
-        "stockflow.catalog.projection-retry-ms=3600000"})
+        "stockflow.catalog.projection-retry-ms=3600000", ThreadStatements.PROPERTY})
 class PaymentListLookupsApiIntegrationTest {
 
     /** Half on signing, due at once; half after delivery, 30 days to pay. */
@@ -74,7 +72,6 @@ class PaymentListLookupsApiIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
-    @Autowired EntityManagerFactory entityManagerFactory;
     @Autowired CustomerService customers;
 
     private ConfirmedOrders orders;
@@ -179,11 +176,11 @@ class PaymentListLookupsApiIntegrationTest {
                 .as("a term matching no customer and no number finds nothing, never everything").isEmpty();
     }
 
-    /** The statements one call of the receipts list, a page of {@code size}, prepared. */
-    private long statements(Statistics stats, String size) throws Exception {
-        stats.clear();
+    /** The statements one call of the receipts list, a page of {@code size}, prepared on this (the request's) thread. */
+    private long statements(String size) throws Exception {
+        ThreadStatements.reset();
         body(get("/api/v1/payment-receipts").param("customerId", customer.toString()).param("size", size));
-        return stats.getPrepareStatementCount();
+        return ThreadStatements.count();
     }
 
     // ---- receipts ---------------------------------------------------------------------------------------------------
@@ -243,23 +240,13 @@ class PaymentListLookupsApiIntegrationTest {
             });
         });
 
-        // Statistics are the SessionFactory's, so the listeners still handling the receipts just recorded may add
-        // statements of their own to a measurement; noise only ever adds, so the least of a few rounds is the list's.
-        Statistics stats = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
-        boolean was = stats.isStatisticsEnabled();
-        stats.setStatisticsEnabled(true);
-        try {
-            // Warmed first: a name or label a cache keeps after the first call must not pass for a flat count.
-            statements(stats, "3");
-            long one = Long.MAX_VALUE;
-            long three = Long.MAX_VALUE;
-            for (int round = 0; round < 4; round++) {
-                one = Math.min(one, statements(stats, "1"));
-                three = Math.min(three, statements(stats, "3"));
-            }
-            assertThat(three).as("a page of three runs the statements of a page of one").isEqualTo(one);
-        } finally {
-            stats.setStatisticsEnabled(was);
-        }
+        // Counted on the request's own thread (ThreadStatements): the listeners still handling the receipts just
+        // recorded run on others, and SessionFactory-wide statistics counted them too (20 for a page of one on CI).
+        // Warmed first: a name or label a cache keeps after the first call must not pass for a flat count.
+        statements("3");
+        long one = statements("1");
+        long three = statements("3");
+        assertThat(one).as("the counter sees the request's statements").isPositive();
+        assertThat(three).as("a page of three runs the statements of a page of one").isEqualTo(one);
     }
 }
