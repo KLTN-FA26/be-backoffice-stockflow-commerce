@@ -113,6 +113,7 @@ class CartonCheckService implements CartonChecks {
     /** A removed carton's line, for its hold; the hold then leaves its delivery batch (08 §4.2 step 4). */
     private final com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines;
     private final com.stockflow.order.api.OrderReservations orderReservations;
+    private final com.stockflow.order.api.CartonRemovals cartonRemovals;
     /** Holds the order for a removed carton, as a short pick report does. */
     private final PickLists pickLists;
     private final ForeignCartonReports foreignCartons;
@@ -127,8 +128,10 @@ class CartonCheckService implements CartonChecks {
                        LoadPlanReleases loadPlans, PlanVehicles planVehicles, LabelledCartons labelledCartons,
                        com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines,
                        com.stockflow.order.api.OrderReservations orderReservations, PickLists pickLists,
-                       ForeignCartonReports foreignCartons, PaymentDueReports paymentDueReports) {
+                       ForeignCartonReports foreignCartons, PaymentDueReports paymentDueReports,
+                       com.stockflow.order.api.CartonRemovals cartonRemovals) {
         this.paymentDueReports = paymentDueReports;
+        this.cartonRemovals = cartonRemovals;
         this.pickLists = pickLists;
         this.foreignCartons = foreignCartons;
         this.labelledCartons = labelledCartons;
@@ -322,6 +325,12 @@ class CartonCheckService implements CartonChecks {
         pickLines.findById(removed.pickLineId()).map(line -> line.getReservationId()).ifPresent(hold ->
                 orderReservations.cartonRemoved(ctx.order().orderId(), hold));
         if (!removedBefore) {
+            // WF4-F2C (owner 2026-11-28): the order's history says the carton left, whether or not the order is held
+            // below - it goes on as a partial shipment when Sales allowed one already (the carton's own record keeps
+            // the note and who). Idempotent per package, like the hold below.
+            cartonRemovals.record(ctx.order().orderId(), removed.id(), removed.lpn(),
+                    removed.removalReason() == null ? "DAMAGED" : removed.removalReason().name(), note,
+                    partialShipmentAllowed(ctx.order()), actor.userId(), clock.instant());
             // 07 §4.4 step 9, as a short pick report: the order stops (INVENTORY) at once, whatever stock there is. A
             // reallocation that finds stock resumes it; one that does not keeps it (WF4-BE3-HOLD). Only a removal
             // that happens now: a repeated request must not hold an order whose hold was resolved since.
@@ -699,6 +708,10 @@ class CartonCheckService implements CartonChecks {
      * 08 §4.1 step 1: "Đơn còn Awaiting Stock chỉ hiện khi Sale đã cho phép giao một phần" - the part held of an order
      * awaiting stock is checked only to go first (17 §4.5 step 18).
      */
+    private static boolean partialShipmentAllowed(OrderSummary order) {
+        return order.lifecycle() != null && order.lifecycle().allowPartialShipment();
+    }
+
     private static boolean workable(OrderStatus status, boolean partialShipmentAllowed) {
         return WORKABLE.contains(status) || status == OrderStatus.AWAITING_STOCK && partialShipmentAllowed;
     }

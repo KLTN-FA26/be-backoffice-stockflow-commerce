@@ -2514,6 +2514,19 @@ Table ordering.order_partial_shipment_decision [headercolor: #C0392B] {
   last_modified_by varchar(100)
 }
 
+Table ordering.order_carton_removal [headercolor: #C0392B] {
+  id                uuid [pk]
+  order_id          uuid [not null]
+  package_id        uuid [not null, unique]
+  lpn               varchar(30) [not null]
+  reason            varchar(30) [not null]
+  note              varchar(500)
+  continues_partial boolean [not null]
+  removed_by        uuid
+  removed_at        timestamptz [not null]
+  created_at        timestamptz [not null, default: `now()`]
+}
+
 Table ordering.order_refund_void [headercolor: #C0392B] {
   id               uuid [pk]
   order_id         uuid [not null]
@@ -5546,6 +5559,8 @@ Ref: ordering.order_line.sku > product.customer_skus.sku [delete: restrict]
 Ref: ordering.order_line.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
 Ref: ordering.order_line_reservation.order_line_id > ordering.order_line.id [delete: cascade]
 Ref: ordering.order_line_reservation.reservation_id > inventory.stock_reservation.id [delete: restrict]
+Ref: ordering.order_carton_removal.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.order_carton_removal.removed_by > identity.app_user.id
 Ref: ordering.order_partial_shipment_decision.decided_by > identity.app_user.id
 Ref: ordering.order_partial_shipment_decision.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_refund_void.order_id > ordering.customer_order.id [delete: cascade]
@@ -6008,6 +6023,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.order_line
   ordering.order_line_reservation
   ordering.order_number_sequence
+  ordering.order_carton_removal
   ordering.order_partial_shipment_decision
   ordering.order_refund_void
   ordering.order_remainder_closure

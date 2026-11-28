@@ -326,7 +326,11 @@ class OrderController {
         // 17 BR-32: and so is the work someone did for the customer's owner (ON_BEHALF, "làm hộ").
         List<com.stockflow.order.internal.service.OrderOperations.OnBehalfEntry> onBehalf =
                 operations.onBehalfHistory(orderId);
+        // WF4-F2C: and so are the cartons the check station removed (CARTON_REMOVAL), held order or not.
+        List<com.stockflow.order.internal.service.OrderOperations.CartonRemovalEntry> removals =
+                operations.cartonRemovals(orderId);
         java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.of(
+                        removals.stream().map(com.stockflow.order.internal.service.OrderOperations.CartonRemovalEntry::removedBy),
                         changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
                         decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy),
                         closures.stream().map(com.stockflow.order.api.RemainderClosure::closedBy),
@@ -354,6 +358,9 @@ class OrderController {
                 voids.stream().map(voided -> OrderStatusChangeResponse.refundVoided(voided.reason(),
                         voided.voidedAt(), voided.voidedBy(),
                         voided.voidedBy() == null ? null : names.get(voided.voidedBy()))),
+                removals.stream().map(removal -> OrderStatusChangeResponse.cartonRemoval(removal.lpn(),
+                        removal.reason(), removal.note(), removal.continuesPartial(), removal.removedAt(),
+                        removal.removedBy(), removal.removedBy() == null ? null : names.get(removal.removedBy()))),
                 onBehalf.stream().map(entry -> OrderStatusChangeResponse.onBehalf(entry.action(), entry.actedAt(),
                         entry.actorId(), names.get(entry.actorId()), entry.actingForUserId(),
                         entry.actingForUserId() == null ? null : names.get(entry.actingForUserId()))))

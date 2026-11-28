@@ -29,7 +29,7 @@ import java.time.Instant;
 public record OrderStatusChangeResponse(
         @Schema(example = "STATUS_CHANGE",
                 description = "STATUS_CHANGE, PARTIAL_SHIPMENT_DECISION, REMAINDER_CLOSURE, ADDRESS_CHANGE, "
-                        + "REFUND_VOIDED or ON_BEHALF")
+                        + "REFUND_VOIDED, ON_BEHALF or CARTON_REMOVAL")
         String type,
         OrderStatus from,
         OrderStatus to,
@@ -51,7 +51,14 @@ public record OrderStatusChangeResponse(
         @Schema(description = "ON_BEHALF only: the owner (or cover) it was done for; null when the customer had none")
         java.util.UUID actingForId,
         @Schema(description = "ON_BEHALF only: their display name")
-        String actingForName) {
+        String actingForName,
+        @Schema(description = "CARTON_REMOVAL only: the LPN of the carton the check station removed")
+        String cartonLpn,
+        @Schema(description = "CARTON_REMOVAL only: why it left the order, e.g. DAMAGED")
+        String cartonRemovalReason,
+        @Schema(description = "CARTON_REMOVAL only: true when the order goes on as a partial shipment (Sales allowed it "
+                + "already), false when it was held for Sales to decide")
+        Boolean continuesPartial) {
 
     public static final String STATUS_CHANGE = "STATUS_CHANGE";
     public static final String PARTIAL_SHIPMENT_DECISION = "PARTIAL_SHIPMENT_DECISION";
@@ -59,13 +66,25 @@ public record OrderStatusChangeResponse(
     public static final String ADDRESS_CHANGE = "ADDRESS_CHANGE";
     public static final String REFUND_VOIDED = "REFUND_VOIDED";
     public static final String ON_BEHALF = "ON_BEHALF";
+    public static final String CARTON_REMOVAL = "CARTON_REMOVAL";
+
+    /**
+     * WF4-F2C (08 §4.2 step 4): a carton removed at the check station - no status moved ({@code from} and {@code to}
+     * null); {@code reason} is the station's note. Staff only.
+     */
+    public static OrderStatusChangeResponse cartonRemoval(String lpn, String removalReason, String note,
+                                                          boolean continuesPartial, Instant removedAt,
+                                                          java.util.UUID actorId, String actorName) {
+        return new OrderStatusChangeResponse(CARTON_REMOVAL, null, null, note, removedAt, actorId, actorName, null,
+                null, null, null, null, null, null, lpn, removalReason, continuesPartial);
+    }
 
     /** 17 BR-32: operational work done for the customer's owner by someone else ("làm hộ"). Staff only. */
     public static OrderStatusChangeResponse onBehalf(String action, Instant actedAt, java.util.UUID actorId,
                                                      String actorName, java.util.UUID actingForId,
                                                      String actingForName) {
         return new OrderStatusChangeResponse(ON_BEHALF, null, null, null, actedAt, actorId, actorName, null, null, null,
-                null, action, actingForId, actingForName);
+                null, action, actingForId, actingForName, null, null, null);
     }
 
     /**
@@ -75,33 +94,33 @@ public record OrderStatusChangeResponse(
     public static OrderStatusChangeResponse refundVoided(String reason, Instant voidedAt, java.util.UUID actorId,
                                                          String actorName) {
         return new OrderStatusChangeResponse(REFUND_VOIDED, null, null, reason, voidedAt, actorId, actorName, null,
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
 
     /** A status change. */
     public OrderStatusChangeResponse(OrderStatus from, OrderStatus to, String reason, Instant occurredAt,
                                      java.util.UUID actorId, String actorName) {
-        this(STATUS_CHANGE, from, to, reason, occurredAt, actorId, actorName, null, null, null, null, null, null, null);
+        this(STATUS_CHANGE, from, to, reason, occurredAt, actorId, actorName, null, null, null, null, null, null, null, null, null, null);
     }
 
     /** A partial-shipment decision. */
     public static OrderStatusChangeResponse partialShipmentDecision(boolean allowed, String note, Instant decidedAt,
                                                                     java.util.UUID actorId, String actorName) {
         return new OrderStatusChangeResponse(PARTIAL_SHIPMENT_DECISION, null, null, note, decidedAt, actorId, actorName,
-                allowed, null, null, null, null, null, null);
+                allowed, null, null, null, null, null, null, null, null, null);
     }
 
     /** A closure of the rest of the order. */
     public static OrderStatusChangeResponse remainderClosure(String reasonCode, String note, Instant closedAt,
                                                              java.util.UUID actorId, String actorName) {
         return new OrderStatusChangeResponse(REMAINDER_CLOSURE, null, null, note, closedAt, actorId, actorName, null,
-                reasonCode, null, null, null, null, null);
+                reasonCode, null, null, null, null, null, null, null, null);
     }
 
     /** A change of the delivery address. */
     public static OrderStatusChangeResponse addressChange(OrderResponse.Address previous, OrderResponse.Address next,
                                                           Instant changedAt, java.util.UUID actorId, String actorName) {
         return new OrderStatusChangeResponse(ADDRESS_CHANGE, null, null, null, changedAt, actorId, actorName, null, null,
-                previous, next, null, null, null);
+                previous, next, null, null, null, null, null, null);
     }
 }

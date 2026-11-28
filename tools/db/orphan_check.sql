@@ -100,6 +100,8 @@ WITH reviewed(col, why) AS (
     ('ordering.return_request_receipt.receipt_number', 'counted in section 1'),
     ('ordering.delivery_failure_case_carton.sku', 'counted in section 1'),
     ('ordering.delivery_failure_case_carton.lpn', 'counted in section 1'),
+    ('ordering.order_carton_removal.package_id', 'history row: the removed package''s id as a correlation key, no foreign key by design (WF4-F2C)'),
+    ('ordering.order_carton_removal.lpn', 'history row: the removed carton''s LPN as it was, kept even if the stock row goes (WF4-F2C)'),
     ('fulfillment.carrier_event.carrier_code', 'counted in section 1'),
     ('fulfillment.pick.order_number', 'counted in section 1'),
     ('inventory.stock_movement.order_number', 'counted in section 1'),
