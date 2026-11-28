@@ -8,6 +8,9 @@ public interface WarehouseDirectory {
 
     Optional<String> codeOf(UUID warehouseId);
 
+    /** The warehouse of this id, active or not: its code and name, for a screen that says where an order ships from. */
+    Optional<Warehouse> find(UUID warehouseId);
+
     /** 4B-7: the warehouses an order may ship from - every ACTIVE one, by code. */
     java.util.List<Warehouse> active();
 

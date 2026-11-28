@@ -3,6 +3,7 @@ package com.stockflow.fulfillment.internal.service;
 import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.customer.api.CustomerService;
 import com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
@@ -11,6 +12,7 @@ import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.product.api.ProductService;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -56,9 +58,17 @@ class LoadPlanParcels {
      *                    plan may take it (sealed, with sizes and weight)
      * @param orderLineId the order line the parcel holds (a carton holds one, 08 BR-02), or null when it holds none or
      *                    several: the line the dispatcher ticks as filler cargo (RTM-LPGROUP)
+     * @param productName what the SKU(s) in {@code partName} are called, joined as they are; null when the parcel holds
+     *                    no order line, or the name of one of its SKUs is not known
      */
     record Parcel(PackageJpaEntity row, ShipmentJpaEntity shipment, OrderSummary order, CargoPackage carton,
-                  String partName, UUID orderLineId) {
+                  String partName, UUID orderLineId, String productName) {
+
+        /** Without the product name: callers that only plan. */
+        Parcel(PackageJpaEntity row, ShipmentJpaEntity shipment, OrderSummary order, CargoPackage carton,
+               String partName, UUID orderLineId) {
+            this(row, shipment, order, carton, partName, orderLineId, null);
+        }
 
         /** A parcel whose order line is not known to the caller. */
         Parcel(PackageJpaEntity row, ShipmentJpaEntity shipment, OrderSummary order, CargoPackage carton,
@@ -79,13 +89,17 @@ class LoadPlanParcels {
     private final ParcelContents lines;
     private final ShipmentJpaRepository shipments;
     private final OrderService orders;
+    private final CustomerService customers;
+    private final ProductService products;
 
     LoadPlanParcels(PackageJpaRepository packages, ParcelContents lines, ShipmentJpaRepository shipments,
-                    OrderService orders) {
+                    OrderService orders, CustomerService customers, ProductService products) {
         this.packages = packages;
         this.lines = lines;
         this.shipments = shipments;
         this.orders = orders;
+        this.customers = customers;
+        this.products = products;
     }
 
     /** These parcels by package id, in the order given; unknown ids are left out. */
@@ -109,6 +123,7 @@ class LoadPlanParcels {
         Map<UUID, List<ParcelContents.Line>> linesByPackage = lines.of(rows.stream()
                         .map(PackageJpaEntity::getId).toList()).stream()
                 .collect(Collectors.groupingBy(ParcelContents.Line::packageId));
+        Map<String, String> variantNames = variantNamesOf(orderById.values(), linesByPackage);
         Map<UUID, Parcel> out = new LinkedHashMap<>();
         for (PackageJpaEntity row : rows) {
             ShipmentJpaEntity shipment = row.getShipmentId() == null ? null : shipmentById.get(row.getShipmentId());
@@ -119,14 +134,46 @@ class LoadPlanParcels {
             }
             List<ParcelContents.Line> held = linesByPackage.getOrDefault(row.getId(), List.of());
             String partName = partName(row, held, skuByLine);
+            String productName = productName(held, skuByLine, variantNames);
             TreeSet<UUID> lineIds = new TreeSet<>();
             held.forEach(l -> lineIds.add(l.orderLineId()));
             String lineKey = lineIds.isEmpty() ? null
                     : lineIds.stream().map(UUID::toString).collect(Collectors.joining("+"));
             out.put(row.getId(), new Parcel(row, shipment, order, carton(row, partName, lineKey), partName,
-                    lineIds.size() == 1 ? lineIds.first() : null));
+                    lineIds.size() == 1 ? lineIds.first() : null, productName));
         }
         return out;
+    }
+
+    /**
+     * The registered name of the customer of each of these orders, by customer id, in one query: what the delivery note
+     * of the same shipment names as the customer. A customer whose record is gone is absent.
+     */
+    Map<UUID, String> customerNamesOf(Collection<OrderSummary> orderSummaries) {
+        return customers.fullNames(orderSummaries.stream().map(OrderSummary::customerId)
+                .filter(java.util.Objects::nonNull).distinct().toList());
+    }
+
+    /** The variant name of every SKU the described parcels hold, in one query; an unknown SKU is absent. */
+    private Map<String, String> variantNamesOf(Collection<OrderSummary> orderSummaries,
+                                               Map<UUID, List<ParcelContents.Line>> linesByPackage) {
+        java.util.Set<UUID> held = new java.util.HashSet<>();
+        linesByPackage.values().forEach(group -> group.forEach(l -> held.add(l.orderLineId())));
+        java.util.Set<String> skus = new java.util.TreeSet<>();
+        orderSummaries.forEach(o -> o.lines().stream().filter(l -> held.contains(l.lineId()))
+                .forEach(l -> skus.add(l.sku())));
+        return skus.isEmpty() ? Map.of() : products.variantNamesOf(skus);
+    }
+
+    /** {@link #partName} in names: the same SKUs in the same order, or null when there are none or one has no name. */
+    private static String productName(List<ParcelContents.Line> lines, Map<UUID, String> skuByLine,
+                                      Map<String, String> variantNames) {
+        TreeSet<String> skus = new TreeSet<>();
+        lines.forEach(l -> skus.add(skuByLine.getOrDefault(l.orderLineId(), "?")));
+        if (skus.isEmpty() || !variantNames.keySet().containsAll(skus)) {
+            return null;
+        }
+        return skus.stream().map(variantNames::get).collect(Collectors.joining(" + "));
     }
 
     /** The orders of these shipments, read once each. */
